@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: browser-pool
+  labels:
+    app: browser-node
+spec:
+  replicas: 5 # Fixed pool size (Active + Idle)
+  selector:
+    matchLabels:
+      app: browser-node
+  template:
+    metadata:
+      labels:
+        app: browser-node
+    spec:
+      containers:
+      - name: neko
+        image: popcorn/browser-node:local
+        imagePullPolicy: Never
+        securityContext:
+          capabilities:
+            add: ["SYS_ADMIN"]
+        env:
+        - name: REDIS_HOST
+          value: "redis"
+        - name: NEKO_SCREEN
+          value: "1920x1080@30"
+        - name: NEKO_PASSWORD
+          value: "neko"
+        - name: NEKO_PASSWORD_ADMIN
+          value: "admin"
+        - name: NEKO_EPR
+          value: "52000-52100"
+        - name: NEKO_WEBRTC_ICE_UDP_MUX
+          value: "true"
+        - name: NEKO_NAT1TO1
+          value: "127.0.0.1" # OrbStack LB usually binds to localhost
+        - name: NEKO_ICESERVERS
+          value: '[{"urls":["turn:192.168.139.2:3478"],"username":"popcorn","credential":"popcorn_secret"}]'
+        # Shared memory is important for browser performance
+        volumeMounts:
+        - mountPath: /dev/shm
+          name: dshm
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Gi

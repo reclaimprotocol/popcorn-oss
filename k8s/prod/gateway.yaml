@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: popcorn-gateway
+  labels:
+    app: gateway
+spec:
+  replicas: 1 # Can scale, but OpenResty is fast enough for now
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: gcr.io/rc-popcorn/gateway:latest
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: popcorn-gateway
+spec:
+  selector:
+    app: gateway
+  type: LoadBalancer
+  ports:
+    - port: 80
+      targetPort: 80

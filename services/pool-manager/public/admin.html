@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🍿 Popcorn Admin</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+            --accent: #3b82f6;
+            --success: #22c55e;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, sans-serif;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+
+        .card {
+            background: var(--card);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            margin-top: 0;
+            color: var(--accent);
+            border-bottom: 1px solid #334155;
+            padding-bottom: 0.5rem;
+        }
+
+        .stat {
+            font-size: 2rem;
+            font-weight: bold;
+        }
+
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        li {
+            background: #334155;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: 6px;
+            font-family: monospace;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        input {
+            background: #334155;
+            border: 1px solid #475569;
+            color: white;
+            padding: 0.75rem;
+            border-radius: 6px;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 1rem;
+        }
+
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            width: 100%;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        .tag {
+            background: var(--success);
+            color: black;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .empty {
+            opacity: 0.5;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🍿 Popcorn Pool Manager</h1>
+
+    <div class="grid">
+        <!-- CLAIM SECTION -->
+        <div class="card">
+            <h2>🚀 New Session</h2>
+            <form id="claimForm">
+                <label style="display:block; margin-bottom:0.5rem">Session ID / User ID</label>
+                <input type="text" id="sessionId" placeholder="e.g. user-123" required>
+                <button type="submit">Claim Browser</button>
+            </form>
+            <div id="result"
+                style="margin-top: 1rem; display: none; background: #064e3b; padding: 1rem; border-radius: 6px;"></div>
+        </div>
+
+        <!-- STATS SECTION -->
+        <div class="card">
+            <h2>📊 Pool Stats</h2>
+            <div style="display: flex; gap: 2rem; margin-bottom: 1rem;">
+                <div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Idle Pods</div>
+                    <div class="stat" id="idleCount">-</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Active Sessions</div>
+                    <div class="stat" id="activeCount">-</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- IDLE PODS -->
+        <div class="card">
+            <h2>💤 Idle Pods</h2>
+            <ul id="idleList"></ul>
+        </div>
+
+        <!-- ACTIVE SESSIONS -->
+        <div class="card">
+            <h2>🔥 Active Sessions</h2>
+            <ul id="activeList"></ul>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+
+        async function fetchStats() {
+            const res = await fetch(`${API_URL}/admin/api`);
+            const data = await res.json();
+
+            document.getElementById('idleCount').innerText = data.idleCount;
+            document.getElementById('activeCount').innerText = data.activeCount;
+
+            // Render Idle
+            const idleList = document.getElementById('idleList');
+            idleList.innerHTML = data.idlePods.length ?
+                data.idlePods.map(p => `<li>${p.name || JSON.stringify(p)} <span class="tag">READY</span></li>`).join('') :
+                '<div class="empty">No idle pods available</div>';
+
+            // Render Active
+            const activeList = document.getElementById('activeList');
+            activeList.innerHTML = Object.keys(data.activeSessions).length ?
+                Object.entries(data.activeSessions).map(([sid, pod]) => {
+                    // API now returns parsed objects
+                    let url = pod.url || JSON.stringify(pod);
+                    return `<li>
+                        <span>👤 ${sid} <a href="${url}" target="_blank" style="color:var(--accent)">${url}</a></span>
+                        <button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:1rem" onclick="killSession('${sid}')">KILL</button>
+                    </li>`;
+                }).join('') :
+                '<div class="empty">No active sessions</div>';
+        }
+
+        async function killSession(sid) {
+            if (!confirm(`Kill session ${sid}?`)) return;
+            await fetch(`${API_URL}/session/${sid}`, { method: 'DELETE' });
+            fetchStats();
+        }
+
+        document.getElementById('claimForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const sessionId = document.getElementById('sessionId').value;
+
+            try {
+                const res = await fetch(`${API_URL}/session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId })
+                });
+
+                const data = await res.json();
+                const resultDiv = document.getElementById('result');
+                resultDiv.style.display = 'block';
+
+                if (res.ok) {
+                    resultDiv.innerHTML = `✅ Assigned! <br><a href="${data.url}" target="_blank" style="color:white; font-weight:bold">${data.url}</a>`;
+                    fetchStats();
+                } else {
+                    resultDiv.innerHTML = `❌ Error: ${data.error}`;
+                    resultDiv.style.background = '#7f1d1d';
+                }
+            } catch (err) {
+                alert('Request failed');
+            }
+        });
+
+        // Poll every 2 seconds
+        fetchStats();
+        setInterval(fetchStats, 2000);
+    </script>
+</body>
+
+</html>

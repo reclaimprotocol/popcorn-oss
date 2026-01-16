@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coturn
+  labels:
+    app: coturn
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: coturn
+  template:
+    metadata:
+      labels:
+        app: coturn
+    spec:
+      containers:
+      - name: coturn
+        image: coturn/coturn:4.6.2
+        args:
+        - "-n" # no config file, use command line
+        - "--log-file=stdout"
+        - "--min-port=49152"
+        - "--max-port=65535"
+        - "--user=popcorn:popcorn_secret" # STATIC USER/PASS
+        - "--lt-cred-mech"
+        - "--realm=neko"
+        - "--no-tls"
+        - "--no-dtls"
+        ports:
+        - containerPort: 3478
+          protocol: TCP
+        - containerPort: 3478
+          protocol: UDP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coturn
+spec:
+  selector:
+    app: coturn
+  type: LoadBalancer # For local, might need NodePort or Tunnel
+  ports:
+    - name: turn-tcp
+      port: 3478
+      targetPort: 3478
+      protocol: TCP
+    - name: turn-udp
+      port: 3478
+      targetPort: 3478
+      protocol: UDP

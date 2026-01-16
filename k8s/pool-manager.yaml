@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pool-manager
+  labels:
+    app: pool-manager
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pool-manager
+  template:
+    metadata:
+      labels:
+        app: pool-manager
+    spec:
+      serviceAccountName: pool-manager
+      containers:
+      - name: pool-manager
+        image: popcorn/pool-manager:local
+        imagePullPolicy: Never # Important for local dev without registry
+        ports:
+        - containerPort: 3000
+        env:
+        - name: REDIS_HOST
+          value: "redis"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pool-manager
+spec:
+  selector:
+    app: pool-manager
+  type: ClusterIP # Internal service only, exposed via Gateway
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
