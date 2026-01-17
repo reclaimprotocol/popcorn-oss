@@ -2,7 +2,7 @@
 set -e
 
 echo "🌽 Popcorn Local Dev Setup (OrbStack)"
-
+kubectl config use-context orbstack
 # 1. Build the Pool Manager Image
 echo "🔨 Building Pool Manager image..."
 docker build -t popcorn/pool-manager:local ./services/pool-manager
