@@ -19,6 +19,12 @@ spec:
         image: gcr.io/rc-popcorn/gateway:latest
         ports:
         - containerPort: 80
+        readinessProbe:
+          httpGet:
+            path: /admin/api
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 5
         resources:
           requests:
             memory: "128Mi"
@@ -34,8 +40,7 @@ metadata:
 spec:
   selector:
     app: gateway
-  type: LoadBalancer
-  loadBalancerIP: "34.131.163.185"
+  type: NodePort
   ports:
     - port: 80
       targetPort: 80

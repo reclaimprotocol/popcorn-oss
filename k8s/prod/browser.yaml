@@ -42,7 +42,7 @@ spec:
         - name: NEKO_WEBRTC_ICE_UDP_MUX
           value: "true"
         - name: NEKO_NAT1TO1
-          value: "34.131.163.185" # Production Gateway IP
+          value: "34.95.69.141" # Production Gateway IP
         volumeMounts:
         - mountPath: /dev/shm
           name: dshm
