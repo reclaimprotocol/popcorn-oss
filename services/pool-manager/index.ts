@@ -1,42 +1,29 @@
 import { Hono } from "hono";
-import { serveStatic } from "hono/bun";
-import { Redis } from "ioredis";
-import { KubeConfig, CoreV1Api } from '@kubernetes/client-node';
-
-// 🔧 FIX: Disable TLS verification globally for local dev (nuclear option)
-// 🔧 FIX: Disable TLS verification globally for local dev (nuclear option)
-if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
-    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
-}
+import { createHmac } from "node:crypto";
+import { DB } from "./src/services/db";
+import { K8s } from "./src/services/k8s";
+import { RegisterRequest, TurnServerConfig } from "./src/types";
+import { Auth } from "./src/services/auth";
 
 const app = new Hono();
 const PORT = 3000;
-const REDIS_HOST = process.env.REDIS_HOST || "localhost";
-const REDIS_PORT = 6379;
+const TURN_SECRET = process.env.TURN_SECRET || "popcorn_secret";
+const TURN_HOST = process.env.TURN_HOST || "192.168.139.2"; // Replace with actual external IP
+const TURN_PORT = 3478;
 
-console.log(`🔌 Connecting to Redis at ${REDIS_HOST}:${REDIS_PORT}...`);
-const redis = new Redis({
-    host: REDIS_HOST,
-    port: REDIS_PORT,
-});
+// Helper to generate TURN creds
+function generateTurnCreds(usernameId: string): TurnServerConfig {
+    const ttl = 24 * 3600; // 24 Hours
+    const timestamp = Math.floor(Date.now() / 1000) + ttl;
+    const username = `${timestamp}:${usernameId}`;
+    const password = createHmac("sha1", TURN_SECRET).update(username).digest("base64");
 
-redis.on("connect", () => console.log("✅ Redis connected!"));
-redis.on("error", (err) => console.error("❌ Redis error:", err));
-
-// K8s Client
-const kc = new KubeConfig();
-try {
-    kc.loadFromDefault();
-} catch (e) {
-    console.warn("⚠️ Failed to load KubeConfig (running outside cluster without config?)");
+    return {
+        urls: [`turn:${TURN_HOST}:${TURN_PORT}`],
+        username,
+        credential: password
+    };
 }
-// 🔧 FIX: Disable TLS verification for local development (fixes SELF_SIGNED_CERT_IN_CHAIN)
-// @ts-ignore: Readonly property workaround
-if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
-    kc.clusters.forEach(c => c.skipTLSVerify = true);
-}
-
-const k8s = kc.makeApiClient(CoreV1Api);
 
 // Serve Admin UI Static File
 app.get("/admin", async (c) => {
@@ -45,33 +32,66 @@ app.get("/admin", async (c) => {
 
 // GET /admin/api
 app.get("/admin/api", async (c) => {
-    const idlePods = await redis.lrange("idle_pods", 0, -1);
-    const activeSessions = await redis.hgetall("sessions");
+    const stats = await DB.getStats();
+    const k8sPods = await K8s.listBrowserPods();
+
+    // Enrich stats for UI
+    const enrichedSessions = Object.entries(stats.activeSessions).reduce((acc, [id, dataStr]) => {
+        try {
+            const pod = JSON.parse(dataStr);
+            // Construct Gateway URL for Admin UI
+            const host = c.req.header("Host") || "localhost";
+            const protocol = c.req.header("X-Forwarded-Proto") || "http";
+            const token = Auth.signToken(id);
+            pod.url = `${protocol}://${host}/browser/${id}/${token}/`;
+            acc[id] = pod;
+        } catch (e) {
+            acc[id] = dataStr;
+        }
+        return acc;
+    }, {} as Record<string, any>);
 
     return c.json({
-        idleCount: idlePods.length,
-        activeCount: Object.keys(activeSessions).length,
-        idlePods: idlePods.map(p => {
-            try { return JSON.parse(p) } catch { return p }
-        }),
-        activeSessions: Object.entries(activeSessions).reduce((acc, [id, data]) => {
-            try {
-                const pod = JSON.parse(data);
-                // Construct Gateway URL for Admin UI
-                const host = c.req.header("Host") || "localhost";
-                const protocol = c.req.header("X-Forwarded-Proto") || "http";
-                pod.url = `${protocol}://${host}/browser/${id}/`;
-                acc[id] = pod;
-            } catch (e) {
-                acc[id] = data;
-            }
-            return acc;
-        }, {} as Record<string, any>)
+        ...stats,
+        idlePods: stats.idlePods.map(p => ({ name: p.name })),
+        activeSessions: enrichedSessions,
+        k8sPods
     });
 });
 
 // GET /health
 app.get("/health", (c) => c.text("OK"));
+
+// POST /register
+app.post("/register", async (c) => {
+    let body: RegisterRequest;
+    try {
+        body = await c.req.json();
+    } catch (e) {
+        return c.json({ error: "Invalid JSON" }, 400);
+    }
+
+    if (!body.name || !body.url) {
+        return c.json({ error: "Missing name or url" }, 400);
+    }
+
+    console.log(`🔌 Registering pod: ${body.name} (${body.url})`);
+
+    await DB.registerPod({
+        name: body.name,
+        url: body.url
+    });
+
+    // Generate TURN creds for the pod to use (technically pod uses them to connect to TURN? 
+    // Or just to have them available? The plan says "returns TURN creds" implies the pod needs them.
+    // Usually the *client* needs them, but if the browser node acts as a peer, it might need them too.
+    // We'll generate a set for the pod itself using its name as ID.
+    const iceServer = generateTurnCreds(body.name);
+
+    return c.json({
+        iceServers: [iceServer]
+    });
+});
 
 // POST /session
 app.post("/session", async (c) => {
@@ -84,129 +104,100 @@ app.post("/session", async (c) => {
         // Body parsing failed or empty, ignore
     }
 
-    // Atomic pop
-    const podRaw = await redis.lpop("idle_pods");
+    const pod = await DB.popIdlePod();
 
-    if (!podRaw) {
+    if (!pod) {
         return c.json({ error: "No idle pods available" }, 503);
     }
 
-    // Parse Pod Data (Expecting: { name: "...", url: "..." })
-    let podData: { name: string, url: string };
-    try {
-        podData = JSON.parse(podRaw);
-    } catch (e) {
-        console.error("❌ Invalid pod data in Redis:", podRaw);
-        return c.json({ error: "Internal Pool Error: Invalid Pod Data" }, 500);
-    }
+    console.log(`🚀 Assigned pod: ${pod.name} (${pod.url}) to session: ${sessionId}`);
 
-    console.log(`🚀 Assigned pod: ${podData.name} (${podData.url}) to session: ${sessionId}`);
+    // 🔥 HOT POOL LOGIC: Orphan the pod
+    await K8s.orphanPod(pod.name);
 
-    // 🔥 HOT POOL LOGIC: Orphan the pod so Deployment creates a replacement
-    // We patch the label 'app' to 'browser-node-taken'
-    // This removes it from the Deployment's selector (which looks for 'browser-node')
-    try {
-        console.log(`🏷️  Orphaning pod ${podData.name} from Deployment...`);
-        // @ts-ignore
-        await k8s.patchNamespacedPod({
-            name: podData.name,
-            namespace: "default",
-            body: [
-                {
-                    op: "replace",
-                    path: "/metadata/labels/app",
-                    value: "browser-node-taken"
-                }
-            ]
-        });
-    } catch (e) {
-        console.error("❌ Failed to patch pod labels:", e);
-        // Continue anyway, but pool won't auto-scale
-    }
-
-    // Store session
-    await redis.hset("sessions", sessionId, JSON.stringify(podData));
-
-    // 🔥 ROUTING LOGIC: Map session ID to Pod IP for OpenResty Gateway
-    // Key: route:<id> -> Value: <internal_ip> (e.g. 10.12.0.5)
-    // Extract IP from URL (assuming url is http://10.x.x.x:8080)
-    const podIp = new URL(podData.url).hostname;
-    await redis.set(`route:${sessionId}`, podIp, "EX", 3600); // Expire in 1 hour
+    // Store session & Route
+    await DB.createSession(sessionId, pod);
 
     // Construct Gateway URL
-    // Default to a placeholder if env var not set, or infer from somewhere.
-    // For now, let's assume the client knows the gateway IP or we return a relative path.
-    // If we return absolute, we need GATEWAY_PUBLIC_URL.
-    // Let's return a relative path that the client can use against the Gateway.
-    // Or if `pool-manager` is behind the gateway (it's not, it's parallel or behind?), 
-    // actually, the user hits Gateway -> Pool Manager (for API).
-    // So `c.req.url` would be the Gateway URL?
-    // If Gateway proxies /api/* to Pool Manager, then `c.req.header("Host")` is the Gateway.
-    // Let's try to use the Host header.
-
     const host = c.req.header("Host") || "localhost";
     const protocol = c.req.header("X-Forwarded-Proto") || "http";
-    const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/`;
+    const token = Auth.signToken(sessionId);
+    const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/${token}/`;
 
-    return c.json({ url: gatewayUrl, sessionId });
+    // 🔑 Generate Time-Limited TURN Credentials for the Client
+    const iceServer = generateTurnCreds(sessionId);
+
+    return c.json({ url: gatewayUrl, sessionId, iceServers: [iceServer] });
 });
 
-// POST /debug/seed
-app.post("/debug/seed", async (c) => {
-    const pod = c.req.query("pod");
-    if (pod) {
-        // Mock data for debug
-        const data = JSON.stringify({ name: "mock-pod", url: pod });
-        await redis.rpush("idle_pods", data);
-        return c.text(`Added ${data} to pool`);
+
+// POST /heartbeat
+app.post("/heartbeat", async (c) => {
+    let body: { name: string };
+    try {
+        body = await c.req.json();
+    } catch { return c.json({}, 400); }
+
+    if (body.name) {
+        await DB.updateHeartbeat(body.name);
     }
-    return c.text("Missing 'pod' query param", 400);
+    return c.json({ ok: true });
 });
 
 // GET /debug/pool
 app.get("/debug/pool", async (c) => {
-    const length = await redis.llen("idle_pods");
-    const pods = await redis.lrange("idle_pods", 0, -1);
-    return c.json({ count: length, pods });
+    const stats = await DB.getStats();
+    return c.json({ count: stats.idleCount, pods: stats.idlePods });
 });
 
 // DELETE /session/:id
 app.delete("/session/:id", async (c) => {
     const id = c.req.param("id");
-    const sessionRaw = await redis.hget("sessions", id);
+    const sessionPod = await DB.deleteSession(id);
 
-    if (sessionRaw) {
-        await redis.hdel("sessions", id);
-
-        try {
-            const podData = JSON.parse(sessionRaw);
-            console.log(`💀 Deleting used pod: ${podData.name}`);
-
-            // Hard kill the pod since it's now orphaned
-            // ObjectParamAPI: (params)
-            // @ts-ignore
-            await k8s.deleteNamespacedPod({
-                name: podData.name,
-                namespace: "default"
-            });
-
-            return c.json({ success: true, killed: podData.name });
-        } catch (e) {
-            console.error("❌ Error cleaning up session pod:", e);
-            return c.json({ error: "Failed to cleanup pod" }, 500);
-        }
+    if (sessionPod) {
+        // Hard kill the pod since it's now orphaned
+        await K8s.deletePod(sessionPod.name);
+        return c.json({ success: true, killed: sessionPod.name });
     }
     return c.json({ error: "Session not found" }, 404);
 });
 
-// PROXY: Reverse proxy requests to browser pods
-// Handle WebSocket upgrades
-// We need to access the underlying server for this in Hono/Bun, typically done separately or via adapter.
-// For Hono+Bun, it's simpler to implement a custom handler for the specific path.
+// 🧹 Stale Pod Cleanup Job
+setInterval(async () => {
+    // 30 Seconds timeout
+    const stalePods = await DB.cleanupStalePods(30 * 1000);
 
-// DELETED: Legacy Proxy Logic (Handled by OpenResty Gateway)
+    for (const podName of stalePods) {
+        console.warn(`🧟 Stale heartbeat from ${podName}. Cleaning up...`);
+        // 1. Remove from idle list (if present)
+        await DB.removePodFromIdle(podName);
 
-console.log(`🧢 Pool Manager (Hono) running on port ${PORT}`);
+        // 2. Kill the pod (forces restart by Deployment)
+        await K8s.deletePod(podName);
+    }
+}, 10000); // Run every 10s
+
+// ⚖️ Dynamic Pool Scaling Job
+const POOL_SIZE_LIMIT = parseInt(process.env.POOL_SIZE_LIMIT || "5");
+const DEPLOYMENT_NAME = "browser-pool";
+
+setInterval(async () => {
+    const stats = await DB.getStats();
+    const activeCount = Object.keys(stats.activeSessions).length;
+
+    // Calculate how many idle pods strictly needed to maintain total limit
+    // Total = Active + Idle (Replicas)
+    // Replicas = TotalLimit - Active
+    const targetReplicas = Math.max(0, POOL_SIZE_LIMIT - activeCount);
+
+    const currentReplicas = await K8s.getDeploymentReplicas(DEPLOYMENT_NAME);
+
+    if (currentReplicas !== targetReplicas) {
+        console.log(`⚖️  Syncing Pool Size: Active=${activeCount}, TargetReplicas=${targetReplicas} (Current=${currentReplicas})`);
+        await K8s.scaleDeployment(DEPLOYMENT_NAME, targetReplicas);
+    }
+}, 5000); // Run every 5s
 
 export default {
     port: PORT,

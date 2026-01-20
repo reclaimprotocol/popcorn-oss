@@ -5,7 +5,7 @@ metadata:
   labels:
     app: browser-node
 spec:
-  replicas: 5 # Fixed pool size (Active + Idle)
+  replicas: 2 # Fixed pool size (Active + Idle)
   selector:
     matchLabels:
       app: browser-node
@@ -36,8 +36,6 @@ spec:
           value: "true"
         - name: NEKO_NAT1TO1
           value: "127.0.0.1" # OrbStack LB usually binds to localhost
-        - name: NEKO_ICESERVERS
-          value: '[{"urls":["turn:192.168.139.2:3478"],"username":"popcorn","credential":"popcorn_secret"}]'
         # Shared memory is important for browser performance
         volumeMounts:
         - mountPath: /dev/shm

@@ -35,6 +35,7 @@ spec:
   selector:
     app: gateway
   type: LoadBalancer
+  loadBalancerIP: "34.131.163.185"
   ports:
     - port: 80
       targetPort: 80

@@ -139,19 +139,17 @@
                     <div style="font-size: 0.9rem; opacity: 0.7;">Active Sessions</div>
                     <div class="stat" id="activeCount">-</div>
                 </div>
+                <div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Total Pods (K8s)</div>
+                    <div class="stat" id="totalPods">-</div>
+                </div>
             </div>
         </div>
 
-        <!-- IDLE PODS -->
-        <div class="card">
-            <h2>💤 Idle Pods</h2>
-            <ul id="idleList"></ul>
-        </div>
-
-        <!-- ACTIVE SESSIONS -->
-        <div class="card">
-            <h2>🔥 Active Sessions</h2>
-            <ul id="activeList"></ul>
+        <!-- UNIFIED POD LIST -->
+        <div class="card" style="grid-column: span 2;">
+            <h2>🖥️ Browser Pods</h2>
+            <ul id="podList"></ul>
         </div>
     </div>
 
@@ -164,25 +162,81 @@
 
             document.getElementById('idleCount').innerText = data.idleCount;
             document.getElementById('activeCount').innerText = data.activeCount;
+            document.getElementById('totalPods').innerText = data.k8sPods.length;
 
-            // Render Idle
-            const idleList = document.getElementById('idleList');
-            idleList.innerHTML = data.idlePods.length ?
-                data.idlePods.map(p => `<li>${p.name || JSON.stringify(p)} <span class="tag">READY</span></li>`).join('') :
-                '<div class="empty">No idle pods available</div>';
+            const podList = document.getElementById('podList');
 
-            // Render Active
-            const activeList = document.getElementById('activeList');
-            activeList.innerHTML = Object.keys(data.activeSessions).length ?
-                Object.entries(data.activeSessions).map(([sid, pod]) => {
-                    // API now returns parsed objects
-                    let url = pod.url || JSON.stringify(pod);
-                    return `<li>
-                        <span>👤 ${sid} <a href="${url}" target="_blank" style="color:var(--accent)">${url}</a></span>
-                        <button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:1rem" onclick="killSession('${sid}')">KILL</button>
-                    </li>`;
-                }).join('') :
-                '<div class="empty">No active sessions</div>';
+            if (!data.k8sPods.length) {
+                podList.innerHTML = '<div class="empty">No pods found in cluster</div>';
+                return;
+            }
+
+            // Create a map for active sessions for easy lookup: podName -> session
+            const activeMap = {};
+            Object.entries(data.activeSessions).forEach(([sid, session]) => {
+                // If session is just a string (old format), we can't map easily by name unless we query.
+                // But updated code returns object with name.
+                if (session.name) activeMap[session.name] = { ...session, sid };
+            });
+
+            // Set for idle pods
+            const idleSet = new Set(data.idlePods.map(p => p.name));
+
+            podList.innerHTML = data.k8sPods.map(p => {
+                const isTerminating = !!p.deletionTimestamp;
+                const hb = data.heartbeats[p.name];
+                const ago = hb ? Math.round((Date.now() - parseInt(hb)) / 1000) + 's ago' : 'N/A';
+
+                // Determine App State
+                let appStateHtml = '<span class="tag" style="background:#64748b; color:white">UNKNOWN</span>';
+                let actionHtml = '';
+                let detailsHtml = '';
+
+                if (idleSet.has(p.name)) {
+                    appStateHtml = '<span class="tag" style="background:var(--success); color:black">IDLE</span>';
+                } else if (activeMap[p.name]) {
+                    const s = activeMap[p.name];
+                    appStateHtml = `<span class="tag" style="background:#eab308; color:black">ACTIVE</span>`;
+                    detailsHtml = `<span style="font-size:0.8rem; margin-left:0.5rem">👤 ${s.sid}</span>`;
+                    const openBtn = `<a href="${s.url}" target="_blank" style="background:#22c55e; color:black; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:1rem; text-decoration:none; border-radius:6px; font-weight:bold; display:inline-block">OPEN</a>`;
+                    const killBtn = `<button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:0.5rem" onclick="killSession('${s.sid}')">KILL</button>`;
+                    actionHtml = openBtn + killBtn;
+                } else if (isTerminating) {
+                    appStateHtml = '<span class="tag" style="background:#ef4444; color:white">TERMINATING</span>';
+                }
+
+                // K8s Phase Style
+                const phaseColor = p.phase === 'Running' ? '#22c55e' : (p.phase === 'Pending' ? '#eab308' : '#64748b');
+
+                return `<li>
+                    <div style="display:flex; align-items:center; width:100%; gap:1rem">
+                        <div style="display:flex; flex-direction:column; min-width: 200px;">
+                            <span style="font-weight:bold">${p.name}</span>
+                            <span style="font-size:0.8rem; opacity:0.6">${p.ip || 'No IP'}</span>
+                        </div>
+                        
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem">
+                            <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">K8s Phase</span>
+                            <span style="color:${phaseColor}; font-weight:bold">${p.phase}</span>
+                        </div>
+
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem; margin-left:1rem">
+                            <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">State</span>
+                            ${appStateHtml}
+                        </div>
+
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem; margin-left:1rem">
+                            <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">Heartbeat</span>
+                            <span>💓 ${ago}</span>
+                        </div>
+
+                        <div style="margin-left:auto; display:flex; align-items:center">
+                            ${detailsHtml}
+                            ${actionHtml}
+                        </div>
+                    </div>
+                </li>`;
+            }).join('');
         }
 
         async function killSession(sid) {
@@ -207,7 +261,7 @@
                 resultDiv.style.display = 'block';
 
                 if (res.ok) {
-                    resultDiv.innerHTML = `✅ Assigned! <br><a href="${data.url}" target="_blank" style="color:white; font-weight:bold">${data.url}</a>`;
+                    resultDiv.innerHTML = `✅ Assigned! <br><a href="${data.url}" target="_blank" style="display:inline-block; margin-top:0.5rem; background:white; color:black; padding:0.5rem 1rem; border-radius:4px; text-decoration:none; font-weight:bold">Open Session</a>`;
                     fetchStats();
                 } else {
                     resultDiv.innerHTML = `❌ Error: ${data.error}`;

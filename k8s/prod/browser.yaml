@@ -43,11 +43,11 @@ spec:
           value: "true"
         - name: NEKO_NAT1TO1
           value: "34.131.163.185" # Production Gateway IP
-        - name: NEKO_ICESERVERS
-          value: '[{"urls":["stun:stun.l.google.com:19302"]},{"urls":["turn:34.131.65.112:3478"],"username":"popcorn","credential":"popcorn_secret"}]'
         volumeMounts:
         - mountPath: /dev/shm
           name: dshm
+      nodeSelector:
+        node_type: standard
       volumes:
       - name: dshm
         emptyDir:
