@@ -17,8 +17,8 @@ spec:
       serviceAccountName: pool-manager
       containers:
       - name: pool-manager
-        image: popcorn/pool-manager:local
-        imagePullPolicy: Never # Important for local dev without registry
+        image: 342772716647.dkr.ecr.us-east-2.amazonaws.com/popcorn/pool-manager:latest
+        imagePullPolicy: Always
         ports:
         - containerPort: 3000
         env:
@@ -30,6 +30,8 @@ spec:
           value: "acded8cc7b0c24d2db86f72a32b3271c-1ba1ac6b9da2a8ca.elb.us-east-2.amazonaws.com"
         - name: TURN_SECRET
           value: "popcorn_secret"
+        - name: POOL_SIZE_LIMIT
+          value: "2"
 ---
 apiVersion: v1
 kind: Service
@@ -38,7 +40,7 @@ metadata:
 spec:
   selector:
     app: pool-manager
-  type: ClusterIP # Internal service only, exposed via Gateway
+  type: ClusterIP
   ports:
     - protocol: TCP
       port: 80

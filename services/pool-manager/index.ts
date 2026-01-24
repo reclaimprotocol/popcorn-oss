@@ -8,18 +8,31 @@ import { Auth } from "./src/services/auth";
 const app = new Hono();
 const PORT = 3000;
 const TURN_SECRET = process.env.TURN_SECRET || "popcorn_secret";
-const TURN_HOST = process.env.TURN_HOST || "192.168.139.2"; // Replace with actual external IP
+const TURN_HOST = process.env.TURN_HOST || "192.168.139.2";
+const TURN_HOST_INTERNAL = process.env.TURN_HOST_INTERNAL || TURN_HOST; // Default to same if not set
 const TURN_PORT = 3478;
 
 // Helper to generate TURN creds
-function generateTurnCreds(usernameId: string): TurnServerConfig {
+function generateTurnCreds(usernameId: string, useInternal = false): TurnServerConfig | TurnServerConfig[] {
+    // 🌍 Check for static external config (e.g. Metered.ca) - ONLY for external clients
+    if (!useInternal && process.env.EXTERNAL_ICE_SERVERS_JSON) {
+        try {
+            const externalConfig = JSON.parse(process.env.EXTERNAL_ICE_SERVERS_JSON);
+            return externalConfig;
+        } catch (e) {
+            console.error("❌ Failed to parse EXTERNAL_ICE_SERVERS_JSON:", e);
+        }
+    }
+
     const ttl = 24 * 3600; // 24 Hours
     const timestamp = Math.floor(Date.now() / 1000) + ttl;
     const username = `${timestamp}:${usernameId}`;
     const password = createHmac("sha1", TURN_SECRET).update(username).digest("base64");
 
+    const host = useInternal ? TURN_HOST_INTERNAL : TURN_HOST;
+
     return {
-        urls: [`turn:${TURN_HOST}:${TURN_PORT}`],
+        urls: [`turn:${host}:${TURN_PORT}`],
         username,
         credential: password
     };
@@ -86,10 +99,11 @@ app.post("/register", async (c) => {
     // Or just to have them available? The plan says "returns TURN creds" implies the pod needs them.
     // Usually the *client* needs them, but if the browser node acts as a peer, it might need them too.
     // We'll generate a set for the pod itself using its name as ID.
-    const iceServer = generateTurnCreds(body.name);
+    // Generate TURN creds for the pod
+    const iceConfigs = generateTurnCreds(body.name);
 
     return c.json({
-        iceServers: [iceServer]
+        iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs]
     });
 });
 
@@ -125,9 +139,10 @@ app.post("/session", async (c) => {
     const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/${token}/`;
 
     // 🔑 Generate Time-Limited TURN Credentials for the Client
-    const iceServer = generateTurnCreds(sessionId);
+    // 🔑 Generate Time-Limited TURN Credentials for the Client
+    const iceConfigs = generateTurnCreds(sessionId);
 
-    return c.json({ url: gatewayUrl, sessionId, iceServers: [iceServer] });
+    return c.json({ url: gatewayUrl, sessionId, iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs] });
 });
 
 

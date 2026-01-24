@@ -47,6 +47,7 @@ while [ $count -lt $MAX_RETRIES ]; do
       if echo "$RESPONSE" | grep -q "iceServers"; then
           echo "✅ Registered! Response: $RESPONSE"
           ICE_SERVERS=$(echo "$RESPONSE" | jq -c '.iceServers')
+          echo "🧊 Received ICE Servers: $ICE_SERVERS"
           REGISTER_SUCCESS=true
           break
       else 
