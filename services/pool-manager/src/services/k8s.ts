@@ -1,4 +1,4 @@
-import { KubeConfig, CoreV1Api, AppsV1Api } from '@kubernetes/client-node';
+import { KubeConfig, CoreV1Api, AppsV1Api, CustomObjectsApi } from '@kubernetes/client-node';
 import { Pod } from '../types';
 
 // 🔧 FIX: Disable TLS verification globally for self-signed info (local dev)
@@ -15,8 +15,55 @@ try {
 
 const k8s = kc.makeApiClient(CoreV1Api);
 const k8sApps = kc.makeApiClient(AppsV1Api);
+const k8sCustom = kc.makeApiClient(CustomObjectsApi);
 
 export const K8s = {
+    // ... existing methods ...
+    async listGameServers() {
+        try {
+            // Fallback: RAW Fetch because client-node CustomObjectsApi is misbehaving
+            const cluster = kc.getCurrentCluster();
+            if (!cluster) {
+                console.error("❌ No cluster in KubeConfig");
+                return [];
+            }
+
+            const url = `${cluster.server}/apis/agones.dev/v1/namespaces/default/gameservers`;
+            const opts: any = { method: "GET", headers: {} };
+
+            // Apply Auth
+            await kc.applyToFetchOptions(opts);
+
+            // Bun/Node TLS handling
+            if (cluster.skipTLSVerify || process.env.NODE_TLS_REJECT_UNAUTHORIZED == "0") {
+                // @ts-ignore
+                opts.tls = { rejectUnauthorized: false };
+            }
+
+            const res = await fetch(url, opts as any);
+            if (!res.ok) {
+                const txt = await res.text();
+                console.error(`❌ Raw fetch failed ${res.status}: ${txt}`);
+                return [];
+            }
+
+            const json = await res.json();
+            // @ts-ignore
+            const items = json.items || [];
+
+            return items.map((gs: any) => ({
+                name: gs.metadata.name,
+                state: gs.status.state,
+                address: gs.status.address,
+                port: gs.status.ports?.[0]?.port
+            }));
+
+        } catch (e) {
+            console.error("❌ Failed to list GameServers (raw):", e);
+            return [];
+        }
+    },
+
     async orphanPod(podName: string) {
         console.log(`🏷️  Orphaning pod ${podName} from Deployment...`);
         try {

@@ -1,13 +1,9 @@
 FROM local/chromium-headful:latest
 
-# Install redis-tools for the registration script
 USER root
-RUN apt-get update && apt-get install -y redis-tools jq && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y curl jq && rm -rf /var/lib/apt/lists/*
 
-# Copy our custom entrypoint
 COPY entrypoint.sh /docker-entrypoint.sh
-COPY wrapper.sh /docker-wrapper.sh
-RUN chmod +x /docker-entrypoint.sh /docker-wrapper.sh
+RUN chmod +x /docker-entrypoint.sh
 
-# We override the entrypoint to run our registration logic before/alongside Neko
 ENTRYPOINT ["/docker-entrypoint.sh"]

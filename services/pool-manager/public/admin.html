@@ -132,15 +132,15 @@
             <h2>📊 Pool Stats</h2>
             <div style="display: flex; gap: 2rem; margin-bottom: 1rem;">
                 <div>
-                    <div style="font-size: 0.9rem; opacity: 0.7;">Idle Pods</div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Ready GameServers</div>
                     <div class="stat" id="idleCount">-</div>
                 </div>
                 <div>
-                    <div style="font-size: 0.9rem; opacity: 0.7;">Active Sessions</div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Allocated Sessions</div>
                     <div class="stat" id="activeCount">-</div>
                 </div>
                 <div>
-                    <div style="font-size: 0.9rem; opacity: 0.7;">Total Pods (K8s)</div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Total GameServers</div>
                     <div class="stat" id="totalPods">-</div>
                 </div>
             </div>
@@ -148,7 +148,7 @@
 
         <!-- UNIFIED POD LIST -->
         <div class="card" style="grid-column: span 2;">
-            <h2>🖥️ Browser Pods</h2>
+            <h2>🎮 Agones GameServers</h2>
             <ul id="podList"></ul>
         </div>
     </div>
@@ -157,91 +157,106 @@
         const API_URL = window.location.origin;
 
         async function fetchStats() {
-            const res = await fetch(`${API_URL}/admin/api`);
-            const data = await res.json();
+            try {
+                const res = await fetch(`${API_URL}/admin/api`);
+                const data = await res.json();
 
-            document.getElementById('idleCount').innerText = data.idleCount;
-            document.getElementById('activeCount').innerText = data.activeCount;
-            document.getElementById('totalPods').innerText = data.k8sPods.length;
+                // Robust assignment with fallback to 0
+                document.getElementById('idleCount').innerText = data.readyCount !== undefined ? data.readyCount : 0;
+                document.getElementById('activeCount').innerText = data.activeCount !== undefined ? data.activeCount : 0;
+                document.getElementById('totalPods').innerText = data.totalCount !== undefined ? data.totalCount : 0;
 
-            const podList = document.getElementById('podList');
+                const podList = document.getElementById('podList');
 
-            if (!data.k8sPods.length) {
-                podList.innerHTML = '<div class="empty">No pods found in cluster</div>';
-                return;
-            }
-
-            // Create a map for active sessions for easy lookup: podName -> session
-            const activeMap = {};
-            Object.entries(data.activeSessions).forEach(([sid, session]) => {
-                // If session is just a string (old format), we can't map easily by name unless we query.
-                // But updated code returns object with name.
-                if (session.name) activeMap[session.name] = { ...session, sid };
-            });
-
-            // Set for idle pods
-            const idleSet = new Set(data.idlePods.map(p => p.name));
-
-            podList.innerHTML = data.k8sPods.map(p => {
-                const isTerminating = !!p.deletionTimestamp;
-                const hb = data.heartbeats[p.name];
-                const ago = hb ? Math.round((Date.now() - parseInt(hb)) / 1000) + 's ago' : 'N/A';
-
-                // Determine App State
-                let appStateHtml = '<span class="tag" style="background:#64748b; color:white">UNKNOWN</span>';
-                let actionHtml = '';
-                let detailsHtml = '';
-
-                if (idleSet.has(p.name)) {
-                    appStateHtml = '<span class="tag" style="background:var(--success); color:black">IDLE</span>';
-                } else if (activeMap[p.name]) {
-                    const s = activeMap[p.name];
-                    appStateHtml = `<span class="tag" style="background:#eab308; color:black">ACTIVE</span>`;
-                    detailsHtml = `<span style="font-size:0.8rem; margin-left:0.5rem">👤 ${s.sid}</span>`;
-                    const openBtn = `<a href="${s.url}" target="_blank" style="background:#22c55e; color:black; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:1rem; text-decoration:none; border-radius:6px; font-weight:bold; display:inline-block">OPEN</a>`;
-                    const killBtn = `<button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:0.5rem" onclick="killSession('${s.sid}')">KILL</button>`;
-                    actionHtml = openBtn + killBtn;
-                } else if (isTerminating) {
-                    appStateHtml = '<span class="tag" style="background:#ef4444; color:white">TERMINATING</span>';
+                if (!data.k8sPods || !data.k8sPods.length) {
+                    podList.innerHTML = '<div class="empty">No GameServers found in cluster</div>';
+                    return;
                 }
 
-                // K8s Phase Style
-                const phaseColor = p.phase === 'Running' ? '#22c55e' : (p.phase === 'Pending' ? '#eab308' : '#64748b');
+                // Create a map for active sessions for easy lookup: podName -> session
+                const activeMap = {};
+                if (data.activeSessions) {
+                    Object.entries(data.activeSessions).forEach(([sid, session]) => {
+                        if (session.name) activeMap[session.name] = { ...session, sid };
+                    });
+                }
 
-                return `<li>
-                    <div style="display:flex; align-items:center; width:100%; gap:1rem">
-                        <div style="display:flex; flex-direction:column; min-width: 200px;">
-                            <span style="font-weight:bold">${p.name}</span>
-                            <span style="font-size:0.8rem; opacity:0.6">${p.ip || 'No IP'}</span>
-                        </div>
-                        
-                        <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem">
-                            <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">K8s Phase</span>
-                            <span style="color:${phaseColor}; font-weight:bold">${p.phase}</span>
-                        </div>
+                podList.innerHTML = data.k8sPods.map(p => {
+                    const hb = data.heartbeats ? data.heartbeats[p.name] : null;
+                    const ago = hb ? Math.round((Date.now() - parseInt(hb)) / 1000) + 's ago' : 'N/A';
 
-                        <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem; margin-left:1rem">
-                            <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">State</span>
-                            ${appStateHtml}
-                        </div>
+                    // Determine App State Colors/Tags
+                    let stateColor = '#64748b'; // Unknown
+                    let appTag = p.status;
 
-                        <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem; margin-left:1rem">
-                            <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">Heartbeat</span>
-                            <span>💓 ${ago}</span>
-                        </div>
+                    if (p.status === 'Ready') {
+                        stateColor = '#22c55e'; // Success green
+                    } else if (p.status === 'Allocated') {
+                        stateColor = '#eab308'; // Active yellow
+                    } else if (p.status === 'Starting' || p.status === 'Scheduled') {
+                        stateColor = '#3b82f6'; // Info blue
+                    } else if (p.status === 'Shutdown' || p.status === 'Terminating') {
+                        stateColor = '#ef4444'; // Error red
+                    } else if (p.status === 'Unhealthy') {
+                        stateColor = '#7f1d1d'; // Dark red
+                    }
 
-                        <div style="margin-left:auto; display:flex; align-items:center">
-                            ${detailsHtml}
-                            ${actionHtml}
+                    let appStateHtml = `<span class="tag" style="background:${stateColor}; color:${p.status === 'Ready' || p.status === 'Allocated' ? 'black' : 'white'}">${appTag}</span>`;
+
+                    let actionHtml = '';
+                    let detailsHtml = '';
+
+                    // Logic for associating with a session OR showing forced shutdown for orphans
+                    if (activeMap[p.name]) {
+                        const s = activeMap[p.name];
+                        detailsHtml = `<span style="font-size:0.8rem; margin-left:0.5rem">👤 ${s.sid}</span>`;
+                        const openBtn = `<a href="${s.url}" target="_blank" style="background:#22c55e; color:black; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:1rem; text-decoration:none; border-radius:6px; font-weight:bold; display:inline-block">OPEN</a>`;
+                        const killBtn = `<button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:0.5rem" onclick="killSession('${s.sid}')">KILL</button>`;
+                        actionHtml = openBtn + killBtn;
+                    } else if (p.status === 'Allocated') {
+                        // Orphaned allocation: Allocated in Agones but no record in Redis
+                        detailsHtml = `<span style="font-size:0.8rem; margin-left:0.5rem; color:#ef4444">⚠️ Orphaned</span>`;
+                        actionHtml = `<button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:1rem" onclick="forceShutdownGS('${p.name}')">FORCE SHUTDOWN</button>`;
+                    }
+
+                    return `<li>
+                        <div style="display:flex; align-items:center; width:100%; gap:1rem">
+                            <div style="display:flex; flex-direction:column; min-width: 250px;">
+                                <span style="font-weight:bold">${p.name}</span>
+                                <span style="font-size:0.8rem; opacity:0.6">${p.url || 'Initializing...'}</span>
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem; margin-left:1rem">
+                                <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">Agones State</span>
+                                ${appStateHtml}
+                            </div>
+
+                            <div style="display:flex; flex-direction:column; align-items:center; gap:0.25rem; margin-left:1rem">
+                                <span style="font-size:0.7rem; text-transform:uppercase; letter-spacing:0.05em; opacity:0.7">Heartbeat</span>
+                                <span>💓 ${ago}</span>
+                            </div>
+
+                            <div style="margin-left:auto; display:flex; align-items:center">
+                                ${detailsHtml}
+                                ${actionHtml}
+                            </div>
                         </div>
-                    </div>
-                </li>`;
-            }).join('');
+                    </li>`;
+                }).join('');
+            } catch (e) {
+                console.error("Failed to fetch stats:", e);
+            }
         }
 
         async function killSession(sid) {
             if (!confirm(`Kill session ${sid}?`)) return;
             await fetch(`${API_URL}/session/${sid}`, { method: 'DELETE' });
+            fetchStats();
+        }
+
+        async function forceShutdownGS(name) {
+            if (!confirm(`Force shutdown GameServer ${name}?`)) return;
+            await fetch(`${API_URL}/admin/gameserver/${name}`, { method: 'DELETE' });
             fetchStats();
         }
 

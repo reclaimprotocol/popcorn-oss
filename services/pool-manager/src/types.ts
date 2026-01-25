@@ -27,3 +27,21 @@ export interface RegisterResponse {
     sessionId?: string; // If we were to pre-assign, but mostly we just want them registered
     iceServers: TurnServerConfig[];
 }
+
+export interface AllocationResponse {
+    gameServerName: string;
+    address: string;
+    nodeName: string;
+    ports: {
+        name: string;
+        port: number;
+    }[];
+}
+
+export interface GameServerStatus {
+    name: string;
+    state: string;
+    address: string;
+    port: number;
+    nodeName: string;
+}

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { createHmac } from "node:crypto";
 import { DB } from "./src/services/db";
-import { K8s } from "./src/services/k8s";
+import { Agones } from "./src/services/agones";
 import { RegisterRequest, TurnServerConfig } from "./src/types";
 import { Auth } from "./src/services/auth";
 
@@ -46,13 +46,17 @@ app.get("/admin", async (c) => {
 // GET /admin/api
 app.get("/admin/api", async (c) => {
     const stats = await DB.getStats();
-    const k8sPods = await K8s.listBrowserPods();
+
+    // Fetch real Agones state (ALL Servers) - This is our source of truth
+    const gameServers = await Agones.listGameServers();
+
+    const readyGameServers = gameServers.filter((gs: any) => gs.state === "Ready");
+    const allocatedGameServers = gameServers.filter((gs: any) => gs.state === "Allocated");
 
     // Enrich stats for UI
     const enrichedSessions = Object.entries(stats.activeSessions).reduce((acc, [id, dataStr]) => {
         try {
             const pod = JSON.parse(dataStr);
-            // Construct Gateway URL for Admin UI
             const host = c.req.header("Host") || "localhost";
             const protocol = c.req.header("X-Forwarded-Proto") || "http";
             const token = Auth.signToken(id);
@@ -65,10 +69,21 @@ app.get("/admin/api", async (c) => {
     }, {} as Record<string, any>);
 
     return c.json({
-        ...stats,
-        idlePods: stats.idlePods.map(p => ({ name: p.name })),
+        activeCount: allocatedGameServers.length,
+        readyCount: readyGameServers.length,
+        totalCount: gameServers.length,
+
         activeSessions: enrichedSessions,
-        k8sPods
+        heartbeats: stats.heartbeats,
+
+        // Map GameServers for Admin UI
+        k8sPods: gameServers.map((gs: any) => ({
+            name: gs.name,
+            url: gs.state === "Allocated" || gs.state === "Ready" ? `http://${gs.address}:${gs.port}` : "",
+            status: gs.state,
+            type: "agones",
+            node: gs.nodeName
+        }))
     });
 });
 
@@ -76,6 +91,7 @@ app.get("/admin/api", async (c) => {
 app.get("/health", (c) => c.text("OK"));
 
 // POST /register
+// Used by browser-nodes to fetch ICE/TURN config on startup
 app.post("/register", async (c) => {
     let body: RegisterRequest;
     try {
@@ -84,21 +100,12 @@ app.post("/register", async (c) => {
         return c.json({ error: "Invalid JSON" }, 400);
     }
 
-    if (!body.name || !body.url) {
-        return c.json({ error: "Missing name or url" }, 400);
+    if (!body.name) {
+        return c.json({ error: "Missing name" }, 400);
     }
 
-    console.log(`🔌 Registering pod: ${body.name} (${body.url})`);
+    console.log(`🔌 Registering pod (config fetch): ${body.name}`);
 
-    await DB.registerPod({
-        name: body.name,
-        url: body.url
-    });
-
-    // Generate TURN creds for the pod to use (technically pod uses them to connect to TURN? 
-    // Or just to have them available? The plan says "returns TURN creds" implies the pod needs them.
-    // Usually the *client* needs them, but if the browser node acts as a peer, it might need them too.
-    // We'll generate a set for the pod itself using its name as ID.
     // Generate TURN creds for the pod
     const iceConfigs = generateTurnCreds(body.name);
 
@@ -118,101 +125,84 @@ app.post("/session", async (c) => {
         // Body parsing failed or empty, ignore
     }
 
-    const pod = await DB.popIdlePod();
+    console.log(`🚀 Allocation request for session: ${sessionId}`);
 
-    if (!pod) {
-        return c.json({ error: "No idle pods available" }, 503);
+    try {
+        // 1. Allocate a pod from Agones
+        const allocation = await Agones.allocate();
+
+        // 2. Map the pod
+        const port = allocation.ports?.[0]?.port || 8080;
+        const podUrl = `http://${allocation.address}:${port}`;
+
+        const podData = {
+            name: allocation.gameServerName,
+            url: podUrl,
+            ports: allocation.ports
+        };
+
+        // 3. Store session & Route in Redis (For Gateway lookup)
+        await DB.createSession(sessionId, podData);
+
+        // 4. Construct Gateway URLs
+        const host = c.req.header("Host") || "localhost";
+        const protocol = c.req.header("X-Forwarded-Proto") || "http";
+        const token = Auth.signToken(sessionId);
+        const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/${token}/`;
+        const cdpUrl = `${protocol}://${host}/cdp/${sessionId}/?token=${token}`;
+        const apiUrl = `${protocol}://${host}/api/${sessionId}/?token=${token}`;
+
+        // 5. Generate TURN Credentials
+        const iceConfigs = generateTurnCreds(sessionId);
+
+        return c.json({
+            url: gatewayUrl,
+            cdpUrl,
+            apiUrl,
+            sessionId,
+            iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs]
+        });
+
+    } catch (e) {
+        console.error("Failed to allocate session:", e);
+        return c.json({ error: "Failed to allocate browser instance" }, 503);
     }
-
-    console.log(`🚀 Assigned pod: ${pod.name} (${pod.url}) to session: ${sessionId}`);
-
-    // 🔥 HOT POOL LOGIC: Orphan the pod
-    await K8s.orphanPod(pod.name);
-
-    // Store session & Route
-    await DB.createSession(sessionId, pod);
-
-    // Construct Gateway URL
-    const host = c.req.header("Host") || "localhost";
-    const protocol = c.req.header("X-Forwarded-Proto") || "http";
-    const token = Auth.signToken(sessionId);
-    const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/${token}/`;
-
-    // 🔑 Generate Time-Limited TURN Credentials for the Client
-    // 🔑 Generate Time-Limited TURN Credentials for the Client
-    const iceConfigs = generateTurnCreds(sessionId);
-
-    return c.json({ url: gatewayUrl, sessionId, iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs] });
 });
 
 
 // POST /heartbeat
 app.post("/heartbeat", async (c) => {
-    let body: { name: string };
     try {
-        body = await c.req.json();
-    } catch { return c.json({}, 400); }
-
-    if (body.name) {
-        await DB.updateHeartbeat(body.name);
-    }
+        const body = await c.req.json();
+        if (body.name) await DB.updateHeartbeat(body.name);
+    } catch (e) { }
     return c.json({ ok: true });
-});
-
-// GET /debug/pool
-app.get("/debug/pool", async (c) => {
-    const stats = await DB.getStats();
-    return c.json({ count: stats.idleCount, pods: stats.idlePods });
 });
 
 // DELETE /session/:id
 app.delete("/session/:id", async (c) => {
     const id = c.req.param("id");
-    const sessionPod = await DB.deleteSession(id);
 
-    if (sessionPod) {
-        // Hard kill the pod since it's now orphaned
-        await K8s.deletePod(sessionPod.name);
-        return c.json({ success: true, killed: sessionPod.name });
+    // 1. Get session info to find pod name
+    const session = await DB.getSession(id);
+    if (session && session.name) {
+        // 2. Kill Agones GameServer (Terminates session)
+        await Agones.shutdownGameServer(session.name);
     }
-    return c.json({ error: "Session not found" }, 404);
+
+    // 3. Cleanup Redis mapping
+    await DB.deleteSession(id);
+
+    return c.json({ success: true });
 });
 
-// 🧹 Stale Pod Cleanup Job
-setInterval(async () => {
-    // 30 Seconds timeout
-    const stalePods = await DB.cleanupStalePods(30 * 1000);
-
-    for (const podName of stalePods) {
-        console.warn(`🧟 Stale heartbeat from ${podName}. Cleaning up...`);
-        // 1. Remove from idle list (if present)
-        await DB.removePodFromIdle(podName);
-
-        // 2. Kill the pod (forces restart by Deployment)
-        await K8s.deletePod(podName);
-    }
-}, 10000); // Run every 10s
-
-// ⚖️ Dynamic Pool Scaling Job
-const POOL_SIZE_LIMIT = parseInt(process.env.POOL_SIZE_LIMIT || "5");
-const DEPLOYMENT_NAME = "browser-pool";
-
-setInterval(async () => {
-    const stats = await DB.getStats();
-    const activeCount = Object.keys(stats.activeSessions).length;
-
-    // Calculate how many idle pods strictly needed to maintain total limit
-    // Total = Active + Idle (Replicas)
-    // Replicas = TotalLimit - Active
-    const targetReplicas = Math.max(0, POOL_SIZE_LIMIT - activeCount);
-
-    const currentReplicas = await K8s.getDeploymentReplicas(DEPLOYMENT_NAME);
-
-    if (currentReplicas !== targetReplicas) {
-        console.log(`⚖️  Syncing Pool Size: Active=${activeCount}, TargetReplicas=${targetReplicas} (Current=${currentReplicas})`);
-        await K8s.scaleDeployment(DEPLOYMENT_NAME, targetReplicas);
-    }
-}, 5000); // Run every 5s
+// Admin: Force Shutdown GameServer
+app.delete("/admin/gameserver/:name", async (c) => {
+    const name = c.req.param("name");
+    console.log(`🛠️ Admin Force Shutdown: ${name}`);
+    await Agones.shutdownGameServer(name);
+    return c.json({ success: true });
+});
 
 export default {
     port: PORT,
