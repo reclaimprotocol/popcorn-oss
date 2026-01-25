@@ -1,4 +1,5 @@
-FROM local/chromium-headful:latest
+ARG BASE_IMAGE=local/chromium-headful:latest
+FROM ${BASE_IMAGE}
 
 USER root
 RUN apt-get update && apt-get install -y curl jq && rm -rf /var/lib/apt/lists/*

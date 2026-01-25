@@ -1,125 +1,116 @@
-# 🚀 On-Demand Confidential Browser Service (Production Guide)
+# 🍿 Popcorn: On-Demand Browser Service
 
-This guide provides the technical blueprint for building an ultra-fast, hardware-secured browser isolation service. The architecture is designed to handle user requests with sub-second latency while ensuring total data privacy using GCP Confidential Computing.
+Popcorn is an ultra-fast browser isolation service. It is designed to scale globally on Kubernetes, providing sub-second access to "warm" browser instances.
 
-## 📋 Table of Contents
+## 🏗 Architecture
 
-- [Goal & Core Metrics](#-goal--core-metrics)
-- [High-Level Architecture](#-high-level-architecture)
-- [The Tech Stack](#-the-tech-stack)
-- [Scaling Logic (The "Orphan" Strategy)](#%EF%B8%8F-scaling-logic-the-orphan-strategy)
-- [Networking: WebRTC & TURN](#-networking-webrtc--turn)
-- [Step-by-Step Production Setup](#-step-by-step-production-setup)
-- [Future Roadmap](#-future-roadmap)
-- [Security Summary](#-security-summary)
+### 1. Infrastructure (Terragrunt)
+We use **OpenTofu** (via Terragrunt) to manage the underlying cloud resources (e.g., AWS EKS).
+- **Directory**: `infra/`
+- **Structure**:
+  - `infra/modules/`: Reusable blueprints (VPC, EKS, Redis).
+  - `infra/live/`: Environment-specific instantiations (`dev`, `prod-mum`, `prod-blr`).
+- **Key Resources**:
+  - **Kubernetes Cluster**: Runs the workload (EKS).
+  - **Worker Nodes**: Standard compute instances.
+  - **Redis**: Stores session state and the "idle" pod list.
 
----
+### 2. GitOps (Argo CD + Kustomize)
+We use a **GitOps** workflow for application deployment.
+- **Directory**: `gitops/`
+- **Structure**:
+  - `gitops/apps/`: Kustomize "Bases" for applications.
+    - `platform`: Core services (Pool Manager, Gateway, Redis, etc.).
+    - `agones`: Game Server Fleet definitions.
+  - `gitops/clusters/`: Kustomize "Overlays" for specific environments.
+    - `local`: Kind-based local dev.
+    - `prod-mum`: Production overlay for Mumbai.
+- **Workflow**:
+  - Developers commit to `main`.
+  - Argo CD (running in the cluster) syncs changes from `gitops/clusters/<env>`.
 
-## 🎯 Goal & Core Metrics
-
-The objective is to eliminate "cold starts" and secure data-in-use.
-
-- **Boot Time**: < 2 seconds (Instant connection to a warm pod).
-- **Security**: Hardware-level RAM encryption via AMD SEV.
-- **Availability**: Multi-region (US, EU, Asia) for low latency.
-- **Scalability**: Auto-refilling warm pools based on real-time demand.
-
----
-
-## 🏗 High-Level Architecture
-
-The system relies on a **Kubernetes Deployment Controller** pattern for infinite scaling:
-1.  **Browser Pool**: A Deployment maintains `N` warm replicas.
-2.  **Gateway**: OpenResty (Nginx + Lua) handles sticky routing based on Session ID.
-3.  **Pool Manager**: Allocates pods and manages the lifecycle.
-4.  **TURN Server**: Handles WebRTC NAT traversal (required for production).
-
----
-
-## 💻 The Tech Stack
-
-| Layer | Technology | Purpose |
-| :--- | :--- | :--- |
-| **Cloud** | GCP (Google Cloud) | Infrastructure backbone. |
-| **Compute** | GKE Standard | Hosting pods on Confidential VMs (N2D nodes). |
-| **State** | Redis | High-speed state for "Idle" lists and "Session" routing maps. |
-| **WebRTC** | Neko + Coturn | Optimized Chromium streaming via UDP Relay (HMAC Auth). |
-| **Gateway** | OpenResty | sticky routing + **CDP/API Exposure proxy**. |
+### 3. Application Stack
+- **Pool Manager**: Node.js service that assigns idle pods to users.
+- **Browser Node**: Custom Docker image running Chromium with Neko.
+- **Agones (Fleets)**:
+  - We use [Agones](https://agones.dev/) to manage the lifecycle of browser sessions.
+  - **Fleets** maintain a set of warm GameServers.
+  - **GameServers** are "allocated" (marked as Busy) when a user connects.
+- **Gateway**: OpenResty (Nginx) for sticky session routing.
 
 ---
 
-## ⚙️ Scaling Logic (The "Orphan" Strategy)
+## 🛠 Local Development
 
-We use a unique **Checkout/Replenish** pattern to ensure users always get a fresh, warm pod instantly.
+We use **Kind** (Kubernetes in Docker) to replicate the production environment locally.
 
-1.  **Warm Pool**: A K8s Deployment keeps `N` replicas of `browser-node`.
-2.  **Registration**: On boot, each pod pushes its IP/Port to a Redis List (`idle_pods`).
-3.  **Checkout (Claim)**:
-    - User requests a session.
-    - Pool Manager `LPOP`s a pod from Redis.
-    - **CRITICAL**: The Pool Manager patches the pod's label from `app=browser-node` to `app=browser-node-taken`.
-4.  **Auto-Replenish**:
-    - The K8s Deployment Controller sees it is missing 1 replica (since the taken pod no longer matches the selector).
-    - It **immediately** spins up a fresh pod to fill the gap.
-5.  **Teardown**:
-    - When the session ends, the "taken" pod is explicitly deleted by the Pool Manager.
+### Prerequisites
+- [Docker](https://docs.docker.com/get-docker/)
+- [Kind](https://kind.sigs.k8s.io/) (`brew install kind`)
+- [Kubectl](https://kubernetes.io/docs/tasks/tools/)
+- [Helm](https://helm.sh/)
+- [Make](https://www.gnu.org/software/make/)
 
----
+### Quick Start
+Use the `Makefile` to control the local environment.
 
-## 🔌 Exposed Endpoints (Gateway)
-The gateway exposes the following endpoints for each active session:
+1. **Build Images & Start Local Cluster**:
+   ```bash
+   make build
+   make up
+   ```
+   *This starts a Kind cluster named `popcorn` and installs Agones.*
 
-1.  **Browser UI**: `/browser/<session_id>/`
-2.  **Chrome DevTools (CDP)**: `/cdp/<session_id>/`
-    -   Proxies to standard CDP port (9222/9223).
-    -   Supports WebSockets for automation (Puppeteer/Playwright).
-3.  **Kernel Images API**: `/api/<session_id>/`
-    -   Control low-level inputs (Mouse/Keyboard).
-    -   Example: `POST /api/<id>/computer/click_mouse`
+2. **Apply Manifests**:
+   ```bash
+   make apply
+   ```
+   *This deploys the `gitops/clusters/local` overlay.*
 
----
+3. **Connect**:
+   ```bash
+   make connect
+   ```
+   *Forwards port 8080 to the gateway. Access at `http://localhost:8080`.*
 
-## 🌐 Networking: WebRTC & TURN
-
-Direct P2P WebRTC fails in production because of Kubernetes NAT layers and Firewalls. We solve this using a self-hosted **Coturn** server.
-
-### Current Implementation (UDP Only)
-- **Gateway**: Exposes HTTP/WS on Port 80 (routed to Pods).
-- **WebRTC**: All media traffic is forced through the **TURN Server**.
-  - **Auth**: Short-lived credentials (HMAC-SHA1) generated by Pool Manager.
-  - Browser connects to `turn:<COTURN_IP>:3478` (UDP).
-  - TURN server relays packets to the Browser Pods inside the cluster.
-  - This bypasses the need for large port ranges usually required by WebRTC.
+4. **Reset**:
+   ```bash
+   make clean
+   ```
 
 ---
 
-## 🛠 Step-by-Step Production Setup
+## 📦 Deployment Strategy (Production)
 
-### 1. Infrastructure
-Ensure you have a GKE cluster and a Reserved Static IP for the TURN services (optional but recommended).
-
-### 2. deploy-prod.sh
-We have a helper script to build and deploy everything:
+### 1. Push Images to ECR
+We use `docker buildx` to build for `linux/amd64` (compatible with AWS) and push to ECR.
 ```bash
-./scripts/deploy-prod.sh
+make push
+```
+*Note: Requires AWS CLI credentials to be active.*
+
+### 2. Provision Infrastructure
+cd into the specific environment in `infra/live/` and run:
+```bash
+terragrunt apply
 ```
 
-### 3. Configurations
-- **k8s/prod/browser.yaml**: Update `NEKO_ICESERVERS` with your TURN IP/Credentials.
-- **k8s/prod/coturn.yaml**: Deploys the TURN server (currently UDP only).
+### 2. Bootstrap GitOps
+Install Argo CD and point it to this repository.
+```bash
+kubectl apply -k gitops/apps/platform/argo-cd
+```
 
 ---
 
-## 🔮 Future Roadmap
+## 🔒 Security
 
-- [ ] **TCP TURN Support**: Add a TCP listener to the TURN server (Split Service architecture) to support users behind strict corporate firewalls that block UDP.
-- [ ] **HPA Integration**: Connect the deployment size to the `idle_pods` length to scale the warm pool size dynamically.
-- [ ] **Geo-Routing**: Deploy Pool Managers in multiple regions closer to users.
+- **Isolation**: Every session runs in a dedicated ephemeral pod.
+- **Network**: WebRTC traffic is routed via a private TURN server (Coturn) or internal ClusterIPs.
 
----
+## 👥 Contributing
 
-## 🔒 Security Summary
-
-- **Memory**: Encrypted via AMD SEV (Confidential VMs).
-- **Transit**: All video and control data is encrypted via DTLS/SRTP.
-- **Isolation**: Each session runs in a dedicated, disposable pod.
+1. Clone the repo.
+2. Run `make up` to stand up the local dev stack.
+3. Make changes to `services/` or `gitops/`.
+4. Run `make build` and `make apply` to test.
