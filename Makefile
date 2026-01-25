@@ -89,39 +89,11 @@ push: login
 	docker push $(ECR_REGISTRY)/popcorn/browser-node:$(TAG)
 	@echo "✅ All images pushed to $(ECR_REGISTRY)/popcorn/*:$(TAG)"
 
-apply-aws:
-	@if [ -z "$(ENV)" ]; then echo "❌ ENV is not set. Usage: make apply-aws ENV=aws-us-east-2"; exit 1; fi
-	@echo "🚀 Applying manifests to $(ENV) with MFA check..."
-	@if [ ! -d "gitops/clusters/$(ENV)" ]; then echo "❌ Directory gitops/clusters/$(ENV) does not exist."; exit 1; fi
-	@CURRENT_CTX=$$(kubectl config current-context 2>/dev/null || echo "kind-$(CLUSTER_NAME)"); \
-	echo "🔄 Saving current context: $$CURRENT_CTX"; \
-	./scripts/get-aws-mfa-creds.sh bash -c "\
-		aws eks update-kubeconfig --region $(AWS_REGION) --name $(AWS_CLUSTER_NAME) && \
-		kubectl apply -k gitops/clusters/$(ENV)"; \
-	RET=$$?; \
-	echo "🔙 Restoring context to $$CURRENT_CTX"; \
-	kubectl config use-context $$CURRENT_CTX; \
-	exit $$RET
 
-install-agones-aws:
-	@echo "🎮 Installing Agones to AWS ($(AWS_CLUSTER_NAME))..."
-	@CURRENT_CTX=$$(kubectl config current-context 2>/dev/null || echo "kind-$(CLUSTER_NAME)"); \
-	echo "🔄 Saving current context: $$CURRENT_CTX"; \
-	./scripts/get-aws-mfa-creds.sh bash -c "\
-		aws eks update-kubeconfig --region $(AWS_REGION) --name $(AWS_CLUSTER_NAME) && \
-		kubectl create namespace agones-system --dry-run=client -o yaml | kubectl apply -f - && \
-		helm repo add agones https://agones.dev/chart/stable || true && \
-		helm repo update && \
-		helm upgrade --install agones --namespace agones-system agones/agones --set \"agones.controller.generateTLS=false\" || true"; \
-	RET=$$?; \
-	echo "🔙 Restoring context to $$CURRENT_CTX"; \
-	kubectl config use-context $$CURRENT_CTX; \
-	exit $$RET
-
-setup-gitops:
-	@echo "🛠️  Setting up GitOps..."
-	./scripts/setup-argocd-aws.sh
-
-
-
-
+connect-aws:
+	@echo "🔌 Connecting to ArgoCD UI on AWS..."
+	@./scripts/get-aws-mfa-creds.sh bash -c "aws eks update-kubeconfig --region $(AWS_REGION) --name $(AWS_CLUSTER_NAME)"
+	@echo "🔓 ArgoCD Admin Password: "
+	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
+	@echo "🔄 Port-forwarding 8888 -> 443..."
+	@kubectl -n argocd port-forward svc/argocd-server 8888:443

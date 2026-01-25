@@ -1,47 +1,46 @@
 #!/bin/bash
-set -e
 
-# If we already have a session token, assume we are good to go
-if [ -n "$AWS_SESSION_TOKEN" ]; then
-    exec "$@"
-fi
+# Unset existing session credentials so we can request new ones
+# This fixes "Cannot call GetSessionToken with session credentials"
+unset AWS_ACCESS_KEY_ID
+unset AWS_SECRET_ACCESS_KEY
+unset AWS_SESSION_TOKEN
 
-# Get the first MFA device ARN
-MFA_SERIAL=$(aws iam list-mfa-devices --query 'MFADevices[0].SerialNumber' --output text)
+# 1. Get MFA Device
+MFA_SERIAL=$(aws iam list-mfa-devices --query 'MFADevices[0].SerialNumber' --output text 2>/dev/null)
 
-if [ "$MFA_SERIAL" == "None" ]; then
-    echo "❌ No MFA device found for user."
-    exit 1
+if [ -z "$MFA_SERIAL" ] || [ "$MFA_SERIAL" = "None" ]; then
+    echo "❌ No MFA device found for user (or AWS_PROFILE invalid)." >&2
+    return 1 2>/dev/null || exit 1
 fi
 
 echo "🔐 MFA Required. Device: $MFA_SERIAL" >&2
-# read -p usually prints to stderr, but let's be safe and print prompt manually if needed, or trust it.
-# Ideally use: read -p "Prompt" var
-# The prompt of read -p is printed to stderr.
-read -p "Enter MFA Token Code: " TOKEN_CODE
 
-# Fetch credentials
-if ! CREDS_JSON=$(aws sts get-session-token --serial-number "$MFA_SERIAL" --token-code "$TOKEN_CODE" 2>&1); then
-    echo "❌ Failed to get session token:" >&2
-    echo "$CREDS_JSON" >&2
-    exit 1
+# 2. Read Token
+if [ -t 0 ]; then
+    echo -n "Enter MFA Token Code: " >&2
+    read TOKEN_CODE
+else
+    read TOKEN_CODE < /dev/tty
 fi
 
+# 3. Get Session Token
+CREDS_JSON=$(aws sts get-session-token --serial-number "$MFA_SERIAL" --token-code "$TOKEN_CODE" 2>&1)
+
+if [ $? -ne 0 ]; then
+    echo "❌ Failed to get session token:" >&2
+    echo "$CREDS_JSON" >&2
+    return 1 2>/dev/null || exit 1
+fi
+
+# 4. Export Variables
 export AWS_ACCESS_KEY_ID=$(echo "$CREDS_JSON" | jq -r '.Credentials.AccessKeyId')
 export AWS_SECRET_ACCESS_KEY=$(echo "$CREDS_JSON" | jq -r '.Credentials.SecretAccessKey')
 export AWS_SESSION_TOKEN=$(echo "$CREDS_JSON" | jq -r '.Credentials.SessionToken')
 
-if [ -z "$AWS_ACCESS_KEY_ID" ] || [ "$AWS_ACCESS_KEY_ID" == "null" ]; then
-    echo "❌ Failed to parse credentials from response." >&2
-    exit 1
-fi
-
-# Unset profile to prevent conflicts
+# Unset profile so tools use the exported env vars
 unset AWS_PROFILE
 
-# Verify identity
-echo "✅ Credentials obtained. Testing identity..." >&2
-aws sts get-caller-identity >&2
-
-# Execute the command passed as arguments
-exec "$@"
+echo "✅ AWS Credentials exported successfully!" >&2
+echo "   Access Key: $AWS_ACCESS_KEY_ID" >&2
+echo "   Session Token: ${AWS_SESSION_TOKEN:0:10}..." >&2
