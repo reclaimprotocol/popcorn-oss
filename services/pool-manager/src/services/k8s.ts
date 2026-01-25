@@ -112,8 +112,10 @@ export const K8s = {
             console.log(`🔍 K8s: Found ${allPods.length} total pods.`);
 
             const browserPods = allPods.filter((p: any) => {
-                const app = p.metadata?.labels?.app;
-                return app === 'browser-node' || app === 'browser-node-taken';
+                const labels = p.metadata?.labels || {};
+                return labels['app'] === 'browser-node' ||
+                    labels['app'] === 'browser-node-taken' ||
+                    labels['agones.dev/role'] === 'gameserver';
             });
 
             return browserPods.map((p: any) => ({
@@ -155,6 +157,53 @@ export const K8s = {
             }, { headers: { "Content-Type": "application/merge-patch+json" } } as any);
         } catch (e) {
             console.error(`❌ Failed to scale deployment ${name}:`, e);
+        }
+    },
+
+    async getGameServerPodIP(gameServerName: string): Promise<string | null> {
+        try {
+            const cluster = kc.getCurrentCluster();
+            if (!cluster) return null;
+
+            const url = `${cluster.server}/apis/agones.dev/v1/namespaces/default/gameservers/${gameServerName}`;
+            const opts: any = { method: "GET", headers: {} };
+            await kc.applyToFetchOptions(opts);
+            if (cluster.skipTLSVerify || process.env.NODE_TLS_REJECT_UNAUTHORIZED == "0") {
+                // @ts-ignore
+                opts.tls = { rejectUnauthorized: false };
+            }
+
+            const res = await fetch(url, opts as any);
+            if (!res.ok) return null;
+
+            const json = await res.json() as any;
+
+            // Agones allocates status.address (Node IP) usually, but we want the POD IP if possible.
+            // However, Agones might NOT expose PodIP in the GameServer status directly nicely everywhere.
+            // BUT, usually GameServer name == Pod name.
+            // So we can try to fetch the POD with this name.
+
+            // NOTE: Agones GameServers create a Pod with the same name.
+            return await K8s.getPodIP(gameServerName);
+
+        } catch (e) {
+            console.error(`❌ Failed to get GameServer IP ${gameServerName}:`, e);
+            return null;
+        }
+    },
+
+    async getPodIP(podName: string): Promise<string | null> {
+        try {
+            // @ts-ignore
+            const res = await k8s.readNamespacedPod({
+                name: podName,
+                namespace: "default"
+            });
+            // @ts-ignore
+            return (res as any).body?.status?.podIP || (res as any).status?.podIP || null;
+        } catch (e) {
+            console.error(`❌ Failed to get Pod IP for ${podName}:`, e);
+            return null;
         }
     }
 }

@@ -18,12 +18,15 @@ spec:
       ports:
         - name: http
           containerPort: 8082
+          portPolicy: None
           protocol: TCP
         - name: cdp
           containerPort: 9222
+          portPolicy: None
           protocol: TCP
         - name: kernel-api
           containerPort: 10001
+          portPolicy: None
           protocol: TCP
       template:
         spec:

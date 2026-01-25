@@ -1,5 +1,6 @@
 import { AllocationResponse } from "../types";
 import { KubeConfig } from '@kubernetes/client-node';
+import { K8s } from "./k8s";
 
 const kc = new KubeConfig();
 try {
@@ -58,13 +59,34 @@ export const Agones = {
                 throw new Error(`GameServerAllocation failed state: ${status.state}`);
             }
 
-            console.log(`✅ Allocated GameServer: ${status.gameServerName} at ${status.address}:${status.ports?.[0]?.port}`);
+            console.log(`✅ Allocated GameServer: ${status.gameServerName}. Fetching Pod IP...`);
+
+            // 6. Fetch Pod IP (Internal) because we use portPolicy: None
+            // We retry a few times because the Pod IP might take a split second if it was just spinning up (though usually ready)
+            let podIp: string | null = null;
+            for (let i = 0; i < 5; i++) {
+                podIp = await K8s.getGameServerPodIP(status.gameServerName);
+                if (podIp) break;
+                await new Promise(r => setTimeout(r, 500));
+            }
+
+            if (!podIp) {
+                console.warn(`⚠️ Could not resolve Pod IP for ${status.gameServerName}, falling back to NodeAddress which might be wrong for None policy.`);
+                podIp = status.address; // Fallback
+            }
+
+            console.log(`📌 Resolved Pod IP: ${podIp}`);
 
             return {
                 gameServerName: status.gameServerName,
-                address: status.address,
+                address: podIp!, // Use Pod IP internally
                 nodeName: status.nodeName,
-                ports: status.ports || []
+                // Return internal ports as we don't have host ports
+                ports: [
+                    { name: "http", port: 8082, protocol: "TCP" },
+                    { name: "cdp", port: 9222, protocol: "TCP" },
+                    { name: "kernel-api", port: 10001, protocol: "TCP" }
+                ]
             };
         } catch (e) {
             console.error("❌ Agones allocation error:", e);
@@ -100,13 +122,22 @@ export const Agones = {
             const json = await res.json() as any;
             const items = json.items || [];
 
-            return items.map((gs: any) => ({
-                name: gs.metadata.name,
-                state: gs.status.state,
-                address: gs.status.address,
-                port: gs.status.ports?.[0]?.port,
-                nodeName: gs.spec.nodeName || 'unknown'
-            }));
+            // Fetch all pods to map IPs (since Agones reports Node IP)
+            const pods = await K8s.listBrowserPods();
+            console.log(`🔍 Debug: Found ${pods.length} browser pods for mapping.`);
+            const podMap = new Map(pods.map((p: any) => [p.name, p.ip]));
+
+            return items.map((gs: any) => {
+                const podIp = podMap.get(gs.metadata.name);
+                // console.log(`🔍 Debug: Mapping GS ${gs.metadata.name} -> Pod IP: ${podIp || 'NONE'}`);
+                return {
+                    name: gs.metadata.name,
+                    state: gs.status.state,
+                    address: podIp || gs.status.address, // Prefer Pod IP
+                    port: gs.status.ports?.[0]?.port,
+                    nodeName: gs.spec.nodeName || 'unknown'
+                };
+            });
 
         } catch (e) {
             console.error("❌ Failed to list GameServers:", e);

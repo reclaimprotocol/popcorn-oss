@@ -35,6 +35,7 @@ export interface AllocationResponse {
     ports: {
         name: string;
         port: number;
+        protocol?: string;
     }[];
 }
 
