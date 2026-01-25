@@ -55,6 +55,7 @@ connect:
 # ECR / Production
 # -----------------------------------------------------------------------------
 AWS_REGION ?= us-east-2
+AWS_CLUSTER_NAME ?= popcorn-cluster-aws
 # Lazy evaluation (=) so we don't call AWS CLI just by parsing the Makefile
 AWS_ACCOUNT_ID = $(shell aws sts get-caller-identity --query Account --output text)
 ECR_REGISTRY = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
@@ -87,5 +88,40 @@ push: login
 	@echo "⬆️  Pushing Browser Node..."
 	docker push $(ECR_REGISTRY)/popcorn/browser-node:$(TAG)
 	@echo "✅ All images pushed to $(ECR_REGISTRY)/popcorn/*:$(TAG)"
+
+apply-aws:
+	@if [ -z "$(ENV)" ]; then echo "❌ ENV is not set. Usage: make apply-aws ENV=aws-us-east-2"; exit 1; fi
+	@echo "🚀 Applying manifests to $(ENV) with MFA check..."
+	@if [ ! -d "gitops/clusters/$(ENV)" ]; then echo "❌ Directory gitops/clusters/$(ENV) does not exist."; exit 1; fi
+	@CURRENT_CTX=$$(kubectl config current-context 2>/dev/null || echo "kind-$(CLUSTER_NAME)"); \
+	echo "🔄 Saving current context: $$CURRENT_CTX"; \
+	./scripts/get-aws-mfa-creds.sh bash -c "\
+		aws eks update-kubeconfig --region $(AWS_REGION) --name $(AWS_CLUSTER_NAME) && \
+		kubectl apply -k gitops/clusters/$(ENV)"; \
+	RET=$$?; \
+	echo "🔙 Restoring context to $$CURRENT_CTX"; \
+	kubectl config use-context $$CURRENT_CTX; \
+	exit $$RET
+
+install-agones-aws:
+	@echo "🎮 Installing Agones to AWS ($(AWS_CLUSTER_NAME))..."
+	@CURRENT_CTX=$$(kubectl config current-context 2>/dev/null || echo "kind-$(CLUSTER_NAME)"); \
+	echo "🔄 Saving current context: $$CURRENT_CTX"; \
+	./scripts/get-aws-mfa-creds.sh bash -c "\
+		aws eks update-kubeconfig --region $(AWS_REGION) --name $(AWS_CLUSTER_NAME) && \
+		kubectl create namespace agones-system --dry-run=client -o yaml | kubectl apply -f - && \
+		helm repo add agones https://agones.dev/chart/stable || true && \
+		helm repo update && \
+		helm upgrade --install agones --namespace agones-system agones/agones --set \"agones.controller.generateTLS=false\" || true"; \
+	RET=$$?; \
+	echo "🔙 Restoring context to $$CURRENT_CTX"; \
+	kubectl config use-context $$CURRENT_CTX; \
+	exit $$RET
+
+setup-gitops:
+	@echo "🛠️  Setting up GitOps..."
+	./scripts/setup-argocd-aws.sh
+
+
 
 
