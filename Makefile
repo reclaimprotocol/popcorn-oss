@@ -63,13 +63,9 @@ ECR_REGISTRY = $(AWS_ACCOUNT_ID).dkr.ecr.$(AWS_REGION).amazonaws.com
 # Production Image Tags (Mutable 'latest' for simple dev loops, or use git sha)
 TAG ?= latest
 
-check-aws:
-	@echo "🔍 Checking AWS credentials..."
-	@aws sts get-caller-identity > /dev/null || (echo "❌ AWS credentials missing or expired. If using MFA, please run 'aws sts get-session-token' or export your valid AWS_PROFILE." && exit 1)
-
-login: check-aws
+login: 
 	@echo "🔓 Logging into ECR ($(AWS_REGION))..."
-	./scripts/get-aws-mfa-creds.sh aws ecr get-login-password --region $(AWS_REGION) > ecr_token.txt
+	aws ecr get-login-password --region $(AWS_REGION) > ecr_token.txt
 	@if [ ! -s ecr_token.txt ]; then echo "❌ Generated token is empty or command failed!"; rm -f ecr_token.txt; exit 1; fi
 	cat ecr_token.txt | docker login --username AWS --password-stdin $(ECR_REGISTRY)
 	@rm -f ecr_token.txt
