@@ -41,8 +41,14 @@ export interface AllocationResponse {
 
 export interface GameServerStatus {
     name: string;
-    state: string;
-    address: string;
-    port: number;
-    nodeName: string;
+    status: string;
+}
+
+export interface SessionResponse {
+    success: boolean;
+    sessionId: string;
+    url: string;
+    cdpUrl: string;
+    apiUrl: string;
+    iceServers: TurnServerConfig[];
 }

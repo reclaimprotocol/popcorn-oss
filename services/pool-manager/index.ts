@@ -43,47 +43,43 @@ app.get("/admin", async (c) => {
     return c.html(await Bun.file("./public/admin.html").text());
 });
 
-// GET /admin/api
-app.get("/admin/api", async (c) => {
-    const stats = await DB.getStats();
-
-    // Fetch real Agones state (ALL Servers) - This is our source of truth
+// GET /admin/servers
+app.get("/admin/servers", async (c) => {
+    // Return minimal info
     const gameServers = await Agones.listGameServers();
+    return c.json(gameServers.map((gs: any) => ({
+        name: gs.name,
+        status: gs.state || gs.status, // Agones returns 'state' in status block, but 'status' is requested
+    })));
+});
 
-    const readyGameServers = gameServers.filter((gs: any) => gs.state === "Ready");
-    const allocatedGameServers = gameServers.filter((gs: any) => gs.state === "Allocated");
+// GET /session/:id
+app.get("/session/:id", async (c) => {
+    const id = c.req.param("id");
+    const session = await DB.getSession(id);
 
-    // Enrich stats for UI
-    const enrichedSessions = Object.entries(stats.activeSessions).reduce((acc, [id, dataStr]) => {
-        try {
-            const pod = JSON.parse(dataStr);
-            const host = c.req.header("Host") || "localhost";
-            const protocol = c.req.header("X-Forwarded-Proto") || "http";
-            const token = Auth.signToken(id);
-            pod.url = `${protocol}://${host}/browser/${id}/${token}/`;
-            acc[id] = pod;
-        } catch (e) {
-            acc[id] = dataStr;
-        }
-        return acc;
-    }, {} as Record<string, any>);
+    if (!session) {
+        return c.json({ success: false, error: "Session not found" }, 404);
+    }
+
+    const host = c.req.header("Host") || "localhost";
+    const protocol = c.req.header("X-Forwarded-Proto") || "http";
+    const token = Auth.signToken(id);
+
+    // Construct URLs
+    const gatewayUrl = `${protocol}://${host}/browser/${id}/${token}/`;
+    const cdpUrl = `${protocol}://${host}/cdp/${id}/?token=${token}`;
+    const apiUrl = `${protocol}://${host}/api/${id}/?token=${token}`;
+
+    const iceConfigs = generateTurnCreds(id);
 
     return c.json({
-        activeCount: allocatedGameServers.length,
-        readyCount: readyGameServers.length,
-        totalCount: gameServers.length,
-
-        activeSessions: enrichedSessions,
-        heartbeats: stats.heartbeats,
-
-        // Map GameServers for Admin UI
-        k8sPods: gameServers.map((gs: any) => ({
-            name: gs.name,
-            url: gs.state === "Allocated" || gs.state === "Ready" ? `http://${gs.address}:${gs.port}` : "",
-            status: gs.state,
-            type: "agones",
-            node: gs.nodeName
-        }))
+        success: true,
+        sessionId: id,
+        url: gatewayUrl,
+        cdpUrl,
+        apiUrl,
+        iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs]
     });
 });
 
@@ -156,10 +152,11 @@ app.post("/session", async (c) => {
         const iceConfigs = generateTurnCreds(sessionId);
 
         return c.json({
+            success: true,
+            sessionId,
             url: gatewayUrl,
             cdpUrl,
             apiUrl,
-            sessionId,
             iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs]
         });
 
