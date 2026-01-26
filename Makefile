@@ -97,6 +97,3 @@ connect-aws:
 	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
 	@echo "🔄 Port-forwarding 8888 -> 443..."
 	@kubectl -n argocd port-forward svc/argocd-server 8888:443
-
-config-mfa:
-	@source ./scripts/get-aws-mfa-creds.sh
