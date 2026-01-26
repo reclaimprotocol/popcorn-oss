@@ -68,18 +68,15 @@ app.get("/session/:id", async (c) => {
 
     // Construct URLs
     const gatewayUrl = `${protocol}://${host}/browser/${id}/${token}/`;
-    const cdpUrl = `${protocol}://${host}/cdp/${id}/?token=${token}`;
-    const apiUrl = `${protocol}://${host}/api/${id}/?token=${token}`;
-
-    const iceConfigs = generateTurnCreds(id);
+    const cdpUrl = `${protocol}://${host}/cdp/${id}/${token}/`;
+    const apiUrl = `${protocol}://${host}/api/${id}/${token}/`;
 
     return c.json({
         success: true,
         sessionId: id,
         url: gatewayUrl,
         cdpUrl,
-        apiUrl,
-        iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs]
+        apiUrl
     });
 });
 
@@ -145,19 +142,15 @@ app.post("/session", async (c) => {
         const protocol = c.req.header("X-Forwarded-Proto") || "http";
         const token = Auth.signToken(sessionId);
         const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/${token}/`;
-        const cdpUrl = `${protocol}://${host}/cdp/${sessionId}/?token=${token}`;
-        const apiUrl = `${protocol}://${host}/api/${sessionId}/?token=${token}`;
-
-        // 5. Generate TURN Credentials
-        const iceConfigs = generateTurnCreds(sessionId);
+        const cdpUrl = `${protocol}://${host}/cdp/${sessionId}/${token}/`;
+        const apiUrl = `${protocol}://${host}/api/${sessionId}/${token}/`;
 
         return c.json({
             success: true,
             sessionId,
             url: gatewayUrl,
             cdpUrl,
-            apiUrl,
-            iceServers: Array.isArray(iceConfigs) ? iceConfigs : [iceConfigs]
+            apiUrl
         });
 
     } catch (e) {

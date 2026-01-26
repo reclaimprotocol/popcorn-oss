@@ -50,5 +50,4 @@ export interface SessionResponse {
     url: string;
     cdpUrl: string;
     apiUrl: string;
-    iceServers: TurnServerConfig[];
 }
