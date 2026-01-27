@@ -217,13 +217,21 @@
 
                     // Simple Force Shutdown for now since we don't have session ID mapping in this minimal list
                     let actionHtml = '';
+
+                    if (p.sessionId) {
+                        actionHtml += `<button style="background:#3b82f6; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-right:0.5rem" onclick="openLiveView('${p.sessionId}')">OPEN</button>`;
+                    }
+
                     if (p.status === 'Allocated' || p.status === 'Ready') {
-                        actionHtml = `<button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:auto" onclick="forceShutdownGS('${p.name}')">SHUTDOWN</button>`;
+                        actionHtml += `<button style="background:#7f1d1d; width:auto; padding:0.25rem 0.5rem; font-size:0.8rem; margin-left:auto" onclick="forceShutdownGS('${p.name}')">SHUTDOWN</button>`;
                     }
 
                     return `<li>
                         <div style="display:flex; align-items:center; width:100%; gap:1rem">
-                            <span style="font-weight:bold">${p.name}</span>
+                            <div style="display:flex; flex-direction:column">
+                                <span style="font-weight:bold">${p.name}</span>
+                                ${p.sessionId ? `<span style="font-size:0.75rem; color:#94a3b8; font-family:monospace">${p.sessionId}</span>` : ''}
+                            </div>
                             ${appStateHtml}
                             ${actionHtml}
                         </div>
@@ -232,6 +240,21 @@
 
             } catch (e) {
                 console.error("Failed to fetch stats:", e);
+            }
+        }
+
+        async function openLiveView(sid) {
+            try {
+                const res = await fetch(`${API_URL}/session/${sid}`);
+                const data = await res.json();
+                if (data.success && data.url) {
+                    window.open(data.url, '_blank');
+                } else {
+                    alert('Failed to get session URL');
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Error fetching session details');
             }
         }
 

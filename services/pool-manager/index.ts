@@ -47,9 +47,23 @@ app.get("/admin", async (c) => {
 app.get("/admin/servers", async (c) => {
     // Return minimal info
     const gameServers = await Agones.listGameServers();
+    const stats = await DB.getStats();
+
+    // Map pod names to session IDs
+    const podToSession = new Map<string, string>();
+    for (const [sid, raw] of Object.entries(stats.activeSessions)) {
+        try {
+            const data = JSON.parse(raw);
+            if (data.name) {
+                podToSession.set(data.name, sid);
+            }
+        } catch (e) { }
+    }
+
     return c.json(gameServers.map((gs: any) => ({
         name: gs.name,
         status: gs.state || gs.status, // Agones returns 'state' in status block, but 'status' is requested
+        sessionId: podToSession.get(gs.name) || null
     })));
 });
 
