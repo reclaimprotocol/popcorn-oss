@@ -101,6 +101,9 @@ Install Argo CD and point it to this repository.
 kubectl apply -k gitops/apps/platform/argo-cd
 ```
 
+### 3. Multi-Region Deployment
+For instructions on adding a new AWS region (like `ap-south-1`), see the [Region Setup Guide](NEW_REGION_SETUP.md).
+
 ---
 
 ## 🔒 Security
