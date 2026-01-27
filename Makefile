@@ -39,6 +39,11 @@ apply:
 	kind load docker-image $(GATEWAY_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(BROWSER_NODE_IMAGE) --name $(CLUSTER_NAME)
 	kubectl apply -k gitops/clusters/local
+	@echo "📊 Installing/Updating Observability Stack (Helm)..."
+	helm dependency build gitops/apps/observability
+	helm upgrade --install observability gitops/apps/observability \
+		--namespace monitoring --create-namespace \
+		-f gitops/apps/observability/values.yaml
 	@echo "🔄 Restarting deployments to pick up new images..."
 	kubectl rollout restart deployment/pool-manager
 	kubectl rollout restart deployment/popcorn-gateway
