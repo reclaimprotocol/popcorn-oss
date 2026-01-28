@@ -11,7 +11,10 @@ build:
 	@echo "🔨 Building Docker images..."
 	docker build -t $(POOL_MANAGER_IMAGE) ./services/pool-manager
 	docker build -t $(GATEWAY_IMAGE) ./services/gateway
-	docker build -t $(BROWSER_NODE_IMAGE) ./services/browser-node
+	@echo "🏗️  Building base image locally (popcorn-base:local)..."
+	docker build  -f ../popcorn-images/images/chromium-headful/Dockerfile -t popcorn-base:local ../popcorn-images
+	@echo "🏗️  Building Browser Node using local base..."
+	docker build --build-arg BASE_IMAGE=popcorn-base:local -t $(BROWSER_NODE_IMAGE) ./services/browser-node
 	@echo "✅ Images built."
 
 up:
@@ -87,7 +90,7 @@ push: login
 	docker buildx build --platform linux/amd64 -t $(ECR_REGISTRY)/popcorn/gateway:$(TAG) --push ./services/gateway
 	# Browser Node
 	@echo "🏗️  Building base image locally (popcorn-base:local)..."
-	docker build --platform linux/amd64 -f ../kernel-images/images/chromium-headful/Dockerfile -t popcorn-base:local ../kernel-images
+	docker build --platform linux/amd64 -f ../popcorn-images/images/chromium-headful/Dockerfile -t popcorn-base:local ../popcorn-images
 	@echo "🏗️  Building Browser Node using local base..."
 	docker build --platform linux/amd64 --build-arg BASE_IMAGE=popcorn-base:local -t $(ECR_REGISTRY)/popcorn/browser-node:$(TAG) ./services/browser-node
 	@echo "⬆️  Pushing Browser Node..."
