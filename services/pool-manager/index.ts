@@ -80,9 +80,12 @@ app.get("/session/:id", async (c) => {
     const protocol = c.req.header("X-Forwarded-Proto") || "http";
     const token = Auth.signToken(id);
 
+    // Determine WebSocket protocol
+    const wsProtocol = protocol === "https" ? "wss" : "ws";
+
     // Construct URLs
     const gatewayUrl = `${protocol}://${host}/browser/${id}/${token}/`;
-    const cdpUrl = `${protocol}://${host}/cdp/${id}/${token}/`;
+    const cdpUrl = `${wsProtocol}://${host}/cdp/${id}/${token}/`;
     const apiUrl = `${protocol}://${host}/api/${id}/${token}/`;
 
     return c.json({
@@ -155,8 +158,11 @@ app.post("/session", async (c) => {
         const host = c.req.header("Host") || "localhost";
         const protocol = c.req.header("X-Forwarded-Proto") || "http";
         const token = Auth.signToken(sessionId);
+
+        const wsProtocol = protocol === "https" ? "wss" : "ws";
+
         const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/${token}/`;
-        const cdpUrl = `${protocol}://${host}/cdp/${sessionId}/${token}/`;
+        const cdpUrl = `${wsProtocol}://${host}/cdp/${sessionId}/${token}/`;
         const apiUrl = `${protocol}://${host}/api/${sessionId}/${token}/`;
 
         return c.json({
