@@ -6,6 +6,7 @@ CLUSTER_NAME := popcorn
 POOL_MANAGER_IMAGE := popcorn/pool-manager:local
 GATEWAY_IMAGE := popcorn/gateway:local
 BROWSER_NODE_IMAGE := popcorn/browser-node:local
+TTL_CONTROLLER_IMAGE := popcorn/ttl-controller:local
 
 build:
 	@echo "🔨 Building Docker images..."
@@ -15,6 +16,8 @@ build:
 	docker build  -f ../popcorn-images/images/chromium-headful/Dockerfile -t popcorn-base:local ../popcorn-images
 	@echo "🏗️  Building Browser Node using local base..."
 	docker build --build-arg BASE_IMAGE=popcorn-base:local -t $(BROWSER_NODE_IMAGE) ./services/browser-node
+	@echo "🏗️  Building TTL Controller..."
+	docker build -t $(TTL_CONTROLLER_IMAGE) ./services/ttl-controller
 	@echo "✅ Images built."
 
 up:
@@ -41,10 +44,12 @@ apply:
 	kind load docker-image $(POOL_MANAGER_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(GATEWAY_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(BROWSER_NODE_IMAGE) --name $(CLUSTER_NAME)
+	kind load docker-image $(TTL_CONTROLLER_IMAGE) --name $(CLUSTER_NAME)
 	kubectl apply -k gitops/clusters/local
 	@echo "🔄 Restarting deployments to pick up new images..."
 	kubectl rollout restart deployment/pool-manager
 	kubectl rollout restart deployment/popcorn-gateway
+	kubectl rollout restart deployment/ttl-controller
 	@echo "✅ Applied & Restarted."
 
 clean:
@@ -95,6 +100,8 @@ push: login
 	docker build --platform linux/amd64 --build-arg BASE_IMAGE=popcorn-base:local -t $(ECR_REGISTRY)/popcorn/browser-node:$(TAG) ./services/browser-node
 	@echo "⬆️  Pushing Browser Node..."
 	docker push $(ECR_REGISTRY)/popcorn/browser-node:$(TAG)
+	# TTL Controller
+	docker buildx build --platform linux/amd64 -t $(ECR_REGISTRY)/popcorn/ttl-controller:$(TAG) --push ./services/ttl-controller
 	@echo "✅ All images pushed to $(ECR_REGISTRY)/popcorn/*:$(TAG)"
 
 
