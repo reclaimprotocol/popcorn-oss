@@ -42,6 +42,7 @@ docker-compose.override.yml
 
 # Keys & Secrets
 *.pem
+!public.pem
 *.key
 *.crt
 # Be careful with these!
