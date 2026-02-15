@@ -50,4 +50,5 @@ export interface SessionResponse {
     url: string;
     cdpUrl: string;
     apiUrl: string;
+    browserPodId?: string;
 }

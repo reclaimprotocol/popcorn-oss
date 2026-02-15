@@ -93,7 +93,8 @@ app.get("/session/:id", async (c) => {
         sessionId: id,
         url: gatewayUrl,
         cdpUrl,
-        apiUrl
+        apiUrl,
+        browserPodId: session.name
     });
 });
 
@@ -170,7 +171,8 @@ app.post("/session", async (c) => {
             sessionId,
             url: gatewayUrl,
             cdpUrl,
-            apiUrl
+            apiUrl,
+            browserPodId: allocation.gameServerName
         });
 
     } catch (e) {
