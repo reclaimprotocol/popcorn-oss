@@ -2,13 +2,15 @@ const fs = require('fs');
 const crypto = require('crypto');
 const { execFile, execFileSync } = require('child_process');
 const path = require('path');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { hostname } = require('os');
 
 const SEV_GUEST_DEVICE = '/dev/sev-guest';
 const OUTPUT_FILE = process.env.OUTPUT_FILE || '/var/www/attestation.bin';
 const SNP_IOCTL_BIN = '/usr/local/bin/snp_ioctl';
 const COSIGN_PUB_KEY = process.env.COSIGN_PUB_KEY || '/etc/cosign.pub';
 
-function main() {
+async function main() {
     console.log('🔒 Starting SEV-SNP Attestation Check...');
 
     // 1. Check if running in TEE
@@ -66,30 +68,101 @@ function main() {
         const finalBuffer = Buffer.alloc(64);
         reportDataHash.copy(finalBuffer, 0);
         reportDataHash.copy(finalBuffer, 32);
-        reportDataHex = finalBuffer.toString('hex');
 
-        console.log(`LOCKING Report Data to: ${reportDataHex}`);
+        console.log(`LOCKING Report Data to: ${reportDataHash.toString('hex')}`);
     }
 
-    // 5. Call C helper
-    console.log('🔄 Calling kernel ioctl via snp_ioctl...');
-    execFile(SNP_IOCTL_BIN, [reportDataHex], { encoding: 'buffer', maxBuffer: 4096 }, (error, stdout, stderr) => {
-        if (error) {
-            console.error('❌ Failed to generate attestation report:', error);
-            if (stderr && stderr.length > 0) console.error('Stderr:', stderr.toString());
-            process.exit(1);
+    // 5. Generate attestation using snpguest
+    console.log('🔄 Generating SEV-SNP attestation report with snpguest...');
+
+    const requestFile = '/tmp/snp_request.bin';
+    const SNPGUEST_BIN = '/usr/local/bin/snpguest';
+
+    try {
+        // Write 64-byte report data to binary file
+        fs.writeFileSync(requestFile, finalBuffer);
+
+        // Generate attestation report
+        execFileSync(SNPGUEST_BIN, ['report', OUTPUT_FILE, requestFile], { stdio: 'inherit' });
+        console.log(`✅ Attestation report saved to ${OUTPUT_FILE}`);
+
+        const reportSize = fs.statSync(OUTPUT_FILE).size;
+        console.log(`📄 Report Size: ${reportSize} bytes`);
+
+        // 6. Fetch VLEK certificates
+        console.log('📜 Fetching VLEK certificates...');
+        const certsDir = '/var/www/certs';
+
+        try {
+            if (!fs.existsSync(certsDir)) {
+                fs.mkdirSync(certsDir, { recursive: true });
+            }
+            execFileSync(SNPGUEST_BIN, ['certificates', 'der', certsDir], { stdio: 'inherit' });
+            console.log(`✅ VLEK certificates saved to ${certsDir}`);
+        } catch (certErr) {
+            console.warn('⚠️  Failed to fetch VLEK certificates:', certErr.message);
+            console.warn('   Attestation report generated, but certificate extraction failed.');
         }
 
-        // 6. Save Report
+        // 7. Upload attestation bundle to S3
+        console.log('☁️  Uploading attestation bundle to S3...');
+
+        const podName = hostname(); // Kubernetes sets hostname to pod name
+        const awsRegion = process.env.AWS_REGION || 'us-east-2';
+        const bucketName = `popcorn-attestations-${awsRegion}`;
+        const s3Client = new S3Client({ region: awsRegion });
+
         try {
-            fs.writeFileSync(OUTPUT_FILE, stdout);
-            console.log(`✅ Attestation report generated and saved to ${OUTPUT_FILE}`);
-            console.log(`📄 Report Size: ${stdout.length} bytes`);
-        } catch (writeErr) {
-            console.error(`❌ Failed to write report to ${OUTPUT_FILE}:`, writeErr);
-            process.exit(1);
+            // Upload attestation report
+            await s3Client.send(new PutObjectCommand({
+                Bucket: bucketName,
+                Key: `${podName}/attestation.bin`,
+                Body: fs.readFileSync(OUTPUT_FILE),
+                ContentType: 'application/octet-stream'
+            }));
+
+            // Upload VLEK certificate
+            const vlekPath = `${certsDir}/vlek.der`;
+            if (fs.existsSync(vlekPath)) {
+                await s3Client.send(new PutObjectCommand({
+                    Bucket: bucketName,
+                    Key: `${podName}/certs/vlek.der`,
+                    Body: fs.readFileSync(vlekPath),
+                    ContentType: 'application/x-x509-ca-cert'
+                }));
+            }
+
+            // Upload manifest
+            const manifest = {
+                podName,
+                imageDigest,
+                imageUri: process.env.IMAGE_URI,
+                timestamp: new Date().toISOString(),
+                region: awsRegion
+            };
+
+            await s3Client.send(new PutObjectCommand({
+                Bucket: bucketName,
+                Key: `${podName}/manifest.json`,
+                Body: JSON.stringify(manifest, null, 2),
+                ContentType: 'application/json'
+            }));
+
+            const baseUrl = `https://${bucketName}.s3.${awsRegion}.amazonaws.com/${podName}`;
+            console.log(`✅ Attestation bundle uploaded:`);
+            console.log(`   📍 ${baseUrl}/manifest.json`);
+            console.log(`   📍 ${baseUrl}/attestation.bin`);
+            console.log(`   📍 ${baseUrl}/certs/vlek.der`);
+
+        } catch (uploadErr) {
+            console.warn('⚠️  Failed to upload to S3:', uploadErr.message);
+            console.warn('   Attestation generated locally but not uploaded.');
         }
-    });
+
+    } catch (error) {
+        console.error('❌ Failed to generate attestation report:', error);
+        process.exit(1);
+    }
 }
 
 main();

@@ -3,16 +3,17 @@ FROM ${BASE_IMAGE}
 
 USER root
 # Install build dependencies, compile helper, and cleanup
-COPY snp_ioctl.c /tmp/snp_ioctl.c
-RUN apt-get update && \
-    apt-get install -y gcc libc6-dev && \
-    gcc -o /usr/local/bin/snp_ioctl /tmp/snp_ioctl.c && \
-    apt-get purge -y gcc libc6-dev && \
-    apt-get autoremove -y && \
-    rm -rf /var/lib/apt/lists/* /tmp/snp_ioctl.c
+# Install runtime tools and AWS SDK
+RUN apt-get update && apt-get install -y curl jq git build-essential && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @aws-sdk/client-s3
 
-# Install runtime tools
-RUN apt-get update && apt-get install -y curl jq && rm -rf /var/lib/apt/lists/*
+# Install Rust and build snpguest
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    . $HOME/.cargo/env && \
+    git clone https://github.com/virtee/snpguest.git /tmp/snpguest && \
+    cd /tmp/snpguest && cargo build --release && \
+    cp target/release/snpguest /usr/local/bin/ && \
+    rm -rf /tmp/snpguest $HOME/.cargo $HOME/.rustup
 
 COPY attest.js /attest.js
 COPY entrypoint.sh /docker-entrypoint.sh

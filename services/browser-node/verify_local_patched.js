@@ -90,61 +90,20 @@ const reportData = reportDataPtr;
 // Byte 7: Microcode
 // (Need to verify this mapping or just print raw TCB for now)
 
-// Construct KDS VCEK URL
-// URL: https://kdsintf.amd.com/vcek/v1/{product}/{chip_id}?blSPL=...
-// Product is typically "Milan" or "Genoa". We can try both or guess based on Chip ID/Family.
-// Chip ID is hex string.
-
 const chipIdHex = chipId.toString('hex');
-const kdsUrl = `https://kdsintf.amd.com/vcek/v1/Milan/${chipIdHex}?blSPL=${currentTcb[0]}&teeSPL=${currentTcb[1]}&snpSPL=${currentTcb[6]}&ucodeSPL=${currentTcb[7]}`;
 
 console.log("\n💻 Hardware & Platform Info:");
 console.log(`   Policy:        0x${policy.reverse().toString('hex')} (Little Endian)`);
 console.log(`   Platform Info: 0x${platformInfo.reverse().toString('hex')} (Little Endian)`);
 console.log(`   Measurement:   ${measurement.toString('hex')}`);
-// ... (existing code: offsets, parsing, logging hardware info) ...
-
 console.log(`   Chip ID:       ${chipIdHex}`);
-console.log(`   Current TCB:   ${currentTcb.toString('hex')}`);
-console.log(`   VCEK URL:      ${kdsUrl} (Assuming Milan)`);
+console.log(`   Current TCB:   ${currentTcb.toString('hex')} (BL=${currentTcb[0]}, TEE=${currentTcb[1]}, SNP=${currentTcb[6]}, uCode=${currentTcb[7]})`);
 console.log(`   Report Data:   ${reportDataHex.substring(0, 64)}...`);
 
-console.log("\nDATA LINKED: The Report Data IS linked to the Chip ID via the signature on this report (verified by VCEK).");
-console.log("To fully prove the Chip ID, we must fetch the VCEK certificate from AMD and verify the chain (ARK -> ASK -> VCEK).");
+console.log("\n💡 Note: AWS uses VLEK (Versioned Loaded Endorsement Key), not VCEK.");
+console.log("   Fetch VLEK certificates with: snpguest certificates der ./certs");
 
-// Function to fetch VCEK DER
-function fetchVcek(url, destFile, isRetry = false) {
-    console.log(`\n⬇️  Fetching VCEK Chain from: ${url}`);
-    const file = fs.createWriteStream(destFile);
 
-    https.get(url, (response) => {
-        if (response.statusCode === 200) {
-            response.pipe(file);
-            file.on('finish', () => {
-                file.close(() => {
-                    console.log(`✅ VCEK Certificate Saved to: ${destFile}`);
-                    console.log("   You can inspect it with: openssl x509 -in " + destFile + " -inform DER -text -noout");
-                });
-            });
-        } else {
-            console.warn(`⚠️  Failed to fetch VCEK. HTTP Status: ${response.statusCode}`);
-            if (!isRetry && url.includes("/Milan/")) {
-                console.log("   Retrying with product 'Genoa'...");
-                const genoaUrl = url.replace("/Milan/", "/Genoa/");
-                fetchVcek(genoaUrl, destFile, true);
-            } else {
-                console.warn("   (Verify your Chip ID, TCB, and Product Line. Could also be 'Bergamo' or 'Siena'.)");
-            }
-        }
-    }).on('error', (err) => {
-        fs.unlink(destFile, () => { }); // Delete the file async
-        console.error(`❌ Error fetching VCEK: ${err.message}`);
-    });
-}
-
-// Attempt to fetch
-const vcekFile = 'vcek_chain.der';
-fetchVcek(kdsUrl, vcekFile);
 
 console.log("\n🔒 Verification:");
 // ... (existing verification logic) ...
