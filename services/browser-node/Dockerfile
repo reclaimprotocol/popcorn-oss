@@ -3,19 +3,20 @@ FROM ${BASE_IMAGE}
 
 USER root
 # Install build dependencies, compile helper, and cleanup
-# Install runtime tools and AWS SDK
-RUN apt-get update && apt-get install -y curl jq git build-essential && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @aws-sdk/client-s3
+# Install runtime tools
+RUN apt-get update && apt-get install -y curl jq && rm -rf /var/lib/apt/lists/*
 
-# Install Rust and build snpguest
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
-    . $HOME/.cargo/env && \
-    git clone https://github.com/virtee/snpguest.git /tmp/snpguest && \
-    cd /tmp/snpguest && cargo build --release && \
-    cp target/release/snpguest /usr/local/bin/ && \
-    rm -rf /tmp/snpguest $HOME/.cargo $HOME/.rustup
+# Install snpguest from pre-built release
+ENV SNPGUEST_VERSION=v0.10.0
+RUN curl -L -o /usr/local/bin/snpguest "https://github.com/virtee/snpguest/releases/download/${SNPGUEST_VERSION}/snpguest" && \
+    chmod +x /usr/local/bin/snpguest
 
-COPY attest.js /attest.js
+# Install AWS SDK locally
+WORKDIR /app
+COPY package.json /app/
+RUN npm install --production
+
+COPY attest.js /app/attest.js
 COPY entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
