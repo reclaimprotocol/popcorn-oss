@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# 0. Run SEV-SNP Attestation (if TEE is present)
+echo "🔒 Checking for Attestation..."
+node /attest.js
+
 # 1. Determine IP Address
 # Robust IP detection
 # Try hostname -i, fallback to ip route
