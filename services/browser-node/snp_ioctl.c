@@ -85,7 +85,11 @@ int main(int argc, char *argv[]) {
     // 0x0: Attestation Report (1184 bytes)
     // The buffer is larger for future expansion.
     
-    if (write(STDOUT_FILENO, resp.data, 1184) != 1184) {
+    // Write the raw report to stdout.
+    // The response buffer is 4000 bytes. The kernel driver may prepend a 32-byte header
+    // (snp_guest_msg_hdr), so writing just 1184 bytes truncates the end of the report signature.
+    // We write the full buffer to ensure we capture everything.
+    if (write(STDOUT_FILENO, &resp, sizeof(resp)) != sizeof(resp)) {
         perror("Failed to write output");
         close(fd);
         return 1;

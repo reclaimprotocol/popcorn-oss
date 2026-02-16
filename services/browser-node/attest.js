@@ -62,9 +62,10 @@ function main() {
         const combined = Buffer.concat([imageHash, pubKeyHash]);
         const reportDataHash = crypto.createHash('sha256').update(combined).digest();
 
-        // Pad to 64 bytes
+        // Pad to 64 bytes (Duplicate hash to fill both halves to handle potential alignment/shift issues)
         const finalBuffer = Buffer.alloc(64);
-        reportDataHash.copy(finalBuffer);
+        reportDataHash.copy(finalBuffer, 0);
+        reportDataHash.copy(finalBuffer, 32);
         reportDataHex = finalBuffer.toString('hex');
 
         console.log(`LOCKING Report Data to: ${reportDataHex}`);
