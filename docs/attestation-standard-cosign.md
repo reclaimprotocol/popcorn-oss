@@ -61,8 +61,9 @@ Update the `attest.js` script to perform self-verification.
 2.  Use `cosign verify` to check that `IMAGE_DIGEST` is signed by the **Trusted Public Key** (bundled in the container).
 3.  **If Verification Fails**: Abort. Do not request an attestation report.
 4.  **If Verification Succeeds**:
-    *   Calculate `Hash(Trusted Public Key)`.
+    *   Calculate `Hash(ImageDigest + Trusted Public Key)`.
     *   Use this hash as the `REPORT_DATA` for the SEV-SNP request.
+    *   **Note**: To handle potential alignment issues in the report structure, the 32-byte hash is duplicated to fill the entire 64-byte `REPORT_DATA` field.
 
 ### 3. Node Hardening (Infrastructure)
 Since we rely on the Node to enforce isolation, we must harden it:
@@ -74,8 +75,9 @@ Since we rely on the Node to enforce isolation, we must harden it:
 The client (Verifier) now checks:
 
 1.  **SNP Signature**: Validates the report is from genuine AMD hardware.
-2.  **Report Data**: Confirms `REPORT_DATA == Hash(Expected Public Key)`.
-3.  **Implication**: "The hardware witnessed a process that possessed the Trusted Public Key and successfully verified its own image signature."
+2.  **Report Data**: Confirms `REPORT_DATA` contains `Hash(ImageDigest + Expected Public Key)`.
+    *   The verifier should check if the hash is present in the first 32 bytes OR the second 32 bytes of the report data field.
+3.  **Implication**: "The hardware witnessed a process that possessed the Trusted Public Key, was running the exact software specified by the Image Digest, and successfully verified its own image signature."
 
 ## Limitations
 *   **Root Compromise**: If an attacker gains root access to the **Node**, they can bypass the in-container check and manually request a report using the correct `REPORT_DATA`.
