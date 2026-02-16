@@ -46,7 +46,8 @@ if (fs.existsSync(COSIGN_PUB_KEY)) {
     pubKeyHash = crypto.createHash('sha256').update(pubKeyContent).digest();
     console.log(`   Key Hash:     ${pubKeyHash.toString('hex')}`);
 } else {
-    console.warn(`⚠️  Public Key not found at ${COSIGN_PUB_KEY}. Assuming Zero Key Hash (Match Mock behavior if key missing).`);
+    console.error(`❌ Public Key not found at ${COSIGN_PUB_KEY}`);
+    process.exit(1);
 }
 
 // 3. Expected Report Data: SHA256(ImageHash || KeyHash)
