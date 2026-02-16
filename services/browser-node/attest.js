@@ -24,12 +24,12 @@ async function main() {
 
     // 2. Get Image Digest
     const imageDigest = process.env.IMAGE_DIGEST;
-    let reportDataHex;
+    let finalBuffer;
 
     if (!imageDigest) {
         console.error('❌ IMAGE_DIGEST environment variable missing!');
         console.error('⚠️  Proceeding with zeroed report data (WEAK PROOF).');
-        reportDataHex = Buffer.alloc(64).toString('hex');
+        finalBuffer = Buffer.alloc(64);
     } else {
         console.log(`ℹ️  Binding to Image Digest: ${imageDigest}`);
 
@@ -65,7 +65,7 @@ async function main() {
         const reportDataHash = crypto.createHash('sha256').update(combined).digest();
 
         // Pad to 64 bytes (Duplicate hash to fill both halves to handle potential alignment/shift issues)
-        const finalBuffer = Buffer.alloc(64);
+        finalBuffer = Buffer.alloc(64);
         reportDataHash.copy(finalBuffer, 0);
         reportDataHash.copy(finalBuffer, 32);
 
