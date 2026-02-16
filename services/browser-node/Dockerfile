@@ -24,6 +24,14 @@ ENV COSIGN_VERSION=v2.2.3
 RUN curl -L -o /usr/local/bin/cosign "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" && \
     chmod +x /usr/local/bin/cosign
 
+# Install ECR Credential Helper for Cosign Auth
+RUN curl -L -o /usr/local/bin/docker-credential-ecr-login "https://amazon-ecr-credential-helper-releases.s3.us-east-2.amazonaws.com/0.7.1/linux-amd64/docker-credential-ecr-login" && \
+    chmod +x /usr/local/bin/docker-credential-ecr-login
+
+# Configure Docker to use ECR Login
+RUN mkdir -p /root/.docker && \
+    echo '{"credsStore": "ecr-login"}' > /root/.docker/config.json
+
 # Copy Public Key for verification
 COPY cosign.pub /etc/cosign.pub
 
