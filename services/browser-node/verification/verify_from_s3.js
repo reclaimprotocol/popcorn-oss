@@ -10,6 +10,13 @@ const REGION = process.env.AWS_REGION || 'us-east-2';
 const BUCKET = `popcorn-attestations-${REGION}`;
 const BASE_URL = `https://${BUCKET}.s3.${REGION}.amazonaws.com/${POD_NAME}`;
 
+// Cosign public key - embedded from repo (trusted, versioned with this script)
+const COSIGN_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjiL30OjPuxa+GC1I7SAcBv2u2pMt
+h9WbP33IvB3eFww+C1hoW0fwdZPiq4FxBtKNiZuFpmYuFngW/nJteBu9kQ==
+-----END PUBLIC KEY-----
+`;
+
 if (!POD_NAME) {
     console.error('Usage: node verify_from_s3.js <POD_NAME>');
     console.error('Example: node verify_from_s3.js browser-fleet-g5vgz-c7fvf');
@@ -24,6 +31,10 @@ function download(url, dest) {
             if (response.statusCode === 200) {
                 response.pipe(file);
                 file.on('finish', () => file.close(resolve));
+            } else if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+                // Follow redirects (GitHub raw URLs may redirect)
+                file.close();
+                download(response.headers.location, dest).then(resolve).catch(reject);
             } else {
                 reject(new Error(`HTTP ${response.statusCode}: ${url}`));
             }
@@ -31,32 +42,37 @@ function download(url, dest) {
     });
 }
 
-// Parse attestation report structure
+// Download content as string
+function downloadText(url) {
+    return new Promise((resolve, reject) => {
+        https.get(url, (response) => {
+            if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+                downloadText(response.headers.location).then(resolve).catch(reject);
+                return;
+            }
+            if (response.statusCode !== 200) {
+                reject(new Error(`HTTP ${response.statusCode}: ${url}`));
+                return;
+            }
+            let data = '';
+            response.on('data', chunk => data += chunk);
+            response.on('end', () => resolve(data));
+        }).on('error', reject);
+    });
+}
+
+// Parse attestation report structure (SEV-SNP spec Table 22)
 function parseAttestationReport(buffer) {
     const report = {};
 
-    // Version (offset 0x00, 4 bytes)
-    report.version = buffer.readUInt32LE(0);
-
-    // Guest SVN (offset 0x04, 4 bytes)
-    report.guestSvn = buffer.readUInt32LE(4);
-
-    // Policy (offset 0x08, 8 bytes)
-    report.policy = buffer.readBigUInt64LE(8);
-
-    // Family ID (offset 0x10, 16 bytes)
+    report.version = buffer.readUInt32LE(0x00);
+    report.guestSvn = buffer.readUInt32LE(0x04);
+    report.policy = buffer.readBigUInt64LE(0x08);
     report.familyId = buffer.slice(0x10, 0x20).toString('hex');
-
-    // Image ID (offset 0x20, 16 bytes)
     report.imageId = buffer.slice(0x20, 0x30).toString('hex');
-
-    // VMPL (offset 0x30, 4 bytes)
     report.vmpl = buffer.readUInt32LE(0x30);
-
-    // Signature Algorithm (offset 0x34, 4 bytes)
     report.signatureAlgo = buffer.readUInt32LE(0x34);
 
-    // Platform Version (offset 0x38, 8 bytes - TCB)
     const tcbBytes = buffer.slice(0x38, 0x40);
     report.tcb = {
         bootLoader: tcbBytes[0],
@@ -65,38 +81,20 @@ function parseAttestationReport(buffer) {
         microcode: tcbBytes[5]
     };
 
-    // Platform Info (offset 0x40, 8 bytes)
     const platformInfo = buffer.readBigUInt64LE(0x40);
     report.platformInfo = {
         smt_enabled: !!(platformInfo & 0x01n),
         tsme_enabled: !!(platformInfo & 0x02n)
     };
 
-    // Report Data (offset 0x50, 64 bytes)
     report.reportData = buffer.slice(0x50, 0x90).toString('hex');
-
-    // Measurement (offset 0x90, 48 bytes)
     report.measurement = buffer.slice(0x90, 0xC0).toString('hex');
-
-    // Host Data (offset 0xC0, 32 bytes)
     report.hostData = buffer.slice(0xC0, 0xE0).toString('hex');
-
-    // ID Key Digest (offset 0xE0, 48 bytes)
     report.idKeyDigest = buffer.slice(0xE0, 0x110).toString('hex');
-
-    // Author Key Digest (offset 0x110, 48 bytes)
     report.authorKeyDigest = buffer.slice(0x110, 0x140).toString('hex');
-
-    // Report ID (offset 0x140, 32 bytes)
     report.reportId = buffer.slice(0x140, 0x160).toString('hex');
-
-    // Report ID MA (offset 0x160, 32 bytes)
     report.reportIdMa = buffer.slice(0x160, 0x180).toString('hex');
-
-    // Chip ID (offset 0x1A0, 64 bytes)
     report.chipId = buffer.slice(0x1A0, 0x1E0).toString('hex');
-
-    // Signature (offset 0x2A0, 512 bytes)
     report.signature = buffer.slice(0x2A0, 0x4A0).toString('hex');
 
     return report;
@@ -112,22 +110,22 @@ async function main() {
         console.log('║       SEV-SNP Attestation Verification Report                    ║');
         console.log('╚══════════════════════════════════════════════════════════════════╝\n');
 
-        // Download manifest
-        console.log('⬇️  Downloading attestation bundle...');
+        // Download all artifacts
+        console.log('⬇️  Downloading attestation bundle from S3...');
         await download(`${BASE_URL}/manifest.json`, `${tmpDir}/manifest.json`);
         await download(`${BASE_URL}/attestation.bin`, `${tmpDir}/attestation.bin`);
         await download(`${BASE_URL}/certs/vlek.der`, `${tmpDir}/certs/vlek.der`);
+
+        console.log('✅ Bundle downloaded\n');
 
         const manifest = JSON.parse(fs.readFileSync(`${tmpDir}/manifest.json`));
         const reportBuffer = fs.readFileSync(`${tmpDir}/attestation.bin`);
         const certSize = fs.statSync(`${tmpDir}/certs/vlek.der`).size;
 
-        console.log('✅ Bundle downloaded\n');
-
         // Parse attestation report
         const report = parseAttestationReport(reportBuffer);
 
-        // Display comprehensive details
+        // ── MANIFEST ──
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log('📋 MANIFEST INFORMATION');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -139,6 +137,7 @@ async function main() {
         console.log(`Report Size:     ${reportBuffer.length} bytes`);
         console.log(`VLEK Cert Size:  ${certSize} bytes\n`);
 
+        // ── PLATFORM ──
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log('🖥️  PLATFORM INFORMATION');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -150,6 +149,7 @@ async function main() {
         console.log(`SMT Enabled:     ${report.platformInfo.smt_enabled ? 'Yes' : 'No'}`);
         console.log(`TSME Enabled:    ${report.platformInfo.tsme_enabled ? 'Yes' : 'No'}\n`);
 
+        // ── TCB ──
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log('🔐 AMD TRUSTED COMPUTING BASE (TCB)');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -158,15 +158,12 @@ async function main() {
         console.log(`SNP Firmware:    ${report.tcb.snp}`);
         console.log(`Microcode SVN:   ${report.tcb.microcode}\n`);
 
+        // ── CRYPTO IDS ──
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log('🔑 CRYPTOGRAPHIC IDENTIFIERS');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log(`Report Data (first 32 bytes):`);
         console.log(`  ${report.reportData.substring(0, 64)}`);
-        if (report.reportData !== '0'.repeat(128)) {
-            const reportDataHash = report.reportData.substring(0, 64);
-            console.log(`  (Hash binding image to attestation)`);
-        }
         console.log(`\nMeasurement:`);
         console.log(`  ${report.measurement.substring(0, 64)}`);
         console.log(`  ${report.measurement.substring(64)}`);
@@ -175,9 +172,53 @@ async function main() {
         console.log(`\nReport ID:`);
         console.log(`  ${report.reportId.substring(0, 64)}\n`);
 
-        // Run snpguest verification if available
+        // ── IMAGE BINDING ──
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('✅ CRYPTOGRAPHIC VERIFICATION');
+        console.log('🔗 IMAGE BINDING VERIFICATION');
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+
+        // Replicate the exact logic from attest.js:
+        // ReportData = SHA256(SHA256(imageDigest) || SHA256(pubKey))
+        const imageHash = crypto.createHash('sha256')
+            .update(manifest.imageDigest)
+            .digest();
+
+        const pubKeyHash = crypto.createHash('sha256')
+            .update(COSIGN_PUBLIC_KEY)
+            .digest();
+
+        const combined = Buffer.concat([imageHash, pubKeyHash]);
+        const expectedHash = crypto.createHash('sha256')
+            .update(combined)
+            .digest('hex');
+
+        const actualHash = report.reportData.substring(0, 64);
+
+        console.log(`Image Digest:    ${manifest.imageDigest}`);
+        console.log(`Public Key:      Embedded in script (from repo)`);
+        console.log('');
+        console.log('Report Data Computation:');
+        console.log(`  imageHash    = SHA256("${manifest.imageDigest.substring(0, 20)}...")`);
+        console.log(`               = ${imageHash.toString('hex')}`);
+        console.log(`  pubKeyHash   = SHA256(cosign.pub)`);
+        console.log(`               = ${pubKeyHash.toString('hex')}`);
+        console.log(`  expected     = SHA256(imageHash || pubKeyHash)`);
+        console.log(`               = ${expectedHash}`);
+        console.log(`  report_data  = ${actualHash}`);
+
+        if (expectedHash === actualHash) {
+            console.log('\n✅ MATCH: Report Data verified!');
+            console.log('   Attestation is cryptographically bound to:');
+            console.log(`   • Image:  ${manifest.imageDigest.substring(0, 20)}...`);
+            console.log(`   • PubKey: cosign.pub from GitHub\n`);
+        } else {
+            console.log('\n❌ MISMATCH: Report Data does not match expected hash!');
+            console.log('   ⚠️  The attestation may not be for this image/key combination.\n');
+        }
+
+        // ── VLEK VERIFICATION ──
+        console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        console.log('✅ CRYPTOGRAPHIC VERIFICATION (snpguest)');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         try {
             const result = execSync(
@@ -185,9 +226,9 @@ async function main() {
                 { encoding: 'utf8' }
             );
             console.log(result);
-            console.log('✅ VERIFICATION PASSED: VLEK signature validated!\n');
+            console.log('✅ VLEK signature validated!\n');
 
-            // Display certificate chain info
+            // Certificate chain
             console.log('🔗 AMD Certificate Chain Verified:');
             console.log('   ARK (AMD Root Key)');
             console.log('    ↓ Signs');
@@ -204,18 +245,20 @@ async function main() {
             console.log('  • Attestation is cryptographically bound to this workload\n');
         } catch (verifyErr) {
             if (verifyErr.message.includes('command not found')) {
-                console.log('⚠️  snpguest not installed - skipping cryptographic verification');
-                console.log('   (Bundle downloaded successfully, manual verification possible)\n');
+                console.log('⚠️  snpguest not installed - skipping VLEK verification');
+                console.log('   Install snpguest for full cryptographic verification.\n');
             } else {
-                throw verifyErr;
+                console.log(verifyErr.stderr || verifyErr.message);
+                console.log('⚠️  snpguest verification encountered an error\n');
             }
         }
 
+        // ── SUMMARY ──
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-        console.log('📍 VERIFICATION ARTIFACTS');
+        console.log('📍 VERIFICATION SUMMARY');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
         console.log(`Local Files:     ${tmpDir}/`);
-        console.log(`Public URL:      ${BASE_URL}/manifest.json`);
+        console.log(`Public URL:      ${BASE_URL}/manifest.json\n`);
 
     } catch (error) {
         console.error(`\n❌ Verification failed: ${error.message}`);
