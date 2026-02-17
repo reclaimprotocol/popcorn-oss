@@ -8,10 +8,8 @@ RUN opm get SkyLothar/lua-resty-jwt
 RUN sed -i 's/EVP_MD_CTX_create/EVP_MD_CTX_new/g' /usr/local/openresty/site/lualib/resty/evp.lua && \
     sed -i 's/EVP_MD_CTX_destroy/EVP_MD_CTX_free/g' /usr/local/openresty/site/lualib/resty/evp.lua
 
-# Copy Public Key for Auth
-COPY keys/public.pem /etc/nginx/certs/public.pem
 
-# Copy Auth Lib
+# Auth Lib
 COPY auth.lua /usr/local/openresty/lualib/auth.lua
 
 # Copy configuration
