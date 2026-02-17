@@ -38,4 +38,4 @@ RUN mkdir -p /root/.docker && \
 COPY cosign.pub /etc/cosign.pub
 
 
-ENTRYPOINT ["/docker-entrypoint.sh"]
+ENTRYPOINT ["/bin/sh", "-c", "mkdir -p /var/log/app && /docker-entrypoint.sh 2>&1 | tee -a /var/log/app/entrypoint.log"]
