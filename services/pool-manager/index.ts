@@ -84,7 +84,7 @@ app.get("/session/:id", async (c) => {
     const wsProtocol = protocol === "https" ? "wss" : "ws";
 
     // Construct URLs
-    const gatewayUrl = `${protocol}://${host}/browser/${id}/${token}/`;
+    const gatewayUrl = `${protocol}://${host}/${session.name}/${id}/${token}/`;
     const cdpUrl = `${wsProtocol}://${host}/cdp/${id}/${token}/`;
     const apiUrl = `${protocol}://${host}/api/${id}/${token}/`;
 
@@ -162,7 +162,7 @@ app.post("/session", async (c) => {
 
         const wsProtocol = protocol === "https" ? "wss" : "ws";
 
-        const gatewayUrl = `${protocol}://${host}/browser/${sessionId}/${token}/`;
+        const gatewayUrl = `${protocol}://${host}/${allocation.gameServerName}/${sessionId}/${token}/`;
         const cdpUrl = `${wsProtocol}://${host}/cdp/${sessionId}/${token}/`;
         const apiUrl = `${protocol}://${host}/api/${sessionId}/${token}/`;
 
