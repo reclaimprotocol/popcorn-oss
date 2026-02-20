@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# 0. Run SEV-SNP Attestation (if TEE is present)
-echo "🔒 Checking for Attestation..."
-cd /app && node attest.js
+# 0. SEV-SNP Attestation now handled by attestor sidecar
+echo "🔒 Skipping legacy attestation..."
 
 # 1. Determine IP Address
 # Robust IP detection

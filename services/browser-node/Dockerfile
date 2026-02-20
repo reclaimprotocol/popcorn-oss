@@ -16,7 +16,7 @@ WORKDIR /app
 COPY package.json /app/
 RUN npm install --production
 
-COPY attest.js /app/attest.js
+# Removed legacy attest.js
 COPY entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
@@ -35,7 +35,7 @@ RUN mkdir -p /root/.docker && \
     echo '{"credsStore": "ecr-login"}' > /root/.docker/config.json
 
 # Copy Public Key for verification
-COPY cosign.pub /etc/cosign.pub
+COPY ../../cosign.pub /etc/cosign.pub
 
 
 ENTRYPOINT ["/bin/sh", "-c", "mkdir -p /var/log/app && /docker-entrypoint.sh 2>&1 | tee -a /var/log/app/entrypoint.log"]
