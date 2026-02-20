@@ -7,12 +7,9 @@ const http = require('http');
 
 const GATEWAY_URL = process.env.GATEWAY_URL || 'https://popcorn-cluster-aws-us-east-2.popcorn.reclaimprotocol.org';
 
-// Cosign public key - embedded from repo
-const COSIGN_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjiL30OjPuxa+GC1I7SAcBv2u2pMt
-h9WbP33IvB3eFww+C1hoW0fwdZPiq4FxBtKNiZuFpmYuFngW/nJteBu9kQ==
------END PUBLIC KEY-----
-`;
+const path = require('path');
+const pubKeyPath = path.join(__dirname, '../../cosign.pub');
+const COSIGN_PUBLIC_KEY = fs.readFileSync(pubKeyPath, 'utf8');
 
 function fetchProof(sessionId, nonce) {
     return new Promise((resolve, reject) => {

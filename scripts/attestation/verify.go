@@ -15,15 +15,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const (
 	GatewayURL = "https://popcorn-cluster-aws-us-east-2.popcorn.reclaimprotocol.org"
-	CosignPub  = `-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEjiL30OjPuxa+GC1I7SAcBv2u2pMt
-h9WbP33IvB3eFww+C1hoW0fwdZPiq4FxBtKNiZuFpmYuFngW/nJteBu9kQ==
------END PUBLIC KEY-----
-`
 )
 
 type ProofResponse struct {
@@ -109,6 +105,16 @@ func main() {
 	fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("🔐 HARDWARE BOUND REPORT_DATA VERIFICATION")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	// Read cosign.pub from repo root relative to this file
+	_, filename, _, _ := runtime.Caller(0)
+	pubKeyPath := filepath.Join(filepath.Dir(filename), "../../cosign.pub")
+	pubKeyBytes, err := os.ReadFile(pubKeyPath)
+	if err != nil {
+		fmt.Printf("❌ Failed to read cosign.pub: %v\n", err)
+		os.Exit(1)
+	}
+	CosignPub := string(pubKeyBytes)
 
 	pubKeyHashBytes := sha256.Sum256([]byte(CosignPub))
 	pubKeyHashHex := hex.EncodeToString(pubKeyHashBytes[:])
