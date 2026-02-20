@@ -24,7 +24,7 @@ const (
 	ReportFile   = "/tmp/report.bin"
 	RequestFile  = "/tmp/snp_request.bin"
 	CertsDir     = "/tmp/certs"
-	WorkloadName = "browser-node"
+	WorkloadName = "neko"
 	AttestorName = "attestor"
 )
 
