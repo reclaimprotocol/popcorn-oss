@@ -32,8 +32,8 @@ RUN mkdir -p /root/.docker && \
 WORKDIR /app
 COPY --from=builder /app/attestor /usr/local/bin/attestor
 # The public key MUST be copied to /etc/cosign.pub
-# We assume it's copied in from the build context (repo root)
-COPY ../../cosign.pub /etc/cosign.pub
+# We assume it's copied in from the build context (repo root) by the CI workflow
+COPY cosign.pub /etc/cosign.pub
 
 EXPOSE 8080
 
