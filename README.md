@@ -108,6 +108,7 @@ For instructions on adding a new AWS region (like `ap-south-1`), see the [Region
 
 ## 🔒 Security
 
+- **SEV-SNP Hardware Attestation**: Popcorn instances run within an AMD cryptographic enclave. Attestation proofs dynamically bind the actively running container digests (e.g., `neko` browser) to a nonce, guaranteeing the exact codebase is running securely. Proofs can be fetched and verified using the tools in [`scripts/attestation/`](scripts/attestation/README.md).
 - **Isolation**: Every session runs in a dedicated ephemeral pod.
 - **Network**: WebRTC traffic is routed via a private TURN server (Coturn) or internal ClusterIPs.
 
