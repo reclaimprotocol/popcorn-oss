@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -41,6 +45,39 @@ type ProofResponse struct {
 func main() {
 	log.Printf("Starting Attestor service on port %s", Port)
 
+	// Automatically run attestation generation and S3 upload in the background on boot
+	go func() {
+		// Wait a small amount of time for the pod to be fully marked as Running so we can fetch our image IDs reliably
+		time.Sleep(5 * time.Second)
+		log.Println("Starting background attestation generation...")
+
+		region := os.Getenv("AWS_REGION")
+		if region == "" {
+			region = "us-east-2"
+		}
+
+		// For the static S3 upload, we bind the signature strictly to the digests + pubkey, without a dynamic nonce.
+		// Alternatively, we use the pod name as the nonce to ensure it's bound strictly to this exact instance's boot.
+		podName := os.Getenv("HOSTNAME")
+		if podName == "" {
+			podName = "unknown-pod"
+		}
+
+		resp, err := generateProof(podName)
+		if err != nil {
+			log.Printf("❌ Background attestation failed: %v", err)
+			return
+		}
+
+		err = uploadToS3(context.Background(), resp, podName, region)
+		if err != nil {
+			log.Printf("❌ Failed to upload attestation to S3: %v", err)
+		} else {
+			bucketName := fmt.Sprintf("popcorn-attestations-%s", region)
+			log.Printf("✅ Attestation successfully uploaded to s3://%s/%s/", bucketName, podName)
+		}
+	}()
+
 	http.HandleFunc("/proof", handleProof)
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -48,6 +85,60 @@ func main() {
 	})
 
 	log.Fatal(http.ListenAndServe(":"+Port, nil))
+}
+
+func uploadToS3(ctx context.Context, proof ProofResponse, podName string, region string) error {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return fmt.Errorf("unable to load AWS SDK config: %v", err)
+	}
+
+	client := s3.NewFromConfig(cfg)
+	bucketName := aws.String(fmt.Sprintf("popcorn-attestations-%s", region))
+
+	// Upload main manifest.json
+	manifestJSON, _ := json.MarshalIndent(proof, "", "  ")
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      bucketName,
+		Key:         aws.String(fmt.Sprintf("%s/manifest.json", podName)),
+		Body:        bytes.NewReader(manifestJSON),
+		ContentType: aws.String("application/json"),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upload manifest.json: %v", err)
+	}
+
+	// Upload attestation.bin
+	reportBytes, err := base64.StdEncoding.DecodeString(proof.SnpReport)
+	if err == nil {
+		_, err = client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket:      bucketName,
+			Key:         aws.String(fmt.Sprintf("%s/attestation.bin", podName)),
+			Body:        bytes.NewReader(reportBytes),
+			ContentType: aws.String("application/octet-stream"),
+		})
+		if err != nil {
+			log.Printf("⚠️ Failed to upload attestation.bin: %v", err)
+		}
+	}
+
+	// Upload vlek.der
+	if proof.VlekCert != "" {
+		certBytes, err := base64.StdEncoding.DecodeString(proof.VlekCert)
+		if err == nil {
+			_, err = client.PutObject(ctx, &s3.PutObjectInput{
+				Bucket:      bucketName,
+				Key:         aws.String(fmt.Sprintf("%s/certs/vlek.der", podName)),
+				Body:        bytes.NewReader(certBytes),
+				ContentType: aws.String("application/x-x509-ca-cert"),
+			})
+			if err != nil {
+				log.Printf("⚠️ Failed to upload vlek.der: %v", err)
+			}
+		}
+	}
+
+	return nil
 }
 
 func handleProof(w http.ResponseWriter, r *http.Request) {
