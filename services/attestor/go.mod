@@ -1,6 +1,6 @@
 module github.com/reclaimprotocol/popcorn/services/attestor
 
-go 1.25.0
+go 1.22.0
 
 require (
 	k8s.io/apimachinery v0.30.0
