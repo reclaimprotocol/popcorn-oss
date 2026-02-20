@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	Port         = "8080"
+	Port         = "8085"
 	PubKeyPath   = "/etc/cosign.pub"
 	ReportFile   = "/tmp/report.bin"
 	RequestFile  = "/tmp/snp_request.bin"

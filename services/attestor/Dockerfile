@@ -35,6 +35,6 @@ COPY --from=builder /app/attestor /usr/local/bin/attestor
 # We assume it's copied in from the build context (repo root) by the CI workflow
 COPY cosign.pub /etc/cosign.pub
 
-EXPOSE 8080
+EXPOSE 8085
 
 CMD ["attestor"]
