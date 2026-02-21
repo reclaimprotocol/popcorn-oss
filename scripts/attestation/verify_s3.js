@@ -3,7 +3,15 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const https = require('https');
+const { execSync } = require('child_process');
 const path = require('path');
+
+const {
+    parseAttestationReport,
+    verifyAMDChain,
+    verifyTCB,
+    verifyHardwareSignature
+} = require('./verify_common');
 
 const pubKeyPath = path.join(__dirname, '../../cosign.pub');
 const COSIGN_PUBLIC_KEY = fs.readFileSync(pubKeyPath, 'utf8');
@@ -19,66 +27,6 @@ function fetchS3Object(url) {
             res.on('end', () => resolve(Buffer.concat(chunks)));
         }).on('error', reject);
     });
-}
-
-function parseAttestationReport(buffer) {
-    const report = {};
-    if (buffer.length < 1000) {
-        throw new Error(`Report buffer is too small: ${buffer.length} bytes`);
-    }
-    report.reportData = buffer.subarray(0x50, 0x90).toString('hex'); // 64 bytes
-    return report;
-}
-
-function toDerInt(bigIntBEBuffer) {
-    let i = 0;
-    while (i < bigIntBEBuffer.length && bigIntBEBuffer[i] === 0) i++;
-    let val = bigIntBEBuffer.subarray(i);
-    if (val.length === 0) return Buffer.from([0x02, 0x01, 0x00]);
-    if (val[0] & 0x80) {
-        val = Buffer.concat([Buffer.from([0x00]), val]);
-    }
-    return Buffer.concat([Buffer.from([0x02, val.length]), val]);
-}
-
-function verifyHardwareSignature(reportBytes, certBytes) {
-    let cert;
-    try {
-        cert = new crypto.X509Certificate(certBytes);
-    } catch (e) {
-        throw new Error("Failed to parse VLEK certificate: " + e.message);
-    }
-    const publicKey = cert.publicKey;
-
-    // Extract R and S from the AMD SEV-SNP report signature block
-    const sigOffset = 0x2A0;
-    const rLE = reportBytes.subarray(sigOffset, sigOffset + 72);
-    const sLE = reportBytes.subarray(sigOffset + 72, sigOffset + 144);
-
-    // AMD yields Little Endian, standard cryptography needs Big Endian
-    const rBE = Buffer.from(rLE).reverse();
-    const sBE = Buffer.from(sLE).reverse();
-
-    // Construct ASN.1 DER Sequence for the ECDSA signature
-    const rDer = toDerInt(rBE);
-    const sDer = toDerInt(sBE);
-
-    const seqLen = rDer.length + sDer.length;
-    let seqLenEncoding;
-    if (seqLen < 128) {
-        seqLenEncoding = Buffer.from([seqLen]);
-    } else {
-        seqLenEncoding = Buffer.from([0x81, seqLen]);
-    }
-    const signature = Buffer.concat([Buffer.from([0x30]), seqLenEncoding, rDer, sDer]);
-
-    // AMD signs the SHA-384 hash of the first 0x2A0 bytes of the report
-    const signedData = reportBytes.subarray(0, 0x2A0);
-    const isValid = crypto.verify('SHA384', signedData, publicKey, signature);
-
-    if (!isValid) {
-        throw new Error("Hardware ECDSA signature is completely invalid!");
-    }
 }
 
 async function verifyS3Proof(podName, region) {
@@ -144,11 +92,21 @@ async function verifyS3Proof(podName, region) {
     }
     console.log("\n✅ REPORT_DATA matches recomputed hash. Hardware binding proven.");
 
+    // 4. Validate Policy Extensions
     console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    console.log("🛡️  CRYPTOGRAPHIC HARDWARE SIGNATURE VERIFICATION");
+    console.log("📜 GUEST POLICY VERIFICATION");
     console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
+    if (report.isDebugEnabled) {
+        console.error(`\n❌ POLICY CHECK FAILED: Debug mode is ALLOWED (Bit 19 is 1).`);
+        console.error(`   The hypervisor can attach a debugger and read this VM's plaintext memory!`);
+        process.exit(1);
+    }
+    console.log("✅ Guest Policy is secure (Debug Mode is disabled).");
+
     try {
+        await verifyAMDChain(certBuffer);
+        verifyTCB(certBuffer, report);
         verifyHardwareSignature(reportBuffer, certBuffer);
         console.log("✅ ECDSA P-384 hardware signature successfully validated against AMD VLEK natively!");
     } catch (e) {
