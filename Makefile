@@ -15,6 +15,7 @@ build:
 	@echo "🏗️  Building base image locally (popcorn-base:local)..."
 	docker build  -f ./popcorn-images/images/chromium-headful/Dockerfile -t popcorn-base:local ./popcorn-images
 	@echo "🏗️  Building Browser Node using local base..."
+	cp -f cosign.pub services/browser-node/cosign.pub
 	docker build --build-arg BASE_IMAGE=popcorn-base:local -t $(BROWSER_NODE_IMAGE) ./services/browser-node
 	@echo "🏗️  Building TTL Controller..."
 	docker build -t $(TTL_CONTROLLER_IMAGE) ./services/ttl-controller
@@ -97,6 +98,7 @@ push: login
 	@echo "🏗️  Building base image locally (popcorn-base:local)..."
 	docker build --platform linux/amd64 -f ./popcorn-images/images/chromium-headful/Dockerfile -t popcorn-base:local ./popcorn-images
 	@echo "🏗️  Building Browser Node using local base..."
+	cp -f cosign.pub services/browser-node/cosign.pub
 	docker build --platform linux/amd64 --build-arg BASE_IMAGE=popcorn-base:local -t $(ECR_REGISTRY)/popcorn/browser-node:$(TAG) ./services/browser-node
 	@echo "⬆️  Pushing Browser Node..."
 	docker push $(ECR_REGISTRY)/popcorn/browser-node:$(TAG)
