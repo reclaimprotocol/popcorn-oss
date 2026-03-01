@@ -14,9 +14,24 @@ const TURN_HOST = process.env.TURN_HOST || "192.168.139.2";
 const TURN_HOST_INTERNAL = process.env.TURN_HOST_INTERNAL || TURN_HOST; // Default to same if not set
 const TURN_PORT = 3478;
 
-const ADMIN_USER = process.env.ADMIN_USER || "admin";
-const ADMIN_PASS = process.env.ADMIN_PASS || "admin";
-const API_TOKEN = process.env.API_TOKEN || "popcorn_api_secret";
+import fs from "node:fs";
+
+// Read from AWS CSI volume if present, fallback to env, fallback to default
+const readSecret = (filename: string, envVar: string, defaultValue: string) => {
+    try {
+        const path = `/mnt/secrets/pool-manager/${filename}`;
+        if (fs.existsSync(path)) {
+            return fs.readFileSync(path, 'utf8').trim();
+        }
+    } catch (e) {
+        console.error(`Error reading secret file for ${filename}:`, e);
+    }
+    return process.env[envVar] || defaultValue;
+};
+
+const ADMIN_USER = readSecret("admin_user", "ADMIN_USER", "admin");
+const ADMIN_PASS = readSecret("admin_pass", "ADMIN_PASS", "admin");
+const API_TOKEN = readSecret("api_token", "API_TOKEN", "popcorn_api_secret");
 
 app.use('/admin/*', basicAuth({ username: ADMIN_USER, password: ADMIN_PASS }));
 app.use('/admin', basicAuth({ username: ADMIN_USER, password: ADMIN_PASS }));
