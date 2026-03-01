@@ -124,7 +124,6 @@ export const Agones = {
 
             // Fetch all pods to map IPs (since Agones reports Node IP)
             const pods = await K8s.listBrowserPods();
-            console.log(`🔍 Debug: Found ${pods.length} browser pods for mapping.`);
             const podMap = new Map(pods.map((p: any) => [p.name, p.ip]));
 
             return items.map((gs: any) => {

@@ -108,9 +108,6 @@ export const K8s = {
             // Handle both { body: ... } (standard) and V1PodList (type-inferred) returns
             const allPods = (res as any).body?.items || (res as any).items || [];
 
-            // Log simple count for visibility
-            console.log(`🔍 K8s: Found ${allPods.length} total pods.`);
-
             const browserPods = allPods.filter((p: any) => {
                 const labels = p.metadata?.labels || {};
                 return labels['app'] === 'browser-node' ||

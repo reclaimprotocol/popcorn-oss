@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { basicAuth } from "hono/basic-auth";
+import { bearerAuth } from "hono/bearer-auth";
 import { createHmac } from "node:crypto";
 import { DB } from "./src/services/db";
 import { Agones } from "./src/services/agones";
@@ -11,6 +13,19 @@ const TURN_SECRET = process.env.TURN_SECRET || "popcorn_secret";
 const TURN_HOST = process.env.TURN_HOST || "192.168.139.2";
 const TURN_HOST_INTERNAL = process.env.TURN_HOST_INTERNAL || TURN_HOST; // Default to same if not set
 const TURN_PORT = 3478;
+
+const ADMIN_USER = process.env.ADMIN_USER || "admin";
+const ADMIN_PASS = process.env.ADMIN_PASS || "admin";
+const API_TOKEN = process.env.API_TOKEN || "popcorn_api_secret";
+
+app.use('/admin/*', basicAuth({ username: ADMIN_USER, password: ADMIN_PASS }));
+app.use('/admin', basicAuth({ username: ADMIN_USER, password: ADMIN_PASS }));
+
+// app.use('/session/*', bearerAuth({ token: API_TOKEN }));
+// app.use('/session', bearerAuth({ token: API_TOKEN }));
+
+app.use('/session/*');
+app.use('/session');
 
 // Helper to generate TURN creds
 function generateTurnCreds(usernameId: string, useInternal = false): TurnServerConfig | TurnServerConfig[] {
@@ -40,7 +55,12 @@ function generateTurnCreds(usernameId: string, useInternal = false): TurnServerC
 
 // Serve Admin UI Static File
 app.get("/admin", async (c) => {
-    return c.html(await Bun.file("./public/admin.html").text());
+    let html = await Bun.file("./public/admin.html").text();
+    html = html.replace(
+        "const API_URL = window.location.origin;",
+        `const API_URL = window.location.origin;\n        const API_TOKEN = "${API_TOKEN}";`
+    );
+    return c.html(html);
 });
 
 // GET /admin/servers
@@ -77,6 +97,7 @@ app.get("/session/:id", async (c) => {
     }
 
     const host = c.req.header("Host") || "localhost";
+    console.log("Host:", host);
     const protocol = c.req.header("X-Forwarded-Proto") || "http";
     const token = Auth.signToken(id);
 
