@@ -73,20 +73,4 @@ connect:
 	@echo "🔌 Cluster available. Gateway is mapped to NodePort 30080 (localhost:8080)."
 	@echo "   Open http://localhost:8080 in your browser."
 
-AWS_REGION ?= us-east-2
-AWS_CLUSTER_NAME ?= popcorn-cluster-aws
-connect-cd:
-	@echo "🔌 Connecting to ArgoCD UI on AWS..."
-	@aws eks update-kubeconfig --region $(AWS_REGION) --name $(AWS_CLUSTER_NAME)
-	@echo "🔓 ArgoCD Admin Password: "
-	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d && echo
-	@echo "🔄 Port-forwarding 8888 -> 443..."
-	@kubectl -n argocd port-forward svc/argocd-server 8888:443
 
-list-secrets:
-	@echo "🔐 Listing AWS Secrets Manager secrets in $(AWS_REGION)..."
-	@aws secretsmanager list-secrets --region $(AWS_REGION) --query 'SecretList[*].Name' --output table
-
-get-pool-secrets:
-	@echo "🔐 Fetching pool-manager-secrets for $(AWS_CLUSTER_NAME) in $(AWS_REGION)..."
-	@aws secretsmanager get-secret-value --secret-id $(AWS_CLUSTER_NAME)/pool-manager-secrets --region $(AWS_REGION) --query SecretString --output text | jq . || aws secretsmanager get-secret-value --secret-id $(AWS_CLUSTER_NAME)/pool-manager-secrets --region $(AWS_REGION) --query SecretString --output text
