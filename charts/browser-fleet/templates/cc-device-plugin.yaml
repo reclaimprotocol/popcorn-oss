@@ -1,0 +1,64 @@
+{{- if .Values.ccDevicePlugin.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: cc-device-plugin
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: cc-device-plugin
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cc-device-plugin
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cc-device-plugin
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - operator: Exists
+          effect: NoExecute
+        - operator: Exists
+          effect: NoSchedule
+      containers:
+        - image: us-central1-docker.pkg.dev/gce-confidential-compute/release/cc-device-plugin:v1.0.0
+          imagePullPolicy: Always
+          name: cc-device-plugin
+          resources:
+            requests:
+              cpu: 50m
+              memory: 20Mi
+            limits:
+              cpu: 50m
+              memory: 20Mi
+          ports:
+            - containerPort: 8080
+              name: http
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: device-plugin
+              mountPath: /var/lib/kubelet/device-plugins
+            - name: dev
+              mountPath: /dev
+            - name: sys
+              mountPath: /sys
+            - name: run
+              mountPath: /run
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: run
+          hostPath:
+            path: /run
+  updateStrategy:
+    type: RollingUpdate
+{{- end }}

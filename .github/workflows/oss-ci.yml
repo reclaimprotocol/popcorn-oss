@@ -1,0 +1,188 @@
+name: OSS CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: oss-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            services/attestor/go.sum
+            services/ttl-controller/go.sum
+
+      - name: Test Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          modules=(
+            services/attestor
+            services/ttl-controller
+          )
+
+          for module in "${modules[@]}"; do
+            echo "::group::${module}"
+            (
+              cd "${module}"
+              mapfile -t packages < <(go list ./...)
+              go test "${packages[@]}"
+            )
+            echo "::endgroup::"
+          done
+
+  bun:
+    name: Bun dependency checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          services=(
+            services/analytics-service
+            services/pool-manager
+          )
+
+          for service in "${services[@]}"; do
+            echo "::group::${service}"
+            (
+              cd "${service}"
+              bun install --frozen-lockfile
+              if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
+                bun run typecheck
+              fi
+              if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+                bun run test
+              fi
+            )
+            echo "::endgroup::"
+          done
+
+  helm:
+    name: Helm templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Render OSS examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f examples/helm/platform-values.yaml
+          test -f examples/helm/browser-fleet-values.yaml
+
+          helm template popcorn-platform charts/platform \
+            --values examples/helm/platform-values.yaml
+
+          helm template browser-fleet charts/browser-fleet \
+            --values examples/helm/browser-fleet-values.yaml
+
+  docker:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: pool-manager
+            context: services/pool-manager
+          - service: gateway
+            context: services/gateway
+          - service: ttl-controller
+            context: services/ttl-controller
+          - service: analytics-service
+            context: services/analytics-service
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && github.repository == 'reclaimprotocol/popcorn-oss'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY,,}"
+          image="ghcr.io/${repo}/${{ matrix.service }}"
+          refs=("${image}:sha-${GITHUB_SHA}")
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            refs+=("${image}:${GITHUB_REF_NAME}" "${image}:latest")
+          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            refs+=("${image}:main" "${image}:latest")
+          else
+            refs+=("${image}:ci-${GITHUB_SHA}")
+          fi
+
+          tag_args=()
+          for ref in "${refs[@]}"; do
+            tag_args+=(--tag "$ref")
+          done
+
+          docker build \
+            "${tag_args[@]}" \
+            "${{ matrix.context }}"
+
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" && "${GITHUB_REPOSITORY}" == "reclaimprotocol/popcorn-oss" ]]; then
+            for ref in "${refs[@]}"; do
+              docker push "$ref"
+            done
+          fi
+
+  browser-node:
+    name: Browser node build smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build browser node image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -f cosign.pub services/browser-node/cosign.pub
+          docker build \
+            --platform linux/amd64 \
+            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)" \
+            --build-arg BASE_IMAGE=ubuntu:22.04 \
+            --tag popcorn/browser-node:ci \
+            ./services/browser-node
+

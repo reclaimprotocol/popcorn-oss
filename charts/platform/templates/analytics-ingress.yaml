@@ -1,0 +1,39 @@
+{{- if and .Values.analytics.enabled .Values.analytics.domainName .Values.analytics.staticIpName }}
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: analytics-service
+spec:
+  redirectToHttps:
+    enabled: true
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: analytics-service
+spec:
+  domains:
+    - {{ .Values.analytics.domainName | quote }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: analytics-service
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: {{ .Values.analytics.staticIpName | quote }}
+    networking.gke.io/managed-certificates: analytics-service
+    networking.gke.io/v1beta1.FrontendConfig: analytics-service
+spec:
+  rules:
+    - host: {{ .Values.analytics.domainName | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: analytics-service
+                port:
+                  number: {{ .Values.analytics.publicServicePort }}
+{{- end }}

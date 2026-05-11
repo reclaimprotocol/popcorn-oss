@@ -1,0 +1,96 @@
+{{- if .Values.ttlController.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ttl-controller-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ttl-controller-role
+rules:
+  - apiGroups: ["agones.dev"]
+    resources: ["gameservers"]
+    verbs: ["get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ttl-controller-rolebinding
+subjects:
+  - kind: ServiceAccount
+    name: ttl-controller-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: ttl-controller-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ttl-controller
+  labels:
+    app: ttl-controller
+spec:
+  replicas: {{ .Values.ttlController.replicas }}
+  selector:
+    matchLabels:
+      app: ttl-controller
+  template:
+    metadata:
+      labels:
+        app: ttl-controller
+    spec:
+      serviceAccountName: ttl-controller-sa
+      containers:
+        - name: manager
+          image: "{{ .Values.registry }}/ttl-controller:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.ttlController.imagePullPolicy }}
+          command:
+            - /manager
+          args:
+            - --leader-elect
+            - --ttl-duration={{ .Values.ttlController.ttlDuration }}
+          env:
+            - name: ANALYTICS_SERVICE_URL
+              value: {{ default (printf "http://analytics-service.%s.svc.cluster.local:3000" .Release.Namespace) .Values.ttlController.analyticsServiceUrl | quote }}
+            - name: CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-config
+                  key: cluster_name
+            - name: ANALYTICS_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-service-secret
+                  key: SERVICE_AUTH_TOKEN
+          ports:
+            - name: health
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 200m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+{{- end }}

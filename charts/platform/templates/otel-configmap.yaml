@@ -1,0 +1,95 @@
+{{- if .Values.otel.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-agent-config
+data:
+  config.yaml: |
+    receivers:
+      filelog/browser:
+        include:
+          - /var/log/pods/default_browser-fleet-*_*/*/*.log
+        include_file_path: true
+        start_at: beginning
+        operators:
+          - id: container-parser
+            type: container
+          - id: extract-k8s-path
+            type: regex_parser
+            parse_from: attributes["log.file.path"]
+            regex: '^/var/log/pods/(?P<k8s_namespace_name>[^_]+)_(?P<k8s_pod_name>.+)_(?P<k8s_pod_uid>[0-9a-f-]+)/(?P<k8s_container_name>[^/]+)/(?P<k8s_restart_count>\d+)\.log$'
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 192
+        spike_limit_mib: 64
+      resource/from-filepath:
+        attributes:
+          - action: upsert
+            key: service.name
+            value: popcorn
+          - action: upsert
+            key: k8s.namespace.name
+            from_attribute: k8s_namespace_name
+          - action: upsert
+            key: k8s.pod.name
+            from_attribute: k8s_pod_name
+          - action: upsert
+            key: k8s.pod.uid
+            from_attribute: k8s_pod_uid
+          - action: upsert
+            key: k8s.container.name
+            from_attribute: k8s_container_name
+          - action: upsert
+            key: cluster.name
+            value: {{ .Values.clusterName | quote }}
+      k8sattributes:
+        auth_type: serviceAccount
+        filter:
+          node_from_env_var: KUBE_NODE_NAME
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.container.name
+            - k8s.node.name
+          labels:
+            - from: pod
+              key: agones.dev/role
+              tag_name: agones.dev.role
+            - from: pod
+              key: agones.dev/fleet
+              tag_name: agones.dev.fleet
+      transform/add-source:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - set(attributes["Source"], resource.attributes["k8s.container.name"]) where resource.attributes["k8s.container.name"] != nil
+      filter/browser:
+        error_mode: ignore
+        logs:
+          log_record:
+            - resource.attributes["k8s.namespace.name"] != "default"
+            - resource.attributes["agones.dev.role"] != "gameserver"
+      batch:
+        send_batch_size: 1000
+        timeout: 5s
+
+    exporters:
+      otlp:
+        endpoint: {{ .Values.otel.exporter.grpcEndpoint | quote }}
+
+    service:
+      pipelines:
+        logs:
+          receivers: [filelog/browser]
+          processors: [memory_limiter, resource/from-filepath, k8sattributes, transform/add-source, filter/browser, batch]
+          exporters: [otlp]
+{{- end }}

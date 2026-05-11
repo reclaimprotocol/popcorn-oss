@@ -1,0 +1,39 @@
+{{- if .Values.imagePrepuller.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: browser-image-prepuller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: browser-image-prepuller
+    app.kubernetes.io/part-of: browser-fleet
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: browser-image-prepuller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: browser-image-prepuller
+        app.kubernetes.io/part-of: browser-fleet
+    spec:
+      containers:
+        - name: prepull-browser-runtime
+          image: {{ .Values.browserRuntimeImage | quote }}
+          imagePullPolicy: {{ .Values.imagePrepuller.imagePullPolicy }}
+          command: ["/bin/sh", "-c", "sleep 365d"]
+          resources:
+{{ toYaml .Values.imagePrepuller.resources | indent 12 }}
+{{- with .Values.imagePrepuller.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.imagePrepuller.tolerations }}
+      tolerations:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- with .Values.imagePrepuller.affinity }}
+      affinity:
+{{ toYaml . | indent 8 }}
+{{- end }}
+{{- end }}

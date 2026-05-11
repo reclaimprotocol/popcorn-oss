@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🍿 Popcorn Admin</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --card: #1e293b;
+            --text: #f8fafc;
+            --accent: #3b82f6;
+            --success: #22c55e;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, sans-serif;
+            padding: 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-top: 2rem;
+        }
+
+        .card {
+            background: var(--card);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            margin-top: 0;
+            color: var(--accent);
+            border-bottom: 1px solid #334155;
+            padding-bottom: 0.5rem;
+        }
+
+        .stat {
+            font-size: 2rem;
+            font-weight: bold;
+        }
+
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+
+        li {
+            background: #334155;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            border-radius: 6px;
+            font-family: monospace;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        input {
+            background: #334155;
+            border: 1px solid #475569;
+            color: white;
+            padding: 0.75rem;
+            border-radius: 6px;
+            width: 100%;
+            box-sizing: border-box;
+            margin-bottom: 1rem;
+        }
+
+        button {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            width: 100%;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        .tag {
+            background: var(--success);
+            color: black;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .empty {
+            opacity: 0.5;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>🍿 Popcorn Pool Manager</h1>
+
+    <div class="grid">
+        <!-- CLAIM SECTION -->
+        <div class="card">
+            <h2>🚀 New Session</h2>
+            <form id="claimForm">
+                <label style="display:block; margin-bottom:0.5rem">Session ID / User ID</label>
+                <input type="text" id="sessionId" placeholder="e.g. user-123" required>
+                <button type="submit">Claim Browser</button>
+            </form>
+            <div id="result"
+                style="margin-top: 1rem; display: none; background: #064e3b; padding: 1rem; border-radius: 6px;"></div>
+        </div>
+
+        <!-- STATS SECTION -->
+        <div class="card">
+            <h2>📊 Pool Stats</h2>
+            <div style="display: flex; gap: 2rem; margin-bottom: 1rem;">
+                <div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Ready GameServers</div>
+                    <div class="stat" id="idleCount">-</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Allocated Sessions</div>
+                    <div class="stat" id="activeCount">-</div>
+                </div>
+                <div>
+                    <div style="font-size: 0.9rem; opacity: 0.7;">Total GameServers</div>
+                    <div class="stat" id="totalPods">-</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- UNIFIED POD LIST -->
+        <div class="card" style="grid-column: span 2;">
+            <h2>🎮 Agones GameServers</h2>
+            <ul id="podList"></ul>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+
+        async function fetchStats() {
+            try {
+                // 1. Get simplified server list
+                const res = await fetch(`${API_URL}/admin/servers`);
+                const servers = await res.json();
+
+                const idleCount = servers.filter(s => s.status === 'Ready').length;
+                const activeCount = servers.filter(s => s.status === 'Allocated').length;
+
+                document.getElementById('idleCount').innerText = idleCount;
+                document.getElementById('activeCount').innerText = activeCount;
+                document.getElementById('totalPods').innerText = servers.length;
+
+                const podList = document.getElementById('podList');
+
+                if (!servers.length) {
+                    podList.innerHTML = '';
+                    const emptyState = document.createElement('div');
+                    emptyState.className = 'empty';
+                    emptyState.textContent = 'No GameServers found in cluster';
+                    podList.appendChild(emptyState);
+                    return;
+                }
+
+                // The server list includes a sessionId when Redis has an active mapping.
+                podList.innerHTML = '';
+
+                servers.forEach(p => {
+                    const item = document.createElement('li');
+                    const row = document.createElement('div');
+                    row.style.display = 'flex';
+                    row.style.alignItems = 'center';
+                    row.style.width = '100%';
+                    row.style.gap = '1rem';
+
+                    const serverInfo = document.createElement('div');
+                    serverInfo.style.display = 'flex';
+                    serverInfo.style.flexDirection = 'column';
+
+                    let stateColor = '#64748b';
+                    let stateTextColor = 'white';
+                    if (p.status === 'Ready') stateColor = '#22c55e';
+                    else if (p.status === 'Allocated') stateColor = '#eab308';
+                    else if (p.status.startsWith('Shut')) stateColor = '#ef4444';
+                    if (p.status === 'Ready' || p.status === 'Allocated') {
+                        stateTextColor = 'black';
+                    }
+
+                    const serverName = document.createElement('span');
+                    serverName.style.fontWeight = 'bold';
+                    serverName.textContent = p.name;
+                    serverInfo.appendChild(serverName);
+
+                    if (p.sessionId) {
+                        const sessionSpan = document.createElement('span');
+                        sessionSpan.style.fontSize = '0.75rem';
+                        sessionSpan.style.color = '#94a3b8';
+                        sessionSpan.style.fontFamily = 'monospace';
+                        sessionSpan.textContent = p.sessionId;
+                        serverInfo.appendChild(sessionSpan);
+                    }
+
+                    const statusBadge = document.createElement('span');
+                    statusBadge.className = 'tag';
+                    statusBadge.style.background = stateColor;
+                    statusBadge.style.color = stateTextColor;
+                    statusBadge.textContent = p.status;
+                    row.appendChild(serverInfo);
+                    row.appendChild(statusBadge);
+
+                    // Simple Force Shutdown for now since we don't have session ID mapping in this minimal list
+                    if (p.sessionId) {
+                        const openButton = document.createElement('button');
+                        openButton.type = 'button';
+                        openButton.style.background = '#3b82f6';
+                        openButton.style.width = 'auto';
+                        openButton.style.padding = '0.25rem 0.5rem';
+                        openButton.style.fontSize = '0.8rem';
+                        openButton.style.marginRight = '0.5rem';
+                        openButton.textContent = 'OPEN';
+                        openButton.dataset.sessionId = p.sessionId;
+                        openButton.addEventListener('click', () => openLiveView(openButton.dataset.sessionId));
+                        row.appendChild(openButton);
+                    }
+
+                    if (p.status === 'Allocated' || p.status === 'Ready') {
+                        const shutdownButton = document.createElement('button');
+                        shutdownButton.type = 'button';
+                        shutdownButton.style.background = '#7f1d1d';
+                        shutdownButton.style.width = 'auto';
+                        shutdownButton.style.padding = '0.25rem 0.5rem';
+                        shutdownButton.style.fontSize = '0.8rem';
+                        shutdownButton.style.marginLeft = 'auto';
+                        shutdownButton.textContent = 'SHUTDOWN';
+                        shutdownButton.addEventListener('click', () => forceShutdownGS(p.name));
+                        row.appendChild(shutdownButton);
+                    }
+
+                    item.appendChild(row);
+                    podList.appendChild(item);
+
+                });
+
+            } catch (e) {
+                console.error("Failed to fetch stats:", e);
+            }
+        }
+
+        async function openLiveView(sid) {
+            try {
+                const res = await fetch(`${API_URL}/admin/session/${sid}`);
+                const data = await res.json();
+                if (data.success && data.url) {
+                    window.open(data.url, '_blank');
+                } else {
+                    alert('Failed to get session URL');
+                }
+            } catch (e) {
+                console.error(e);
+                alert('Error fetching session details');
+            }
+        }
+
+        async function killSession(sid) {
+            if (!confirm(`Kill session ${sid}?`)) return;
+            await fetch(`${API_URL}/admin/session/${sid}`, { method: 'DELETE' });
+            fetchStats();
+        }
+
+        async function forceShutdownGS(name) {
+            if (!confirm(`Force shutdown GameServer ${name}?`)) return;
+            await fetch(`${API_URL}/admin/gameserver/${name}`, { method: 'DELETE' });
+            fetchStats();
+        }
+
+        function safeUrl(rawUrl, allowedProtocols = ['http:', 'https:']) {
+            if (typeof rawUrl !== 'string') return null;
+            try {
+                const parsed = new URL(rawUrl, API_URL);
+                if (!allowedProtocols.includes(parsed.protocol)) {
+                    return null;
+                }
+                return parsed.href;
+            } catch {
+                return null;
+            }
+        }
+
+        function createSafeLink(label, rawUrl, backgroundColor, allowedProtocols) {
+            const link = document.createElement('a');
+            link.style.background = backgroundColor;
+            link.style.color = backgroundColor === '#eab308' ? 'black' : (backgroundColor === '#3b82f6' ? 'white' : 'black');
+            link.style.padding = '0.25rem 0.5rem';
+            link.style.borderRadius = '4px';
+            link.style.textDecoration = 'none';
+            link.style.fontWeight = 'bold';
+            link.textContent = label;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+
+            const href = safeUrl(rawUrl, allowedProtocols);
+            if (href) {
+                link.href = href;
+            } else {
+                link.href = '#';
+                link.addEventListener('click', (e) => e.preventDefault());
+            }
+
+            return link;
+        }
+
+        document.getElementById('claimForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const sessionId = document.getElementById('sessionId').value;
+
+            try {
+                const res = await fetch(`${API_URL}/admin/session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId })
+                });
+
+                const data = await res.json();
+                const resultDiv = document.getElementById('result');
+                resultDiv.style.display = 'block';
+
+                if (res.ok) {
+                    const successHeader = document.createElement('div');
+                    const successIcon = document.createElement('span');
+                    successIcon.textContent = '✅ ';
+                    const successBold = document.createElement('strong');
+                    successBold.textContent = 'Success!';
+                    successHeader.appendChild(successIcon);
+                    successHeader.appendChild(successBold);
+
+                    const sessionLine = document.createElement('div');
+                    sessionLine.style.marginTop = '0.5rem';
+                    sessionLine.style.fontSize = '0.9rem';
+                    sessionLine.textContent = `Session ID: ${data.sessionId}`;
+
+                    const actionRow = document.createElement('div');
+                    actionRow.style.display = 'flex';
+                    actionRow.style.gap = '0.5rem';
+                    actionRow.style.marginTop = '0.5rem';
+                    actionRow.appendChild(createSafeLink('Open Gateway', data.url, 'white'));
+                    actionRow.appendChild(createSafeLink('CDP', data.cdpUrl, '#eab308', ['ws:', 'wss:']));
+                    actionRow.appendChild(createSafeLink('Kernel API', data.apiUrl, '#3b82f6'));
+
+                    resultDiv.replaceChildren();
+                    resultDiv.appendChild(successHeader);
+                    resultDiv.appendChild(sessionLine);
+                    resultDiv.appendChild(actionRow);
+                    fetchStats();
+                } else {
+                    resultDiv.replaceChildren();
+                    const errorText = document.createElement('div');
+                    errorText.textContent = `❌ Error: ${data.error}`;
+                    resultDiv.appendChild(errorText);
+                    resultDiv.style.background = '#7f1d1d';
+                }
+            } catch (err) {
+                alert('Request failed');
+            }
+        });
+
+        // Poll every 2 seconds
+        fetchStats();
+        setInterval(fetchStats, 2000);
+    </script>
+</body>
+
+</html>

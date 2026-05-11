@@ -1,0 +1,133 @@
+# OSS-safe example values for rendering the platform chart.
+# Replace placeholders before installing into a real cluster.
+
+clusterName: example-cluster
+provider: generic
+region: us-central1
+registry: ghcr.io/reclaimprotocol/popcorn-oss
+imageTag: latest
+
+poolManager:
+  enabled: false
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  redisHost: redis
+  analyticsServiceUrl: ""
+  jwtSecretName: gateway-jwt-keys
+
+gateway:
+  enabled: true
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  domainName: gateway.example.com
+  staticIpName: ""
+  serviceType: ClusterIP
+  nodePorts: {}
+  serviceAnnotations: {}
+  backendConfig:
+    enabled: false
+    timeoutSec: 3600
+    connectionDrainingTimeoutSec: 60
+  jwtSecretName: gateway-jwt-keys
+  jwtPrivateKeySecretId: ""
+  jwtPublicKeySecretId: ""
+
+redis:
+  enabled: false
+  replicas: 1
+  image: redis:7-alpine
+  imagePullPolicy: IfNotPresent
+
+postgres:
+  enabled: false
+  image: postgres:16
+  imagePullPolicy: IfNotPresent
+  database: analytics
+  username: analytics_admin
+  hostAuthMethod: scram-sha-256
+  storageSize: 20Gi
+  storageClassName: ""
+  existingSecretName: analytics-db-secret
+  passwordSecretKey: password
+
+analytics:
+  enabled: false
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  nodeEnv: production
+  databaseSsl: false
+  serviceType: ClusterIP
+  domainName: analytics.example.com
+  staticIpName: ""
+  publicServicePort: 3000
+  internalServiceUrl: ""
+
+metabase:
+  enabled: false
+  replicas: 1
+  image: metabase/metabase:v0.57.6.x
+  imagePullPolicy: IfNotPresent
+  serviceType: ClusterIP
+  publicServicePort: 3000
+  domainName: metabase.example.com
+  staticIpName: ""
+  siteUrl: ""
+  databaseName: metabase
+  databaseSecretName: analytics-db-secret
+
+ttlController:
+  enabled: false
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  analyticsServiceUrl: ""
+  ttlDuration: 15m
+
+gkeNodePrescaler:
+  enabled: false
+  image: python:3.12-slim
+  imagePullPolicy: IfNotPresent
+  gcpServiceAccount: prescaler@example-project.iam.gserviceaccount.com
+  project: example-project
+  cluster: example-cluster
+  location: us-central1
+  nodePool: browser-pool
+  namespace: default
+  fleetName: browser-fleet
+  fleetAutoscalerName: browser-autoscaler
+  intervalSeconds: 15
+  podsPerNode: 4
+  targetSessionsPerMinute: 5
+  desiredCoverageMinutes: 2
+  burstHeadroomGameServers: 0
+  applyHeadroomOnlyWhenDemandAboveBaseline: true
+  scaleAheadFreeSlots: 4
+  maxNodesTotal: 0
+  scaleUpCooldownSeconds: 30
+  dryRun: true
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 128Mi
+      cpu: 200m
+
+otel:
+  enabled: false
+  image: otel/opentelemetry-collector-contrib:0.149.0
+  imagePullPolicy: IfNotPresent
+  exporter:
+    grpcEndpoint: https://otel-grpc.example.com:4317
+    httpEndpoint: https://otel-http.example.com
+  clickhouse:
+    database: otel
+    createSchema: false
+    secretName: otel-clickhouse-secret
+  agent:
+    resources:
+      requests:
+        memory: 128Mi
+        cpu: 100m
+      limits:
+        memory: 256Mi
+        cpu: 250m

@@ -1,0 +1,93 @@
+{{- if .Values.poolManager.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pool-manager
+  labels:
+    app: pool-manager
+spec:
+  replicas: {{ .Values.poolManager.replicas }}
+  selector:
+    matchLabels:
+      app: pool-manager
+  template:
+    metadata:
+      labels:
+        app: pool-manager
+    spec:
+      serviceAccountName: pool-manager
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: {{ .Values.poolManager.jwtSecretName | quote }}
+            items:
+              - key: private.pem
+                path: private.pem
+      containers:
+        - name: pool-manager
+          image: "{{ .Values.registry }}/pool-manager:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.poolManager.imagePullPolicy }}
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /app/keys
+              readOnly: true
+          env:
+            - name: REDIS_HOST
+              value: {{ .Values.poolManager.redisHost | quote }}
+            - name: ANALYTICS_SERVICE_URL
+              value: {{ default (printf "http://analytics-service.%s.svc.cluster.local:3000" .Release.Namespace) .Values.poolManager.analyticsServiceUrl | quote }}
+            - name: OTEL_CLICKHOUSE_ENABLED
+              value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
+            - name: ANALYTICS_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-service-secret
+                  key: SERVICE_AUTH_TOKEN
+            - name: CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-config
+                  key: cluster_name
+{{- if .Values.otel.enabled }}
+            - name: OTEL_CLICKHOUSE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_ENDPOINT
+            - name: OTEL_CLICKHOUSE_HTTP_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_HTTP_ENDPOINT
+            - name: OTEL_CLICKHOUSE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_USERNAME
+            - name: OTEL_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_PASSWORD
+            - name: OTEL_CLICKHOUSE_DATABASE
+              value: {{ .Values.otel.clickhouse.database | quote }}
+{{- end }}
+          envFrom:
+            - secretRef:
+                name: pool-manager-env-secrets
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pool-manager
+spec:
+  selector:
+    app: pool-manager
+  type: ClusterIP
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+{{- end }}

@@ -1,0 +1,156 @@
+apiVersion: agones.dev/v1
+kind: Fleet
+metadata:
+  name: browser-fleet
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.fleet.replicas }}
+  scheduling: {{ .Values.fleet.scheduling }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 25%
+      maxSurge: 50%
+  template:
+    metadata:
+      labels:
+        app: browser-runtime
+    spec:
+      container: browser-runtime
+      health:
+        initialDelaySeconds: {{ .Values.fleet.health.initialDelaySeconds }}
+        periodSeconds: {{ .Values.fleet.health.periodSeconds }}
+        failureThreshold: {{ .Values.fleet.health.failureThreshold }}
+      ports:
+        - name: webrtc-udp
+          portPolicy: Passthrough
+          protocol: UDP
+        - name: http
+          containerPort: 8082
+          portPolicy: None
+          protocol: TCP
+        - name: cdp
+          containerPort: 9222
+          portPolicy: None
+          protocol: TCP
+        - name: cdp-internal
+          containerPort: 9226
+          portPolicy: None
+          protocol: TCP
+        - name: kernel-api
+          containerPort: 10001
+          portPolicy: None
+          protocol: TCP
+      template:
+        spec:
+          serviceAccountName: browser-sa
+          containers:
+            - name: browser-runtime
+              image: {{ .Values.browserRuntimeImage | quote }}
+              imagePullPolicy: {{ .Values.browserRuntimeImagePullPolicy }}
+              resources:
+                requests:
+                  memory: {{ .Values.fleet.browserRuntimeMemoryRequest }}
+                  cpu: {{ .Values.fleet.browserRuntimeCpuRequest | quote }}
+                limits:
+                  memory: {{ .Values.fleet.browserRuntimeMemoryLimit }}
+                  cpu: {{ .Values.fleet.browserRuntimeCpuLimit | quote }}
+              securityContext:
+                capabilities:
+                  add: ["SYS_ADMIN"]
+              env:
+                - name: POD_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+                - name: REDIS_HOST
+                  value: redis
+                - name: NEKO_SCREEN
+                  value: "1920x1080@30"
+                - name: NEKO_PASSWORD
+                  value: neko
+                - name: NEKO_PASSWORD_ADMIN
+                  value: admin
+                - name: TURN_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: browser-turn-secret
+                      key: TURN_KEY_ID
+                - name: TURN_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: browser-turn-secret
+                      key: TURN_API_TOKEN
+                - name: NEKO_ICESERVERS
+                  valueFrom:
+                    secretKeyRef:
+                      name: browser-turn-secret
+                      key: NEKO_ICESERVERS
+                      optional: true
+                - name: NEKO_LOG_JSON
+                  value: "true"
+                - name: NEKO_LOG_LEVEL
+                  value: info
+                - name: NEKO_LOG_TIME
+                  value: unixms
+                - name: NEKO_LOG_NOCOLOR
+                  value: "true"
+              volumeMounts:
+                - mountPath: /dev/shm
+                  name: dshm
+                - mountPath: /var/log/app
+                  name: app-logs
+{{- if .Values.browserRuntimeAttestor.enabled }}
+            - name: browser-runtime-attestor
+              image: {{ .Values.browserRuntimeAttestorImage | quote }}
+              imagePullPolicy: {{ .Values.browserRuntimeAttestor.imagePullPolicy }}
+              resources:
+                requests:
+                  memory: {{ .Values.fleet.browserRuntimeAttestorMemoryRequest }}
+                  cpu: {{ .Values.fleet.browserRuntimeAttestorCpuRequest | quote }}
+                  google.com/cc: "1"
+                limits:
+                  memory: {{ .Values.fleet.browserRuntimeAttestorMemoryLimit }}
+                  cpu: {{ .Values.fleet.browserRuntimeAttestorCpuLimit | quote }}
+                  google.com/cc: "1"
+              ports:
+                - name: proof-http
+                  containerPort: 8085
+                  protocol: TCP
+              env:
+                - name: HOSTNAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.name
+                - name: ATTESTATION_TOKEN_AUDIENCE
+                  value: {{ printf "https://%s" .Values.gatewayDomain | quote }}
+                - name: CONFIDENTIAL_COMPUTING_LOCATION
+                  value: {{ .Values.region | quote }}
+                - name: TPM_EVENT_LOG_PATH
+                  value: /var/run/cc/tpm0/binary_bios_measurements
+              volumeMounts:
+                - mountPath: /var/run/cc/tpm0
+                  name: tpm-eventlog
+                  readOnly: true
+{{- end }}
+          volumes:
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 2Gi
+            - name: app-logs
+              emptyDir: {}
+{{- if .Values.browserRuntimeAttestor.enabled }}
+            - name: tpm-eventlog
+              hostPath:
+                path: /sys/kernel/security/tpm0
+                type: Directory
+{{- end }}

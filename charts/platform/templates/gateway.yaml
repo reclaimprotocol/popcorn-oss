@@ -1,0 +1,108 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: popcorn-gateway
+  labels:
+    app: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      serviceAccountName: gateway
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: {{ .Values.gateway.jwtSecretName | quote }}
+            items:
+              - key: public.pem
+                path: public.pem
+      containers:
+        - name: gateway
+          image: "{{ .Values.registry }}/gateway:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.gateway.imagePullPolicy }}
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /etc/nginx/certs
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          env:
+            - name: GATEWAY_DOMAIN
+              value: {{ .Values.gateway.domainName | quote }}
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 100m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: popcorn-gateway
+{{- if or .Values.gateway.backendConfig.enabled .Values.gateway.serviceAnnotations }}
+  annotations:
+{{- if .Values.gateway.backendConfig.enabled }}
+    cloud.google.com/backend-config: '{"ports":{"http":"popcorn-gateway","https":"popcorn-gateway"}}'
+{{- end }}
+{{- range $key, $value := .Values.gateway.serviceAnnotations }}
+    {{ $key }}: {{ $value | quote }}
+{{- end }}
+{{- end }}
+spec:
+  selector:
+    app: gateway
+  type: {{ if and .Values.gateway.domainName .Values.gateway.staticIpName }}ClusterIP{{ else }}{{ .Values.gateway.serviceType }}{{ end }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+{{- with .Values.gateway.nodePorts.http }}
+      nodePort: {{ . }}
+{{- end }}
+    - name: https
+      port: 443
+      targetPort: 80
+{{- with .Values.gateway.nodePorts.https }}
+      nodePort: {{ . }}
+{{- end }}
+{{- if .Values.gateway.backendConfig.enabled }}
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: popcorn-gateway
+spec:
+  timeoutSec: {{ .Values.gateway.backendConfig.timeoutSec }}
+  connectionDraining:
+    drainingTimeoutSec: {{ .Values.gateway.backendConfig.connectionDrainingTimeoutSec }}
+  healthCheck:
+    checkIntervalSec: 15
+    healthyThreshold: 1
+    port: 80
+    requestPath: /health
+    timeoutSec: 5
+    type: HTTP
+    unhealthyThreshold: 2
+{{- end }}
+{{- end }}

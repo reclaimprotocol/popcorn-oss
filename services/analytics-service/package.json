@@ -1,0 +1,22 @@
+{
+  "name": "analytics-service",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun run --watch index.ts",
+    "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
+    "db:migrate": "bun run src/migrate.ts"
+  },
+  "dependencies": {
+    "hono": "^3.12.0",
+    "drizzle-orm": "^0.33.0",
+    "postgres": "^3.4.0",
+    "bcrypt": "^5.1.1"
+  },
+  "devDependencies": {
+    "drizzle-kit": "^0.24.0",
+    "@types/bun": "^1.3.6",
+    "@types/bcrypt": "^5.0.2"
+  }
+}

@@ -1,0 +1,4 @@
+[submodule "popcorn-images"]
+	path = popcorn-images
+	url = https://github.com/reclaimprotocol/popcorn-images.git
+	branch = main

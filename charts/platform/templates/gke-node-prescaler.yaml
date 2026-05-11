@@ -1,0 +1,142 @@
+{{- if .Values.gkeNodePrescaler.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gke-node-prescaler
+  namespace: {{ .Release.Namespace }}
+  {{- if .Values.gkeNodePrescaler.gcpServiceAccount }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ .Values.gkeNodePrescaler.gcpServiceAccount | quote }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gke-node-prescaler
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["agones.dev"]
+    resources: ["fleets", "gameservers"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling.agones.dev"]
+    resources: ["fleetautoscalers"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gke-node-prescaler
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: gke-node-prescaler
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: gke-node-prescaler
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gke-node-prescaler
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gke-node-prescaler
+subjects:
+  - kind: ServiceAccount
+    name: gke-node-prescaler
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: gke-node-prescaler
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gke-node-prescaler
+  namespace: {{ .Release.Namespace }}
+data:
+  prescaler.py: |
+{{ .Files.Get "files/gke-node-prescaler.py" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gke-node-prescaler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: gke-node-prescaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gke-node-prescaler
+  template:
+    metadata:
+      labels:
+        app: gke-node-prescaler
+    spec:
+      serviceAccountName: gke-node-prescaler
+      automountServiceAccountToken: true
+      containers:
+        - name: gke-node-prescaler
+          image: {{ .Values.gkeNodePrescaler.image | quote }}
+          imagePullPolicy: {{ .Values.gkeNodePrescaler.imagePullPolicy }}
+          command: ["python", "/app/prescaler.py"]
+          env:
+            - name: GCP_PROJECT
+              value: {{ .Values.gkeNodePrescaler.project | quote }}
+            - name: GKE_CLUSTER
+              value: {{ .Values.gkeNodePrescaler.cluster | quote }}
+            - name: GKE_LOCATION
+              value: {{ .Values.gkeNodePrescaler.location | quote }}
+            - name: GKE_NODE_POOL
+              value: {{ .Values.gkeNodePrescaler.nodePool | quote }}
+            - name: NAMESPACE
+              value: {{ .Values.gkeNodePrescaler.namespace | quote }}
+            - name: FLEET_NAME
+              value: {{ .Values.gkeNodePrescaler.fleetName | quote }}
+            - name: FLEET_AUTOSCALER_NAME
+              value: {{ .Values.gkeNodePrescaler.fleetAutoscalerName | quote }}
+            - name: INTERVAL_SECONDS
+              value: {{ .Values.gkeNodePrescaler.intervalSeconds | quote }}
+            - name: PODS_PER_NODE
+              value: {{ .Values.gkeNodePrescaler.podsPerNode | quote }}
+            - name: TARGET_SESSIONS_PER_MINUTE
+              value: {{ .Values.gkeNodePrescaler.targetSessionsPerMinute | quote }}
+            - name: DESIRED_COVERAGE_MINUTES
+              value: {{ .Values.gkeNodePrescaler.desiredCoverageMinutes | quote }}
+            - name: BURST_HEADROOM_GAMESERVERS
+              value: {{ .Values.gkeNodePrescaler.burstHeadroomGameServers | quote }}
+            - name: APPLY_HEADROOM_ONLY_WHEN_DEMAND_ABOVE_BASELINE
+              value: {{ .Values.gkeNodePrescaler.applyHeadroomOnlyWhenDemandAboveBaseline | quote }}
+            - name: SCALE_AHEAD_FREE_SLOTS
+              value: {{ .Values.gkeNodePrescaler.scaleAheadFreeSlots | quote }}
+            - name: MAX_NODES_TOTAL
+              value: {{ .Values.gkeNodePrescaler.maxNodesTotal | quote }}
+            - name: SCALE_UP_COOLDOWN_SECONDS
+              value: {{ .Values.gkeNodePrescaler.scaleUpCooldownSeconds | quote }}
+            - name: DRY_RUN
+              value: {{ .Values.gkeNodePrescaler.dryRun | quote }}
+          resources:
+{{ toYaml .Values.gkeNodePrescaler.resources | indent 12 }}
+          volumeMounts:
+            - name: script
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: gke-node-prescaler
+{{- end }}

@@ -1,0 +1,59 @@
+# OSS-safe example values for rendering the browser-fleet chart.
+# Replace placeholders before installing into a real cluster.
+
+region: us-central1
+gatewayDomain: gateway.example.com
+
+externalSecrets:
+  enabled: false
+
+ccDevicePlugin:
+  enabled: false
+
+serviceAccount:
+  gcpServiceAccount: browser-runtime@example-project.iam.gserviceaccount.com
+
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime:latest
+browserRuntimeImagePullPolicy: IfNotPresent
+
+browserRuntimeAttestor:
+  enabled: false
+  imagePullPolicy: IfNotPresent
+
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime-attestor:latest
+
+imagePrepuller:
+  enabled: false
+  imagePullPolicy: IfNotPresent
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 128Mi
+
+fleet:
+  replicas: 1
+  scheduling: Packed
+  health:
+    initialDelaySeconds: 90
+    periodSeconds: 5
+    failureThreshold: 6
+  browserRuntimeCpuRequest: "1000m"
+  browserRuntimeCpuLimit: "2000m"
+  browserRuntimeMemoryRequest: 2Gi
+  browserRuntimeMemoryLimit: 4Gi
+  browserRuntimeAttestorCpuRequest: "100m"
+  browserRuntimeAttestorCpuLimit: "200m"
+  browserRuntimeAttestorMemoryRequest: 128Mi
+  browserRuntimeAttestorMemoryLimit: 256Mi
+
+autoscaler:
+  bufferSize: 1
+  minReplicas: 1
+  maxReplicas: 3
+  syncSeconds: 30

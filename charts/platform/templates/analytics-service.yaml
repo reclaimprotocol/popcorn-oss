@@ -1,0 +1,107 @@
+{{- if .Values.analytics.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analytics-service
+  labels:
+    app: analytics-service
+spec:
+  replicas: {{ .Values.analytics.replicas }}
+  selector:
+    matchLabels:
+      app: analytics-service
+  template:
+    metadata:
+      labels:
+        app: analytics-service
+    spec:
+      serviceAccountName: analytics-service-sa
+      containers:
+        - name: analytics-service
+          image: "{{ .Values.registry }}/analytics-service:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.analytics.imagePullPolicy }}
+          env:
+            - name: NODE_ENV
+              value: {{ .Values.analytics.nodeEnv | quote }}
+            - name: DATABASE_SSL
+              value: {{ include "popcorn-platform.analyticsDatabaseSsl" . | quote }}
+            {{- if .Values.analytics.databaseSslCa }}
+            - name: DATABASE_SSL_CA
+              value: {{ .Values.analytics.databaseSslCa | quote }}
+            {{- end }}
+            {{- if .Values.analytics.databaseSslCaFile }}
+            - name: DATABASE_SSL_CA_FILE
+              value: {{ .Values.analytics.databaseSslCaFile | quote }}
+            {{- end }}
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-db-secret
+                  key: host
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-db-secret
+                  key: port
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-db-secret
+                  key: database
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-db-secret
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-db-secret
+                  key: password
+            - name: SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-service-secret
+                  key: SERVICE_AUTH_TOKEN
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-service-secret
+                  key: ADMIN_TOKEN
+          ports:
+            - containerPort: 3000
+              name: http
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 250m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+spec:
+  type: {{ .Values.analytics.serviceType }}
+  selector:
+    app: analytics-service
+  ports:
+    - name: http
+      port: {{ .Values.analytics.publicServicePort }}
+      targetPort: 3000
+      protocol: TCP
+{{- end }}

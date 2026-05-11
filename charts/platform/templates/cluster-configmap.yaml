@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-config
+data:
+  cluster_name: {{ .Values.clusterName | quote }}
+  provider: {{ .Values.provider | quote }}
+  region: {{ .Values.region | quote }}
