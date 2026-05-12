@@ -13,6 +13,8 @@ poolManager:
   imagePullPolicy: IfNotPresent
   redisHost: redis
   analyticsServiceUrl: ""
+  gameServerNamespace: ""
+  gameServerFleet: browser-fleet
   jwtSecretName: gateway-jwt-keys
 
 gateway:
@@ -91,7 +93,7 @@ gkeNodePrescaler:
   cluster: example-cluster
   location: us-central1
   nodePool: browser-pool
-  namespace: default
+  namespace: ""
   fleetName: browser-fleet
   fleetAutoscalerName: browser-autoscaler
   intervalSeconds: 15

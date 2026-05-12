@@ -1,5 +1,6 @@
 import { AllocationResponse } from "../types";
 import { KubeConfig } from '@kubernetes/client-node';
+import { RuntimeConfig } from "../config";
 import { K8s } from "./k8s";
 import { buildK8sFetchRequest, getK8sClusterServer } from "./k8s-fetch";
 import { retry } from "./retry";
@@ -17,7 +18,7 @@ async function agonesFetch(path: string, opts: any = {}) {
 }
 
 export const Agones = {
-    async allocate(namespace: string = "default", fleetName: string = "browser-fleet", sessionId?: string): Promise<AllocationResponse> {
+    async allocate(namespace: string = RuntimeConfig.gameServerNamespace, fleetName: string = RuntimeConfig.gameServerFleet, sessionId?: string): Promise<AllocationResponse> {
         console.log(`🎮 Requesting allocation via K8s API [${fleetName}]...`);
 
         try {
@@ -90,7 +91,7 @@ export const Agones = {
             // 6. Fetch Pod IP (Internal) because we use portPolicy: None
             // We retry a few times because the Pod IP might take a split second if it was just spinning up (though usually ready)
             const podIp = await retry(
-                () => K8s.getGameServerPodIP(status.gameServerName),
+                () => K8s.getGameServerPodIP(status.gameServerName, namespace),
                 {
                     attempts: 5,
                     delayMs: 500,
@@ -133,7 +134,7 @@ export const Agones = {
         }
     },
 
-    async listGameServers(namespace: string = "default") {
+    async listGameServers(namespace: string = RuntimeConfig.gameServerNamespace) {
         try {
             const res = await agonesFetch(`/apis/agones.dev/v1/namespaces/${namespace}/gameservers`, { method: "GET" });
             if (!res.ok) {
@@ -146,7 +147,7 @@ export const Agones = {
             const items = json.items || [];
 
             // Fetch all pods to map IPs (since Agones reports Node IP)
-            const pods = await K8s.listBrowserPods();
+            const pods = await K8s.listBrowserPods(namespace);
             const podMap = new Map(pods.map((p: any) => [p.name, p.ip]));
 
             return items.map((gs: any) => {
@@ -167,7 +168,7 @@ export const Agones = {
         }
     },
 
-    async shutdownGameServer(name: string, namespace: string = "default") {
+    async shutdownGameServer(name: string, namespace: string = RuntimeConfig.gameServerNamespace) {
         console.log(`💀 Deleting GameServer: ${name}`);
         try {
             const res = await agonesFetch(`/apis/agones.dev/v1/namespaces/${namespace}/gameservers/${name}`, {

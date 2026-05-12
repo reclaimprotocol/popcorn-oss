@@ -38,29 +38,38 @@ Loaded into the pool manager with `envFrom`.
 
 | Key | Required | Purpose |
 | --- | --- | --- |
-| `POPCORN_ADMIN_USER` | yes | Basic auth username for admin session endpoints. |
-| `POPCORN_ADMIN_PASS` | yes | Basic auth password for admin session endpoints. |
-| `SERVICE_AUTH_TOKEN` | yes | Service-to-service token used by internal platform calls. |
-| `SESSION_AUTH_CLIENTS` | no | JSON map of client credentials for `/session` API access. |
+| `ADMIN_USER` | yes, unless using only an admin password file or Google OAuth | Username for admin Basic auth and password login fallback. |
+| `ADMIN_PASS` | yes, unless using only an admin password file or Google OAuth | Password for admin Basic auth and password login fallback. Also used as a fallback cookie signing secret if `ADMIN_SESSION_SECRET` is absent. |
+| `ADMIN_SESSION_SECRET` | required for Google OAuth or password-file browser login | Random secret used to sign admin browser login cookies. Legacy `ADMIN_PASS` is only a fallback for existing username/password deployments. |
+| `ADMIN_GOOGLE_CLIENT_ID` | only for Google admin auth | Google OAuth client ID for `/admin/auth/google`. |
+| `ADMIN_GOOGLE_CLIENT_SECRET` | only for Google admin auth | Google OAuth client secret for `/admin/auth/google`. |
+| `SERVICE_AUTH_TOKEN` | yes | Service-to-service token used by internal platform calls. The current `/session` auth path does not read this key directly from `pool-manager-env-secrets`. |
 
-Example `SESSION_AUTH_CLIENTS`:
+For file-based admin password auth, mount a separate Secret containing an
+htpasswd-style bcrypt file and set `poolManager.adminAuth.passwordFileSecretName`.
+Each line should be `username:$2b$...`; blank lines and `#` comments are
+ignored.
 
-```json
-{"demo-client":{"secret":"replace-me","scopes":["session:create","session:read","session:delete"]}}
-```
+The current pool manager does not read `SESSION_AUTH_CLIENTS`. Client
+credentials for `/session` are validated through the analytics service, not a
+local JSON map in this Secret.
 
 ### `analytics-service-secret`
 
-Required when analytics, pool-manager analytics calls, or TTL analytics callbacks are enabled.
+Required by the pool manager for client `/session` authentication, and by
+analytics or TTL callbacks when those components are enabled.
 
 | Key | Used by | Purpose |
 | --- | --- | --- |
-| `SERVICE_AUTH_TOKEN` | analytics, pool manager, TTL controller | Shared service token for analytics API calls. |
+| `SERVICE_AUTH_TOKEN` | analytics, pool manager, TTL controller | Shared service token for analytics API calls. The platform chart exposes this to the pool manager as `ANALYTICS_AUTH_TOKEN`. |
 | `ADMIN_TOKEN` | analytics | Admin token for analytics operational endpoints. |
 
 ### `analytics-db-secret`
 
-Required when analytics, the bundled Postgres deployment, or Metabase is enabled.
+Required when running the bundled analytics service, bundled Postgres
+deployment, or Metabase. Client `/session` authentication depends on analytics
+client records stored in Postgres, either in this deployment or in an external
+analytics service you point `poolManager.analyticsServiceUrl` at.
 
 | Key | Purpose |
 | --- | --- |
@@ -79,6 +88,14 @@ Required by browser pods. Values can be empty for a local-only Kind demo, but pr
 | `TURN_KEY_ID` | yes | TURN credential key ID. |
 | `TURN_API_TOKEN` | yes | TURN API token or credential secret. |
 | `NEKO_ICESERVERS` | no | JSON ICE server override consumed by the browser runtime. |
+
+Popcorn browser sessions use WebRTC for the interactive browser stream. In Kubernetes, browser pods usually sit behind private pod networking, node NAT, firewalls, or cloud load balancers. Direct peer-to-peer UDP may work on a flat local network, but it is not reliable for users on the public internet, corporate networks, mobile networks, or local Kind clusters running behind a desktop VM. A TURN relay gives WebRTC a predictable fallback path when direct connectivity fails.
+
+Local Kind can run without Cloudflare TURN only for same-machine testing. The local setup publishes Agones UDP ports `7000-7010` from the Kind node and advertises `127.0.0.1` to Neko. That path is not a substitute for TURN when the browser client is outside the developer machine or when a network blocks direct UDP.
+
+Cloudflare TURN is the recommended hosted TURN option for production and realistic local testing. Set `TURN_KEY_ID` and `TURN_API_TOKEN` from a Cloudflare Calls TURN key. On browser pod startup, the runtime exchanges those values for short-lived ICE server credentials and exports them to Neko as `NEKO_ICESERVERS`. Leave `NEKO_ICESERVERS` empty unless you need to provide a static custom ICE server JSON override.
+
+Do not store Cloudflare API tokens in Helm values or source control. Put them in `browser-turn-secret` directly or sync them from your secret manager.
 
 ## Local Development
 
@@ -101,10 +118,13 @@ Create Secrets directly before running Helm:
 
 ```bash
 kubectl create secret generic pool-manager-env-secrets \
-  --from-literal=POPCORN_ADMIN_USER="$POPCORN_ADMIN_USER" \
-  --from-literal=POPCORN_ADMIN_PASS="$POPCORN_ADMIN_PASS" \
-  --from-literal=SERVICE_AUTH_TOKEN="$SERVICE_AUTH_TOKEN" \
-  --from-literal=SESSION_AUTH_CLIENTS="$SESSION_AUTH_CLIENTS"
+  --from-literal=ADMIN_USER="$ADMIN_USER" \
+  --from-literal=ADMIN_PASS="$ADMIN_PASS" \
+  --from-literal=ADMIN_SESSION_SECRET="$ADMIN_SESSION_SECRET" \
+  --from-literal=SERVICE_AUTH_TOKEN="$SERVICE_AUTH_TOKEN"
+
+kubectl create secret generic pool-manager-admin-password-file \
+  --from-file=admin.htpasswd=./admin.htpasswd
 
 kubectl create secret generic analytics-service-secret \
   --from-literal=SERVICE_AUTH_TOKEN="$SERVICE_AUTH_TOKEN" \
@@ -112,7 +132,8 @@ kubectl create secret generic analytics-service-secret \
 
 kubectl create secret generic browser-turn-secret \
   --from-literal=TURN_KEY_ID="$TURN_KEY_ID" \
-  --from-literal=TURN_API_TOKEN="$TURN_API_TOKEN"
+  --from-literal=TURN_API_TOKEN="$TURN_API_TOKEN" \
+  --from-literal=NEKO_ICESERVERS=""
 ```
 
 See `examples/kubernetes/existing-secrets.example.yaml` for a complete placeholder manifest.
@@ -143,3 +164,8 @@ kubectl rollout restart deployment/analytics-service deployment/ttl-controller
 
 JWT key rotation invalidates active browser URLs. Token and password rotation may interrupt active clients. Prefer short browser session TTLs and scheduled maintenance windows for production rotations.
 
+Browser pods read TURN settings only at startup. After rotating `browser-turn-secret`, recycle the browser GameServers so new pods fetch fresh Cloudflare ICE credentials:
+
+```bash
+kubectl delete gameserver --all
+```

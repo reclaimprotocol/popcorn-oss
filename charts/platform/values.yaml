@@ -10,7 +10,22 @@ poolManager:
   imagePullPolicy: Always
   redisHost: redis
   analyticsServiceUrl: ""
+  gameServerNamespace: ""
+  gameServerFleet: browser-fleet
   jwtSecretName: gateway-jwt-keys
+  adminAuth:
+    strategies: password
+    sessionTtlSeconds: 43200
+    sessionSecretName: pool-manager-env-secrets
+    sessionSecretKey: ADMIN_SESSION_SECRET
+    passwordFileSecretName: ""
+    passwordFileSecretKey: admin.htpasswd
+    googleSecretName: pool-manager-env-secrets
+    googleClientIdKey: ADMIN_GOOGLE_CLIENT_ID
+    googleClientSecretKey: ADMIN_GOOGLE_CLIENT_SECRET
+    googleRedirectUri: ""
+    googleAllowedEmails: ""
+    googleAllowedDomains: ""
 
 gateway:
   enabled: true
@@ -90,7 +105,7 @@ gkeNodePrescaler:
   cluster: ""
   location: ""
   nodePool: ""
-  namespace: default
+  namespace: ""
   fleetName: browser-fleet
   fleetAutoscalerName: browser-autoscaler
   intervalSeconds: 15

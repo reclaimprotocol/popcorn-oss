@@ -59,6 +59,11 @@ bun run start  # Production
 ### POST /validate
 Validate client credentials (called by pool-managers)
 
+**Headers:**
+```
+Authorization: Bearer <SERVICE_AUTH_TOKEN>
+```
+
 **Request:**
 ```json
 {
@@ -71,7 +76,8 @@ Validate client credentials (called by pool-managers)
 ```json
 {
   "valid": true,
-  "clientId": "client_abc123"
+  "clientId": "client_abc123",
+  "clientName": "Client Name"
 }
 ```
 

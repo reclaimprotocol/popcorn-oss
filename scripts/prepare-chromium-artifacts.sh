@@ -41,7 +41,7 @@ done
 
 eval "$("$SCRIPT_DIR/chromium-lock-env.sh" "$PLATFORM_INPUT")"
 
-GITHUB_ARTIFACT_MIRROR_REPO="${GITHUB_ARTIFACT_MIRROR_REPO:-reclaimprotocol/popcorn}"
+GITHUB_ARTIFACT_MIRROR_REPO="${GITHUB_ARTIFACT_MIRROR_REPO:-reclaimprotocol/popcorn-oss}"
 ARTIFACT_ROOT="$OUT_DIR/artifacts"
 ARTIFACT_LIST_FILE="$(mktemp)"
 TMP_DOWNLOAD_DIR="$(mktemp -d)"

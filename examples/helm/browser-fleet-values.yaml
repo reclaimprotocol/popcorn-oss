@@ -13,14 +13,14 @@ ccDevicePlugin:
 serviceAccount:
   gcpServiceAccount: browser-runtime@example-project.iam.gserviceaccount.com
 
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime:latest
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
 browserRuntimeImagePullPolicy: IfNotPresent
 
 browserRuntimeAttestor:
   enabled: false
   imagePullPolicy: IfNotPresent
 
-browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime-attestor:latest
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:latest
 
 imagePrepuller:
   enabled: false

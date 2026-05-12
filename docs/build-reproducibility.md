@@ -1,52 +1,104 @@
 # Build Reproducibility
 
-The repo currently makes a reproducibility claim for `browser-runtime-attestor` and `browser-runtime` only.
+The OSS reproducible image path covers:
 
-## What The Repo Shows
-
-- `.github/workflows/image-build.yaml` pushes immutable `<commit-sha>` tags and records the resolved digests for `browser-runtime-attestor`, `browser-runtime`, and `browser-base`.
-- The workflow uploads a `reproducible-images-<commit-sha>` artifact and writes the same digest refs into the job summary.
-- `.github/workflows/verify-reproducible-images.yaml` takes a commit SHA, pulls the published immutable image tag for `browser-runtime-attestor` and/or `browser-runtime`, rebuilds locally from that same commit, and compares the resulting OCI digests. This avoids colliding with registry tag immutability.
-
-## Current Reproducible Scope
-
-- `browser-runtime-attestor`
+- `browser-base`
 - `browser-runtime`
+- `browser-runtime-attestor`
 
-Everything else should still be treated as best-effort until it gets the same pinned-input treatment.
+These images are published to:
 
-## Mirrored Inputs We Already Use
+```text
+ghcr.io/reclaimprotocol/popcorn-oss/browser-base
+ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime
+ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor
+```
 
-For `browser-runtime`, the `popcorn-images` submodule already locks and mirrors the large Chromium-related artifacts behind a deterministic release tag derived from `popcorn-images/images/chromium-headful/chromium-lock.json`.
+The public `reclaimprotocol/popcorn-images` repository remains the source of the `popcorn-images` submodule. Chromium artifact release assets are mirrored in `reclaimprotocol/popcorn-oss`, which is the shared artifact mirror for both OSS and internal builds.
 
-The mirrored artifact set currently includes:
+## What The Workflow Publishes
 
-- Chromium `.deb` packages from the xtradeb PPA
-- `libxcvt0`
-- FFmpeg archive
-- `websocat`
+`.github/workflows/reproducible-images.yml` builds the three images for `linux/amd64`, pushes immutable tags to GHCR, signs each pushed digest with keyless cosign, and uploads a `reproducible-images-<commit-sha>` artifact.
 
-The mirror is prepared with `scripts/publish-chromium-artifacts-to-github.sh` and consumed by the browser base build through `artifact-mirror.Dockerfile`.
+Tag policy:
 
-## Release-Mirror Candidates Still Worth Adding
+- `browser-runtime:<commit-sha>`
+- `browser-runtime-attestor:<commit-sha>`
+- `browser-base:<popcorn-images-submodule-sha>`
 
-If we want to reduce live external fetches further for the reproducible pair, these are the next obvious candidates:
+The uploaded manifest records:
 
-1. `cosign-linux-amd64`
-   `browser-runtime-attestor` fetches the pinned Cosign binary directly from GitHub releases with `ADD --checksum=...`.
-2. Go module proxy inputs for `browser-runtime-attestor`
-   The build is pinned by `go.sum`, but it still relies on live module downloads unless we add an internal module mirror or vendored modules.
-3. OCI base images
-   The reproducible pair already pins several base image digests, but the trust path still depends on external registries being reachable.
+- Popcorn source commit
+- `SOURCE_DATE_EPOCH`
+- resolved GHCR digest refs
+- `popcorn-images` submodule SHA
+- Chromium artifact mirror lock tag
+- keyless cosign issuer and workflow identity
 
-## How To Check A Commit
+## Locked Inputs
 
-1. Run the normal image build workflow for the commit.
-2. Open the `reproducible-images-<commit-sha>` artifact or workflow summary to get the immutable digest refs.
-3. If you want to verify that the same source rebuilds to the same digest as the published image, run `Verify Reproducible Images` for `browser-runtime-attestor`, `browser-runtime`, or both and pass the commit SHA.
+`browser-base` is built from the pinned `popcorn-images` submodule at:
 
-## Local Command
+```text
+popcorn-images/
+```
+
+The Chromium artifact lock lives in:
+
+```text
+popcorn-images/images/chromium-headful/chromium-lock.json
+```
+
+The lock file determines the artifact mirror release tag through:
 
 ```bash
-./scripts/ci/check-reproducible-images.sh --commit-sha "$(git rev-parse HEAD)" --service all
+./scripts/chromium-lock-env.sh linux/amd64
 ```
+
+The OSS workflow sets `GITHUB_ARTIFACT_MIRROR_REPO=reclaimprotocol/popcorn-oss`, so artifact downloads prefer public GitHub release assets from the OSS repository before falling back to the upstream URLs recorded in the lock.
+
+## Verify A Published Digest
+
+Get the digest from the workflow summary or the uploaded `reproducible-images-<commit-sha>` artifact, then verify the keyless signature:
+
+```bash
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp 'https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/(heads/main|tags/v.*)' \
+  ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+```
+
+Use the same command for `browser-base` and `browser-runtime-attestor` by replacing the image name and digest.
+
+## Verify Source, Submodule, And Artifact Lock
+
+1. Check out the recorded source commit:
+
+   ```bash
+   git checkout <commit-sha>
+   git submodule update --init --recursive
+   ```
+
+2. Confirm the submodule SHA matches the manifest:
+
+   ```bash
+   git submodule status popcorn-images
+   ```
+
+3. Confirm the artifact lock tag matches the manifest:
+
+   ```bash
+   ./scripts/chromium-lock-env.sh linux/amd64
+   ```
+
+4. Compare a local rebuild with the published GHCR image config digests:
+
+   ```bash
+   ./scripts/ci/check-reproducible-images.sh --commit-sha "$(git rev-parse HEAD)" --service all
+   ```
+
+The verifier pulls from `ghcr.io/reclaimprotocol/popcorn-oss/*`, rebuilds from the current checkout, and writes `dist/reproducible-images-check.json` plus a Markdown summary. If a digest differs, it also writes per-image layer diff reports under `dist/`.
+
+## Current Boundaries
+
+The reproducibility claim applies only to the three browser images listed above. Platform service images remain normal OSS CI images unless they receive the same pinned-input treatment.

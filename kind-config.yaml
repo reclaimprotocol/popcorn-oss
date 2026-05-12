@@ -6,3 +6,39 @@ nodes:
   - containerPort: 30080
     hostPort: 8080
     protocol: TCP
+  # Local WebRTC without TURN needs the browser to reach Agones GameServer UDP
+  # ports through the Kind node container. Keep this range in sync with the
+  # local Agones min/max ports in Makefile.
+  - containerPort: 7000
+    hostPort: 7000
+    protocol: UDP
+  - containerPort: 7001
+    hostPort: 7001
+    protocol: UDP
+  - containerPort: 7002
+    hostPort: 7002
+    protocol: UDP
+  - containerPort: 7003
+    hostPort: 7003
+    protocol: UDP
+  - containerPort: 7004
+    hostPort: 7004
+    protocol: UDP
+  - containerPort: 7005
+    hostPort: 7005
+    protocol: UDP
+  - containerPort: 7006
+    hostPort: 7006
+    protocol: UDP
+  - containerPort: 7007
+    hostPort: 7007
+    protocol: UDP
+  - containerPort: 7008
+    hostPort: 7008
+    protocol: UDP
+  - containerPort: 7009
+    hostPort: 7009
+    protocol: UDP
+  - containerPort: 7010
+    hostPort: 7010
+    protocol: UDP

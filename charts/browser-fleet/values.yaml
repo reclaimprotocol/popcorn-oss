@@ -10,19 +10,22 @@ ccDevicePlugin:
 serviceAccount:
   gcpServiceAccount: browser-attestor.iam.gserviceaccount.com
 
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime:latest
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
 browserRuntimeImagePullPolicy: IfNotPresent
 
 browserRuntimeAttestor:
   enabled: true
   imagePullPolicy: IfNotPresent
 
-browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime-attestor:latest
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:latest
 
+extraBrowserRuntimeEnv: []
 
 imagePrepuller:
   enabled: false
   imagePullPolicy: IfNotPresent
+  extraInitContainers: []
+  extraContainers: []
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -33,6 +36,9 @@ imagePrepuller:
     limits:
       cpu: 50m
       memory: 128Mi
+
+webrtc:
+  advertiseHost: ""
 
 fleet:
   replicas: 10
@@ -49,6 +55,8 @@ fleet:
   browserRuntimeAttestorCpuLimit: "200m"
   browserRuntimeAttestorMemoryRequest: 128Mi
   browserRuntimeAttestorMemoryLimit: 256Mi
+  extraPorts: []
+  extraContainers: []
 
 autoscaler:
   bufferSize: 5

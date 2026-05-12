@@ -1,5 +1,7 @@
+import { namespacedServiceUrl } from "../config";
+
 // Read from environment variables (sourced from K8s secrets via CSI secretObjects)
-const ANALYTICS_URL = process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service.default.svc:3000';
+const ANALYTICS_URL = process.env.ANALYTICS_SERVICE_URL || namespacedServiceUrl("analytics-service", 3000);
 const SERVICE_AUTH_TOKEN = requireEnv("ANALYTICS_AUTH_TOKEN");
 
 function requireEnv(name: string): string {

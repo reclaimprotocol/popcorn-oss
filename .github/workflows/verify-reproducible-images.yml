@@ -1,0 +1,73 @@
+name: Verify Reproducible Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Commit SHA to verify
+        required: true
+        type: string
+      service:
+        description: Image set to verify
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - browser-base
+          - browser-runtime
+          - browser-runtime-attestor
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  REGISTRY_HOST: ghcr.io
+  REGISTRY_PROJECT_ID: reclaimprotocol
+  REGISTRY_REPOSITORY: popcorn-oss
+  GITHUB_ARTIFACT_MIRROR_REPO: reclaimprotocol/popcorn-oss
+
+jobs:
+  verify:
+    name: Rebuild and compare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout requested commit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.commit_sha }}
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.repository == 'reclaimprotocol/popcorn-oss'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Verify reproducible image digests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ./scripts/ci/check-reproducible-images.sh \
+            --commit-sha "${{ inputs.commit_sha }}" \
+            --service "${{ inputs.service }}"
+
+      - name: Upload verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reproducible-images-check-${{ inputs.commit_sha }}
+          path: |
+            dist/reproducible-images-check.json
+            dist/reproducible-images-check.md
+            dist/reproducible-image-layer-diff-*.json
+            dist/reproducible-image-layer-diff-*.md
+          if-no-files-found: ignore

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Popcorn Admin Login</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #10151f;
+            --panel: #1b2433;
+            --text: #f8fafc;
+            --muted: #94a3b8;
+            --accent: #3b82f6;
+            --danger: #f87171;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, sans-serif;
+        }
+
+        main {
+            width: min(100% - 2rem, 380px);
+            background: var(--panel);
+            border: 1px solid #334155;
+            border-radius: 8px;
+            padding: 1.5rem;
+        }
+
+        h1 {
+            margin: 0 0 1rem;
+            font-size: 1.35rem;
+        }
+
+        label {
+            display: block;
+            margin: 0.85rem 0 0.35rem;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        input {
+            width: 100%;
+            box-sizing: border-box;
+            border: 1px solid #475569;
+            background: #0f172a;
+            color: var(--text);
+            border-radius: 6px;
+            padding: 0.75rem;
+        }
+
+        button,
+        .google {
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+            margin-top: 1rem;
+            border: 0;
+            border-radius: 6px;
+            padding: 0.75rem;
+            background: var(--accent);
+            color: white;
+            font-weight: 700;
+            text-align: center;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        .google {
+            background: #f8fafc;
+            color: #0f172a;
+        }
+
+        .error {
+            margin-bottom: 1rem;
+            color: var(--danger);
+        }
+
+        .empty {
+            color: var(--muted);
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <h1>Popcorn Admin</h1>
+        <div id="error" class="error" hidden></div>
+
+        <form id="password-form" method="post" action="/admin/auth/password" hidden>
+            <label for="username">Username</label>
+            <input id="username" name="username" autocomplete="username" required>
+            <label for="password">Password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password" required>
+            <button type="submit">Sign In</button>
+        </form>
+
+        <a id="google-link" class="google" href="/admin/auth/google" hidden>Sign in with Google</a>
+        <p id="empty" class="empty" hidden>No admin auth strategy is configured.</p>
+    </main>
+
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const error = params.get("error");
+        if (error) {
+            const errorEl = document.getElementById("error");
+            errorEl.textContent = error;
+            errorEl.hidden = false;
+        }
+
+        fetch("/admin/auth/config")
+            .then((res) => res.json())
+            .then((config) => {
+                document.getElementById("password-form").hidden = !config.password;
+                document.getElementById("google-link").hidden = !config.google;
+                document.getElementById("empty").hidden = config.password || config.google;
+            })
+            .catch(() => {
+                const errorEl = document.getElementById("error");
+                errorEl.textContent = "Unable to load admin auth configuration.";
+                errorEl.hidden = false;
+            });
+    </script>
+</body>
+
+</html>

@@ -1,5 +1,6 @@
 export interface Pod {
     name: string;
+    namespace?: string;
     url: string;
     ip?: string;
     clientId?: string;

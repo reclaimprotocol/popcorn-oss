@@ -41,6 +41,9 @@ spec:
           containerPort: 10001
           portPolicy: None
           protocol: TCP
+{{- with .Values.fleet.extraPorts }}
+{{ tpl (toYaml .) $ | nindent 8 }}
+{{- end }}
       template:
         spec:
           serviceAccountName: browser-sa
@@ -95,6 +98,10 @@ spec:
                       name: browser-turn-secret
                       key: NEKO_ICESERVERS
                       optional: true
+{{- if .Values.webrtc.advertiseHost }}
+                - name: POPCORN_WEBRTC_ADVERTISE_HOST
+                  value: {{ .Values.webrtc.advertiseHost | quote }}
+{{- end }}
                 - name: NEKO_LOG_JSON
                   value: "true"
                 - name: NEKO_LOG_LEVEL
@@ -103,6 +110,9 @@ spec:
                   value: unixms
                 - name: NEKO_LOG_NOCOLOR
                   value: "true"
+{{- with .Values.extraBrowserRuntimeEnv }}
+{{ tpl (toYaml .) $ | nindent 16 }}
+{{- end }}
               volumeMounts:
                 - mountPath: /dev/shm
                   name: dshm
@@ -140,6 +150,9 @@ spec:
                 - mountPath: /var/run/cc/tpm0
                   name: tpm-eventlog
                   readOnly: true
+{{- end }}
+{{- with .Values.fleet.extraContainers }}
+{{ tpl (toYaml .) $ | nindent 12 }}
 {{- end }}
           volumes:
             - name: dshm

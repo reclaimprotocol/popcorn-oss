@@ -11,13 +11,38 @@ Popcorn isolates each browser session in an ephemeral Kubernetes workload and ex
 - Browser pods are ephemeral and should not be treated as trusted storage.
 - Admin endpoints are for trusted operators only.
 
+## Admin Authentication
+
+Admin endpoints under `/admin` use a separate admin auth layer from the client
+session API. Deployments can enable one or more admin strategies:
+
+- username/password through HTTP Basic auth for scripts;
+- username/password browser login backed by the same credential source;
+- Google OAuth browser login.
+
+The default username/password source is still `ADMIN_USER` / `ADMIN_PASS` for
+backward compatibility. Production deployments should prefer a mounted
+htpasswd-style bcrypt password file or Google OAuth with explicit allow rules.
+Google users must have verified email and match either an allowed email or an
+allowed domain. Admin browser sessions are stored in signed, HTTP-only cookies
+and should be protected by TLS outside local development. Configure
+`ADMIN_SESSION_SECRET` for Google OAuth or password-file browser login so
+session cookies and OAuth state remain valid across restarts and replicas.
+
 ## Session API Credentials
 
-Client session API credentials are configured for the `/session` endpoint:
+Client session API credentials are required for the `/session` endpoint:
 
 ```http
 Authorization: Bearer <client-id>:<client-secret>
 ```
+
+In the current pool-manager implementation, these credentials are not loaded
+from a local `SESSION_AUTH_CLIENTS` map. The pool manager calls the analytics
+service `POST /validate` endpoint and authenticates that service call with
+`ANALYTICS_AUTH_TOKEN`. Deployments that expose `/session` therefore need an
+analytics service endpoint plus Postgres-backed client records, even if the
+analytics UI or dashboards are otherwise optional.
 
 Local Kind smoke tests should use `/admin/session` with local admin credentials (`admin:admin`) instead of client credentials.
 
@@ -78,10 +103,12 @@ For OSS installations, store production secrets in Kubernetes Secrets or your ow
 Production deployments should manage:
 
 - gateway JWT private and public keys;
-- session API client credentials (for `/session`);
+- analytics-backed session API client credentials (for `/session`);
+- the analytics service token used by pool-manager validation calls;
+- pool-manager admin credentials, admin session secret, and optional Google OAuth client secret;
 - registry pull credentials, if needed;
 - attestation signing material, if attestation is enabled;
-- analytics or observability secrets, if those optional services are enabled.
+- observability secrets, if optional observability services are enabled.
 
 Never commit private keys, client secrets, registry credentials, or cloud credentials.
 
@@ -115,7 +142,7 @@ Prefer structured logs with session IDs and pod IDs, while redacting tokens.
 - Keep admin endpoints behind trusted access controls.
 - Keep Redis and internal services private.
 - Use digest-pinned runtime images.
-- Ensure the AI-agent component is excluded from OSS v1 deployments and export paths.
+- Keep private deployment extensions out of OSS release manifests.
 - Use your own registry and credentials.
 - Set session TTLs and resource limits.
 - Run dependency and container scans as part of release.

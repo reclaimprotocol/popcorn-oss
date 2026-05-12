@@ -1,5 +1,6 @@
 import { KubeConfig } from '@kubernetes/client-node';
 import { Pod } from '../types';
+import { RuntimeConfig } from '../config';
 import { buildK8sFetchRequest, getK8sClusterServer } from './k8s-fetch';
 import { retry } from './retry';
 
@@ -22,9 +23,9 @@ async function k8sJson(path: string, opts: any = {}) {
 
 export const K8s = {
     // ... existing methods ...
-    async listGameServers() {
+    async listGameServers(namespace: string = RuntimeConfig.gameServerNamespace) {
         try {
-            const res = await k8sJson(`/apis/agones.dev/v1/namespaces/default/gameservers`, { method: "GET" });
+            const res = await k8sJson(`/apis/agones.dev/v1/namespaces/${namespace}/gameservers`, { method: "GET" });
             if (!res.ok) {
                 const txt = await res.text();
                 console.error(`❌ Raw fetch failed ${res.status}: ${txt}`);
@@ -48,7 +49,7 @@ export const K8s = {
         }
     },
 
-    async orphanPod(podName: string) {
+    async orphanPod(podName: string, namespace: string = RuntimeConfig.gameServerNamespace) {
         console.log(`🏷️  Orphaning pod ${podName} from Deployment...`);
         try {
             const patch = [
@@ -58,7 +59,7 @@ export const K8s = {
                     value: "browser-runtime-taken"
                 }
             ];
-            const res = await k8sJson(`/api/v1/namespaces/default/pods/${podName}`, {
+            const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods/${podName}`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json-patch+json" },
                 body: JSON.stringify(patch),
@@ -71,10 +72,10 @@ export const K8s = {
         }
     },
 
-    async deletePod(podName: string) {
+    async deletePod(podName: string, namespace: string = RuntimeConfig.gameServerNamespace) {
         console.log(`💀 Deleting pod: ${podName}`);
         try {
-            const res = await k8sJson(`/api/v1/namespaces/default/pods/${podName}`, {
+            const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods/${podName}`, {
                 method: "DELETE",
             });
             if (!res.ok && res.status !== 404) {
@@ -85,9 +86,9 @@ export const K8s = {
         }
     },
 
-    async listBrowserPods() {
+    async listBrowserPods(namespace: string = RuntimeConfig.gameServerNamespace) {
         try {
-            const res = await k8sJson(`/api/v1/namespaces/default/pods`, {
+            const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods`, {
                 method: "GET",
             });
             if (!res.ok) {
@@ -118,9 +119,9 @@ export const K8s = {
         }
     },
 
-    async getDeploymentReplicas(name: string): Promise<number> {
+    async getDeploymentReplicas(name: string, namespace: string = RuntimeConfig.gameServerNamespace): Promise<number> {
         try {
-            const res = await k8sJson(`/apis/apps/v1/namespaces/default/deployments/${name}`, {
+            const res = await k8sJson(`/apis/apps/v1/namespaces/${namespace}/deployments/${name}`, {
                 method: "GET",
             });
             if (!res.ok) {
@@ -134,10 +135,10 @@ export const K8s = {
         }
     },
 
-    async scaleDeployment(name: string, replicas: number) {
+    async scaleDeployment(name: string, replicas: number, namespace: string = RuntimeConfig.gameServerNamespace) {
         console.log(`⚖️  Scaling deployment ${name} to ${replicas}...`);
         try {
-            const res = await k8sJson(`/apis/apps/v1/namespaces/default/deployments/${name}`, {
+            const res = await k8sJson(`/apis/apps/v1/namespaces/${namespace}/deployments/${name}`, {
                 method: "PATCH",
                 headers: { "Content-Type": "application/merge-patch+json" },
                 body: JSON.stringify({ spec: { replicas } }),
@@ -150,9 +151,9 @@ export const K8s = {
         }
     },
 
-    async getGameServerPodIP(gameServerName: string): Promise<string | null> {
+    async getGameServerPodIP(gameServerName: string, namespace: string = RuntimeConfig.gameServerNamespace): Promise<string | null> {
         try {
-            const res = await k8sJson(`/apis/agones.dev/v1/namespaces/default/gameservers/${gameServerName}`, {
+            const res = await k8sJson(`/apis/agones.dev/v1/namespaces/${namespace}/gameservers/${gameServerName}`, {
                 method: "GET",
             });
             if (!res.ok) return null;
@@ -165,7 +166,7 @@ export const K8s = {
             // So we can try to fetch the POD with this name.
 
             // NOTE: Agones GameServers create a Pod with the same name.
-            return await K8s.getPodIP(gameServerName);
+            return await K8s.getPodIP(gameServerName, namespace);
 
         } catch (e) {
             console.error(`❌ Failed to get GameServer IP ${gameServerName}:`, e);
@@ -173,9 +174,9 @@ export const K8s = {
         }
     },
 
-    async getPodIP(podName: string): Promise<string | null> {
+    async getPodIP(podName: string, namespace: string = RuntimeConfig.gameServerNamespace): Promise<string | null> {
         try {
-            const res = await k8sJson(`/api/v1/namespaces/default/pods/${podName}`, {
+            const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods/${podName}`, {
                 method: "GET",
             });
             if (!res.ok) {
@@ -189,10 +190,10 @@ export const K8s = {
         }
     },
 
-    async getPodMetadata(podName: string): Promise<{ uid: string | null, namespace: string }> {
+    async getPodMetadata(podName: string, namespace: string = RuntimeConfig.gameServerNamespace): Promise<{ uid: string | null, namespace: string }> {
         try {
             return await retry(async () => {
-                const res = await k8sJson(`/api/v1/namespaces/default/pods/${podName}`, {
+                const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods/${podName}`, {
                     method: "GET",
                 });
                 if (!res.ok) {
@@ -201,7 +202,7 @@ export const K8s = {
                 const json = await res.json() as any;
                 return {
                     uid: json.metadata?.uid || null,
-                    namespace: json.metadata?.namespace || "default",
+                    namespace: json.metadata?.namespace || namespace,
                 };
             }, {
                 attempts: 5,
@@ -210,7 +211,7 @@ export const K8s = {
         } catch (e) {
             console.error(`❌ Failed to get Pod metadata for ${podName}:`, e);
         }
-        return { uid: null, namespace: "default" };
+        return { uid: null, namespace };
     },
 
     async patchGameServer(namespace: string, name: string, patch: any): Promise<void> {

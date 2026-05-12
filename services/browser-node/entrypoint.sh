@@ -101,35 +101,63 @@ configure_direct_webrtc() {
         return
     fi
 
-    if [ -z "${NODE_NAME:-}" ]; then
-        echo "[entrypoint] ⚠️ NODE_NAME missing; continuing with TURN fallback only."
-        return
+    local node_candidate
+    if [ -n "${POPCORN_WEBRTC_ADVERTISE_HOST:-}" ]; then
+        node_candidate="$POPCORN_WEBRTC_ADVERTISE_HOST"
+        echo "[entrypoint] ℹ️ Using configured WebRTC advertise host ${node_candidate}."
     fi
 
-    echo "[entrypoint] 🔍 Resolving public node address for ${NODE_NAME}..."
-    local node_json
-    if ! node_json=$(k8s_get "/api/v1/nodes/${NODE_NAME}"); then
-        echo "[entrypoint] ⚠️ Failed to fetch Node ${NODE_NAME}; continuing with TURN fallback only."
-        return
-    fi
+    if [ -z "$node_candidate" ]; then
+        if [ -z "${NODE_NAME:-}" ]; then
+            echo "[entrypoint] ⚠️ NODE_NAME missing; continuing with TURN fallback only."
+            return
+        fi
 
-    local node_external_ip
-    node_external_ip=$(echo "$node_json" | jq -r '
+        echo "[entrypoint] 🔍 Resolving node address for ${NODE_NAME}..."
+        local node_json
+        if ! node_json=$(k8s_get "/api/v1/nodes/${NODE_NAME}"); then
+            echo "[entrypoint] ⚠️ Failed to fetch Node ${NODE_NAME}; continuing with TURN fallback only."
+            return
+        fi
+
+        node_candidate=$(echo "$node_json" | jq -r '
         (
           [
             (.status.addresses[]? | select(.type == "ExternalIP") | .address),
             (.status.addresses[]? | select(.type == "ExternalDNS") | .address)
           ] | map(select(. != null and . != "")) | .[0]
         ) // empty
-    ')
+        ')
 
-    if [ -z "$node_external_ip" ]; then
-        echo "[entrypoint] ⚠️ Node ${NODE_NAME} has no ExternalIP/ExternalDNS; continuing with TURN fallback only."
+        if [ -z "$node_candidate" ]; then
+            node_candidate=$(echo "$gameserver_json" | jq -r '.status.address // empty')
+            if [ -n "$node_candidate" ]; then
+                echo "[entrypoint] ℹ️ Node ${NODE_NAME} has no ExternalIP/ExternalDNS; using GameServer address ${node_candidate} for local direct WebRTC."
+            fi
+        fi
+
+        if [ -z "$node_candidate" ]; then
+            node_candidate=$(echo "$node_json" | jq -r '
+            (
+              [
+                (.status.addresses[]? | select(.type == "InternalIP") | .address),
+                (.status.addresses[]? | select(.type == "Hostname") | .address)
+              ] | map(select(. != null and . != "")) | .[0]
+            ) // empty
+            ')
+            if [ -n "$node_candidate" ]; then
+                echo "[entrypoint] ℹ️ Node ${NODE_NAME} has no ExternalIP/ExternalDNS; using node-internal address ${node_candidate} for local direct WebRTC."
+            fi
+        fi
+    fi
+
+    if [ -z "$node_candidate" ]; then
+        echo "[entrypoint] ⚠️ Node ${NODE_NAME} has no usable WebRTC address; continuing with TURN fallback only."
         return
     fi
 
     export NEKO_UDPMUX="$udp_port"
-    export NEKO_NAT1TO1="$node_external_ip"
+    export NEKO_NAT1TO1="$node_candidate"
 
     echo "[entrypoint] ✅ Direct WebRTC candidate configured: external=${NEKO_NAT1TO1} udp_mux=${NEKO_UDPMUX}"
     echo "[entrypoint] ℹ️ WebRTC mode: direct+TURN fallback"

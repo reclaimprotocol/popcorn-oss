@@ -1,33 +1,83 @@
 import { Hono } from "hono";
-import { basicAuth } from "hono/basic-auth";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { DB } from "./src/services/db";
 import { Agones } from "./src/services/agones";
 import { Auth } from "./src/services/auth";
 import { AnalyticsClient } from "./src/services/analytics-client";
 import { ClickHouse } from "./src/services/clickhouse";
 import { K8s } from "./src/services/k8s";
+import { RuntimeConfig } from "./src/config";
+import {
+    ADMIN_OAUTH_STATE_COOKIE,
+    ADMIN_SESSION_COOKIE,
+    authenticateBasicAdmin,
+    authorizeGoogleUser,
+    buildGoogleAuthorizationUrl,
+    createAdminSession,
+    createOauthState,
+    fetchGoogleUserInfo,
+    isAdminAuthPath,
+    isGoogleOAuthConfigured,
+    isPasswordLoginConfigured,
+    isSameOriginAdminRequest,
+    readAdminAuthConfig,
+    verifyAdminPassword,
+    verifyAdminSession,
+    verifyOauthState,
+    wantsHtml,
+} from "./src/services/admin-auth";
 
 const app = new Hono();
 const PORT = 3000;
 
-function requireEnv(name: string): string {
-    const value = process.env[name]?.trim();
-    if (!value) {
-        throw new Error(`Missing required environment variable: ${name}`);
-    }
-    return value;
-}
-
 // Read from environment variables populated by pool-manager-env-secrets.
-const ADMIN_USER = requireEnv("ADMIN_USER");
-const ADMIN_PASS = requireEnv("ADMIN_PASS");
+const ADMIN_AUTH_CONFIG = readAdminAuthConfig();
 const CLUSTER_NAME = process.env.CLUSTER_NAME || "unknown";
+const GAME_SERVER_NAMESPACE = RuntimeConfig.gameServerNamespace;
+const GAME_SERVER_FLEET = RuntimeConfig.gameServerFleet;
 const ADMIN_CLIENT_ID = "admin";
 const ADMIN_CLIENT_NAME = "Admin UI";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 
-app.use('/admin/*', basicAuth({ username: ADMIN_USER, password: ADMIN_PASS }));
-app.use('/admin', basicAuth({ username: ADMIN_USER, password: ADMIN_PASS }));
+app.use('/admin/*', async (c, next) => {
+    if (isAdminAuthPath(new URL(c.req.url).pathname)) {
+        return next();
+    }
+
+    const basicIdentity = await authenticateBasicAdmin(c.req.header("Authorization"), ADMIN_AUTH_CONFIG);
+    if (basicIdentity) {
+        return next();
+    }
+
+    const sessionIdentity = verifyAdminSession(getCookie(c, ADMIN_SESSION_COOKIE), ADMIN_AUTH_CONFIG);
+    if (sessionIdentity) {
+        if (!isSameOriginAdminRequest(c.req.raw)) {
+            return c.json({ error: "Cross-origin admin request rejected" }, 403);
+        }
+        return next();
+    }
+
+    if (wantsHtml(c.req.raw.headers)) {
+        return c.redirect("/admin/login", 302);
+    }
+
+    c.header("WWW-Authenticate", 'Basic realm="Popcorn Admin"');
+    return c.json({ error: "Unauthorized" }, 401);
+});
+
+app.use('/admin', async (c, next) => {
+    const basicIdentity = await authenticateBasicAdmin(c.req.header("Authorization"), ADMIN_AUTH_CONFIG);
+    if (basicIdentity || verifyAdminSession(getCookie(c, ADMIN_SESSION_COOKIE), ADMIN_AUTH_CONFIG)) {
+        return next();
+    }
+
+    if (wantsHtml(c.req.raw.headers)) {
+        return c.redirect("/admin/login", 302);
+    }
+
+    c.header("WWW-Authenticate", 'Basic realm="Popcorn Admin"');
+    return c.json({ error: "Unauthorized" }, 401);
+});
 
 interface ClientIdentity {
     clientId: string;
@@ -139,13 +189,14 @@ async function createSession(c: any, identity: ClientIdentity, requestedSessionI
     console.log(`🚀 Allocation request for session: ${sessionId} (client: ${identity.clientId})`);
 
     try {
-        const allocation = await Agones.allocate("default", "browser-fleet", sessionId);
+        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId);
         allocatedGameServerName = allocation.gameServerName;
         const port = allocation.ports?.[0]?.port || 8080;
         const podUrl = `http://${allocation.address}:${port}`;
 
         const podData = {
             name: allocation.gameServerName,
+            namespace: GAME_SERVER_NAMESPACE,
             url: podUrl,
             ports: allocation.ports,
             clientId: identity.clientId,
@@ -158,14 +209,14 @@ async function createSession(c: any, identity: ClientIdentity, requestedSessionI
         }
 
         const boundAt = new Date().toISOString();
-        const podMetadata = await K8s.getPodMetadata(allocation.gameServerName);
+        const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
         const sessionAnnotations = {
             "popcorn.dev/session-id": sessionId,
             "popcorn.dev/session-bound-at": boundAt,
         };
 
         try {
-            await K8s.patchGameServer("default", allocation.gameServerName, {
+            await K8s.patchGameServer(GAME_SERVER_NAMESPACE, allocation.gameServerName, {
                 metadata: {
                     annotations: sessionAnnotations,
                 }
@@ -201,7 +252,7 @@ async function createSession(c: any, identity: ClientIdentity, requestedSessionI
             }
 
             try {
-                await Agones.shutdownGameServer(allocatedGameServerName);
+                await Agones.shutdownGameServer(allocatedGameServerName, GAME_SERVER_NAMESPACE);
             } catch (shutdownError) {
                 console.error(`Failed to shutdown allocated GameServer ${allocatedGameServerName}:`, shutdownError);
             }
@@ -244,7 +295,7 @@ async function deleteSession(c: any, sessionId: string, identity?: ClientIdentit
         AnalyticsClient.endSession(sessionId, 'deleted');
 
         if (session.name) {
-            await Agones.shutdownGameServer(session.name);
+            await Agones.shutdownGameServer(session.name, session.namespace || GAME_SERVER_NAMESPACE);
         }
     }
 
@@ -252,6 +303,105 @@ async function deleteSession(c: any, sessionId: string, identity?: ClientIdentit
 
     return c.json({ success: true }, 200);
 }
+
+function isSecureRequest(c: any): boolean {
+    return new URL(c.req.url).protocol === "https:" || c.req.header("X-Forwarded-Proto") === "https";
+}
+
+function setAdminSessionCookie(c: any, session: string) {
+    setCookie(c, ADMIN_SESSION_COOKIE, session, {
+        httpOnly: true,
+        sameSite: "Lax",
+        secure: isSecureRequest(c),
+        path: "/admin",
+        maxAge: ADMIN_AUTH_CONFIG.sessionTtlSeconds,
+    });
+}
+
+function clearAdminCookies(c: any) {
+    deleteCookie(c, ADMIN_SESSION_COOKIE, { path: "/admin" });
+    deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: "/admin/auth/google" });
+}
+
+app.get("/admin/login", async (c) => {
+    return c.html(await Bun.file("./public/admin-login.html").text());
+});
+
+app.get("/admin/auth/config", (c) => {
+    return c.json({
+        password: isPasswordLoginConfigured(ADMIN_AUTH_CONFIG),
+        google: isGoogleOAuthConfigured(ADMIN_AUTH_CONFIG),
+    });
+});
+
+app.post("/admin/auth/password", async (c) => {
+    const form = await c.req.formData();
+    const username = String(form.get("username") || "");
+    const password = String(form.get("password") || "");
+
+    if (!await verifyAdminPassword(username, password, ADMIN_AUTH_CONFIG)) {
+        return c.redirect("/admin/login?error=Invalid%20credentials", 302);
+    }
+
+    if (!isPasswordLoginConfigured(ADMIN_AUTH_CONFIG)) {
+        return c.redirect("/admin/login?error=Admin%20session%20secret%20is%20not%20configured", 302);
+    }
+
+    setAdminSessionCookie(c, createAdminSession({
+        id: username,
+        displayName: username,
+        strategy: "password",
+    }, ADMIN_AUTH_CONFIG));
+    return c.redirect("/admin", 302);
+});
+
+app.get("/admin/auth/google", (c) => {
+    if (!isGoogleOAuthConfigured(ADMIN_AUTH_CONFIG)) {
+        return c.redirect("/admin/login?error=Google%20OAuth%20is%20not%20configured", 302);
+    }
+
+    const state = createOauthState(ADMIN_AUTH_CONFIG);
+    setCookie(c, ADMIN_OAUTH_STATE_COOKIE, state, {
+        httpOnly: true,
+        sameSite: "Lax",
+        secure: isSecureRequest(c),
+        path: "/admin/auth/google",
+        maxAge: 5 * 60,
+    });
+
+    return c.redirect(buildGoogleAuthorizationUrl(ADMIN_AUTH_CONFIG, state), 302);
+});
+
+app.get("/admin/auth/google/callback", async (c) => {
+    if (!verifyOauthState(c.req.query("state"), getCookie(c, ADMIN_OAUTH_STATE_COOKIE), ADMIN_AUTH_CONFIG)) {
+        return c.redirect("/admin/login?error=Invalid%20OAuth%20state", 302);
+    }
+
+    const code = c.req.query("code");
+    if (!code) {
+        return c.redirect("/admin/login?error=Missing%20OAuth%20code", 302);
+    }
+
+    try {
+        const userInfo = await fetchGoogleUserInfo(code, ADMIN_AUTH_CONFIG);
+        const identity = authorizeGoogleUser(userInfo, ADMIN_AUTH_CONFIG);
+        if (!identity) {
+            return c.redirect("/admin/login?error=Google%20account%20is%20not%20allowed", 302);
+        }
+
+        setAdminSessionCookie(c, createAdminSession(identity, ADMIN_AUTH_CONFIG));
+        deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: "/admin/auth/google" });
+        return c.redirect("/admin", 302);
+    } catch (error) {
+        console.error("Google admin login failed:", error);
+        return c.redirect("/admin/login?error=Google%20login%20failed", 302);
+    }
+});
+
+app.post("/admin/logout", (c) => {
+    clearAdminCookies(c);
+    return c.redirect("/admin/login", 302);
+});
 
 // Serve Admin UI Static File
 app.get("/admin", async (c) => {
@@ -261,7 +411,7 @@ app.get("/admin", async (c) => {
 // GET /admin/servers
 app.get("/admin/servers", async (c) => {
     // Return minimal info
-    const gameServers = await Agones.listGameServers();
+    const gameServers = await Agones.listGameServers(GAME_SERVER_NAMESPACE);
     const stats = await DB.getStats();
 
     // Map pod names to session IDs
@@ -353,7 +503,7 @@ app.delete("/admin/gameserver/:name", async (c) => {
         await DB.deleteSession(session.sessionId);
     }
 
-    await Agones.shutdownGameServer(name);
+    await Agones.shutdownGameServer(name, session?.namespace || GAME_SERVER_NAMESPACE);
     return c.json({ success: true });
 });
 

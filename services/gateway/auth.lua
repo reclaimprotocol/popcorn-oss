@@ -27,22 +27,11 @@ end
 
 load_public_key()
 
-function _M.check(bypass_assets, token_arg, required_scope)
+function _M.check(bypass_assets, token_arg, required_scope, expected_session_id)
     -- bypass_assets: boolean
     -- token_arg: string (optional, from path)
     -- required_scope: string (optional, "internal" for restricted endpoints)
 
-    if bypass_assets then
-        local rest_uri = ngx.var.rest_uri
-        local is_root = (rest_uri == "" or rest_uri == "/")
-
-        local upgrade = ngx.req.get_headers()["Upgrade"]
-        local is_ws = (upgrade and string.lower(upgrade) == "websocket")
-
-        if not (is_root or is_ws) then
-            return -- Bypass Auth for assets
-        end
-    end
 
     local token = token_arg
     if not token then
@@ -72,6 +61,26 @@ function _M.check(bypass_assets, token_arg, required_scope)
         if not payload_scope or payload_scope ~= required_scope then
             ngx.log(ngx.WARN, "Auth: Insufficient scope - required: " .. required_scope .. ", got: " .. (payload_scope or "none"))
             return ngx.exit(403)
+        end
+    end
+
+    if expected_session_id then
+        local payload_sub = jwt_obj.payload.sub
+        if tostring(payload_sub or "") ~= tostring(expected_session_id) then
+            ngx.log(ngx.WARN, "Auth: Session mismatch - token sub: " .. (payload_sub or "none") .. ", expected: " .. expected_session_id)
+            return ngx.exit(403)
+        end
+    end
+
+    if bypass_assets then
+        local rest_uri = ngx.var.rest_uri
+        local is_root = (rest_uri == "" or rest_uri == "/")
+
+        local upgrade = ngx.req.get_headers()["Upgrade"]
+        local is_ws = (upgrade and string.lower(upgrade) == "websocket")
+
+        if not (is_root or is_ws) then
+            return -- Bypass additional browser root/WebSocket auth checks for assets after token/session validation
         end
     end
 

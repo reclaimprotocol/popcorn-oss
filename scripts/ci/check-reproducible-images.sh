@@ -61,7 +61,7 @@ case "$selector" in
     ;;
 esac
 
-for cmd in curl docker gh git python3; do
+for cmd in curl docker git python3; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Missing required command: $cmd" >&2
     exit 1
@@ -74,12 +74,17 @@ mkdir -p dist
 
 REGISTRY_HOST="${REGISTRY_HOST:-ghcr.io}"
 REGISTRY_PROJECT_ID="${REGISTRY_PROJECT_ID:-reclaimprotocol}"
-REGISTRY_REPOSITORY="${REGISTRY_REPOSITORY:-popcorn-images}"
+REGISTRY_REPOSITORY="${REGISTRY_REPOSITORY:-popcorn-oss}"
 
 requested_commit="$(git rev-parse "${commit_sha}^{commit}")"
 current_commit="$(git rev-parse HEAD)"
 if [[ "$requested_commit" != "$current_commit" ]]; then
   echo "Current checkout (${current_commit}) does not match requested commit (${requested_commit})" >&2
+  exit 1
+fi
+
+if [[ ! -f popcorn-images/images/chromium-headful/chromium-lock.json ]]; then
+  echo "Missing popcorn-images submodule. Run: git submodule update --init --recursive" >&2
   exit 1
 fi
 
@@ -158,6 +163,28 @@ print(image_id)
 PY
 }
 
+published_repo_digest_from_pull() {
+  python3 - "$1" "$2" <<'PY'
+import json
+import subprocess
+import sys
+
+image_ref = sys.argv[1]
+repo_prefix = sys.argv[2]
+repo_digests = json.loads(
+    subprocess.check_output(
+        ["docker", "image", "inspect", image_ref, "--format", "{{json .RepoDigests}}"],
+        text=True,
+    )
+)
+for value in repo_digests:
+    if value.startswith(repo_prefix + "@"):
+        print(value.split("@", 1)[1])
+        raise SystemExit(0)
+raise SystemExit(f"Could not find repo digest for {image_ref}")
+PY
+}
+
 pull_published_image() {
   local service="$1"
   local image_tag="${2:-$requested_commit}"
@@ -166,6 +193,17 @@ pull_published_image() {
   echo "Pulling published image ${image_ref}..." >&2
   docker pull --platform linux/amd64 "$image_ref" >/dev/null
   published_config_digest_from_pull "$image_ref" "${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/${service}"
+}
+
+pull_published_repo_digest() {
+  local service="$1"
+  local image_tag="${2:-$requested_commit}"
+  local image_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/${service}:${image_tag}"
+  local repo_prefix="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/${service}"
+
+  echo "Pulling published image ${image_ref}..." >&2
+  docker pull --platform linux/amd64 "$image_ref" >/dev/null
+  published_repo_digest_from_pull "$image_ref" "$repo_prefix"
 }
 
 build_attestor_once() {
@@ -200,7 +238,8 @@ build_browser_base_once() {
   CLEANUP_DIRS+=("$artifact_layout_dir" "$base_layout_dir")
   browser_base_local_layout_dir="$base_layout_dir"
 
-  SOURCE_DATE_EPOCH=0 "$SCRIPT_DIR/../prepare-chromium-artifacts.sh" "$artifact_layout_dir" linux/amd64
+  GITHUB_ARTIFACT_MIRROR_REPO="${GITHUB_ARTIFACT_MIRROR_REPO:-reclaimprotocol/popcorn-oss}" \
+    SOURCE_DATE_EPOCH=0 "$SCRIPT_DIR/../prepare-chromium-artifacts.sh" "$artifact_layout_dir" linux/amd64
 
   docker buildx build \
     --platform linux/amd64 \
@@ -218,15 +257,7 @@ build_browser_base_once() {
 }
 
 resolve_published_browser_base_digest() {
-  local image_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-base:${SUBMODULE_SHA}"
-
-  if ! command -v gcloud >/dev/null 2>&1; then
-    echo "gcloud is required to resolve the published browser-base digest for browser-runtime verification" >&2
-    exit 1
-  fi
-
-  gcloud artifacts docker images describe "$image_ref" \
-    --format='value(image_summary.digest)'
+  pull_published_repo_digest browser-base "$SUBMODULE_SHA"
 }
 
 build_browser_node_once() {

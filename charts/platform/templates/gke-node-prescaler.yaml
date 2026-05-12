@@ -104,7 +104,7 @@ spec:
             - name: GKE_NODE_POOL
               value: {{ .Values.gkeNodePrescaler.nodePool | quote }}
             - name: NAMESPACE
-              value: {{ .Values.gkeNodePrescaler.namespace | quote }}
+              value: {{ default .Release.Namespace .Values.gkeNodePrescaler.namespace | quote }}
             - name: FLEET_NAME
               value: {{ .Values.gkeNodePrescaler.fleetName | quote }}
             - name: FLEET_AUTOSCALER_NAME

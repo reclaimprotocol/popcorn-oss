@@ -17,7 +17,7 @@ OSS deployments should use public, self-hosted values and image references. The 
 - Agones installed in the cluster.
 - Popcorn images pushed to a registry your cluster can pull.
 - RSA key pair for signing gateway path tokens.
-- Client credentials or a local-compatible auth configuration for the client session API.
+- Analytics-backed client credentials for the client session API.
   Local smoke tests can use the admin session endpoint instead.
 
 ## Image Inputs
@@ -29,8 +29,8 @@ Example image references:
 ```yaml
 registry: ghcr.io/reclaimprotocol/popcorn-oss
 imageTag: v0.1.0
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime@sha256:<digest>
-browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime-attestor@sha256:<digest>
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
 ```
 
 Do not use private project registries in public examples. Internal production chart defaults may keep GCP Artifact Registry references; the OSS export rewrites those defaults to public GHCR-style image references.
@@ -48,6 +48,52 @@ make local-keys
 `make local-keys` creates development-only key material for the local Kind path.
 
 Production deployments should create Kubernetes secrets through their normal secret-management process. Do not commit private keys or production secrets. See [Secrets](secrets.md) for the complete required Secret contract and provider-neutral examples.
+
+## Client Session Authentication
+
+The public `/session` API is analytics-backed in the current pool-manager
+implementation. The pool manager validates `Authorization: Bearer
+<client-id>:<client-secret>` by calling `POST /validate` on
+`poolManager.analyticsServiceUrl`, authenticated with `ANALYTICS_AUTH_TOKEN`
+from `analytics-service-secret`.
+
+For local smoke tests, use `/admin/session` with the admin credentials. For a
+client-facing deployment, either enable the bundled analytics service and
+Postgres or point `poolManager.analyticsServiceUrl` at an existing analytics
+service with client records. A local `SESSION_AUTH_CLIENTS` Secret value is not
+used by the current code path.
+
+## Admin Authentication
+
+`/admin` and `/admin/*` use pool-manager admin auth. Basic auth remains
+available for automation, and browser users can sign in through password login
+or Google OAuth.
+
+Minimal password-file values:
+
+```yaml
+poolManager:
+  adminAuth:
+    strategies: password
+    passwordFileSecretName: pool-manager-admin-password-file
+```
+
+Google OAuth can be enabled with password auth:
+
+```yaml
+poolManager:
+  adminAuth:
+    strategies: password,google
+    googleRedirectUri: https://gateway.example.com/admin/auth/google/callback
+    googleAllowedEmails: admin@example.com
+    googleAllowedDomains: example.com
+```
+
+Store `ADMIN_SESSION_SECRET`, `ADMIN_GOOGLE_CLIENT_ID`, and
+`ADMIN_GOOGLE_CLIENT_SECRET` in `pool-manager-env-secrets` or another Secret
+referenced by `poolManager.adminAuth`. `ADMIN_SESSION_SECRET` is required for
+Google OAuth and password-file browser login; legacy `ADMIN_PASS` remains a
+compatibility fallback for existing username/password deployments.
 
 ## Minimal Local Values Shape
 
@@ -120,8 +166,9 @@ helm upgrade --install agones agones/agones \
 Install the platform:
 
 ```bash
+kubectl create namespace popcorn --dry-run=client -o yaml | kubectl apply -f -
 helm upgrade --install popcorn-platform charts/platform \
-  --namespace default \
+  --namespace popcorn \
   --values examples/helm/local-platform-values.yaml
 ```
 
@@ -129,9 +176,11 @@ Install the browser fleet:
 
 ```bash
 helm upgrade --install browser-fleet charts/browser-fleet \
-  --namespace default \
+  --namespace popcorn \
   --values examples/helm/local-browser-fleet-values.yaml
 ```
+
+`popcorn` is only an example workload namespace. The charts do not require that name, but the platform chart and browser-fleet chart should be installed into the same workload namespace unless you intentionally configure `poolManager.gameServerNamespace` and the matching RBAC/secrets for a split-namespace deployment.
 
 The `examples/helm/*.yaml` files are public-safe examples for OSS chart rendering. The `examples/kubernetes/*.yaml` files show placeholder Secret manifests for direct Kubernetes Secrets and External Secrets Operator. Replace placeholder image registries, domains, service accounts, and secret names before installing into a shared or production cluster.
 
@@ -141,8 +190,8 @@ For production, prefer immutable image digests:
 
 ```bash
 helm upgrade --install browser-fleet charts/browser-fleet \
-  --namespace default \
-  --set browserRuntimeImage=ghcr.io/reclaimprotocol/popcorn-images/browser-runtime@sha256:<digest>
+  --namespace popcorn \
+  --set browserRuntimeImage=ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 ```
 
 Before upgrading, ensure:
@@ -155,8 +204,8 @@ Before upgrading, ensure:
 ## Uninstall
 
 ```bash
-helm uninstall browser-fleet --namespace default
-helm uninstall popcorn-platform --namespace default
+helm uninstall browser-fleet --namespace popcorn
+helm uninstall popcorn-platform --namespace popcorn
 ```
 
 Agones is shared infrastructure. Remove it only if no other workloads use it:
@@ -171,6 +220,6 @@ helm uninstall agones --namespace agones-system
 - Keep private keys in Kubernetes secrets or an external secret system.
 - Terminate TLS at your ingress or load balancer.
 - Keep the gateway public; keep Redis and pool manager internal unless you intentionally expose them.
-- Ensure the AI-agent component is excluded from OSS v1 deployment manifests.
+- Use `fleet.extraPorts`, `fleet.extraContainers`, `extraBrowserRuntimeEnv`, `imagePrepuller.extraInitContainers`, and `imagePrepuller.extraContainers` for private deployment extensions.
 - Enable attestation only on compatible confidential-computing nodes.
 - Add resource requests and limits that match your concurrency target.

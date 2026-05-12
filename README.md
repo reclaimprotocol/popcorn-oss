@@ -2,7 +2,7 @@
 
 Popcorn is a self-hostable browser platform for running isolated, on-demand Chromium sessions in Kubernetes. It gives each session its own ephemeral browser pod, then exposes browser view, Chrome DevTools Protocol, and session APIs through a gateway.
 
-Popcorn OSS v1 is focused on the browser runtime platform: local deployment, Helm deployment, session lifecycle APIs, CDP access, browser images, and optional attestation docs. The AI-agent component is excluded from the OSS v1 export path; it may still exist in the internal repository.
+Popcorn OSS v1 is focused on the browser runtime platform: local deployment, Helm deployment, session lifecycle APIs, CDP access, browser images, and optional attestation docs.
 
 ## What It Runs
 
@@ -75,7 +75,7 @@ make run-local-cluster
 make connect
 ```
 
-`make run-local-cluster` builds the local platform images used by the Kind demo and intentionally avoids internal-only components that are not part of the OSS v1 export path.
+`make run-local-cluster` builds the local platform images used by the Kind demo.
 
 The local gateway is expected at:
 
@@ -96,7 +96,7 @@ curl -sS -X POST http://localhost:8080/admin/session \
 ```
 
 `/admin/session` is the local Kind smoke-test endpoint and uses the default local admin credentials `admin:admin`.
-Client `/session` usage requires client credentials and is documented for deployments where that auth path is configured.
+Client `/session` usage requires analytics-backed client credentials and is documented for deployments where that auth path is configured.
 
 The response includes:
 
@@ -179,7 +179,6 @@ await browser.close();
 
 ## Limitations
 
-- The AI-agent component is excluded from OSS v1 export paths.
 - There is no hosted public demo for OSS v1.
 - Local deployment depends on generated local JWT keys and OSS Helm example values that are landing in parallel PRs.
 - Confidential-computing attestation requires compatible infrastructure and signed digest-pinned images.

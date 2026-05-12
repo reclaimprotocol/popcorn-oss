@@ -4,7 +4,6 @@ Popcorn OSS v1 keeps image ownership explicit:
 
 - Popcorn platform services live in this repository.
 - Browser base image assets live in the separate [popcorn-images](../popcorn-images/README.md) repository.
-- The AI-agent component is excluded from the OSS v1 release export.
 
 ## Image Set
 
@@ -22,17 +21,27 @@ Public OSS examples use GitHub Container Registry style references:
 
 ```yaml
 registry: ghcr.io/reclaimprotocol/popcorn-oss
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime:latest
-browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime-attestor:latest
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:<commit-sha>
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:<commit-sha>
 ```
 
 The OSS CI workflow publishes platform service images from `reclaimprotocol/popcorn-oss` to GHCR on pushes to `main`, release tags, and manual runs. Pull requests only smoke-build images and do not push packages.
+
+The reproducible browser image workflow publishes:
+
+```text
+ghcr.io/reclaimprotocol/popcorn-oss/browser-base:<popcorn-images-submodule-sha>
+ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:<commit-sha>
+ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:<commit-sha>
+```
+
+Those digest refs are signed with keyless cosign by `.github/workflows/reproducible-images.yml`.
 
 Internal production deployments can continue to use GCP Artifact Registry values in the internal chart defaults. Do not copy private production registry references into the OSS export.
 
 ## Browser Images
 
-`popcorn-images` remains a separate OSS project. Clone Popcorn with submodules:
+`popcorn-images` remains a separate OSS project and the source tree for browser image builds. Chromium artifact release assets are mirrored through `reclaimprotocol/popcorn-oss`. Clone Popcorn with submodules:
 
 ```bash
 git clone --recursive https://github.com/reclaimprotocol/popcorn-oss.git
@@ -51,6 +60,8 @@ The browser runtime build uses image assets from:
 ```text
 popcorn-images/
 ```
+
+The OSS reproducible workflow sets `GITHUB_ARTIFACT_MIRROR_REPO=reclaimprotocol/popcorn-oss` so Chromium release assets are resolved from the OSS repository before falling back to pinned upstream URLs.
 
 ## Local Images
 
@@ -84,27 +95,27 @@ Then it loads them into the Kind cluster.
 Production deployments should use immutable image references:
 
 ```text
-ghcr.io/reclaimprotocol/popcorn-images/browser-runtime@sha256:<digest>
-ghcr.io/reclaimprotocol/popcorn-images/browser-runtime-attestor@sha256:<digest>
+ghcr.io/reclaimprotocol/popcorn-oss/browser-base@sha256:<digest>
+ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
 ```
 
 Avoid mutable tags for production rollouts unless the tag is only used to discover a digest and the chart ultimately deploys the digest.
 
-## OSS Export
-
-The public OSS export flow is expected to be owned by a parallel PR:
+Verify the keyless signature before rollout:
 
 ```bash
-scripts/oss/export.sh
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp 'https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/(heads/main|tags/v.*)' \
+  ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 ```
-
-That script is expected to prepare a public-safe tree by excluding private deployment material and generated secrets. This docs PR does not implement the export script.
 
 ## Release Checklist
 
 - Root `LICENSE` exists.
 - Public README and docs do not mention private registries, domains, or credentials.
-- The AI-agent component is not part of the OSS v1 export path.
+- Private components are not part of the OSS release branch.
 - `popcorn-images` submodule points to the intended public release.
 - Local Kind demo works from a fresh clone with submodules.
 - OSS Helm example values are present.
@@ -125,7 +136,8 @@ For production chart values, record both the human version and digest:
 
 ```yaml
 imageTag: v0.1.0
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-images/browser-runtime@sha256:<digest>
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
 ```
 
 ## License Blocker

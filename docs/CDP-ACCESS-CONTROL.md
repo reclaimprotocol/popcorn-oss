@@ -13,9 +13,12 @@ Popcorn provides **two separate CDP (Chrome DevTools Protocol) endpoints** with 
 
 When you create a session, you receive **two CDP URLs** with different tokens:
 
+The `/session` API requires analytics-backed client credentials.
+
 ### Request
 ```bash
 curl -X POST http://popcorn-gateway/session \
+  -H "Authorization: Bearer <client-id>:<client-secret>" \
   -H "Content-Type: application/json" \
   -d '{"sessionId": "my-session"}'
 ```
@@ -46,7 +49,10 @@ For client-facing applications that should have limited access:
 ```javascript
 const session = await fetch('http://popcorn-gateway/session', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    Authorization: 'Bearer <client-id>:<client-secret>',
+    'Content-Type': 'application/json'
+  },
   body: JSON.stringify({ sessionId: 'client-session' })
 }).then(r => r.json());
 
@@ -65,7 +71,10 @@ For internal services, debugging tools, or administrative operations:
 ```javascript
 const session = await fetch('http://popcorn-gateway/session', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    Authorization: 'Bearer <client-id>:<client-secret>',
+    'Content-Type': 'application/json'
+  },
   body: JSON.stringify({ sessionId: 'internal-session' })
 }).then(r => r.json());
 
@@ -87,7 +96,10 @@ import { chromium } from 'playwright';
 // Get session
 const response = await fetch('http://popcorn-gateway/session', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    Authorization: 'Bearer <client-id>:<client-secret>',
+    'Content-Type': 'application/json'
+  },
   body: JSON.stringify({ sessionId: `session-${Date.now()}` })
 });
 const session = await response.json();
@@ -110,7 +122,10 @@ const puppeteer = require('puppeteer');
 // Get session
 const session = await fetch('http://popcorn-gateway/session', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    Authorization: 'Bearer <client-id>:<client-secret>',
+    'Content-Type': 'application/json'
+  },
   body: JSON.stringify({ sessionId: 'my-session' })
 }).then(r => r.json());
 
@@ -131,7 +146,10 @@ const WebSocket = require('ws');
 // Get session
 const session = await fetch('http://popcorn-gateway/session', {
   method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
+  headers: {
+    Authorization: 'Bearer <client-id>:<client-secret>',
+    'Content-Type': 'application/json'
+  },
   body: JSON.stringify({ sessionId: 'cdp-session' })
 }).then(r => r.json());
 
@@ -317,7 +335,10 @@ Always delete sessions when done:
 
 ```javascript
 await fetch(`http://popcorn-gateway/session/${sessionId}`, {
-  method: 'DELETE'
+  method: 'DELETE',
+  headers: {
+    Authorization: 'Bearer <client-id>:<client-secret>'
+  }
 });
 ```
 

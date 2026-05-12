@@ -4,7 +4,7 @@ The OSS quickstart is optimized for a local demo. A production deployment needs 
 
 ## Identity And Access
 
-- Replace local admin credentials before exposing the gateway.
+- Replace local admin credentials before exposing the gateway, and prefer a bcrypt password file or Google OAuth allowlist for `/admin`.
 - Use unique client credentials for each integration.
 - Keep `/admin/*` endpoints private or behind an authenticated internal network.
 - Prefer short session TTLs and explicit session deletion.
@@ -70,4 +70,3 @@ Before promoting an OSS release into production:
 - CDP connection works from your automation environment.
 - TTL cleanup removes expired sessions.
 - Secret scans and image scans are clean enough for your policy.
-

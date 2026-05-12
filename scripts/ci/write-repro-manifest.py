@@ -12,7 +12,7 @@ def build_image_ref(host: str, project: str, repository: str, image: str, digest
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Write the reproducible image manifest for browser-runtime-attestor and browser-runtime.")
+    parser = argparse.ArgumentParser(description="Write the OSS reproducible image manifest.")
     parser.add_argument("--commit", required=True)
     parser.add_argument("--source-date-epoch", required=True, type=int)
     parser.add_argument("--registry-host", required=True)
@@ -35,7 +35,11 @@ def main() -> int:
         "commit": args.commit,
         "source_date_epoch": args.source_date_epoch,
         "created_at": created_at,
-        "tag_policy": "immutable commit tags",
+        "source_repository": "https://github.com/reclaimprotocol/popcorn-oss",
+        "submodule_repository": "https://github.com/reclaimprotocol/popcorn-images",
+        "artifact_mirror_repository": "https://github.com/reclaimprotocol/popcorn-oss",
+        "registry": tag_prefix,
+        "tag_policy": "immutable commit tags for runtime images; immutable popcorn-images submodule SHA tag for browser-base",
         "reproducible_images": {
             "browser-runtime-attestor": {
                 "tag": f"{tag_prefix}/browser-runtime-attestor:{args.commit}",
@@ -73,6 +77,11 @@ def main() -> int:
                 "submodule_sha": args.submodule_sha,
             },
         },
+        "verification": {
+            "cosign_oidc_issuer": "https://token.actions.githubusercontent.com",
+            "cosign_identity": "https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/heads/main",
+            "cosign_identity_tag_pattern": "https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/tags/v*",
+        },
     }
 
     json_out = pathlib.Path(args.json_out)
@@ -83,11 +92,12 @@ def main() -> int:
 
     markdown = f"""## Reproducible Images
 
-This build records immutable digests for the reproducible image set only: `browser-runtime-attestor` and `browser-runtime`.
+This build records immutable digests for the OSS reproducible image set: `browser-base`, `browser-runtime`, and `browser-runtime-attestor`.
 
 Commit: `{args.commit}`
 Source date epoch: `{args.source_date_epoch}` (`{created_at}`)
-Tag policy: immutable commit tags
+Registry: `{tag_prefix}`
+Tag policy: immutable commit tags for runtime images; immutable popcorn-images submodule SHA tag for `browser-base`
 
 | Image | Commit tag | Digest ref |
 | --- | --- | --- |
@@ -95,8 +105,13 @@ Tag policy: immutable commit tags
 | `browser-runtime` | `{tag_prefix}/browser-runtime:{args.commit}` | `{payload["reproducible_images"]["browser-runtime"]["image"]}` |
 | `browser-base` | `{tag_prefix}/browser-base:{args.browser_base_tag}` | `{payload["reproducible_images"]["browser-runtime"]["browser_base"]["image"]}` |
 
+Source repository: `https://github.com/reclaimprotocol/popcorn-oss`
+Submodule repository: `https://github.com/reclaimprotocol/popcorn-images`
+Artifact mirror repository: `https://github.com/reclaimprotocol/popcorn-oss`
 Browser runtime submodule SHA: `{args.submodule_sha}`
 Chromium artifact mirror tag: `{args.artifact_mirror_tag}`
+Cosign OIDC issuer: `https://token.actions.githubusercontent.com`
+Cosign workflow identity: `https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/heads/main`
 """
     markdown_out.write_text(markdown, encoding="utf-8")
     return 0

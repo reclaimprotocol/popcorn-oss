@@ -28,22 +28,57 @@ make clean
 make run-local-cluster
 ```
 
+## Pool Manager Does Not Start
+
+The platform chart injects `analytics-service-secret` key
+`SERVICE_AUTH_TOKEN` into the pool manager as `ANALYTICS_AUTH_TOKEN`. The pool
+manager requires that environment variable at startup. If the Secret or key is
+missing, `/session` will not return `401`; the pod fails to start or remains
+unready.
+
+Check the pod events and required Secret:
+
+```bash
+kubectl describe pod -l app=pool-manager
+kubectl get secret analytics-service-secret -o jsonpath='{.data.SERVICE_AUTH_TOKEN}' | base64 -d
+kubectl logs deployment/pool-manager
+```
+
+Common signs:
+
+- `CreateContainerConfigError` mentioning `analytics-service-secret` or `SERVICE_AUTH_TOKEN`;
+- pool-manager logs mention missing `ANALYTICS_AUTH_TOKEN`;
+- deployment rollout never becomes ready.
+
 ## `401` Or `403` From Session APIs
 
-Admin endpoints use Basic auth. Client endpoints use client credentials.
+Admin endpoints use pool-manager admin auth. Basic credentials still work for
+automation when the password strategy is enabled; browser users can also use
+password or Google login when configured. Client endpoints use analytics-backed
+client credentials.
 
 Check `pool-manager-env-secrets`:
 
 ```bash
-kubectl get secret pool-manager-env-secrets -o jsonpath='{.data.POPCORN_ADMIN_USER}' | base64 -d
-kubectl get secret pool-manager-env-secrets -o jsonpath='{.data.SESSION_AUTH_CLIENTS}' | base64 -d
+kubectl get secret pool-manager-env-secrets -o jsonpath='{.data.ADMIN_USER}' | base64 -d
+kubectl get secret pool-manager-env-secrets -o jsonpath='{.data.ADMIN_PASS}' | base64 -d
+```
+
+For client `/session`, check the analytics wiring:
+
+```bash
+kubectl get deploy pool-manager -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="ANALYTICS_SERVICE_URL")].value}'
+kubectl get secret analytics-service-secret -o jsonpath='{.data.SERVICE_AUTH_TOKEN}' | base64 -d
 ```
 
 Common causes:
 
 - wrong admin username/password;
-- missing `SESSION_AUTH_CLIENTS`;
-- malformed client credential JSON;
+- missing or mismatched `ADMIN_SESSION_SECRET` across pool-manager replicas;
+- Google OAuth user email is unverified or not in the configured allowed emails/domains;
+- analytics service rejects the configured service token;
+- `poolManager.analyticsServiceUrl` points at a missing or unreachable analytics service;
+- the client ID/secret was not created in the analytics service, or the client was revoked;
 - using `/session` when only the local admin path was configured.
 
 ## Browser URL Opens But CDP Fails
@@ -62,7 +97,7 @@ Inspect the GameServer and browser pod:
 ```bash
 kubectl get gameservers -o wide
 kubectl describe gameserver <name>
-kubectl logs <browser-pod-name> -c browser
+kubectl logs <browser-pod-name> -c browser-runtime
 ```
 
 Common causes:
@@ -72,6 +107,45 @@ Common causes:
 - insufficient CPU or memory;
 - node does not support required sandbox or confidential-computing settings;
 - `browserRuntimeImage` points at a private registry without image pull credentials.
+
+## Browser Opens But WebRTC Does Not Connect
+
+If the browser session URL loads but the video stream stays disconnected, check the TURN configuration first. The browser runtime should log that Cloudflare ICE servers were generated:
+
+```bash
+kubectl logs <browser-pod-name> -c browser-runtime | grep -i cloudflare
+kubectl get secret browser-turn-secret -o jsonpath='{.data.TURN_KEY_ID}' | grep -q . && echo TURN_KEY_ID=set
+kubectl get secret browser-turn-secret -o jsonpath='{.data.TURN_API_TOKEN}' | grep -q . && echo TURN_API_TOKEN=set
+```
+
+Common causes:
+
+- `TURN_KEY_ID` or `TURN_API_TOKEN` is empty;
+- the Cloudflare TURN key was deleted, expired, or copied incorrectly;
+- the browser pod was not restarted after updating `browser-turn-secret`;
+- a firewall blocks direct UDP and no TURN relay is configured;
+- a custom `NEKO_ICESERVERS` override is malformed.
+
+For same-machine Kind without TURN, also verify that the Agones UDP port is published through Docker and that the browser runtime advertises localhost:
+
+```bash
+docker port popcorn-control-plane | grep udp
+kubectl get gameservers -o wide
+kubectl logs <browser-pod-name> -c browser-runtime | grep -E 'advertise host|Direct WebRTC'
+```
+
+You should see UDP `7000-7010` mapped on the Kind node, a GameServer port in that range, and `external=127.0.0.1` in the browser runtime logs. If `docker port` shows only `8080/tcp`, recreate the Kind cluster so the UDP mappings from `kind-config.yaml` are applied:
+
+```bash
+make clean
+make run-local-cluster
+```
+
+After updating TURN credentials, recycle browser GameServers so new pods fetch fresh Cloudflare ICE server credentials:
+
+```bash
+kubectl delete gameserver --all
+```
 
 ## Helm Template Fails
 
@@ -112,17 +186,10 @@ kubectl get secret analytics-service-secret -o jsonpath='{.data.SERVICE_AUTH_TOK
 kubectl get secret analytics-db-secret -o yaml
 ```
 
-If analytics is not required for your deployment, keep `analytics.enabled=false` and verify services do not depend on analytics-only endpoints.
+If you only use the local admin session path, analytics can stay disabled. If
+you expose client `/session`, analytics is part of the authentication path and
+must be reachable with valid client records.
 
-## Export Or Public CI Fails
+## Public CI Fails
 
-Run the export checks locally:
-
-```bash
-scripts/oss/export.sh /tmp/popcorn-oss-export
-scripts/oss/check-export.sh /tmp/popcorn-oss-export
-scripts/oss/scan-export.sh /tmp/popcorn-oss-export
-```
-
-The export must not contain private deployment paths, internal-only components, private GitHub URLs, production domains, or secret material.
-
+Run the OSS checks locally where possible. The public tree must not contain private deployment paths, private GitHub URLs, production domains, or secret material.

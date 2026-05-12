@@ -25,7 +25,6 @@ Popcorn OSS v1 is a self-hostable browser platform for Kubernetes. These docs co
 
 ## OSS v1 Notes
 
-- The AI-agent component is excluded from the OSS v1 export; it may still exist in the internal repository.
 - The public showcase is docs, architecture, placeholders for screenshots or GIFs, and a local demo flow.
 - There is no hosted public demo for OSS v1.
 - If this repository does not include a root `LICENSE` file, OSS launch is blocked until licensing is added.

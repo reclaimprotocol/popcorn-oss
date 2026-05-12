@@ -17,6 +17,10 @@ spec:
         app.kubernetes.io/name: browser-image-prepuller
         app.kubernetes.io/part-of: browser-fleet
     spec:
+{{- with .Values.imagePrepuller.extraInitContainers }}
+      initContainers:
+{{ tpl (toYaml .) $ | nindent 8 }}
+{{- end }}
       containers:
         - name: prepull-browser-runtime
           image: {{ .Values.browserRuntimeImage | quote }}
@@ -24,6 +28,9 @@ spec:
           command: ["/bin/sh", "-c", "sleep 365d"]
           resources:
 {{ toYaml .Values.imagePrepuller.resources | indent 12 }}
+{{- with .Values.imagePrepuller.extraContainers }}
+{{ tpl (toYaml .) $ | nindent 8 }}
+{{- end }}
 {{- with .Values.imagePrepuller.nodeSelector }}
       nodeSelector:
 {{ toYaml . | indent 8 }}

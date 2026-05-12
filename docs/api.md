@@ -16,7 +16,11 @@ Client session API requests use bearer credentials:
 Authorization: Bearer <client-id>:<client-secret>
 ```
 
-Production and staged deployments should issue and rotate client credentials through their own auth layer (for example, analytics service integration).
+The pool manager validates these credentials by calling the analytics service
+`POST /validate` endpoint, using `ANALYTICS_SERVICE_URL` and the
+`ANALYTICS_AUTH_TOKEN` value sourced from `analytics-service-secret`.
+Production and staged deployments that expose `/session` must run or point to an
+analytics service with Postgres-backed client records.
 
 Browser, CDP, and runtime API URLs returned from `/session` include signed path tokens. Treat those URLs as bearer secrets.
 
@@ -30,7 +34,8 @@ POST /session
 
 This endpoint is the client-facing API path. It requires client credentials to be configured in your deployment.
 
-If your local setup has not wired client credentials, this endpoint can return `401/403`.
+If the pool manager cannot reach the analytics service, the analytics service rejects the configured token, or the client has not been created in analytics, this endpoint returns `401`.
+If `analytics-service-secret` or its `SERVICE_AUTH_TOKEN` key is absent, the platform chart cannot populate `ANALYTICS_AUTH_TOKEN`; the pool-manager pod fails startup or stays unready before `/session` can serve requests.
 
 Request:
 
@@ -131,7 +136,10 @@ OK
 
 ## Admin Endpoints
 
-Admin endpoints are intended for local operations and trusted internal tooling. They use HTTP Basic auth configured by the deployment.
+Admin endpoints are intended for local operations and trusted internal tooling.
+They use pool-manager admin auth, which supports HTTP Basic credentials for
+automation and signed browser login cookies from password or Google OAuth login.
+The client `/session` bearer credentials are separate and unchanged.
 
 - `GET /admin/servers`: list GameServers and allocation status.
 - `POST /admin/session`: create a session attributed to the admin client.
@@ -154,6 +162,11 @@ curl -sS -X POST http://localhost:8080/admin/session \
 ```
 
 The response shape matches client session creation.
+
+For browser use, visit `/admin/login`. Password login uses the same
+username/password source as Basic auth. When Google OAuth is enabled, Google
+accounts must have verified email and match either the configured allowed email
+list or allowed domain list.
 
 ## Gateway Paths
 

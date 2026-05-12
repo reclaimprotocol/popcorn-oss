@@ -31,7 +31,7 @@ RUN --mount=type=bind,source=entrypoint.sh,target=/tmp/entrypoint.sh,ro \
     find /var/log -mindepth 1 -delete; \
     mkdir -p /var/log/app; \
     find / \
-      \( -path /proc -o -path /sys -o -path /dev -o -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune -o \
+      \( -path /proc -o -path /sys -o -path /dev -o -path /tmp/entrypoint.sh -o -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf \) -prune -o \
       -newerct "$touch_start" \
       -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 

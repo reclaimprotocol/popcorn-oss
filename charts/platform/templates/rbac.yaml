@@ -1,8 +1,10 @@
 {{- if .Values.poolManager.enabled }}
+{{- $gameServerNamespace := default .Release.Namespace .Values.poolManager.gameServerNamespace }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: pod-killer
+  namespace: {{ $gameServerNamespace | quote }}
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -21,6 +23,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: pool-manager-pod-killer
+  namespace: {{ $gameServerNamespace | quote }}
 subjects:
   - kind: ServiceAccount
     name: pool-manager

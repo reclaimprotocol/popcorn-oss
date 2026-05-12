@@ -50,7 +50,7 @@ make build-browser-node
 make build-ttl-controller
 ```
 
-The local build creates service images for the platform and browser runtime. Browser image inputs come from the separate [popcorn-images](../popcorn-images/README.md) submodule. The root `make build` target may include internal-only services in the internal repository; use the explicit targets or `make run-local-cluster` for the OSS local path.
+The local build creates service images for the platform and browser runtime. Browser image inputs come from the separate [popcorn-images](../popcorn-images/README.md) submodule. Use the explicit targets or `make run-local-cluster` for the OSS local path.
 
 ## Start Kind and Deploy
 
@@ -65,7 +65,6 @@ The local deployment is expected to:
 - load locally built images into Kind;
 - install the platform chart with Redis, pool manager, and gateway enabled;
 - install the browser fleet chart with attestation disabled by default;
-- keep the AI-agent component excluded in the OSS v1 path.
 
 If a parallel PR has not landed yet, the available fallback targets are:
 
@@ -99,7 +98,7 @@ curl -sS http://localhost:8080/health
 ## Create a Demo Session
 
 The local Kind smoke-test flow uses the admin endpoint, so external client credentials are not required.
-`/session` may require client credentials and is not assumed in the default local path.
+`/session` requires analytics-backed client credentials and is not assumed in the default local path.
 
 ```bash
 POPCORN_ADMIN_USER="${POPCORN_ADMIN_USER:-admin}"

@@ -23,6 +23,14 @@ spec:
             items:
               - key: private.pem
                 path: private.pem
+{{- if .Values.poolManager.adminAuth.passwordFileSecretName }}
+        - name: admin-password-file
+          secret:
+            secretName: {{ .Values.poolManager.adminAuth.passwordFileSecretName | quote }}
+            items:
+              - key: {{ .Values.poolManager.adminAuth.passwordFileSecretKey | quote }}
+                path: admin.htpasswd
+{{- end }}
       containers:
         - name: pool-manager
           image: "{{ .Values.registry }}/pool-manager:{{ .Values.imageTag }}"
@@ -33,11 +41,57 @@ spec:
             - name: jwt-keys
               mountPath: /app/keys
               readOnly: true
+{{- if .Values.poolManager.adminAuth.passwordFileSecretName }}
+            - name: admin-password-file
+              mountPath: /app/auth/admin.htpasswd
+              subPath: admin.htpasswd
+              readOnly: true
+{{- end }}
           env:
             - name: REDIS_HOST
               value: {{ .Values.poolManager.redisHost | quote }}
+            - name: ADMIN_AUTH_STRATEGIES
+              value: {{ .Values.poolManager.adminAuth.strategies | quote }}
+            - name: ADMIN_SESSION_TTL_SECONDS
+              value: {{ .Values.poolManager.adminAuth.sessionTtlSeconds | quote }}
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.poolManager.adminAuth.sessionSecretName | quote }}
+                  key: {{ .Values.poolManager.adminAuth.sessionSecretKey | quote }}
+                  optional: true
+{{- if .Values.poolManager.adminAuth.passwordFileSecretName }}
+            - name: ADMIN_PASSWORD_FILE
+              value: /app/auth/admin.htpasswd
+{{- end }}
+            - name: ADMIN_GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.poolManager.adminAuth.googleSecretName | quote }}
+                  key: {{ .Values.poolManager.adminAuth.googleClientIdKey | quote }}
+                  optional: true
+            - name: ADMIN_GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.poolManager.adminAuth.googleSecretName | quote }}
+                  key: {{ .Values.poolManager.adminAuth.googleClientSecretKey | quote }}
+                  optional: true
+            - name: ADMIN_GOOGLE_REDIRECT_URI
+              value: {{ .Values.poolManager.adminAuth.googleRedirectUri | quote }}
+            - name: ADMIN_GOOGLE_ALLOWED_EMAILS
+              value: {{ .Values.poolManager.adminAuth.googleAllowedEmails | quote }}
+            - name: ADMIN_GOOGLE_ALLOWED_DOMAINS
+              value: {{ .Values.poolManager.adminAuth.googleAllowedDomains | quote }}
             - name: ANALYTICS_SERVICE_URL
               value: {{ default (printf "http://analytics-service.%s.svc.cluster.local:3000" .Release.Namespace) .Values.poolManager.analyticsServiceUrl | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GAME_SERVER_NAMESPACE
+              value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
+            - name: GAME_SERVER_FLEET
+              value: {{ .Values.poolManager.gameServerFleet | quote }}
             - name: OTEL_CLICKHOUSE_ENABLED
               value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
             - name: ANALYTICS_AUTH_TOKEN
