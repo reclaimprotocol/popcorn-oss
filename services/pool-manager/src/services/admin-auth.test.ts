@@ -50,6 +50,17 @@ describe("admin auth", () => {
         }))).toBe(false);
     });
 
+    test("allows port-variant forwarded hosts as same-site for admin requests", () => {
+        expect(isSameOriginAdminRequest(new Request("http://pool-manager.default.svc:3000/admin/session", {
+            method: "POST",
+            headers: {
+                Origin: "https://gateway.example.com",
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-Host": "gateway.example.com:8443",
+            },
+        }))).toBe(true);
+    });
+
     test("parses htpasswd bcrypt users and ignores unsupported hashes", () => {
         const users = parseHtpasswd(`
 # comment

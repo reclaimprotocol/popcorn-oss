@@ -84,24 +84,67 @@ export function isSameOriginAdminRequest(request: Request): boolean {
     const origin = request.headers.get("Origin");
     const referer = request.headers.get("Referer");
     const url = new URL(request.url);
-    const forwardedProto = request.headers.get("X-Forwarded-Proto")?.split(",")[0]?.trim();
-    const forwardedHost = request.headers.get("X-Forwarded-Host")?.split(",")[0]?.trim();
-    const protocol = forwardedProto ? `${forwardedProto}:` : url.protocol;
-    const host = forwardedHost || url.host;
-    const expectedOrigin = `${protocol}//${host}`;
+
+    const expectedOrigins = buildExpectedAdminOrigins(request, url);
 
     if (origin) {
-        return origin === expectedOrigin;
+        return matchesOrigin(origin, expectedOrigins);
     }
     if (referer) {
         try {
-            return new URL(referer).origin === expectedOrigin;
+            return matchesOrigin(referer, expectedOrigins);
         } catch {
             return false;
         }
     }
 
     return false;
+}
+
+function buildExpectedAdminOrigins(request: Request, url: URL): Set<string> {
+    const protocolSet = new Set<string>([
+        normalizeProtocol(request.headers.get("X-Forwarded-Proto")?.split(",")[0]?.trim()),
+        normalizeProtocol(url.protocol),
+    ].filter(Boolean) as string[]);
+    const hostSet = new Set<string>([
+        request.headers.get("X-Forwarded-Host")?.split(",")[0]?.trim(),
+        request.headers.get("Host")?.split(",")[0]?.trim(),
+        url.host,
+    ].filter(Boolean) as string[]);
+
+    const expected = new Set<string>();
+    for (const protocol of protocolSet) {
+        for (const rawHost of hostSet) {
+            const host = normalizeHost(rawHost);
+            if (!host) continue;
+            expected.add(`${protocol}://${host}`);
+        }
+    }
+
+    return expected;
+}
+
+function normalizeProtocol(protocol: string | undefined): string {
+    if (!protocol) return "";
+    return protocol.toLowerCase().replace(":", "");
+}
+
+function normalizeHost(rawHost: string): string {
+    const host = rawHost.trim().toLowerCase();
+    if (!host) return "";
+
+    try {
+        return new URL(`https://${host}`).hostname;
+    } catch {
+        return host.split(":")[0] || "";
+    }
+}
+
+function matchesOrigin(origin: string, expectedOrigins: Set<string>): boolean {
+    const parsed = new URL(origin);
+    const protocol = normalizeProtocol(parsed.protocol);
+    const host = normalizeHost(parsed.host);
+    return expectedOrigins.has(`${protocol}://${host}`);
 }
 
 export function parseBasicAuth(header?: string | null): { username: string; password: string } | null {
