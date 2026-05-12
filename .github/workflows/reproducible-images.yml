@@ -71,6 +71,12 @@ jobs:
             echo "ARTIFACT_MIRROR_TAG=${ARTIFACT_MIRROR_TAG}"
           } >>"${GITHUB_ENV}"
 
+      - name: Ensure mirrored Chromium release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/publish-chromium-artifacts-to-github.sh "${GITHUB_ARTIFACT_MIRROR_REPO}"
+
       - name: Prepare Chromium artifact context
         shell: bash
         env:
