@@ -187,4 +187,3 @@ jobs:
             --build-arg BASE_IMAGE=ubuntu:22.04 \
             --tag popcorn/browser-node:ci \
             ./services/browser-node
-
