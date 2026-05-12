@@ -22,8 +22,6 @@ We want Popcorn to be a welcoming, respectful, and productive project for contri
 
 ## Enforcement
 
-Report Code of Conduct concerns to `security@example.com`.
-
-TODO: Replace this placeholder with the approved public community contact before the repository is announced for public use.
+Report Code of Conduct concerns to `security@reclaimprotocol.org`.
 
 Maintainers may remove comments, close issues or pull requests, restrict participation, or take other appropriate action to protect the community. Reports will be handled with discretion and respect for the people involved.

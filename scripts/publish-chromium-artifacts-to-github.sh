@@ -77,14 +77,20 @@ for artifact in artifacts:
     print(f'{artifact["filename"]}\t{artifact["url"]}\t{artifact["sha256"]}')
 PY
 
-declare -A ARTIFACT_URLS=()
-declare -A ARTIFACT_SHAS=()
 expected_assets=()
 while IFS=$'\t' read -r filename url sha256; do
   expected_assets+=("$filename")
-  ARTIFACT_URLS["$filename"]="$url"
-  ARTIFACT_SHAS["$filename"]="$sha256"
 done <"$ARTIFACT_LIST_FILE"
+
+artifact_field() {
+  local filename="$1"
+  local field="$2"
+
+  awk -F $'\t' -v filename="$filename" -v field="$field" '
+    $1 == filename { print $field; found = 1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$ARTIFACT_LIST_FILE"
+}
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -133,17 +139,19 @@ download_from_github_release() {
 echo "Publishing Chromium artifacts for $TARGET_ARCH to $MIRROR_REPO"
 echo "Release tag: $ARTIFACT_MIRROR_TAG"
 
-declare -A RELEASE_ASSET_LOOKUP=()
+RELEASE_ASSETS_FILE="$TMP_DIR/release-assets.txt"
+: >"$RELEASE_ASSETS_FILE"
 if gh release view "$ARTIFACT_MIRROR_TAG" --repo "$MIRROR_REPO" >/dev/null 2>&1; then
-  while IFS= read -r asset_name; do
-    RELEASE_ASSET_LOOKUP["$asset_name"]=1
-  done < <(
-    gh release view "$ARTIFACT_MIRROR_TAG" \
-      --repo "$MIRROR_REPO" \
-      --json assets \
-      --jq '.assets[].name'
-  )
+  gh release view "$ARTIFACT_MIRROR_TAG" \
+    --repo "$MIRROR_REPO" \
+    --json assets \
+    --jq '.assets[].name' >"$RELEASE_ASSETS_FILE"
 fi
+
+release_has_asset() {
+  local filename="$1"
+  grep -Fxq "$filename" "$RELEASE_ASSETS_FILE"
+}
 
 release_exists=false
 if gh release view "$ARTIFACT_MIRROR_TAG" --repo "$MIRROR_REPO" >/dev/null 2>&1; then
@@ -151,7 +159,7 @@ if gh release view "$ARTIFACT_MIRROR_TAG" --repo "$MIRROR_REPO" >/dev/null 2>&1;
 
   missing_assets=()
   for asset_name in "${expected_assets[@]}"; do
-    if [[ -z "${RELEASE_ASSET_LOOKUP[$asset_name]+x}" ]]; then
+    if ! release_has_asset "$asset_name"; then
       missing_assets+=("$asset_name")
     fi
   done
@@ -168,11 +176,11 @@ fi
 downloaded_files=()
 for filename in "${expected_assets[@]}"; do
   out_path="$TMP_DIR/$filename"
-  expected_sha="${ARTIFACT_SHAS[$filename]}"
-  upstream_url="${ARTIFACT_URLS[$filename]}"
+  expected_sha="$(artifact_field "$filename" 3)"
+  upstream_url="$(artifact_field "$filename" 2)"
   used_mirror=false
 
-  if [[ "$release_exists" == true ]] && [[ -n "${RELEASE_ASSET_LOOKUP[$filename]+x}" ]]; then
+  if [[ "$release_exists" == true ]] && release_has_asset "$filename"; then
     echo "Using already-mirrored $filename from release"
     if download_from_github_release "$filename" "$out_path"; then
       used_mirror=true
@@ -209,37 +217,31 @@ gh release upload "$ARTIFACT_MIRROR_TAG" \
   --clobber \
   "${downloaded_files[@]}"
 
-declare -A RELEASE_ASSETS=()
-while IFS= read -r asset_name; do
-  RELEASE_ASSETS["$asset_name"]=1
-done < <(
-  gh release view "$ARTIFACT_MIRROR_TAG" \
-    --repo "$MIRROR_REPO" \
-    --json assets \
-    --jq '.assets[].name'
-)
+gh release view "$ARTIFACT_MIRROR_TAG" \
+  --repo "$MIRROR_REPO" \
+  --json assets \
+  --jq '.assets[].name' >"$RELEASE_ASSETS_FILE"
 
-if [[ "${#RELEASE_ASSETS[@]}" -ne "${#expected_assets[@]}" ]]; then
-  echo "Release completeness check failed: expected ${#expected_assets[@]} asset(s), found ${#RELEASE_ASSETS[@]} artifact(s)" >&2
-  for asset_name in "${!RELEASE_ASSETS[@]}"; do
-    echo "Uploaded asset: $asset_name"
-  done | sort
+release_asset_count="$(grep -c . "$RELEASE_ASSETS_FILE" || true)"
+if [[ "$release_asset_count" -ne "${#expected_assets[@]}" ]]; then
+  echo "Release completeness check failed: expected ${#expected_assets[@]} asset(s), found $release_asset_count artifact(s)" >&2
+  sed 's/^/Uploaded asset: /' "$RELEASE_ASSETS_FILE" | sort
   exit 1
 fi
 
 for expected_asset in "${expected_assets[@]}"; do
-  if [[ -z "${RELEASE_ASSETS[$expected_asset]+x}" ]]; then
+  if ! release_has_asset "$expected_asset"; then
     echo "Release completeness check failed: missing asset '$expected_asset' in $ARTIFACT_MIRROR_TAG" >&2
     exit 1
   fi
 done
 
-for uploaded_asset in "${!RELEASE_ASSETS[@]}"; do
-  if [[ -z "${ARTIFACT_SHAS[$uploaded_asset]+x}" ]]; then
+while IFS= read -r uploaded_asset; do
+  if [[ -n "$uploaded_asset" ]] && ! artifact_field "$uploaded_asset" 3 >/dev/null; then
     echo "Release completeness check failed: unexpected asset '$uploaded_asset' in $ARTIFACT_MIRROR_TAG" >&2
     exit 1
   fi
-done
+done <"$RELEASE_ASSETS_FILE"
 
 cat <<EOF
 

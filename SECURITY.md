@@ -4,9 +4,7 @@
 
 Please do not open public issues for suspected security vulnerabilities.
 
-Email reports to `security@example.com`.
-
-TODO: Replace this placeholder with the approved public security contact before the repository is announced for public use.
+Email reports to `security@reclaimprotocol.org`, or use GitHub private vulnerability reporting when it is enabled for this repository.
 
 Include as much of the following as you can:
 
