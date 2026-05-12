@@ -1,14 +1,14 @@
-# OSS-safe example values for rendering the platform chart.
-# Replace placeholders before installing into a real cluster.
+# GCP example values for rendering the platform chart.
+# Replace placeholders before installing into a GKE cluster.
 
-clusterName: example-cluster
-provider: generic
+clusterName: example-gke-cluster
+provider: gcp
 region: us-central1
 registry: ghcr.io/reclaimprotocol/popcorn-oss
 imageTag: latest
 
 poolManager:
-  enabled: false
+  enabled: true
   replicas: 1
   imagePullPolicy: IfNotPresent
   redisHost: redis
@@ -35,7 +35,7 @@ gateway:
   jwtPublicKeySecretId: ""
 
 redis:
-  enabled: false
+  enabled: true
   replicas: 1
   image: redis:7-alpine
   imagePullPolicy: IfNotPresent

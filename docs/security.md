@@ -137,12 +137,12 @@ Prefer structured logs with session IDs and pod IDs, while redacting tokens.
 
 ## Public Deployment Checklist
 
-- Add a root `LICENSE` before OSS launch.
+- Confirm the root `LICENSE` matches the intended release license.
 - Use TLS for gateway traffic.
 - Keep admin endpoints behind trusted access controls.
 - Keep Redis and internal services private.
 - Use digest-pinned runtime images.
 - Keep private deployment extensions out of OSS release manifests.
-- Use your own registry and credentials.
+- Use GHCR or your own GCP Artifact Registry mirror with digest-pinned images.
 - Set session TTLs and resource limits.
 - Run dependency and container scans as part of release.

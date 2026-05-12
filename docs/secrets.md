@@ -1,12 +1,12 @@
 # Secrets
 
-Popcorn services read secrets from Kubernetes Secrets mounted as files or exposed as environment variables. The application code does not need to know whether those Kubernetes Secrets were created by `kubectl`, External Secrets Operator, Sealed Secrets, SOPS, Vault, AWS Secrets Manager, GCP Secret Manager, Azure Key Vault, 1Password, or another operator.
+Popcorn services read secrets from Kubernetes Secrets mounted as files or exposed as environment variables. For supported GCP deployments, use GCP Secret Manager with External Secrets Operator, or create the expected Kubernetes Secrets directly.
 
 Use one of these patterns:
 
 - Local development: `make local-secrets` creates development-only Kubernetes Secrets in a Kind cluster.
 - Existing Kubernetes Secrets: create the expected Secret objects before installing the Helm charts.
-- External secret manager: install External Secrets Operator and map provider keys into the same Secret names and keys.
+- GCP Secret Manager: install External Secrets Operator and map Secret Manager entries into the same Secret names and keys.
 
 Do not commit generated private keys, client credentials, registry credentials, cloud credentials, or production tokens.
 
@@ -95,7 +95,7 @@ Local Kind can run without Cloudflare TURN only for same-machine testing. The lo
 
 Cloudflare TURN is the recommended hosted TURN option for production and realistic local testing. Set `TURN_KEY_ID` and `TURN_API_TOKEN` from a Cloudflare Calls TURN key. On browser pod startup, the runtime exchanges those values for short-lived ICE server credentials and exports them to Neko as `NEKO_ICESERVERS`. Leave `NEKO_ICESERVERS` empty unless you need to provide a static custom ICE server JSON override.
 
-Do not store Cloudflare API tokens in Helm values or source control. Put them in `browser-turn-secret` directly or sync them from your secret manager.
+Do not store Cloudflare API tokens in Helm values or source control. Put them in `browser-turn-secret` directly or sync them from GCP Secret Manager.
 
 ## Local Development
 
@@ -138,18 +138,18 @@ kubectl create secret generic browser-turn-secret \
 
 See `examples/kubernetes/existing-secrets.example.yaml` for a complete placeholder manifest.
 
-## External Secret Managers
+## GCP Secret Manager
 
-External Secrets Operator can sync provider-backed values into the same Kubernetes Secret names. Popcorn does not require a specific provider.
+External Secrets Operator can sync GCP Secret Manager values into the same Kubernetes Secret names. The bundled chart templates expect a `ClusterSecretStore` named `gcpsm`.
 
 Recommended flow:
 
 1. Install External Secrets Operator.
-2. Configure a `SecretStore` or `ClusterSecretStore` for your provider.
+2. Configure `ClusterSecretStore/gcpsm` for GCP Secret Manager using Workload Identity.
 3. Create `ExternalSecret` objects that produce the required Kubernetes Secrets listed above.
 4. Install Popcorn with the same Secret names in Helm values.
 
-See `examples/kubernetes/external-secrets.example.yaml` for provider-neutral placeholder mappings.
+See `examples/kubernetes/external-secrets.example.yaml` for GCP Secret Manager placeholder mappings.
 
 The browser fleet chart already supports an optional `externalSecrets.enabled` path for `browser-turn-secret`. The platform chart can consume either directly-created Kubernetes Secrets or externally-synced Secrets with the same names.
 

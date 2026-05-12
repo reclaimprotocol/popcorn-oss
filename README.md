@@ -2,7 +2,7 @@
 
 Popcorn is a self-hostable browser platform for running isolated, on-demand Chromium sessions in Kubernetes. It gives each session its own ephemeral browser pod, then exposes browser view, Chrome DevTools Protocol, and session APIs through a gateway.
 
-Popcorn OSS v1 is focused on the browser runtime platform: local deployment, Helm deployment, session lifecycle APIs, CDP access, browser images, and optional attestation docs.
+Popcorn OSS v1 is focused on the browser runtime platform: local Kind development, GCP/GKE deployment, session lifecycle APIs, CDP access, browser images, and optional GCP attestation docs.
 
 ## What It Runs
 
@@ -16,7 +16,7 @@ Popcorn is built from a few small services:
 - `browser-runtime-attestor`: optional attestation sidecar for deployments that support confidential computing.
 - `popcorn-images`: a separate OSS repository for browser base images and image build assets.
 
-The current v1 showcase is documentation, architecture, screenshots or GIF placeholders where useful, and a local demo flow. There is no hosted public demo for OSS v1.
+There is no hosted public demo for OSS v1; run the local Kind flow or deploy it to GKE.
 
 ```mermaid
 flowchart LR
@@ -56,10 +56,8 @@ Clone with submodules so the browser image assets are present:
 
 ```bash
 git clone --recursive https://github.com/reclaimprotocol/popcorn-oss.git
-cd popcorn
+cd popcorn-oss
 ```
-
-The `reclaimprotocol/popcorn-oss` repository may remain private while release validation is in progress.
 
 If you already cloned without submodules:
 
@@ -166,7 +164,7 @@ await browser.close();
 
 - [Docs index](docs/index.md)
 - [Local Kind deployment](docs/local-kind.md)
-- [Helm deployment](docs/helm-deployment.md)
+- [GCP deployment](docs/helm-deployment.md)
 - [Configuration](docs/configuration.md)
 - [Secrets](docs/secrets.md)
 - [Session API](docs/api.md)
@@ -180,11 +178,11 @@ await browser.close();
 ## Limitations
 
 - There is no hosted public demo for OSS v1.
-- Local deployment depends on generated local JWT keys and OSS Helm example values that are landing in parallel PRs.
-- Confidential-computing attestation requires compatible infrastructure and signed digest-pinned images.
+- Production deployment support is GCP/GKE only for now.
+- Local deployment depends on generated local JWT keys and development-only Helm values.
+- Confidential-computing attestation requires compatible GCP infrastructure and signed digest-pinned images.
 - The restricted CDP endpoint currently relies on scoped gateway tokens; command-level filtering is planned but should not be treated as the primary security boundary yet.
-- Root repository licensing is pending. If no root `LICENSE` file is present in your checkout, launch is blocked until the project license is added.
 
 ## Contributing
 
-This repository is being prepared for OSS launch. Keep public docs self-hosting oriented, avoid private registries or domains in examples, and prefer local demo commands that work without hosted infrastructure.
+Keep public docs oriented around local Kind and GCP/GKE deployment, avoid private registries or domains in examples, and prefer commands that can be reproduced from a fresh clone.

@@ -37,7 +37,7 @@ ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:<commit-sha>
 
 Those digest refs are signed with keyless cosign by `.github/workflows/reproducible-images.yml`.
 
-Internal production deployments can continue to use GCP Artifact Registry values in the internal chart defaults. Do not copy private production registry references into the OSS export.
+Production deployments can either pull the published GHCR images directly or mirror them into their own GCP Artifact Registry. Public examples use GHCR.
 
 ## Browser Images
 
@@ -46,8 +46,6 @@ Internal production deployments can continue to use GCP Artifact Registry values
 ```bash
 git clone --recursive https://github.com/reclaimprotocol/popcorn-oss.git
 ```
-
-The `reclaimprotocol/popcorn-oss` repository may remain private while release validation is in progress.
 
 Or initialize later:
 
@@ -113,7 +111,7 @@ cosign verify \
 
 ## Release Checklist
 
-- Root `LICENSE` exists.
+- Root `LICENSE` exists and matches the intended release license.
 - Public README and docs do not mention private registries, domains, or credentials.
 - Private components are not part of the OSS release branch.
 - `popcorn-images` submodule points to the intended public release.
@@ -122,7 +120,6 @@ cosign verify \
 - Images are built for supported platforms.
 - Production image references are digest-pinned.
 - Attestor images are signed if attestation is documented for the release.
-- Screenshots or GIF placeholders are present if used in release notes.
 
 ## Versioning
 
@@ -139,7 +136,3 @@ imageTag: v0.1.0
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
 ```
-
-## License Blocker
-
-If the repository has no root `LICENSE` file, OSS launch is blocked. Add the project license before publishing a release or inviting external contributions.

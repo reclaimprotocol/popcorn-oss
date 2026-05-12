@@ -21,3 +21,5 @@ __pycache__/
 *.swo
 docker-compose.override.yml
 .venv/
+services/gateway/keys/
+services/pool-manager/keys/

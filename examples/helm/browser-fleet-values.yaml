@@ -1,5 +1,5 @@
-# OSS-safe example values for rendering the browser-fleet chart.
-# Replace placeholders before installing into a real cluster.
+# GCP example values for rendering the browser-fleet chart.
+# Replace placeholders before installing into a GKE cluster.
 
 region: us-central1
 gatewayDomain: gateway.example.com

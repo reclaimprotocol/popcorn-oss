@@ -1,158 +1,76 @@
-# Helm Deployment
+# GCP Deployment
 
-Popcorn can run on any Kubernetes cluster that supports the required workloads. The Helm deployment is split into a platform chart and a browser fleet chart.
+Popcorn OSS production deployments are supported on Google Kubernetes Engine (GKE). The local Kind path remains available for development and smoke testing, but the production documentation, chart defaults, and examples assume GCP services.
 
-## Charts
+The deployment is split into two Helm charts:
 
-- `charts/platform`: gateway, pool manager, Redis, optional analytics, optional TTL controller, and supporting RBAC.
-- `charts/browser-fleet`: Agones browser fleet, optional attestor sidecar, optional image prepuller, and browser runtime settings.
+- `charts/platform`: gateway, pool manager, Redis, optional analytics/Postgres/Metabase, optional TTL controller, optional GKE node prescaler, and RBAC.
+- `charts/browser-fleet`: Agones browser fleet, browser runtime settings, optional attestor sidecar, optional image prepuller, and TURN secret wiring.
 
-OSS deployments should use public, self-hosted values and image references. The OSS examples use GitHub Container Registry image names; internal production values can continue to use GCP Artifact Registry.
+Install both charts into the same workload namespace unless you intentionally configure a split namespace with `poolManager.gameServerNamespace` and `gkeNodePrescaler.namespace`.
 
 ## Prerequisites
 
-- Kubernetes cluster.
-- Helm 3.
-- kubectl configured for the target cluster.
+- A GCP project with a GKE cluster.
+- `gcloud`, `kubectl`, and Helm 3 configured for that cluster.
+- Workload Identity enabled for GKE service accounts that need GCP access.
 - Agones installed in the cluster.
-- Popcorn images pushed to a registry your cluster can pull.
-- RSA key pair for signing gateway path tokens.
-- Analytics-backed client credentials for the client session API.
-  Local smoke tests can use the admin session endpoint instead.
+- External Secrets Operator installed if you want to sync secrets from GCP Secret Manager.
+- A DNS name and GCP global static IP for the gateway if you want managed TLS through GKE Ingress.
+- Popcorn images available to the cluster. Public OSS examples use `ghcr.io/reclaimprotocol/popcorn-oss`; production rollouts should pin digests.
+- Stable JWT keys for gateway path tokens.
+- `browser-turn-secret` backed by Cloudflare TURN credentials for browser access from real networks.
 
-## Image Inputs
+## Images
 
-Popcorn runtime image assets are built from the separate [popcorn-images](../popcorn-images/README.md) repository. For OSS self-hosting, use GHCR images or your own public registry and digest-pin production deployments.
-
-Example image references:
+Use the published OSS GHCR images or mirror them into your own GCP Artifact Registry. Prefer digest refs for production:
 
 ```yaml
 registry: ghcr.io/reclaimprotocol/popcorn-oss
-imageTag: v0.1.0
+imageTag: <commit-or-release-tag>
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
 ```
 
-Do not use private project registries in public examples. Internal production chart defaults may keep GCP Artifact Registry references; the OSS export rewrites those defaults to public GHCR-style image references.
+The browser base image assets are tracked through the `popcorn-images` submodule. Chromium artifact release assets are mirrored in `reclaimprotocol/popcorn-oss`, and both OSS and internal builds should consume that mirror.
 
-## Keys
+## GCP Secrets
 
-The gateway validates JWT path tokens using the public key, while the pool manager signs tokens with the private key.
+Popcorn reads Kubernetes Secrets. On GCP, the recommended production path is GCP Secret Manager plus External Secrets Operator using a `ClusterSecretStore` named `gcpsm`, because the bundled chart ExternalSecret templates expect that store name.
 
-Development flow:
+Create the required secrets in Secret Manager, then sync them into Kubernetes Secrets with the names documented in [Secrets](secrets.md):
+
+- `gateway-jwt-keys`
+- `pool-manager-env-secrets`
+- `pool-manager-admin-password-file`, if using password-file admin auth
+- `analytics-service-secret`
+- `analytics-db-secret`, if running bundled analytics/Postgres or Metabase
+- `browser-turn-secret`
+- `otel-clickhouse-secret`, if observability is enabled
+
+For a direct Kubernetes Secret bootstrap instead of External Secrets Operator, apply `examples/kubernetes/existing-secrets.example.yaml` after replacing every placeholder.
+
+## Gateway TLS On GKE
+
+When both values are set, the platform chart renders GKE `ManagedCertificate`, `FrontendConfig`, and GCE Ingress resources:
+
+```yaml
+gateway:
+  domainName: gateway.example.com
+  staticIpName: popcorn-gateway-ip
+```
+
+Create the static IP before installing the chart:
 
 ```bash
-make local-keys
+gcloud compute addresses create popcorn-gateway-ip --global
 ```
 
-`make local-keys` creates development-only key material for the local Kind path.
+Point your DNS record at that IP. Managed certificate provisioning can take several minutes after DNS is correct.
 
-Production deployments should create Kubernetes secrets through their normal secret-management process. Do not commit private keys or production secrets. See [Secrets](secrets.md) for the complete required Secret contract and provider-neutral examples.
+## Install Agones
 
-## Client Session Authentication
-
-The public `/session` API is analytics-backed in the current pool-manager
-implementation. The pool manager validates `Authorization: Bearer
-<client-id>:<client-secret>` by calling `POST /validate` on
-`poolManager.analyticsServiceUrl`, authenticated with `ANALYTICS_AUTH_TOKEN`
-from `analytics-service-secret`.
-
-For local smoke tests, use `/admin/session` with the admin credentials. For a
-client-facing deployment, either enable the bundled analytics service and
-Postgres or point `poolManager.analyticsServiceUrl` at an existing analytics
-service with client records. A local `SESSION_AUTH_CLIENTS` Secret value is not
-used by the current code path.
-
-## Admin Authentication
-
-`/admin` and `/admin/*` use pool-manager admin auth. Basic auth remains
-available for automation, and browser users can sign in through password login
-or Google OAuth.
-
-Minimal password-file values:
-
-```yaml
-poolManager:
-  adminAuth:
-    strategies: password
-    passwordFileSecretName: pool-manager-admin-password-file
-```
-
-Google OAuth can be enabled with password auth:
-
-```yaml
-poolManager:
-  adminAuth:
-    strategies: password,google
-    googleRedirectUri: https://gateway.example.com/admin/auth/google/callback
-    googleAllowedEmails: admin@example.com
-    googleAllowedDomains: example.com
-```
-
-Store `ADMIN_SESSION_SECRET`, `ADMIN_GOOGLE_CLIENT_ID`, and
-`ADMIN_GOOGLE_CLIENT_SECRET` in `pool-manager-env-secrets` or another Secret
-referenced by `poolManager.adminAuth`. `ADMIN_SESSION_SECRET` is required for
-Google OAuth and password-file browser login; legacy `ADMIN_PASS` remains a
-compatibility fallback for existing username/password deployments.
-
-## Minimal Local Values Shape
-
-The OSS Helm example values are included under `examples/helm/`. For Kind, they should look roughly like this:
-
-```yaml
-registry: popcorn
-imageTag: local
-clusterName: local
-provider: kind
-
-poolManager:
-  enabled: true
-  imagePullPolicy: IfNotPresent
-
-gateway:
-  enabled: true
-  imagePullPolicy: IfNotPresent
-  serviceType: NodePort
-  nodePorts:
-    http: 30080
-  backendConfig:
-    enabled: false
-
-redis:
-  enabled: true
-```
-
-Browser fleet local values:
-
-```yaml
-externalSecrets:
-  enabled: false
-
-ccDevicePlugin:
-  enabled: false
-
-browserRuntimeImage: popcorn/browser-node:local
-browserRuntimeImagePullPolicy: IfNotPresent
-
-browserRuntimeAttestor:
-  enabled: false
-
-fleet:
-  replicas: 1
-  browserRuntimeCpuRequest: 500m
-  browserRuntimeCpuLimit: 2000m
-  browserRuntimeMemoryRequest: 512Mi
-  browserRuntimeMemoryLimit: 2Gi
-
-autoscaler:
-  bufferSize: 1
-  minReplicas: 1
-  maxReplicas: 3
-```
-
-## Install
-
-Install Agones first if your cluster does not already have it:
+Install Agones once per cluster:
 
 ```bash
 kubectl create namespace agones-system --dry-run=client -o yaml | kubectl apply -f -
@@ -163,43 +81,130 @@ helm upgrade --install agones agones/agones \
   --set agones.controller.generateTLS=false
 ```
 
-Install the platform:
+For local Kind only, the Makefile constrains Agones ports to `7000-7010` so Docker can publish UDP to the host. Do not use that tiny range for production GKE capacity.
+
+## Prepare Values
+
+Start from the examples and copy them into a private values location outside the repo:
+
+```bash
+cp examples/helm/platform-values.yaml /tmp/popcorn-platform.gcp.yaml
+cp examples/helm/browser-fleet-values.yaml /tmp/popcorn-browser-fleet.gcp.yaml
+```
+
+At minimum, update:
+
+```yaml
+# platform values
+clusterName: popcorn-prod
+provider: gcp
+region: us-central1
+registry: ghcr.io/reclaimprotocol/popcorn-oss
+imageTag: <commit-or-release-tag>
+
+poolManager:
+  enabled: true
+  analyticsServiceUrl: http://analytics-service.popcorn.svc.cluster.local:3000
+
+gateway:
+  enabled: true
+  domainName: gateway.example.com
+  staticIpName: popcorn-gateway-ip
+
+redis:
+  enabled: true
+
+ttlController:
+  enabled: true
+
+gkeNodePrescaler:
+  enabled: false
+  project: example-project
+  cluster: popcorn-prod
+  location: us-central1
+  nodePool: browser-pool
+```
+
+```yaml
+# browser fleet values
+region: us-central1
+gatewayDomain: gateway.example.com
+
+externalSecrets:
+  enabled: true
+
+serviceAccount:
+  gcpServiceAccount: browser-runtime@example-project.iam.gserviceaccount.com
+
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+
+browserRuntimeAttestor:
+  enabled: false
+
+ccDevicePlugin:
+  enabled: false
+
+fleet:
+  replicas: 2
+
+autoscaler:
+  minReplicas: 2
+  maxReplicas: 20
+```
+
+Enable `browserRuntimeAttestor` and `ccDevicePlugin` only when deploying on compatible confidential-computing GKE nodes with the required IAM and digest-pinned images.
+
+## Install Popcorn
 
 ```bash
 kubectl create namespace popcorn --dry-run=client -o yaml | kubectl apply -f -
+
 helm upgrade --install popcorn-platform charts/platform \
   --namespace popcorn \
-  --values examples/helm/local-platform-values.yaml
-```
+  --values /tmp/popcorn-platform.gcp.yaml
 
-Install the browser fleet:
-
-```bash
 helm upgrade --install browser-fleet charts/browser-fleet \
   --namespace popcorn \
-  --values examples/helm/local-browser-fleet-values.yaml
+  --values /tmp/popcorn-browser-fleet.gcp.yaml
 ```
 
-`popcorn` is only an example workload namespace. The charts do not require that name, but the platform chart and browser-fleet chart should be installed into the same workload namespace unless you intentionally configure `poolManager.gameServerNamespace` and the matching RBAC/secrets for a split-namespace deployment.
+Watch rollout state:
 
-The `examples/helm/*.yaml` files are public-safe examples for OSS chart rendering. The `examples/kubernetes/*.yaml` files show placeholder Secret manifests for direct Kubernetes Secrets and External Secrets Operator. Replace placeholder image registries, domains, service accounts, and secret names before installing into a shared or production cluster.
+```bash
+kubectl -n popcorn get pods
+kubectl -n popcorn get fleet,fleetautoscaler,gameservers
+kubectl -n popcorn rollout status deployment/pool-manager
+kubectl -n popcorn rollout status deployment/popcorn-gateway
+```
+
+## Verify A Session
+
+After the gateway DNS and certificate are ready, create a session through the admin endpoint:
+
+```bash
+curl -sS -X POST https://gateway.example.com/admin/session \
+  -u "$POPCORN_ADMIN_USER:$POPCORN_ADMIN_PASS" \
+  -H 'Content-Type: application/json' \
+  -d '{"sessionId":"gcp-smoke"}'
+```
+
+For the public `/session` API, configure the analytics service and client records. The current pool manager validates client credentials through `poolManager.analyticsServiceUrl`, authenticated with `analytics-service-secret` key `SERVICE_AUTH_TOKEN`.
 
 ## Upgrade
 
-For production, prefer immutable image digests:
+Before upgrading, confirm the target image digests and submodule lock in [Images and releases](images-and-releases.md). Then upgrade the two charts with the same values files and new image refs:
 
 ```bash
+helm upgrade --install popcorn-platform charts/platform \
+  --namespace popcorn \
+  --values /tmp/popcorn-platform.gcp.yaml
+
 helm upgrade --install browser-fleet charts/browser-fleet \
   --namespace popcorn \
-  --set browserRuntimeImage=ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+  --values /tmp/popcorn-browser-fleet.gcp.yaml
 ```
 
-Before upgrading, ensure:
-
-- at least one new browser pod can become Ready;
-- gateway and pool manager images are compatible with the browser runtime;
-- path-token keys are stable across the rollout;
-- session TTL behavior is acceptable for in-flight sessions.
+Keep JWT signing keys stable across rollouts. Rotating `gateway-jwt-keys` invalidates outstanding browser, CDP, runtime API, and proof URLs.
 
 ## Uninstall
 
@@ -208,7 +213,7 @@ helm uninstall browser-fleet --namespace popcorn
 helm uninstall popcorn-platform --namespace popcorn
 ```
 
-Agones is shared infrastructure. Remove it only if no other workloads use it:
+Agones and External Secrets Operator are cluster-level dependencies. Remove them only if no other workloads use them:
 
 ```bash
 helm uninstall agones --namespace agones-system
@@ -216,10 +221,12 @@ helm uninstall agones --namespace agones-system
 
 ## Production Notes
 
-- Use GHCR or another public/self-hosted registry and digest-pinned images.
-- Keep private keys in Kubernetes secrets or an external secret system.
-- Terminate TLS at your ingress or load balancer.
-- Keep the gateway public; keep Redis and pool manager internal unless you intentionally expose them.
-- Use `fleet.extraPorts`, `fleet.extraContainers`, `extraBrowserRuntimeEnv`, `imagePrepuller.extraInitContainers`, and `imagePrepuller.extraContainers` for private deployment extensions.
-- Enable attestation only on compatible confidential-computing nodes.
-- Add resource requests and limits that match your concurrency target.
+- Expose only the gateway publicly.
+- Keep Redis, pool manager, analytics, Postgres, and Metabase internal unless you intentionally expose them.
+- Use GKE Ingress with a managed certificate or another GCP-managed TLS path.
+- Store production secrets in GCP Secret Manager or pre-created Kubernetes Secrets, never in Helm values.
+- Configure Cloudflare TURN for browser access from real networks.
+- Keep `webrtc.advertiseHost` empty in GKE; it is for same-machine Kind only.
+- Set `autoscaler.maxReplicas` and GKE node pool limits as cost guardrails.
+- Use `gkeNodePrescaler` only after its GCP IAM and node pool settings are configured.
+- Enable attestation only on compatible confidential-computing GKE nodes.

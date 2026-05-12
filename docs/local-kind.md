@@ -15,10 +15,8 @@ Clone with the image submodule:
 
 ```bash
 git clone --recursive https://github.com/reclaimprotocol/popcorn-oss.git
-cd popcorn
+cd popcorn-oss
 ```
-
-The `reclaimprotocol/popcorn-oss` repository may remain private while release validation is in progress.
 
 Or initialize submodules after cloning:
 
@@ -66,7 +64,7 @@ The local deployment is expected to:
 - install the platform chart with Redis, pool manager, and gateway enabled;
 - install the browser fleet chart with attestation disabled by default;
 
-If a parallel PR has not landed yet, the available fallback targets are:
+The Makefile targets are composable, so you can also run the deployment in stages:
 
 ```bash
 make up

@@ -16,12 +16,12 @@ The OSS quickstart is optimized for a local demo. A production deployment needs 
 - Keep Redis, pool manager, analytics, Postgres, and internal services private.
 - Use TLS at the edge.
 - Restrict Kubernetes API access to operators and automation.
-- Use network policies where your Kubernetes distribution supports them.
+- Use GKE Network Policy or Dataplane V2 policy controls where available.
 
 ## Secrets
 
 - Use stable JWT signing keys and keep the private key out of source control.
-- Use a dedicated secret backend or sealed secret workflow for production.
+- Use GCP Secret Manager with External Secrets Operator, or pre-created Kubernetes Secrets managed by your release process.
 - Keep local development secrets separate from production namespaces.
 - Restart affected workloads after rotation.
 - Do not log signed browser URLs, CDP URLs, service tokens, client credentials, or database passwords.
@@ -42,7 +42,7 @@ See `docs/secrets.md` for the exact Secret names and keys.
 - Set `autoscaler.maxReplicas` as a cost guardrail.
 - Use dedicated node pools for browser workloads in larger installations.
 - Review browser pod privileges against your runtime and sandbox requirements.
-- Disable cloud-specific helpers unless they are configured for your provider.
+- Enable the GKE node prescaler only after Workload Identity, GCP IAM, and target node pool values are configured.
 
 ## Data And Retention
 

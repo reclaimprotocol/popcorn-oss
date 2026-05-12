@@ -1,6 +1,6 @@
 # Configuration
 
-Popcorn is configured through Helm values and Kubernetes Secrets. The same charts support a local Kind demo and a production cluster, but production operators should replace all example registries, domains, credentials, and resource values.
+Popcorn is configured through Helm values and Kubernetes Secrets. The same charts support a local Kind demo and a GCP/GKE production deployment, but production operators should replace all example registries, domains, credentials, and resource values.
 
 ## Deployment Profiles
 
@@ -25,7 +25,7 @@ The local Kind path can create browser sessions without TURN credentials, but br
 
 For same-machine local development without TURN, `kind-config.yaml` publishes UDP ports `7000-7010` from the Kind node and the local Makefile constrains Agones GameServer allocations to that same range. The browser fleet also sets `webrtc.advertiseHost=127.0.0.1`, so Neko advertises a host candidate the local browser can actually reach. If you change the local Agones port range, update both `kind-config.yaml` and the Agones `gameservers.minPort` / `gameservers.maxPort` values together, then recreate the Kind cluster because Docker port mappings are fixed when the node container is created.
 
-### Existing Kubernetes Cluster
+### GCP/GKE
 
 Use the example values as a starting point:
 
@@ -40,16 +40,16 @@ helm upgrade --install browser-fleet charts/browser-fleet \
   --values examples/helm/browser-fleet-values.yaml
 ```
 
-The namespace can be any Kubernetes namespace you choose; `popcorn` is the documentation example. Keep the platform and browser-fleet releases in the same namespace for the normal deployment shape. In that shape, pool-manager allocates Agones GameServers in its own release namespace, the GKE node prescaler watches the same namespace, and in-cluster service URLs resolve to services in that namespace.
+The namespace can be any GKE workload namespace you choose; `popcorn` is the documentation example. Keep the platform and browser-fleet releases in the same namespace for the normal deployment shape. In that shape, pool-manager allocates Agones GameServers in its own release namespace, the GKE node prescaler watches the same namespace, and in-cluster service URLs resolve to services in that namespace.
 
 If you deliberately split platform and browser workloads across namespaces, set `poolManager.gameServerNamespace` and `gkeNodePrescaler.namespace` to the browser workload namespace, and make sure the pool-manager RBAC plus required Secrets are rendered for the namespaces they reference.
 
-Before installing into a shared cluster, replace:
+Before installing into a GKE cluster, replace:
 
 - `registry`
 - `imageTag`
 - public domains
-- service type and ingress settings
+- GKE Ingress, static IP, and managed certificate settings
 - Secret names or external secret mappings
 - CPU and memory requests
 - autoscaler limits
@@ -61,8 +61,8 @@ Before installing into a shared cluster, replace:
 | Value | Default intent | Notes |
 | --- | --- | --- |
 | `clusterName` | identifies the deployment | Used in service metadata and analytics. |
-| `provider` | `generic` for OSS examples | Keep provider-specific automation disabled unless configured. |
-| `registry` | image registry prefix | OSS examples use GHCR. Internal production values may use GCP Artifact Registry. |
+| `provider` | `gcp` for OSS examples | Production support is GCP/GKE only for now. |
+| `registry` | image registry prefix | OSS examples use GHCR. You may mirror images into your own GCP Artifact Registry. |
 | `imageTag` | runtime image tag | Prefer immutable tags or digests for production. |
 | `poolManager.enabled` | API allocator | Required for session creation. |
 | `poolManager.gameServerNamespace` | release namespace | Optional override for where pool-manager allocates and manages Agones GameServers. Leave empty for same-namespace deployments. |
@@ -74,7 +74,7 @@ Before installing into a shared cluster, replace:
 | `analytics.enabled` | analytics API | Optional for the admin-only OSS local path. Required somewhere, bundled or external, for client `/session` auth. |
 | `ttlController.enabled` | session cleanup | Recommended outside throwaway demos. |
 | `otel.enabled` | observability | Optional; requires ClickHouse credentials when enabled. |
-| `gkeNodePrescaler.enabled` | GKE-only scaling helper | Keep disabled for generic Kubernetes. |
+| `gkeNodePrescaler.enabled` | GKE-only scaling helper | Enable only after GCP project, cluster, location, node pool, and IAM are configured. |
 | `gkeNodePrescaler.namespace` | release namespace | Optional override for the namespace watched by the prescaler. Leave empty for same-namespace deployments. |
 
 ### Browser Fleet Chart
@@ -82,9 +82,9 @@ Before installing into a shared cluster, replace:
 | Value | Default intent | Notes |
 | --- | --- | --- |
 | `gatewayDomain` | gateway host | Browser runtime uses this to form callback URLs. |
-| `externalSecrets.enabled` | optional secret sync | If enabled, requires External Secrets Operator and a configured secret store. |
-| `ccDevicePlugin.enabled` | confidential-computing support | Keep disabled unless nodes support it. |
-| `browserRuntimeImage` | browser runtime image | Use GHCR or another public/pinned image for OSS. |
+| `externalSecrets.enabled` | optional GCP Secret Manager sync | If enabled, requires External Secrets Operator and `ClusterSecretStore/gcpsm`. |
+| `ccDevicePlugin.enabled` | GCP confidential-computing support | Keep disabled unless GKE nodes support it. |
+| `browserRuntimeImage` | browser runtime image | Use GHCR or a GCP Artifact Registry mirror, pinned by digest for production. |
 | `browserRuntimeAttestor.enabled` | optional attestation sidecar | Keep disabled unless using attestation. |
 | `imagePrepuller.enabled` | pre-pull runtime image | Useful for larger fleets. |
 | `extraBrowserRuntimeEnv` | extra runtime env vars | Optional list appended to the browser runtime container env. |
@@ -99,7 +99,7 @@ Before installing into a shared cluster, replace:
 
 ## Secrets
 
-Use `docs/secrets.md` as the source of truth for required Secret names and keys. The charts are intentionally backend-neutral: they consume Kubernetes Secrets regardless of how those Secrets are created.
+Use `docs/secrets.md` as the source of truth for required Secret names and keys. On GCP, use GCP Secret Manager with External Secrets Operator and a `ClusterSecretStore` named `gcpsm`, or create the Kubernetes Secrets directly before installing the charts.
 
 Browser WebRTC access should have a TURN fallback. Popcorn supports Cloudflare TURN by reading `TURN_KEY_ID` and `TURN_API_TOKEN` from `browser-turn-secret`; the browser runtime then requests short-lived ICE server credentials on startup. Keep `NEKO_ICESERVERS` empty for this dynamic Cloudflare flow, or set it only when using a static custom ICE server list.
 
@@ -109,9 +109,9 @@ Enable optional components one at a time:
 
 - Analytics: required for client `/session` credential validation; requires analytics service and database Secrets when hosted in this deployment.
 - TTL controller: requires the analytics service token when analytics callbacks are enabled.
-- Attestation: requires compatible nodes and digest-pinned images.
+- Attestation: requires compatible GCP confidential-computing nodes and digest-pinned images.
 - Observability: requires exporter endpoints and ClickHouse credentials.
-- Cloud-specific scaling helpers: require provider credentials and should remain disabled in generic OSS examples.
+- GKE node prescaler: requires GCP IAM and should remain disabled until the target node pool settings are correct.
 
 ## Validation
 
