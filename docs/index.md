@@ -28,3 +28,4 @@ Popcorn OSS v1 is a self-hostable browser platform for Kubernetes. These docs co
 - There is no hosted public demo for OSS v1.
 - Production deployment support is GCP/GKE only for now.
 - OSS sync smoke test marker: 2026-05-13.
+- Rebase sync smoke test marker: 2026-05-13.
