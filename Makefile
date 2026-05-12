@@ -72,7 +72,10 @@ up:
 	kubectl create namespace agones-system --dry-run=client -o yaml | kubectl apply -f -
 	helm repo add agones https://agones.dev/chart/stable || true
 	helm repo update
-	helm upgrade --install agones --namespace agones-system agones/agones --set "agones.controller.generateTLS=false" || true
+	helm upgrade --install agones --namespace agones-system agones/agones \
+		--set "agones.controller.generateTLS=false" \
+		--set gameservers.minPort=7000 \
+		--set gameservers.maxPort=7010 || true
 
 local-keys:
 	@./scripts/local/generate-jwt-keys.sh
@@ -145,6 +148,7 @@ deploy-local: up local-secrets load-local-images
 		--set browserRuntimeImage=$(BROWSER_NODE_IMAGE) \
 		--set browserRuntimeImagePullPolicy=IfNotPresent \
 		--set browserRuntimeAttestor.enabled=false \
+		--set webrtc.advertiseHost=127.0.0.1 \
 		--set fleet.replicas=1 \
 		--set fleet.browserRuntimeCpuRequest=500m \
 		--set fleet.browserRuntimeCpuLimit=2000m \
