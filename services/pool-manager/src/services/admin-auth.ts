@@ -86,13 +86,14 @@ export function isSameOriginAdminRequest(request: Request): boolean {
     const url = new URL(request.url);
 
     const expectedOrigins = buildExpectedAdminOrigins(request, url);
+    const expectedHosts = buildExpectedAdminHosts(request, url);
 
     if (origin) {
-        return matchesOrigin(origin, expectedOrigins);
+        return matchesOrigin(origin, expectedOrigins, expectedHosts);
     }
     if (referer) {
         try {
-            return matchesOrigin(referer, expectedOrigins);
+            return matchesOrigin(referer, expectedOrigins, expectedHosts);
         } catch {
             return false;
         }
@@ -102,26 +103,48 @@ export function isSameOriginAdminRequest(request: Request): boolean {
 }
 
 function buildExpectedAdminOrigins(request: Request, url: URL): Set<string> {
+    const protocolSet = buildExpectedAdminProtocols(request, url);
+    const hostSet = buildExpectedAdminHosts(request, url);
+
+    const expected = new Set<string>();
+    for (const protocol of protocolSet) {
+        for (const host of hostSet) {
+            expected.add(`${protocol}://${host}`);
+        }
+    }
+
+    return expected;
+}
+
+function buildExpectedAdminProtocols(request: Request, url: URL): Set<string> {
     const protocolSet = new Set<string>([
         normalizeProtocol(request.headers.get("X-Forwarded-Proto")?.split(",")[0]?.trim()),
         normalizeProtocol(url.protocol),
     ].filter(Boolean) as string[]);
+
+    if (protocolSet.has("https")) {
+        protocolSet.add("http");
+    }
+
+    return protocolSet;
+}
+
+function buildExpectedAdminHosts(request: Request, url: URL): Set<string> {
     const hostSet = new Set<string>([
         request.headers.get("X-Forwarded-Host")?.split(",")[0]?.trim(),
         request.headers.get("Host")?.split(",")[0]?.trim(),
         url.host,
     ].filter(Boolean) as string[]);
 
-    const expected = new Set<string>();
-    for (const protocol of protocolSet) {
-        for (const rawHost of hostSet) {
-            const host = normalizeHost(rawHost);
-            if (!host) continue;
-            expected.add(`${protocol}://${host}`);
+    const normalized = new Set<string>();
+    for (const rawHost of hostSet) {
+        const host = normalizeHost(rawHost);
+        if (host) {
+            normalized.add(host);
         }
     }
 
-    return expected;
+    return normalized;
 }
 
 function normalizeProtocol(protocol: string | undefined): string {
@@ -140,11 +163,13 @@ function normalizeHost(rawHost: string): string {
     }
 }
 
-function matchesOrigin(origin: string, expectedOrigins: Set<string>): boolean {
+function matchesOrigin(origin: string, expectedOrigins: Set<string>, expectedHosts: Set<string>): boolean {
     const parsed = new URL(origin);
     const protocol = normalizeProtocol(parsed.protocol);
     const host = normalizeHost(parsed.host);
-    return expectedOrigins.has(`${protocol}://${host}`);
+    if (!host) return false;
+
+    return expectedOrigins.has(`${protocol}://${host}`) || expectedHosts.has(host);
 }
 
 export function parseBasicAuth(header?: string | null): { username: string; password: string } | null {

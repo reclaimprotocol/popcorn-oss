@@ -61,6 +61,18 @@ describe("admin auth", () => {
         }))).toBe(true);
     });
 
+    test("allows secure-origin requests when proxy terminates TLS and forwards internal HTTP", () => {
+        expect(isSameOriginAdminRequest(new Request("http://pool-manager.default.svc/admin/session", {
+            method: "POST",
+            headers: {
+                Origin: "https://pool-manager-gateway.example.com",
+                Referer: "https://pool-manager-gateway.example.com/admin/session",
+                "X-Forwarded-Proto": "http",
+                Host: "pool-manager-gateway.example.com",
+            },
+        }))).toBe(true);
+    });
+
     test("parses htpasswd bcrypt users and ignores unsupported hashes", () => {
         const users = parseHtpasswd(`
 # comment
