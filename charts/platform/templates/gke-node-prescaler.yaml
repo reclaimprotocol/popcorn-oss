@@ -95,8 +95,10 @@ spec:
           imagePullPolicy: {{ .Values.gkeNodePrescaler.imagePullPolicy }}
           command: ["python", "/app/prescaler.py"]
           env:
+{{- with .Values.gkeNodePrescaler.project }}
             - name: GCP_PROJECT
-              value: {{ .Values.gkeNodePrescaler.project | quote }}
+              value: {{ . | quote }}
+{{- end }}
             - name: GKE_CLUSTER
               value: {{ .Values.gkeNodePrescaler.cluster | quote }}
             - name: GKE_LOCATION

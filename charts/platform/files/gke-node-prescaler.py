@@ -28,8 +28,16 @@ def env_bool(name, default):
     return raw.lower() in ("1", "true", "yes", "on")
 
 
+def env_first(names):
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is not None and raw.strip() != "":
+            return raw.strip()
+    raise RuntimeError(f"one of {', '.join(names)} must be set")
+
+
 CONFIG = {
-    "project": os.environ["GCP_PROJECT"],
+    "project": env_first(("GCP_PROJECT", "GOOGLE_CLOUD_PROJECT", "PROJECT_ID")),
     "cluster": os.environ["GKE_CLUSTER"],
     "location": os.environ["GKE_LOCATION"],
     "node_pool": os.environ["GKE_NODE_POOL"],

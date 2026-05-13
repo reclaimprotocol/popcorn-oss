@@ -62,6 +62,21 @@ NODE_POOL = {
 
 
 class CalculateTargetTest(unittest.TestCase):
+    def test_env_first_uses_first_non_empty_value(self):
+        old_values = {name: os.environ.get(name) for name in ("ONE", "TWO", "THREE")}
+        try:
+            os.environ["ONE"] = ""
+            os.environ["TWO"] = "  fallback-project  "
+            os.environ["THREE"] = "later-project"
+
+            self.assertEqual(prescaler.env_first(("ONE", "TWO", "THREE")), "fallback-project")
+        finally:
+            for name, value in old_values.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
     def setUp(self):
         prescaler.CONFIG.update(
             {
