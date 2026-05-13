@@ -1,0 +1,267 @@
+{{- $controlPlane := .Values.controlPlane }}
+{{- $legacyAnalytics := .Values.analytics }}
+{{- $compatAnalyticsMode := and (not $controlPlane.enabled) $legacyAnalytics.enabled }}
+{{- if $compatAnalyticsMode }}
+{{- $controlPlane = mergeOverwrite (deepCopy $controlPlane) $legacyAnalytics }}
+{{- end }}
+{{- $legacyAnalyticsSecret := default "analytics-service-secret" .Values.secrets.analyticsServiceName }}
+{{- $controlPlaneSecret := default (ternary $legacyAnalyticsSecret .Values.secrets.controlPlaneName $compatAnalyticsMode) $controlPlane.secretName }}
+{{- $databaseSecret := default .Values.secrets.controlPlaneDatabaseName $controlPlane.databaseSecretName }}
+{{- $regions := list }}
+{{- $hasSecretVolumes := false }}
+{{- range $index, $region := default (list) $controlPlane.regions }}
+{{- $entry := dict "name" $region.name "clusterName" $region.clusterName "poolManagerUrl" $region.poolManagerUrl "publicGatewayUrl" $region.publicGatewayUrl "enabled" (ne $region.enabled false) }}
+{{- if $region.serviceAuthToken }}
+{{- $_ := set $entry "serviceAuthToken" $region.serviceAuthToken }}
+{{- end }}
+{{- if $region.serviceAuthTokenFile }}
+{{- $_ := set $entry "serviceAuthTokenFile" $region.serviceAuthTokenFile }}
+{{- end }}
+{{- with $region.poolManagerAuth }}
+{{- if .secretName }}
+{{- $_ := set $entry "serviceAuthTokenFile" (printf "/app/secrets/pool-managers/%s/%s" $region.name (default "SERVICE_AUTH_TOKEN" .secretKey)) }}
+{{- $hasSecretVolumes = true }}
+{{- end }}
+{{- end }}
+{{- $regions = append $regions $entry }}
+{{- end }}
+{{- if $controlPlane.enabled }}
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+{{- $hasSecretVolumes = true }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  labels:
+    app: control-plane
+spec:
+  replicas: {{ $controlPlane.replicas }}
+  selector:
+    matchLabels:
+      app: control-plane
+  template:
+    metadata:
+      labels:
+        app: control-plane
+    spec:
+      serviceAccountName: control-plane-sa
+{{- if $hasSecretVolumes }}
+      volumes:
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+        - name: admin-password-file
+          secret:
+            secretName: {{ $controlPlane.adminAuth.passwordFileSecretName | quote }}
+            items:
+              - key: {{ $controlPlane.adminAuth.passwordFileSecretKey | quote }}
+                path: admin.htpasswd
+{{- end }}
+{{- range $index, $region := default (list) $controlPlane.regions }}
+{{- with $region.poolManagerAuth }}
+{{- if .secretName }}
+        - name: pool-manager-auth-{{ $index }}
+          secret:
+            secretName: {{ .secretName | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+      containers:
+        - name: control-plane
+          image: "{{ .Values.registry }}/control-plane:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ $controlPlane.imagePullPolicy }}
+{{- if $hasSecretVolumes }}
+          volumeMounts:
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+            - name: admin-password-file
+              mountPath: /app/auth/admin.htpasswd
+              subPath: admin.htpasswd
+              readOnly: true
+{{- end }}
+{{- range $index, $region := default (list) $controlPlane.regions }}
+{{- with $region.poolManagerAuth }}
+{{- if .secretName }}
+            - name: pool-manager-auth-{{ $index }}
+              mountPath: /app/secrets/pool-managers/{{ $region.name }}
+              readOnly: true
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+          env:
+            - name: NODE_ENV
+              value: {{ $controlPlane.nodeEnv | quote }}
+            - name: DATABASE_SSL
+              value: {{ include "popcorn-platform.controlPlaneDatabaseSsl" . | quote }}
+            {{- if $controlPlane.databaseSslCa }}
+            - name: DATABASE_SSL_CA
+              value: {{ $controlPlane.databaseSslCa | quote }}
+            {{- end }}
+            {{- if $controlPlane.databaseSslCaFile }}
+            - name: DATABASE_SSL_CA_FILE
+              value: {{ $controlPlane.databaseSslCaFile | quote }}
+            {{- end }}
+            - name: CONTROL_PLANE_REGIONS
+              value: {{ toJson $regions | quote }}
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: host
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: port
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: database
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: password
+            - name: ADMIN_AUTH_STRATEGIES
+              value: {{ $controlPlane.adminAuth.strategies | quote }}
+            - name: ADMIN_SESSION_TTL_SECONDS
+              value: {{ $controlPlane.adminAuth.sessionTtlSeconds | quote }}
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.sessionSecretKey | quote }}
+                  optional: true
+            - name: ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.userKey | quote }}
+                  optional: true
+            - name: ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.passKey | quote }}
+                  optional: true
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+            - name: ADMIN_PASSWORD_FILE
+              value: /app/auth/admin.htpasswd
+{{- end }}
+            - name: ADMIN_GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.googleClientIdKey | quote }}
+                  optional: true
+            - name: ADMIN_GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.googleClientSecretKey | quote }}
+                  optional: true
+            - name: ADMIN_GOOGLE_REDIRECT_URI
+              value: {{ $controlPlane.adminAuth.googleRedirectUri | quote }}
+            - name: ADMIN_GOOGLE_ALLOWED_EMAILS
+              value: {{ $controlPlane.adminAuth.googleAllowedEmails | quote }}
+            - name: ADMIN_GOOGLE_ALLOWED_DOMAINS
+              value: {{ $controlPlane.adminAuth.googleAllowedDomains | quote }}
+            - name: CONTROL_PLANE_SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.serviceAuthSecretKey | quote }}
+                  optional: true
+            - name: CONTROL_PLANE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.serviceAuthSecretKey | quote }}
+                  optional: true
+            - name: SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ ternary $legacyAnalyticsSecret $controlPlaneSecret $compatAnalyticsMode | quote }}
+                  key: {{ $controlPlane.serviceAuthSecretKey | quote }}
+                  optional: true
+            - name: ANALYTICS_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $legacyAnalyticsSecret | quote }}
+                  key: SERVICE_AUTH_TOKEN
+                  optional: true
+            - name: CONTROL_PLANE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.tokenKey | quote }}
+                  optional: true
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.tokenKey | quote }}
+                  optional: true
+          ports:
+            - containerPort: 3000
+              name: http
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 250m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+spec:
+  type: {{ $controlPlane.serviceType }}
+  selector:
+    app: control-plane
+  ports:
+    - name: http
+      port: {{ $controlPlane.publicServicePort }}
+      targetPort: 3000
+      protocol: TCP
+{{- with $controlPlane.nodePorts.http }}
+      nodePort: {{ . }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytics-service
+  labels:
+    app: control-plane
+    compatibility.popcorn.dev/name: analytics-service
+spec:
+  type: ClusterIP
+  selector:
+    app: control-plane
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+      protocol: TCP
+{{- end }}

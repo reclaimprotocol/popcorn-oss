@@ -1,4 +1,5 @@
 {{- if .Values.gateway.enabled }}
+{{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.gateway.jwtSecretName }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,7 +20,7 @@ spec:
       volumes:
         - name: jwt-keys
           secret:
-            secretName: {{ .Values.gateway.jwtSecretName | quote }}
+            secretName: {{ $gatewayJwtSecret | quote }}
             items:
               - key: public.pem
                 path: public.pem

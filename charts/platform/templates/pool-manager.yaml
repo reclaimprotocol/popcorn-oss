@@ -1,4 +1,9 @@
 {{- if .Values.poolManager.enabled }}
+{{- $poolManagerSecret := default .Values.secrets.poolManagerName .Values.poolManager.adminAuth.sessionSecretName }}
+{{- $poolManagerServiceAuthSecret := default .Values.secrets.poolManagerServiceAuthName .Values.poolManager.serviceAuth.secretName }}
+{{- $controlPlaneSecret := default .Values.secrets.controlPlaneName .Values.controlPlane.secretName }}
+{{- $legacyAnalyticsSecret := default "analytics-service-secret" .Values.secrets.analyticsServiceName }}
+{{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.poolManager.jwtSecretName }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -19,7 +24,7 @@ spec:
       volumes:
         - name: jwt-keys
           secret:
-            secretName: {{ .Values.poolManager.jwtSecretName | quote }}
+            secretName: {{ $gatewayJwtSecret | quote }}
             items:
               - key: private.pem
                 path: private.pem
@@ -57,33 +62,17 @@ spec:
             - name: ADMIN_SESSION_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.poolManager.adminAuth.sessionSecretName | quote }}
+                  name: {{ $poolManagerSecret | quote }}
                   key: {{ .Values.poolManager.adminAuth.sessionSecretKey | quote }}
                   optional: true
 {{- if .Values.poolManager.adminAuth.passwordFileSecretName }}
             - name: ADMIN_PASSWORD_FILE
               value: /app/auth/admin.htpasswd
 {{- end }}
-            - name: ADMIN_GOOGLE_CLIENT_ID
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.poolManager.adminAuth.googleSecretName | quote }}
-                  key: {{ .Values.poolManager.adminAuth.googleClientIdKey | quote }}
-                  optional: true
-            - name: ADMIN_GOOGLE_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.poolManager.adminAuth.googleSecretName | quote }}
-                  key: {{ .Values.poolManager.adminAuth.googleClientSecretKey | quote }}
-                  optional: true
-            - name: ADMIN_GOOGLE_REDIRECT_URI
-              value: {{ .Values.poolManager.adminAuth.googleRedirectUri | quote }}
-            - name: ADMIN_GOOGLE_ALLOWED_EMAILS
-              value: {{ .Values.poolManager.adminAuth.googleAllowedEmails | quote }}
-            - name: ADMIN_GOOGLE_ALLOWED_DOMAINS
-              value: {{ .Values.poolManager.adminAuth.googleAllowedDomains | quote }}
+            - name: CONTROL_PLANE_URL
+              value: {{ default (default (printf "http://control-plane.%s.svc.cluster.local:3000" .Release.Namespace) .Values.poolManager.analyticsServiceUrl) .Values.poolManager.controlPlaneUrl | quote }}
             - name: ANALYTICS_SERVICE_URL
-              value: {{ default (printf "http://analytics-service.%s.svc.cluster.local:3000" .Release.Namespace) .Values.poolManager.analyticsServiceUrl | quote }}
+              value: {{ default (default (printf "http://control-plane.%s.svc.cluster.local:3000" .Release.Namespace) .Values.poolManager.controlPlaneUrl) .Values.poolManager.analyticsServiceUrl | quote }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -92,13 +81,34 @@ spec:
               value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
             - name: GAME_SERVER_FLEET
               value: {{ .Values.poolManager.gameServerFleet | quote }}
+            - name: POPCORN_REGION
+              value: {{ .Values.region | quote }}
             - name: OTEL_CLICKHOUSE_ENABLED
               value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
+            - name: CONTROL_PLANE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ .Values.controlPlane.serviceAuthSecretKey | quote }}
+                  optional: true
             - name: ANALYTICS_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
-                  name: analytics-service-secret
+                  name: {{ $legacyAnalyticsSecret | quote }}
                   key: SERVICE_AUTH_TOKEN
+                  optional: true
+            - name: POOL_MANAGER_SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $poolManagerServiceAuthSecret | quote }}
+                  key: {{ .Values.poolManager.serviceAuth.secretKey | quote }}
+                  optional: true
+            - name: SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $poolManagerServiceAuthSecret | quote }}
+                  key: {{ .Values.poolManager.serviceAuth.secretKey | quote }}
+                  optional: true
             - name: CLUSTER_NAME
               valueFrom:
                 configMapKeyRef:
@@ -130,7 +140,7 @@ spec:
 {{- end }}
           envFrom:
             - secretRef:
-                name: pool-manager-env-secrets
+                name: {{ $poolManagerSecret | quote }}
 ---
 apiVersion: v1
 kind: Service

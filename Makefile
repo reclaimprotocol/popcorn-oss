@@ -1,4 +1,4 @@
-.PHONY: build ensure-base build-pool-manager build-gateway build-base build-browser-node build-ttl-controller up local-keys local-secrets load-local-images deploy-local apply apply-local run-local-cluster connect clean
+.PHONY: build ensure-base build-pool-manager build-control-plane build-gateway build-base build-browser-node build-ttl-controller up patch-kind-orbstack-proxy local-keys local-secrets load-local-images deploy-local apply apply-local run-local-cluster connect clean
 
 export DOCKER_BUILDKIT=1
 
@@ -7,20 +7,32 @@ GITHUB_ARTIFACT_MIRROR_REPO ?= reclaimprotocol/popcorn-oss
 export GITHUB_ARTIFACT_MIRROR_REPO
 
 CLUSTER_NAME := popcorn
+ORBSTACK_NO_PROXY_EXTRA := .svc,.svc.cluster.local,cluster.local,kubernetes.default.svc,10.96.0.0/12,10.244.0.0/16,$(CLUSTER_NAME)-control-plane
 LOCAL_ADMIN_USER ?= admin
 LOCAL_ADMIN_PASS ?= admin
+LOCAL_ADMIN_SESSION_SECRET ?= local_admin_session_secret_for_dev
 LOCAL_SERVICE_AUTH_TOKEN ?= local_service_auth_token
+LOCAL_POOL_MANAGER_SERVICE_AUTH_TOKEN ?= local_pool_manager_service_auth_token
+LOCAL_CONTROL_PLANE_ADMIN_USER ?= admin
+LOCAL_CONTROL_PLANE_ADMIN_PASS ?= admin
+LOCAL_CONTROL_PLANE_ADMIN_SESSION_SECRET ?= local_control_plane_admin_session_secret_for_dev
+LOCAL_CONTROL_PLANE_ADMIN_TOKEN ?= local_admin_token_for_dev
+LOCAL_ANALYTICS_DB_PASSWORD ?= local_analytics_password
 LOCAL_TURN_KEY_ID ?= $(TURN_KEY_ID)
 LOCAL_TURN_API_TOKEN ?= $(TURN_API_TOKEN)
 LOCAL_NEKO_ICESERVERS ?= $(NEKO_ICESERVERS)
 
 POOL_MANAGER_IMAGE := popcorn/pool-manager:local
+CONTROL_PLANE_IMAGE := popcorn/control-plane:local
 GATEWAY_IMAGE := popcorn/gateway:local
 BROWSER_NODE_IMAGE := popcorn/browser-node:local
 TTL_CONTROLLER_IMAGE := popcorn/ttl-controller:local
 
 build-pool-manager:
 	docker build -t $(POOL_MANAGER_IMAGE) ./services/pool-manager
+
+build-control-plane:
+	docker build -t $(CONTROL_PLANE_IMAGE) ./services/control-plane
 
 build-gateway:
 	docker build -t $(GATEWAY_IMAGE) ./services/gateway
@@ -59,7 +71,7 @@ build-browser-node: ensure-base
 build-ttl-controller:
 	docker build -t $(TTL_CONTROLLER_IMAGE) ./services/ttl-controller
 
-build: build-pool-manager build-gateway build-browser-node build-ttl-controller
+build: build-pool-manager build-control-plane build-gateway build-browser-node build-ttl-controller
 
 up:
 	@if ! kind get clusters | grep -q "^$(CLUSTER_NAME)$$"; then \
@@ -69,6 +81,7 @@ up:
 	fi
 	kubectl config use-context kind-$(CLUSTER_NAME)
 	kubectl wait --for=condition=Ready nodes --all --timeout=120s
+	$(MAKE) patch-kind-orbstack-proxy
 	kubectl create namespace agones-system --dry-run=client -o yaml | kubectl apply -f -
 	helm repo add agones https://agones.dev/chart/stable || true
 	helm repo update
@@ -76,6 +89,26 @@ up:
 		--set "agones.controller.generateTLS=false" \
 		--set gameservers.minPort=7000 \
 		--set gameservers.maxPort=7010 || true
+	kubectl -n agones-system rollout status deployment/agones-controller --timeout=180s
+	kubectl -n agones-system rollout status deployment/agones-extensions --timeout=180s
+
+patch-kind-orbstack-proxy:
+	@if docker inspect $(CLUSTER_NAME)-control-plane >/dev/null 2>&1 && \
+		docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' $(CLUSTER_NAME)-control-plane | grep -q 'proxyproxy.orb.internal'; then \
+		echo "Patching Kind static pod NO_PROXY for Orbstack Kubernetes service traffic..."; \
+		docker exec -e NO_PROXY_EXTRA="$(ORBSTACK_NO_PROXY_EXTRA)" $(CLUSTER_NAME)-control-plane sh -lc '\
+			for file in /etc/kubernetes/manifests/kube-apiserver.yaml /etc/kubernetes/manifests/kube-controller-manager.yaml /etc/kubernetes/manifests/kube-scheduler.yaml; do \
+				[ -f "$$file" ] || continue; \
+				if awk "/name: NO_PROXY/{getline; print; exit}" "$$file" | grep -q ".svc"; then \
+					continue; \
+				fi; \
+				current=$$(awk "/name: NO_PROXY/{getline; sub(/^[[:space:]]*value: /, \"\"); print; exit}" "$$file"); \
+				patched="$$current,$$NO_PROXY_EXTRA"; \
+				sed -i "/name: NO_PROXY/{n;s|value: .*|value: $$patched|}; /name: no_proxy/{n;s|value: .*|value: $$patched|}" "$$file"; \
+			done'; \
+		sleep 12; \
+		kubectl wait --for=condition=Ready nodes --all --timeout=120s; \
+	fi
 
 local-keys:
 	@./scripts/local/generate-jwt-keys.sh
@@ -89,10 +122,24 @@ local-secrets: local-keys
 	@kubectl create secret generic pool-manager-env-secrets \
 		--from-literal=ADMIN_USER="$(LOCAL_ADMIN_USER)" \
 		--from-literal=ADMIN_PASS="$(LOCAL_ADMIN_PASS)" \
+		--from-literal=ADMIN_SESSION_SECRET="$(LOCAL_ADMIN_SESSION_SECRET)" \
 		--dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create secret generic analytics-service-secret \
+	@kubectl create secret generic pool-manager-service-auth \
+		--from-literal=SERVICE_AUTH_TOKEN="$(LOCAL_POOL_MANAGER_SERVICE_AUTH_TOKEN)" \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic control-plane-secret \
 		--from-literal=SERVICE_AUTH_TOKEN="$(LOCAL_SERVICE_AUTH_TOKEN)" \
-		--from-literal=ADMIN_TOKEN=local_admin_token_for_dev \
+		--from-literal=ADMIN_USER="$(LOCAL_CONTROL_PLANE_ADMIN_USER)" \
+		--from-literal=ADMIN_PASS="$(LOCAL_CONTROL_PLANE_ADMIN_PASS)" \
+		--from-literal=ADMIN_SESSION_SECRET="$(LOCAL_CONTROL_PLANE_ADMIN_SESSION_SECRET)" \
+		--from-literal=ADMIN_TOKEN="$(LOCAL_CONTROL_PLANE_ADMIN_TOKEN)" \
+		--dry-run=client -o yaml | kubectl apply -f -
+	@kubectl create secret generic analytics-db-secret \
+		--from-literal=host=postgres \
+		--from-literal=port=5432 \
+		--from-literal=database=analytics \
+		--from-literal=username=analytics_admin \
+		--from-literal=password="$(LOCAL_ANALYTICS_DB_PASSWORD)" \
 		--dry-run=client -o yaml | kubectl apply -f -
 	@if { [ -n "$(LOCAL_TURN_KEY_ID)" ] && [ -z "$(LOCAL_TURN_API_TOKEN)" ]; } || { [ -z "$(LOCAL_TURN_KEY_ID)" ] && [ -n "$(LOCAL_TURN_API_TOKEN)" ]; }; then \
 		echo "Set both TURN_KEY_ID and TURN_API_TOKEN, or neither to keep the existing local secret."; \
@@ -120,6 +167,7 @@ local-secrets: local-keys
 load-local-images:
 	@kubectl config use-context kind-$(CLUSTER_NAME)
 	kind load docker-image $(POOL_MANAGER_IMAGE) --name $(CLUSTER_NAME)
+	kind load docker-image $(CONTROL_PLANE_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(GATEWAY_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(BROWSER_NODE_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(TTL_CONTROLLER_IMAGE) --name $(CLUSTER_NAME)
@@ -133,6 +181,21 @@ deploy-local: up local-secrets load-local-images
 		--set provider=kind \
 		--set poolManager.enabled=true \
 		--set poolManager.imagePullPolicy=IfNotPresent \
+		--set poolManager.controlPlaneUrl=http://control-plane.default.svc.cluster.local:3000 \
+		--set controlPlane.enabled=true \
+		--set controlPlane.imagePullPolicy=IfNotPresent \
+		--set controlPlane.serviceType=NodePort \
+		--set controlPlane.nodePorts.http=30081 \
+		--set 'controlPlane.regions[0].name=local' \
+		--set 'controlPlane.regions[0].clusterName=local' \
+		--set 'controlPlane.regions[0].poolManagerUrl=http://pool-manager.default.svc.cluster.local' \
+		--set 'controlPlane.regions[0].publicGatewayUrl=http://localhost:8080' \
+		--set 'controlPlane.regions[0].enabled=true' \
+		--set 'controlPlane.regions[0].poolManagerAuth.secretName=pool-manager-service-auth' \
+		--set 'controlPlane.regions[0].poolManagerAuth.secretKey=SERVICE_AUTH_TOKEN' \
+		--set postgres.enabled=true \
+		--set postgres.imagePullPolicy=IfNotPresent \
+		--set postgres.storageSize=1Gi \
 		--set gateway.enabled=true \
 		--set gateway.imagePullPolicy=IfNotPresent \
 		--set gateway.serviceType=NodePort \
@@ -157,13 +220,14 @@ deploy-local: up local-secrets load-local-images
 		--set autoscaler.bufferSize=1 \
 		--set autoscaler.minReplicas=1 \
 		--set autoscaler.maxReplicas=3
-	kubectl rollout restart deployment/pool-manager deployment/popcorn-gateway || true
+	kubectl rollout restart deployment/pool-manager deployment/control-plane deployment/popcorn-gateway || true
 	kubectl exec deployment/redis -- redis-cli DEL idle_pods sessions || true
 	@echo "Local cluster deployed. Gateway: http://localhost:8080"
+	@echo "Control plane: http://localhost:8081"
 
 apply: deploy-local
 apply-local: deploy-local
-run-local-cluster: build-pool-manager build-gateway build-browser-node build-ttl-controller deploy-local
+run-local-cluster: build-pool-manager build-control-plane build-gateway build-browser-node build-ttl-controller deploy-local
 
 connect:
 	@kubectl config use-context kind-$(CLUSTER_NAME)

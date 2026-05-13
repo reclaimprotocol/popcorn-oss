@@ -1,4 +1,5 @@
 {{- if .Values.metabase.enabled }}
+{{- $metabaseDatabaseSecret := default .Values.secrets.controlPlaneDatabaseName .Values.metabase.databaseSecretName }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,24 +39,24 @@ spec:
             - name: MB_DB_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: host
             - name: MB_DB_PORT
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: port
             - name: MB_DB_DBNAME
               value: {{ .Values.metabase.databaseName | quote }}
             - name: MB_DB_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: username
             - name: MB_DB_PASS
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: password
       containers:
         - name: metabase
@@ -71,24 +72,24 @@ spec:
             - name: MB_DB_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: host
             - name: MB_DB_PORT
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: port
             - name: MB_DB_DBNAME
               value: {{ .Values.metabase.databaseName | quote }}
             - name: MB_DB_USER
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: username
             - name: MB_DB_PASS
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.metabase.databaseSecretName }}
+                  name: {{ $metabaseDatabaseSecret | quote }}
                   key: password
           ports:
             - containerPort: 3000

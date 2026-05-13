@@ -4,6 +4,9 @@ gatewayDomain: ""
 externalSecrets:
   enabled: true
 
+secrets:
+  browserTurnName: browser-turn-secret
+
 ccDevicePlugin:
   enabled: true
 

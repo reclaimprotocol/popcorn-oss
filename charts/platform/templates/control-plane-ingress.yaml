@@ -1,0 +1,44 @@
+{{- $controlPlane := .Values.controlPlane }}
+{{- $legacyAnalytics := .Values.analytics }}
+{{- if and (not $controlPlane.enabled) $legacyAnalytics.enabled }}
+{{- $controlPlane = mergeOverwrite (deepCopy $controlPlane) $legacyAnalytics }}
+{{- end }}
+{{- if and $controlPlane.enabled $controlPlane.domainName $controlPlane.staticIpName }}
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: control-plane
+spec:
+  redirectToHttps:
+    enabled: true
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: control-plane
+spec:
+  domains:
+    - {{ $controlPlane.domainName | quote }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: control-plane
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: {{ $controlPlane.staticIpName | quote }}
+    networking.gke.io/managed-certificates: control-plane
+    networking.gke.io/v1beta1.FrontendConfig: control-plane
+spec:
+  rules:
+    - host: {{ $controlPlane.domainName | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: control-plane
+                port:
+                  number: {{ $controlPlane.publicServicePort }}
+{{- end }}

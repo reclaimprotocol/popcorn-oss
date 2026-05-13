@@ -4,28 +4,35 @@ region: asia-south1
 registry: ghcr.io/reclaimprotocol/popcorn-oss
 imageTag: latest
 
+secrets:
+  gatewayJwtName: gateway-jwt-keys
+  poolManagerName: pool-manager-env-secrets
+  poolManagerServiceAuthName: pool-manager-service-auth
+  controlPlaneName: control-plane-secret
+  analyticsServiceName: analytics-service-secret
+  controlPlaneDatabaseName: analytics-db-secret
+  browserTurnName: browser-turn-secret
+
 poolManager:
   enabled: false
   replicas: 1
   imagePullPolicy: Always
   redisHost: redis
+  controlPlaneUrl: ""
   analyticsServiceUrl: ""
   gameServerNamespace: ""
   gameServerFleet: browser-fleet
-  jwtSecretName: gateway-jwt-keys
+  jwtSecretName: ""
+  serviceAuth:
+    secretName: ""
+    secretKey: SERVICE_AUTH_TOKEN
   adminAuth:
     strategies: password
     sessionTtlSeconds: 43200
-    sessionSecretName: pool-manager-env-secrets
+    sessionSecretName: ""
     sessionSecretKey: ADMIN_SESSION_SECRET
     passwordFileSecretName: ""
     passwordFileSecretKey: admin.htpasswd
-    googleSecretName: pool-manager-env-secrets
-    googleClientIdKey: ADMIN_GOOGLE_CLIENT_ID
-    googleClientSecretKey: ADMIN_GOOGLE_CLIENT_SECRET
-    googleRedirectUri: ""
-    googleAllowedEmails: ""
-    googleAllowedDomains: ""
 
 gateway:
   enabled: true
@@ -40,7 +47,7 @@ gateway:
     enabled: true
     timeoutSec: 3600
     connectionDrainingTimeoutSec: 60
-  jwtSecretName: gateway-jwt-keys
+  jwtSecretName: ""
   jwtPrivateKeySecretId: ""
   jwtPublicKeySecretId: ""
 
@@ -59,8 +66,41 @@ postgres:
   hostAuthMethod: scram-sha-256
   storageSize: 20Gi
   storageClassName: ""
-  existingSecretName: analytics-db-secret
+  existingSecretName: ""
   passwordSecretKey: password
+
+controlPlane:
+  enabled: false
+  replicas: 1
+  imagePullPolicy: Always
+  nodeEnv: production
+  databaseSsl: false
+  databaseSslCa: ""
+  databaseSslCaFile: ""
+  serviceType: ClusterIP
+  domainName: ""
+  staticIpName: ""
+  publicServicePort: 3000
+  nodePorts: {}
+  internalServiceUrl: ""
+  secretName: ""
+  databaseSecretName: ""
+  serviceAuthSecretKey: SERVICE_AUTH_TOKEN
+  adminAuth:
+    strategies: password
+    sessionTtlSeconds: 43200
+    sessionSecretKey: ADMIN_SESSION_SECRET
+    userKey: ADMIN_USER
+    passKey: ADMIN_PASS
+    tokenKey: ADMIN_TOKEN
+    passwordFileSecretName: ""
+    passwordFileSecretKey: admin.htpasswd
+    googleClientIdKey: ADMIN_GOOGLE_CLIENT_ID
+    googleClientSecretKey: ADMIN_GOOGLE_CLIENT_SECRET
+    googleRedirectUri: ""
+    googleAllowedEmails: ""
+    googleAllowedDomains: ""
+  regions: []
 
 analytics:
   enabled: false
@@ -74,6 +114,7 @@ analytics:
   domainName: ""
   staticIpName: ""
   publicServicePort: 3000
+  nodePorts: {}
   internalServiceUrl: ""
 
 metabase:
@@ -87,12 +128,13 @@ metabase:
   staticIpName: ""
   siteUrl: ""
   databaseName: metabase
-  databaseSecretName: analytics-db-secret
+  databaseSecretName: ""
 
 ttlController:
   enabled: false
   replicas: 1
   imagePullPolicy: Always
+  controlPlaneUrl: ""
   analyticsServiceUrl: ""
   ttlDuration: 15m
 

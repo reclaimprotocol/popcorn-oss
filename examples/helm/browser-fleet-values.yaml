@@ -7,6 +7,9 @@ gatewayDomain: gateway.example.com
 externalSecrets:
   enabled: false
 
+secrets:
+  browserTurnName: browser-turn-secret
+
 ccDevicePlugin:
   enabled: false
 

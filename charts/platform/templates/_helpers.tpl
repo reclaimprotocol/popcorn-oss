@@ -6,10 +6,18 @@
 {{- printf "%s" (include "popcorn-platform.name" .) | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{- define "popcorn-platform.analyticsDatabaseSsl" -}}
-{{- if kindIs "bool" .Values.analytics.databaseSsl -}}
-{{- ternary "true" "false" .Values.analytics.databaseSsl -}}
-{{- else -}}
-{{- .Values.analytics.databaseSsl -}}
+{{- define "popcorn-platform.controlPlaneDatabaseSsl" -}}
+{{- $controlPlane := .Values.controlPlane -}}
+{{- if and (not $controlPlane.enabled) .Values.analytics.enabled -}}
+{{- $controlPlane = .Values.analytics -}}
 {{- end -}}
+{{- if kindIs "bool" $controlPlane.databaseSsl -}}
+{{- ternary "true" "false" $controlPlane.databaseSsl -}}
+{{- else -}}
+{{- $controlPlane.databaseSsl -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "popcorn-platform.analyticsDatabaseSsl" -}}
+{{- include "popcorn-platform.controlPlaneDatabaseSsl" . -}}
 {{- end -}}

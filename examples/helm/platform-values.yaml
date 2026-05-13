@@ -7,15 +7,27 @@ region: us-central1
 registry: ghcr.io/reclaimprotocol/popcorn-oss
 imageTag: latest
 
+secrets:
+  gatewayJwtName: gateway-jwt-keys
+  poolManagerName: pool-manager-env-secrets
+  poolManagerServiceAuthName: pool-manager-us-central1-service-auth
+  controlPlaneName: control-plane-secret
+  analyticsServiceName: analytics-service-secret
+  controlPlaneDatabaseName: analytics-db-secret
+  browserTurnName: browser-turn-secret
+
 poolManager:
   enabled: true
   replicas: 1
   imagePullPolicy: IfNotPresent
   redisHost: redis
+  controlPlaneUrl: ""
   analyticsServiceUrl: ""
   gameServerNamespace: ""
   gameServerFleet: browser-fleet
-  jwtSecretName: gateway-jwt-keys
+  serviceAuth:
+    secretName: pool-manager-us-central1-service-auth
+    secretKey: SERVICE_AUTH_TOKEN
 
 gateway:
   enabled: true
@@ -30,7 +42,6 @@ gateway:
     enabled: false
     timeoutSec: 3600
     connectionDrainingTimeoutSec: 60
-  jwtSecretName: gateway-jwt-keys
   jwtPrivateKeySecretId: ""
   jwtPublicKeySecretId: ""
 
@@ -49,20 +60,28 @@ postgres:
   hostAuthMethod: scram-sha-256
   storageSize: 20Gi
   storageClassName: ""
-  existingSecretName: analytics-db-secret
   passwordSecretKey: password
 
-analytics:
+controlPlane:
   enabled: false
   replicas: 1
   imagePullPolicy: IfNotPresent
   nodeEnv: production
   databaseSsl: false
   serviceType: ClusterIP
-  domainName: analytics.example.com
+  domainName: control-plane.example.com
   staticIpName: ""
   publicServicePort: 3000
   internalServiceUrl: ""
+  regions:
+    - name: us-central1
+      clusterName: example-gke-cluster
+      poolManagerUrl: http://pool-manager.default.svc.cluster.local
+      publicGatewayUrl: https://gateway.example.com
+      enabled: true
+      poolManagerAuth:
+        secretName: pool-manager-us-central1-service-auth
+        secretKey: SERVICE_AUTH_TOKEN
 
 metabase:
   enabled: false
@@ -81,6 +100,7 @@ ttlController:
   enabled: false
   replicas: 1
   imagePullPolicy: IfNotPresent
+  controlPlaneUrl: ""
   analyticsServiceUrl: ""
   ttlDuration: 15m
 

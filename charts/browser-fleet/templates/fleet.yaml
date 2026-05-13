@@ -1,3 +1,4 @@
+{{- $browserTurnSecret := default "browser-turn-secret" .Values.secrets.browserTurnName }}
 apiVersion: agones.dev/v1
 kind: Fleet
 metadata:
@@ -85,17 +86,17 @@ spec:
                 - name: TURN_KEY_ID
                   valueFrom:
                     secretKeyRef:
-                      name: browser-turn-secret
+                      name: {{ $browserTurnSecret | quote }}
                       key: TURN_KEY_ID
                 - name: TURN_API_TOKEN
                   valueFrom:
                     secretKeyRef:
-                      name: browser-turn-secret
+                      name: {{ $browserTurnSecret | quote }}
                       key: TURN_API_TOKEN
                 - name: NEKO_ICESERVERS
                   valueFrom:
                     secretKeyRef:
-                      name: browser-turn-secret
+                      name: {{ $browserTurnSecret | quote }}
                       key: NEKO_ICESERVERS
                       optional: true
 {{- if .Values.webrtc.advertiseHost }}
