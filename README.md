@@ -96,6 +96,7 @@ curl -sS -X POST http://localhost:8080/admin/session \
 
 `/admin/session` is the local Kind smoke-test endpoint and uses the default local admin credentials `admin:admin`.
 New client session creation should use the control-plane `/v1/sessions` API. The existing pool-manager `/session` path remains available for compatibility and requires control-plane-backed client credentials.
+See [Control plane session creation](docs/control-plane-sessions.md) for the client credential and `/v1/sessions` workflow.
 
 The response includes:
 
@@ -168,6 +169,7 @@ await browser.close();
 - [GCP deployment](docs/helm-deployment.md)
 - [Configuration](docs/configuration.md)
 - [Secrets](docs/secrets.md)
+- [Control plane session creation](docs/control-plane-sessions.md)
 - [Session API](docs/api.md)
 - [Security model](docs/security.md)
 - [Production hardening](docs/production-hardening.md)

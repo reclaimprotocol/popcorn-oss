@@ -6,10 +6,15 @@ manager to allocate a browser pod, and returns gateway URLs for the selected
 region. The existing pool-manager `/session` API remains supported for
 single-region and compatibility deployments.
 
-Default local gateway:
+For the end-to-end workflow of configuring regions, creating client
+credentials, and creating sessions through `/v1/sessions`, see
+[Control plane session creation](control-plane-sessions.md).
+
+Default local control plane and gateway:
 
 ```text
-http://localhost:8080
+Control plane: http://localhost:8081
+Gateway:       http://localhost:8080
 ```
 
 ## Authentication
@@ -36,6 +41,10 @@ For local Kind smoke tests, use `/admin/session` with trusted local admin creden
 ```http
 POST /v1/sessions
 ```
+
+Create a client first from the control-plane admin UI or `POST
+/admin/clients`. Session requests authenticate with that returned
+`clientId:clientSecret` pair.
 
 Request:
 

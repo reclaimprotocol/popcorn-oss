@@ -43,6 +43,9 @@ or `serviceAuthToken` on each region.
 
 ## Client Session API
 
+For the complete client setup and session creation guide, see
+[Control plane session creation](../../docs/control-plane-sessions.md).
+
 ```http
 POST /v1/sessions
 Authorization: Bearer <client-id>:<client-secret>

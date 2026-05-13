@@ -61,7 +61,8 @@ The local deployment is expected to:
 - create or reuse a Kind cluster named `popcorn`;
 - install Agones;
 - load locally built images into Kind;
-- install the platform chart with Redis, pool manager, and gateway enabled;
+- install the platform chart with Redis, pool manager, control plane, gateway,
+  Postgres, and TTL controller enabled;
 - install the browser fleet chart with attestation disabled by default;
 
 The Makefile targets are composable, so you can also run the deployment in stages:
@@ -87,16 +88,23 @@ The local gateway should be available at:
 http://localhost:8080
 ```
 
+The local control plane should be available at:
+
+```text
+http://localhost:8081
+```
+
 Check health:
 
 ```bash
 curl -sS http://localhost:8080/health
+curl -sS http://localhost:8081/health
 ```
 
 ## Create a Demo Session
 
-The local Kind smoke-test flow uses the admin endpoint, so external client credentials are not required.
-`/session` requires control-plane-backed client credentials and is not assumed in the default local path.
+The quickest local smoke test uses the gateway admin endpoint, so external
+client credentials are not required:
 
 ```bash
 POPCORN_ADMIN_USER="${POPCORN_ADMIN_USER:-admin}"
@@ -123,6 +131,36 @@ The response includes browser and automation URLs:
 ```
 
 Open `url` in a browser, or connect automation to `cdpUrl`.
+
+New client integrations should use the control-plane `/v1/sessions` API. The
+local control plane uses the development admin token
+`local_admin_token_for_dev`, so you can create a client and then create a
+routed session:
+
+```bash
+CONTROL_PLANE_URL=http://localhost:8081
+CONTROL_PLANE_ADMIN_TOKEN=local_admin_token_for_dev
+
+curl -sS -X POST "$CONTROL_PLANE_URL/admin/clients" \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"local demo client"}'
+```
+
+Use the returned `clientId` and `clientSecret` with `POST /v1/sessions`:
+
+```bash
+CLIENT_ID=client_0123456789abcdef
+CLIENT_SECRET=secret_0123456789abcdef
+
+curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
+  -H "Authorization: Bearer $CLIENT_ID:$CLIENT_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"local-control-plane-demo","regions":["local"]}'
+```
+
+See [Control plane session creation](control-plane-sessions.md) for the full
+workflow and response shape.
 
 ## Playwright Smoke Test
 

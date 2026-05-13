@@ -9,6 +9,7 @@ Popcorn OSS v1 is a self-hostable browser platform for Kubernetes. These docs co
 - [GCP deployment](helm-deployment.md): deploy Popcorn to Google Kubernetes Engine.
 - [Configuration](configuration.md): chart values, deployment profiles, and optional components.
 - [Secrets](secrets.md): required Kubernetes Secret names, keys, and GCP Secret Manager patterns.
+- [Control plane session creation](control-plane-sessions.md): create client credentials and route new sessions through `/v1/sessions`.
 - [Session API](api.md): create, inspect, and delete browser sessions.
 
 ## Operations

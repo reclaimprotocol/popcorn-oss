@@ -11,16 +11,17 @@ Use `make run-local-cluster` for the fastest self-hosted smoke test. It builds l
 Local defaults are intentionally small:
 
 - `gateway.serviceType=NodePort`
-- control plane disabled unless explicitly enabled
+- control plane enabled by `make run-local-cluster` and mapped to `http://localhost:8081`
 - generated local JWT keys
 - development admin credentials
 - empty TURN credentials unless supplied
 - one browser replica
 
-The local profile is intended to use `/admin/session`. The client `/session`
-API still validates credentials through the control plane; enabling it for
-clients requires a control-plane endpoint, the shared service token, and client
-records in the control-plane database.
+The quickest local smoke test uses `/admin/session` on the gateway. New client
+integrations should create client records in the local control plane and call
+`POST /v1/sessions`; see [Control plane session creation](control-plane-sessions.md).
+The compatibility `/session` API still validates credentials through the
+control plane.
 The local Kind path can create browser sessions without TURN credentials, but browser streaming is only dependable from networks that can reach the browser pod's WebRTC candidates. For realistic browser access, especially from another device, a VPN, a corporate network, or a cloud-hosted cluster, configure Cloudflare TURN through `browser-turn-secret`.
 
 For same-machine local development without TURN, `kind-config.yaml` publishes UDP ports `7000-7010` from the Kind node and the local Makefile constrains Agones GameServer allocations to that same range. The browser fleet also sets `webrtc.advertiseHost=127.0.0.1`, so Neko advertises a host candidate the local browser can actually reach. If you change the local Agones port range, update both `kind-config.yaml` and the Agones `gameservers.minPort` / `gameservers.maxPort` values together, then recreate the Kind cluster because Docker port mappings are fixed when the node container is created.
