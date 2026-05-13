@@ -8,7 +8,8 @@ Popcorn OSS v1 is focused on the browser runtime platform: local Kind developmen
 
 Popcorn is built from a few small services:
 
-- `pool-manager`: allocates Agones GameServers, creates session records, and returns connection URLs.
+- `control-plane`: validates clients, routes new sessions across configured regions, and stores analytics.
+- `pool-manager`: allocates Agones GameServers in one cluster, creates local route records, and returns connection URLs.
 - `gateway`: routes authenticated browser, CDP, API, and proof paths to the correct browser pod.
 - `browser-node`: runs the browser runtime container.
 - `ttl-controller`: expires sessions and shuts down old GameServers.
@@ -94,7 +95,7 @@ curl -sS -X POST http://localhost:8080/admin/session \
 ```
 
 `/admin/session` is the local Kind smoke-test endpoint and uses the default local admin credentials `admin:admin`.
-Client `/session` usage requires analytics-backed client credentials and is documented for deployments where that auth path is configured.
+New client session creation should use the control-plane `/v1/sessions` API. The existing pool-manager `/session` path remains available for compatibility and requires control-plane-backed client credentials.
 
 The response includes:
 

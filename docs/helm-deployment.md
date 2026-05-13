@@ -4,7 +4,7 @@ Popcorn OSS production deployments are supported on Google Kubernetes Engine (GK
 
 The deployment is split into two Helm charts:
 
-- `charts/platform`: gateway, pool manager, Redis, optional analytics/Postgres/Metabase, optional TTL controller, optional GKE node prescaler, and RBAC.
+- `charts/platform`: gateway, pool manager, Redis, optional control plane/Postgres/Metabase, optional TTL controller, optional GKE node prescaler, and RBAC.
 - `charts/browser-fleet`: Agones browser fleet, browser runtime settings, optional attestor sidecar, optional image prepuller, and TURN secret wiring.
 
 Install both charts into the same workload namespace unless you intentionally configure a split namespace with `poolManager.gameServerNamespace` and `gkeNodePrescaler.namespace`.
@@ -42,8 +42,9 @@ Create the required secrets in Secret Manager, then sync them into Kubernetes Se
 
 - `gateway-jwt-keys`
 - `pool-manager-env-secrets`
+- one pool-manager service-auth Secret per region, for example `pool-manager-us-central1-service-auth`
 - `pool-manager-admin-password-file`, if using password-file admin auth
-- `analytics-service-secret`
+- `control-plane-secret`
 - `analytics-db-secret`, if running bundled analytics/Postgres or Metabase
 - `browser-turn-secret`
 - `otel-clickhouse-secret`, if observability is enabled
@@ -104,7 +105,16 @@ imageTag: <commit-or-release-tag>
 
 poolManager:
   enabled: true
-  analyticsServiceUrl: http://analytics-service.popcorn.svc.cluster.local:3000
+  controlPlaneUrl: http://control-plane.popcorn.svc.cluster.local:3000
+
+controlPlane:
+  enabled: true
+  regions:
+    - name: us-central1
+      clusterName: popcorn-prod
+      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
+      publicGatewayUrl: https://gateway.example.com
+      enabled: true
 
 gateway:
   enabled: true
@@ -188,7 +198,11 @@ curl -sS -X POST https://gateway.example.com/admin/session \
   -d '{"sessionId":"gcp-smoke"}'
 ```
 
-For the public `/session` API, configure the analytics service and client records. The current pool manager validates client credentials through `poolManager.analyticsServiceUrl`, authenticated with `analytics-service-secret` key `SERVICE_AUTH_TOKEN`.
+For new public clients, configure the control plane and create client records,
+then call `POST /v1/sessions` on the control plane. The current pool manager
+compatibility `/session` path validates client credentials through
+`poolManager.controlPlaneUrl`, authenticated with that pool-manager region's
+service-auth Secret.
 
 ## Upgrade
 

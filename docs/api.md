@@ -1,6 +1,10 @@
 # Session API
 
-The pool manager owns session lifecycle. In a deployed cluster, clients call the gateway, and the gateway proxies API requests to the pool manager or browser pod based on the path.
+The control plane is the preferred client entry point for new deployments. It
+validates clients, tries preferred regions in order, asks a regional pool
+manager to allocate a browser pod, and returns gateway URLs for the selected
+region. The existing pool-manager `/session` API remains supported for
+single-region and compatibility deployments.
 
 Default local gateway:
 
@@ -16,26 +20,75 @@ Client session API requests use bearer credentials:
 Authorization: Bearer <client-id>:<client-secret>
 ```
 
-The pool manager validates these credentials by calling the analytics service
-`POST /validate` endpoint, using `ANALYTICS_SERVICE_URL` and the
-`ANALYTICS_AUTH_TOKEN` value sourced from `analytics-service-secret`.
-Production and staged deployments that expose `/session` must run or point to an
-analytics service with Postgres-backed client records.
+The control plane validates these credentials directly against Postgres-backed
+client records. Existing pool-manager `/session` requests still validate by
+calling the compatibility `POST /validate` endpoint on the control plane using
+`CONTROL_PLANE_URL` and `CONTROL_PLANE_AUTH_TOKEN`. The legacy
+`ANALYTICS_SERVICE_URL` and `ANALYTICS_AUTH_TOKEN` names remain accepted as
+aliases.
 
 Browser, CDP, and runtime API URLs returned from `/session` include signed path tokens. Treat those URLs as bearer secrets.
 
 For local Kind smoke tests, use `/admin/session` with trusted local admin credentials (`admin:admin`) as documented in the local Kind guide.
 
-## Create Session (Client API)
+## Create Session (Control Plane API)
+
+```http
+POST /v1/sessions
+```
+
+Request:
+
+```bash
+curl -sS -X POST https://control-plane.example.com/v1/sessions \
+  -H "Authorization: Bearer <client-id>:<client-secret>" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo-session","regions":["asia-south1","us-central1"]}'
+```
+
+Body:
+
+```json
+{
+  "sessionId": "demo-session",
+  "regions": ["asia-south1", "us-central1"]
+}
+```
+
+`sessionId` is optional. `regions` is optional; when present, regions are tried
+only in the specified priority order.
+
+Response:
+
+```json
+{
+  "success": true,
+  "sessionId": "demo-session",
+  "url": "https://asia.example.com/browser-fleet-abc/demo-session/<token>/",
+  "cdpUrl": "wss://asia.example.com/cdp/demo-session/<token>/",
+  "cdpInternalUrl": "wss://asia.example.com/cdp-internal/demo-session/<token>/",
+  "apiUrl": "https://asia.example.com/api/demo-session/<token>/",
+  "aiUrl": "https://asia.example.com/ai/demo-session/<token>/",
+  "browserPodId": "browser-fleet-abc",
+  "region": "asia-south1",
+  "clusterName": "asia-cluster"
+}
+```
+
+If no requested region can allocate, the control plane returns `503` with an
+`attempts` array describing each regional failure.
+
+## Create Session (Pool Manager Compatibility API)
 
 ```http
 POST /session
 ```
 
-This endpoint is the client-facing API path. It requires client credentials to be configured in your deployment.
+This endpoint is retained for existing single-region clients and requires client credentials to be configured in your deployment.
 
-If the pool manager cannot reach the analytics service, the analytics service rejects the configured token, or the client has not been created in analytics, this endpoint returns `401`.
-If `analytics-service-secret` or its `SERVICE_AUTH_TOKEN` key is absent, the platform chart cannot populate `ANALYTICS_AUTH_TOKEN`; the pool-manager pod fails startup or stays unready before `/session` can serve requests.
+If the pool manager cannot reach the control plane, the control plane rejects
+the configured token, or the client has not been created in the control plane,
+this endpoint returns `401`.
 
 Request:
 
@@ -137,15 +190,20 @@ OK
 ## Admin Endpoints
 
 Admin endpoints are intended for local operations and trusted internal tooling.
-They use pool-manager admin auth, which supports HTTP Basic credentials for
-automation and signed browser login cookies from password or Google OAuth login.
-The client `/session` bearer credentials are separate and unchanged.
+Pool-manager keeps its per-region `/admin` UI and HTTP Basic/password-cookie
+auth for direct regional operations. Control-plane exposes the multi-region
+admin UI at `/admin` plus token/Basic/cookie-protected JSON helpers for client
+and session management. The client `/session` and `/v1/sessions` bearer
+credentials are separate and unchanged.
 
-- `GET /admin/servers`: list GameServers and allocation status.
-- `POST /admin/session`: create a session attributed to the admin client.
-- `GET /admin/session/:id`: inspect an admin-visible session.
-- `DELETE /admin/session/:id`: delete a session.
-- `DELETE /admin/gameserver/:name`: force shutdown for a GameServer.
+- Pool-manager `GET /admin/servers`: list local GameServers and allocation status.
+- Pool-manager `POST /admin/session`: create a local session attributed to the admin client.
+- Pool-manager `DELETE /admin/gameserver/:name`: force shutdown for a local GameServer.
+- Control-plane `GET /admin/regions`: list configured regions and regional health.
+- Control-plane `GET /admin/sessions`: list stored sessions, optionally filtered by `clientId`.
+- Control-plane `POST /admin/sessions`: create a routed admin session.
+- Control-plane `GET /admin/session/:id`: inspect a routed session through its region.
+- Control-plane `DELETE /admin/session/:id`: delete a routed session.
 
 Do not expose admin endpoints publicly without additional access control.
 
@@ -164,9 +222,8 @@ curl -sS -X POST http://localhost:8080/admin/session \
 The response shape matches client session creation.
 
 For browser use, visit `/admin/login`. Password login uses the same
-username/password source as Basic auth. When Google OAuth is enabled, Google
-accounts must have verified email and match either the configured allowed email
-list or allowed domain list.
+username/password source as Basic auth. Google OAuth is handled by the
+control-plane admin UI, not the regional pool-manager admin UI.
 
 ## Gateway Paths
 

@@ -13,7 +13,7 @@ Popcorn provides **two separate CDP (Chrome DevTools Protocol) endpoints** with 
 
 When you create a session, you receive **two CDP URLs** with different tokens:
 
-The `/session` API requires analytics-backed client credentials.
+The `/session` API requires control-plane-backed client credentials.
 
 ### Request
 ```bash

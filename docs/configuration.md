@@ -11,16 +11,16 @@ Use `make run-local-cluster` for the fastest self-hosted smoke test. It builds l
 Local defaults are intentionally small:
 
 - `gateway.serviceType=NodePort`
-- analytics disabled unless explicitly enabled
+- control plane disabled unless explicitly enabled
 - generated local JWT keys
 - development admin credentials
 - empty TURN credentials unless supplied
 - one browser replica
 
 The local profile is intended to use `/admin/session`. The client `/session`
-API still validates credentials through the analytics service; enabling it for
-clients requires an analytics endpoint, the shared analytics service token, and
-client records in the analytics database.
+API still validates credentials through the control plane; enabling it for
+clients requires a control-plane endpoint, the shared service token, and client
+records in the control-plane database.
 The local Kind path can create browser sessions without TURN credentials, but browser streaming is only dependable from networks that can reach the browser pod's WebRTC candidates. For realistic browser access, especially from another device, a VPN, a corporate network, or a cloud-hosted cluster, configure Cloudflare TURN through `browser-turn-secret`.
 
 For same-machine local development without TURN, `kind-config.yaml` publishes UDP ports `7000-7010` from the Kind node and the local Makefile constrains Agones GameServer allocations to that same range. The browser fleet also sets `webrtc.advertiseHost=127.0.0.1`, so Neko advertises a host candidate the local browser can actually reach. If you change the local Agones port range, update both `kind-config.yaml` and the Agones `gameservers.minPort` / `gameservers.maxPort` values together, then recreate the Kind cluster because Docker port mappings are fixed when the node container is created.
@@ -64,14 +64,17 @@ Before installing into a GKE cluster, replace:
 | `provider` | `gcp` for OSS examples | Production support is GCP/GKE only for now. |
 | `registry` | image registry prefix | OSS examples use GHCR. You may mirror images into your own GCP Artifact Registry. |
 | `imageTag` | runtime image tag | Prefer immutable tags or digests for production. |
-| `poolManager.enabled` | API allocator | Required for session creation. |
+| `secrets.*` | central Secret names | One place to override Kubernetes Secret names for JWT keys, pool-manager admin env, pool-manager service auth, control-plane admin/service auth, database, and TURN. |
+| `poolManager.enabled` | Regional allocator | Required for local pool-manager session creation. |
 | `poolManager.gameServerNamespace` | release namespace | Optional override for where pool-manager allocates and manages Agones GameServers. Leave empty for same-namespace deployments. |
-| `poolManager.jwtSecretName` | `gateway-jwt-keys` | Secret must contain `private.pem`. |
+| `poolManager.controlPlaneUrl` | bundled control plane | Control-plane URL used for compatibility `/session` validation. `poolManager.analyticsServiceUrl` remains an alias. |
+| `poolManager.serviceAuth.secretName` | `secrets.poolManagerServiceAuthName` | Per-region token Secret trusted by this pool-manager and mounted by the control plane region config. |
 | `gateway.enabled` | public gateway | Required for browser/CDP access. |
-| `gateway.jwtSecretName` | `gateway-jwt-keys` | Secret must contain `public.pem`. |
 | `redis.enabled` | local Redis | Enable bundled Redis for simple installs. |
 | `postgres.enabled` | local Postgres | Optional analytics storage. |
-| `analytics.enabled` | analytics API | Optional for the admin-only OSS local path. Required somewhere, bundled or external, for client `/session` auth. |
+| `controlPlane.enabled` | client control plane | Enables client credentials, `/v1/sessions`, multi-region routing, and analytics storage. |
+| `controlPlane.adminAuth` | password login | Supports password, bcrypt htpasswd file, and Google OAuth with allowed emails/domains. |
+| `controlPlane.regions` | `[]` | Ordered regional pool-manager config used by `/v1/sessions`; set `poolManagerAuth.secretName` per region. |
 | `ttlController.enabled` | session cleanup | Recommended outside throwaway demos. |
 | `otel.enabled` | observability | Optional; requires ClickHouse credentials when enabled. |
 | `gkeNodePrescaler.enabled` | GKE-only scaling helper | Enable only after GCP project, cluster, location, node pool, and IAM are configured. |
@@ -107,8 +110,8 @@ Browser WebRTC access should have a TURN fallback. Popcorn supports Cloudflare T
 
 Enable optional components one at a time:
 
-- Analytics: required for client `/session` credential validation; requires analytics service and database Secrets when hosted in this deployment.
-- TTL controller: requires the analytics service token when analytics callbacks are enabled.
+- Control plane: required for `/v1/sessions` and client `/session` credential validation; requires control-plane and database Secrets when hosted in this deployment.
+- TTL controller: requires the control-plane service token when session callbacks are enabled.
 - Attestation: requires compatible GCP confidential-computing nodes and digest-pinned images.
 - Observability: requires exporter endpoints and ClickHouse credentials.
 - GKE node prescaler: requires GCP IAM and should remain disabled until the target node pool settings are correct.
@@ -129,7 +132,7 @@ After applying:
 
 ```bash
 kubectl get pods
-kubectl get secret gateway-jwt-keys pool-manager-env-secrets browser-turn-secret
+kubectl get secret gateway-jwt-keys pool-manager-env-secrets pool-manager-service-auth control-plane-secret browser-turn-secret
 kubectl rollout status deployment/pool-manager
 kubectl rollout status deployment/popcorn-gateway
 ```

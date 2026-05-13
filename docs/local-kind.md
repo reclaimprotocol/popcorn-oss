@@ -96,7 +96,7 @@ curl -sS http://localhost:8080/health
 ## Create a Demo Session
 
 The local Kind smoke-test flow uses the admin endpoint, so external client credentials are not required.
-`/session` requires analytics-backed client credentials and is not assumed in the default local path.
+`/session` requires control-plane-backed client credentials and is not assumed in the default local path.
 
 ```bash
 POPCORN_ADMIN_USER="${POPCORN_ADMIN_USER:-admin}"

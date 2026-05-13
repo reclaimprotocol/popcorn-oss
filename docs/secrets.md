@@ -12,6 +12,18 @@ Do not commit generated private keys, client credentials, registry credentials, 
 
 ## Required Secrets
 
+Secret names are centralized under `secrets.*` in the platform Helm values.
+The defaults are:
+
+| Helm value | Default Secret |
+| --- | --- |
+| `secrets.gatewayJwtName` | `gateway-jwt-keys` |
+| `secrets.poolManagerName` | `pool-manager-env-secrets` |
+| `secrets.poolManagerServiceAuthName` | `pool-manager-service-auth` |
+| `secrets.controlPlaneName` | `control-plane-secret` |
+| `secrets.controlPlaneDatabaseName` | `analytics-db-secret` |
+| `secrets.browserTurnName` | `browser-turn-secret` |
+
 ### `gateway-jwt-keys`
 
 Used by the pool manager and gateway for signed path tokens.
@@ -38,12 +50,9 @@ Loaded into the pool manager with `envFrom`.
 
 | Key | Required | Purpose |
 | --- | --- | --- |
-| `ADMIN_USER` | yes, unless using only an admin password file or Google OAuth | Username for admin Basic auth and password login fallback. |
-| `ADMIN_PASS` | yes, unless using only an admin password file or Google OAuth | Password for admin Basic auth and password login fallback. Also used as a fallback cookie signing secret if `ADMIN_SESSION_SECRET` is absent. |
-| `ADMIN_SESSION_SECRET` | required for Google OAuth or password-file browser login | Random secret used to sign admin browser login cookies. Legacy `ADMIN_PASS` is only a fallback for existing username/password deployments. |
-| `ADMIN_GOOGLE_CLIENT_ID` | only for Google admin auth | Google OAuth client ID for `/admin/auth/google`. |
-| `ADMIN_GOOGLE_CLIENT_SECRET` | only for Google admin auth | Google OAuth client secret for `/admin/auth/google`. |
-| `SERVICE_AUTH_TOKEN` | yes | Service-to-service token used by internal platform calls. The current `/session` auth path does not read this key directly from `pool-manager-env-secrets`. |
+| `ADMIN_USER` | yes, unless using only an admin password file | Username for admin Basic auth and password login fallback. |
+| `ADMIN_PASS` | yes, unless using only an admin password file | Password for admin Basic auth and password login fallback. Also used as a fallback cookie signing secret if `ADMIN_SESSION_SECRET` is absent. |
+| `ADMIN_SESSION_SECRET` | required for password-file browser login | Random secret used to sign admin browser login cookies. Legacy `ADMIN_PASS` is only a fallback for existing username/password deployments. |
 
 For file-based admin password auth, mount a separate Secret containing an
 htpasswd-style bcrypt file and set `poolManager.adminAuth.passwordFileSecretName`.
@@ -51,25 +60,53 @@ Each line should be `username:$2b$...`; blank lines and `#` comments are
 ignored.
 
 The current pool manager does not read `SESSION_AUTH_CLIENTS`. Client
-credentials for `/session` are validated through the analytics service, not a
+credentials for `/session` are validated through the control plane, not a
 local JSON map in this Secret.
 
-### `analytics-service-secret`
+Pool-manager admin login intentionally remains password/file based. Google
+OAuth admin login belongs on the control plane.
 
-Required by the pool manager for client `/session` authentication, and by
-analytics or TTL callbacks when those components are enabled.
+### `pool-manager-service-auth`
+
+Each regional pool manager should have its own service-auth Secret. The
+control plane uses that region's token to call `/internal/sessions`,
+`/internal/session/:id`, and `/internal/servers`; the pool manager uses the
+same token for compatibility callbacks to the control plane.
 
 | Key | Used by | Purpose |
 | --- | --- | --- |
-| `SERVICE_AUTH_TOKEN` | analytics, pool manager, TTL controller | Shared service token for analytics API calls. The platform chart exposes this to the pool manager as `ANALYTICS_AUTH_TOKEN`. |
-| `ADMIN_TOKEN` | analytics | Admin token for analytics operational endpoints. |
+| `SERVICE_AUTH_TOKEN` | control plane, one pool manager | Per-region service token for internal allocation and legacy analytics callbacks. |
+
+For multi-region deployments, create one Secret per region and reference it
+from `controlPlane.regions[].poolManagerAuth.secretName`.
+
+### `control-plane-secret`
+
+Required by the control plane. TTL callbacks can still use the global
+`SERVICE_AUTH_TOKEN`; regional pool-manager allocation should use the
+per-region `pool-manager-service-auth` token instead.
+
+| Key | Used by | Purpose |
+| --- | --- | --- |
+| `SERVICE_AUTH_TOKEN` | control plane, TTL controller, legacy deployments | Global compatibility service token. |
+| `ADMIN_USER` | control plane | Password-login username. |
+| `ADMIN_PASS` | control plane | Password-login password. |
+| `ADMIN_SESSION_SECRET` | control plane | Cookie signing secret for browser login. |
+| `ADMIN_TOKEN` | control plane | Compatibility bearer token for operational API access. |
+| `ADMIN_GOOGLE_CLIENT_ID` | control plane OAuth | Optional Google OAuth client ID. |
+| `ADMIN_GOOGLE_CLIENT_SECRET` | control plane OAuth | Optional Google OAuth client secret. |
+
+Control-plane admin auth supports password login, bcrypt htpasswd files, and
+Google OAuth with allowed emails or domains. Configure the strategies with
+`controlPlane.adminAuth.strategies`, for example `password` or
+`password,google`.
 
 ### `analytics-db-secret`
 
-Required when running the bundled analytics service, bundled Postgres
+Required when running the bundled control plane, bundled Postgres
 deployment, or Metabase. Client `/session` authentication depends on analytics
 client records stored in Postgres, either in this deployment or in an external
-analytics service you point `poolManager.analyticsServiceUrl` at.
+control plane you point `poolManager.controlPlaneUrl` at.
 
 | Key | Purpose |
 | --- | --- |
@@ -120,15 +157,20 @@ Create Secrets directly before running Helm:
 kubectl create secret generic pool-manager-env-secrets \
   --from-literal=ADMIN_USER="$ADMIN_USER" \
   --from-literal=ADMIN_PASS="$ADMIN_PASS" \
-  --from-literal=ADMIN_SESSION_SECRET="$ADMIN_SESSION_SECRET" \
-  --from-literal=SERVICE_AUTH_TOKEN="$SERVICE_AUTH_TOKEN"
+  --from-literal=ADMIN_SESSION_SECRET="$ADMIN_SESSION_SECRET"
+
+kubectl create secret generic pool-manager-service-auth \
+  --from-literal=SERVICE_AUTH_TOKEN="$POOL_MANAGER_SERVICE_AUTH_TOKEN"
 
 kubectl create secret generic pool-manager-admin-password-file \
   --from-file=admin.htpasswd=./admin.htpasswd
 
-kubectl create secret generic analytics-service-secret \
+kubectl create secret generic control-plane-secret \
   --from-literal=SERVICE_AUTH_TOKEN="$SERVICE_AUTH_TOKEN" \
-  --from-literal=ADMIN_TOKEN="$ANALYTICS_ADMIN_TOKEN"
+  --from-literal=ADMIN_USER="$CONTROL_PLANE_ADMIN_USER" \
+  --from-literal=ADMIN_PASS="$CONTROL_PLANE_ADMIN_PASS" \
+  --from-literal=ADMIN_SESSION_SECRET="$CONTROL_PLANE_ADMIN_SESSION_SECRET" \
+  --from-literal=ADMIN_TOKEN="$CONTROL_PLANE_ADMIN_TOKEN"
 
 kubectl create secret generic browser-turn-secret \
   --from-literal=TURN_KEY_ID="$TURN_KEY_ID" \
@@ -159,7 +201,7 @@ Rotate secrets by updating the backing Kubernetes Secret, then restarting affect
 
 ```bash
 kubectl rollout restart deployment/pool-manager deployment/popcorn-gateway
-kubectl rollout restart deployment/analytics-service deployment/ttl-controller
+kubectl rollout restart deployment/control-plane deployment/ttl-controller
 ```
 
 JWT key rotation invalidates active browser URLs. Token and password rotation may interrupt active clients. Prefer short browser session TTLs and scheduled maintenance windows for production rotations.

@@ -14,7 +14,7 @@ Popcorn isolates each browser session in an ephemeral Kubernetes workload and ex
 ## Admin Authentication
 
 Admin endpoints under `/admin` use a separate admin auth layer from the client
-session API. Deployments can enable one or more admin strategies:
+session API. Control-plane deployments can enable one or more admin strategies:
 
 - username/password through HTTP Basic auth for scripts;
 - username/password browser login backed by the same credential source;
@@ -29,6 +29,10 @@ and should be protected by TLS outside local development. Configure
 `ADMIN_SESSION_SECRET` for Google OAuth or password-file browser login so
 session cookies and OAuth state remain valid across restarts and replicas.
 
+Pool-manager admin auth is intentionally narrower: password or bcrypt
+htpasswd file only. Keep OAuth and cross-region client administration at the
+control plane.
+
 ## Session API Credentials
 
 Client session API credentials are required for the `/session` endpoint:
@@ -40,8 +44,8 @@ Authorization: Bearer <client-id>:<client-secret>
 In the current pool-manager implementation, these credentials are not loaded
 from a local `SESSION_AUTH_CLIENTS` map. The pool manager calls the analytics
 service `POST /validate` endpoint and authenticates that service call with
-`ANALYTICS_AUTH_TOKEN`. Deployments that expose `/session` therefore need an
-analytics service endpoint plus Postgres-backed client records, even if the
+`CONTROL_PLANE_AUTH_TOKEN` (or legacy `ANALYTICS_AUTH_TOKEN`). Deployments that expose `/session` therefore need a
+control-plane endpoint plus Postgres-backed client records, even if the
 analytics UI or dashboards are otherwise optional.
 
 Local Kind smoke tests should use `/admin/session` with local admin credentials (`admin:admin`) instead of client credentials.
@@ -103,9 +107,11 @@ For OSS installations, store production secrets in Kubernetes Secrets or your ow
 Production deployments should manage:
 
 - gateway JWT private and public keys;
-- analytics-backed session API client credentials (for `/session`);
-- the analytics service token used by pool-manager validation calls;
-- pool-manager admin credentials, admin session secret, and optional Google OAuth client secret;
+- control-plane-backed session API client credentials (for `/session` and `/v1/sessions`);
+- the global control-plane compatibility service token;
+- one service-auth token per regional pool manager;
+- pool-manager admin credentials and admin session secret;
+- control-plane admin credentials, admin session secret, and optional Google OAuth client secret;
 - registry pull credentials, if needed;
 - attestation signing material, if attestation is enabled;
 - observability secrets, if optional observability services are enabled.
