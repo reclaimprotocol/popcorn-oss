@@ -67,8 +67,6 @@ export function isAdminAuthPath(path: string): boolean {
     return path === "/admin/login"
         || path === "/admin/auth/config"
         || path === "/admin/auth/password"
-        || path === "/admin/auth/google"
-        || path === "/admin/auth/google/callback"
         || path === "/admin/logout";
 }
 

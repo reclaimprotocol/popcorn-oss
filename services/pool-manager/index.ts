@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { timingSafeEqual } from "crypto";
 import { DB } from "./src/services/db";
 import { Agones } from "./src/services/agones";
 import { Auth } from "./src/services/auth";
@@ -8,22 +9,15 @@ import { ClickHouse } from "./src/services/clickhouse";
 import { K8s } from "./src/services/k8s";
 import { RuntimeConfig } from "./src/config";
 import {
-    ADMIN_OAUTH_STATE_COOKIE,
     ADMIN_SESSION_COOKIE,
     authenticateBasicAdmin,
-    authorizeGoogleUser,
-    buildGoogleAuthorizationUrl,
     createAdminSession,
-    createOauthState,
-    fetchGoogleUserInfo,
     isAdminAuthPath,
-    isGoogleOAuthConfigured,
     isPasswordLoginConfigured,
     isSameOriginAdminRequest,
     readAdminAuthConfig,
     verifyAdminPassword,
     verifyAdminSession,
-    verifyOauthState,
     wantsHtml,
 } from "./src/services/admin-auth";
 
@@ -38,6 +32,8 @@ const GAME_SERVER_FLEET = RuntimeConfig.gameServerFleet;
 const ADMIN_CLIENT_ID = "admin";
 const ADMIN_CLIENT_NAME = "Admin UI";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const CONTROL_PLANE_AUTH_TOKEN = process.env.CONTROL_PLANE_AUTH_TOKEN || process.env.ANALYTICS_AUTH_TOKEN || "";
+const POOL_MANAGER_SERVICE_AUTH_TOKEN = process.env.POOL_MANAGER_SERVICE_AUTH_TOKEN || process.env.SERVICE_AUTH_TOKEN || CONTROL_PLANE_AUTH_TOKEN;
 
 app.use('/admin/*', async (c, next) => {
     if (isAdminAuthPath(new URL(c.req.url).pathname)) {
@@ -99,6 +95,26 @@ function getBearerCredential(c: any): string | null {
     return match?.[1]?.trim() || null;
 }
 
+function isControlPlaneRequest(c: any): boolean {
+    const credential = getBearerCredential(c);
+    return constantTimeEqual(credential || undefined, POOL_MANAGER_SERVICE_AUTH_TOKEN || CONTROL_PLANE_AUTH_TOKEN || undefined);
+}
+
+function constantTimeEqual(a: string | undefined, b: string | undefined): boolean {
+    if (!a || !b) return false;
+    const left = Buffer.from(a);
+    const right = Buffer.from(b);
+    if (left.length !== right.length) return false;
+    return timingSafeEqual(left, right);
+}
+
+function requireControlPlane(c: any): Response | null {
+    if (isControlPlaneRequest(c)) {
+        return null;
+    }
+    return c.json({ error: "Unauthorized" }, 401);
+}
+
 async function authenticateClient(c: any): Promise<{ identity?: ClientIdentity; response?: Response }> {
     const credential = getBearerCredential(c);
 
@@ -152,28 +168,49 @@ function isValidSessionId(sessionId: string): boolean {
     return SESSION_ID_PATTERN.test(sessionId);
 }
 
-function buildSessionDetails(c: any, sessionId: string, session: any) {
+function requestBaseUrl(c: any): string {
     const host = c.req.header("Host") || "localhost";
     const protocol = c.req.header("X-Forwarded-Proto") || "http";
+    return `${protocol}://${host}`;
+}
+
+function normalizeBaseUrl(rawBaseUrl: string | undefined | null): string | null {
+    if (!rawBaseUrl || typeof rawBaseUrl !== "string") {
+        return null;
+    }
+    try {
+        const parsed = new URL(rawBaseUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+            return null;
+        }
+        return parsed.href.replace(/\/+$/, "");
+    } catch {
+        return null;
+    }
+}
+
+function buildSessionDetails(c: any, sessionId: string, session: any, publicBaseUrl?: string | null) {
+    const baseUrl = publicBaseUrl || requestBaseUrl(c);
+    const parsedBase = new URL(baseUrl);
+    const wsBase = `${parsedBase.protocol === "https:" ? "wss:" : "ws:"}//${parsedBase.host}`;
     const token = Auth.signToken(sessionId, 'restricted');
     const internalToken = Auth.signToken(sessionId, 'internal');
-    const wsProtocol = protocol === "https" ? "wss" : "ws";
 
     return {
         success: true,
         sessionId,
-        url: `${protocol}://${host}/${session.name}/${sessionId}/${token}/`,
-        cdpUrl: `${wsProtocol}://${host}/cdp/${sessionId}/${token}/`,
-        cdpInternalUrl: `${wsProtocol}://${host}/cdp-internal/${sessionId}/${internalToken}/`,
-        apiUrl: `${protocol}://${host}/api/${sessionId}/${internalToken}/`,
-        aiUrl: `${protocol}://${host}/ai/${sessionId}/${token}/`,
+        url: `${baseUrl}/${session.name}/${sessionId}/${token}/`,
+        cdpUrl: `${wsBase}/cdp/${sessionId}/${token}/`,
+        cdpInternalUrl: `${wsBase}/cdp-internal/${sessionId}/${internalToken}/`,
+        apiUrl: `${baseUrl}/api/${sessionId}/${internalToken}/`,
+        aiUrl: `${baseUrl}/ai/${sessionId}/${token}/`,
         browserPodId: session.name
     };
 }
 
-async function createSession(c: any, identity: ClientIdentity, requestedSessionId?: string): Promise<Response> {
+async function allocateSessionLocally(identity: ClientIdentity, requestedSessionId?: string) {
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
-        return c.json({ error: "Invalid session ID. Use 1-64 chars in [A-Za-z0-9_-]." }, 400);
+        throw new Error("INVALID_SESSION_ID");
     }
 
     const sessionId = requestedSessionId || crypto.randomUUID().slice(0, 8);
@@ -182,7 +219,7 @@ async function createSession(c: any, identity: ClientIdentity, requestedSessionI
     if (requestedSessionId) {
         const duplicate = await DB.sessionExists(sessionId);
         if (duplicate) {
-            return c.json({ error: "Session ID already exists" }, 409);
+            throw new DuplicateSessionIdError();
         }
     }
 
@@ -240,9 +277,7 @@ async function createSession(c: any, identity: ClientIdentity, requestedSessionI
             console.warn(`⚠️ Pod UID missing for ${allocation.gameServerName}; skipping session binding insert`);
         }
 
-        AnalyticsClient.createSession(sessionId, identity.clientId, identity.clientName, CLUSTER_NAME);
-
-        return c.json(buildSessionDetails(c, sessionId, podData));
+        return { sessionId, podData };
     } catch (e) {
         if (allocatedGameServerName) {
             try {
@@ -257,16 +292,53 @@ async function createSession(c: any, identity: ClientIdentity, requestedSessionI
                 console.error(`Failed to shutdown allocated GameServer ${allocatedGameServerName}:`, shutdownError);
             }
         }
-        if (e instanceof DuplicateSessionIdError) {
-            return c.json({ error: e.message }, 409);
-        }
-
-        console.error("Failed to allocate session:", e);
-        return c.json({ error: "Failed to allocate browser instance" }, 503);
+        throw e;
     }
 }
 
-async function getSessionDetails(c: any, sessionId: string, identity?: ClientIdentity): Promise<Response> {
+function allocationErrorResponse(c: any, e: unknown): Response {
+    if ((e as Error).message === "INVALID_SESSION_ID") {
+        return c.json({ error: "Invalid session ID. Use 1-64 chars in [A-Za-z0-9_-]." }, 400);
+    }
+
+    if (e instanceof DuplicateSessionIdError) {
+        return c.json({ error: e.message }, 409);
+    }
+
+    console.error("Failed to allocate session:", e);
+    return c.json({ error: "Failed to allocate browser instance" }, 503);
+}
+
+async function createSession(c: any, identity: ClientIdentity, requestedSessionId?: string): Promise<Response> {
+    try {
+        const { sessionId, podData } = await allocateSessionLocally(identity, requestedSessionId);
+        AnalyticsClient.createSession(sessionId, identity.clientId, identity.clientName, CLUSTER_NAME);
+        return c.json(buildSessionDetails(c, sessionId, podData));
+    } catch (e) {
+        return allocationErrorResponse(c, e);
+    }
+}
+
+async function createControlPlaneSession(c: any): Promise<Response> {
+    try {
+        const body = await c.req.json();
+        const sessionId = typeof body?.sessionId === "string" ? body.sessionId.trim() : "";
+        const clientId = typeof body?.clientId === "string" ? body.clientId.trim() : "";
+        const clientName = typeof body?.clientName === "string" ? body.clientName.trim() : "";
+        const publicBaseUrl = normalizeBaseUrl(body?.publicGatewayUrl);
+
+        if (!sessionId || !clientId || !clientName || !publicBaseUrl) {
+            return c.json({ error: "Missing sessionId, clientId, clientName, or valid publicGatewayUrl" }, 400);
+        }
+
+        const allocation = await allocateSessionLocally({ clientId, clientName }, sessionId);
+        return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
+    } catch (e) {
+        return allocationErrorResponse(c, e);
+    }
+}
+
+async function getSessionDetails(c: any, sessionId: string, identity?: ClientIdentity, publicBaseUrl?: string | null): Promise<Response> {
     const session = await DB.getSession(sessionId);
 
     if (!session) {
@@ -277,29 +349,38 @@ async function getSessionDetails(c: any, sessionId: string, identity?: ClientIde
         return c.json({ success: false, error: "Session not found" }, 404);
     }
 
-    return c.json(buildSessionDetails(c, sessionId, session));
+    return c.json(buildSessionDetails(c, sessionId, session, publicBaseUrl));
 }
 
-async function deleteSession(c: any, sessionId: string, identity?: ClientIdentity): Promise<Response> {
+async function deleteLocalSession(sessionId: string, identity?: ClientIdentity) {
     const session = await DB.getSession(sessionId);
 
     if (!session) {
-        return c.json({ success: true }, 200);
+        return { deleted: false, notFound: true, forbidden: false, session: null };
     }
 
     if (identity && session.clientId !== identity.clientId) {
-        return c.json({ success: false, error: "Session not found" }, 404);
+        return { deleted: false, notFound: true, forbidden: true, session };
     }
 
-    if (session) {
-        AnalyticsClient.endSession(sessionId, 'deleted');
-
-        if (session.name) {
-            await Agones.shutdownGameServer(session.name, session.namespace || GAME_SERVER_NAMESPACE);
-        }
+    if (session.name) {
+        await Agones.shutdownGameServer(session.name, session.namespace || GAME_SERVER_NAMESPACE);
     }
 
     await DB.deleteSession(sessionId);
+    return { deleted: true, notFound: false, forbidden: false, session };
+}
+
+async function deleteSession(c: any, sessionId: string, identity?: ClientIdentity): Promise<Response> {
+    const result = await deleteLocalSession(sessionId, identity);
+
+    if (result.forbidden) {
+        return c.json({ success: false, error: "Session not found" }, 404);
+    }
+
+    if (result.deleted) {
+        AnalyticsClient.endSession(sessionId, 'deleted');
+    }
 
     return c.json({ success: true }, 200);
 }
@@ -320,7 +401,27 @@ function setAdminSessionCookie(c: any, session: string) {
 
 function clearAdminCookies(c: any) {
     deleteCookie(c, ADMIN_SESSION_COOKIE, { path: "/admin" });
-    deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: "/admin/auth/google" });
+}
+
+async function listServerStatuses() {
+    const gameServers = await Agones.listGameServers(GAME_SERVER_NAMESPACE);
+    const stats = await DB.getStats();
+
+    const podToSession = new Map<string, string>();
+    for (const [sid, raw] of Object.entries(stats.activeSessions)) {
+        try {
+            const data = JSON.parse(raw as string);
+            if (data.name) {
+                podToSession.set(data.name, sid);
+            }
+        } catch (e) { }
+    }
+
+    return gameServers.map((gs: any) => ({
+        name: gs.name,
+        status: gs.state || gs.status,
+        sessionId: podToSession.get(gs.name) || null
+    }));
 }
 
 app.get("/admin/login", async (c) => {
@@ -330,7 +431,7 @@ app.get("/admin/login", async (c) => {
 app.get("/admin/auth/config", (c) => {
     return c.json({
         password: isPasswordLoginConfigured(ADMIN_AUTH_CONFIG),
-        google: isGoogleOAuthConfigured(ADMIN_AUTH_CONFIG),
+        google: false,
     });
 });
 
@@ -355,49 +456,6 @@ app.post("/admin/auth/password", async (c) => {
     return c.redirect("/admin", 302);
 });
 
-app.get("/admin/auth/google", (c) => {
-    if (!isGoogleOAuthConfigured(ADMIN_AUTH_CONFIG)) {
-        return c.redirect("/admin/login?error=Google%20OAuth%20is%20not%20configured", 302);
-    }
-
-    const state = createOauthState(ADMIN_AUTH_CONFIG);
-    setCookie(c, ADMIN_OAUTH_STATE_COOKIE, state, {
-        httpOnly: true,
-        sameSite: "Lax",
-        secure: isSecureRequest(c),
-        path: "/admin/auth/google",
-        maxAge: 5 * 60,
-    });
-
-    return c.redirect(buildGoogleAuthorizationUrl(ADMIN_AUTH_CONFIG, state), 302);
-});
-
-app.get("/admin/auth/google/callback", async (c) => {
-    if (!verifyOauthState(c.req.query("state"), getCookie(c, ADMIN_OAUTH_STATE_COOKIE), ADMIN_AUTH_CONFIG)) {
-        return c.redirect("/admin/login?error=Invalid%20OAuth%20state", 302);
-    }
-
-    const code = c.req.query("code");
-    if (!code) {
-        return c.redirect("/admin/login?error=Missing%20OAuth%20code", 302);
-    }
-
-    try {
-        const userInfo = await fetchGoogleUserInfo(code, ADMIN_AUTH_CONFIG);
-        const identity = authorizeGoogleUser(userInfo, ADMIN_AUTH_CONFIG);
-        if (!identity) {
-            return c.redirect("/admin/login?error=Google%20account%20is%20not%20allowed", 302);
-        }
-
-        setAdminSessionCookie(c, createAdminSession(identity, ADMIN_AUTH_CONFIG));
-        deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: "/admin/auth/google" });
-        return c.redirect("/admin", 302);
-    } catch (error) {
-        console.error("Google admin login failed:", error);
-        return c.redirect("/admin/login?error=Google%20login%20failed", 302);
-    }
-});
-
 app.post("/admin/logout", (c) => {
     clearAdminCookies(c);
     return c.redirect("/admin/login", 302);
@@ -410,26 +468,32 @@ app.get("/admin", async (c) => {
 
 // GET /admin/servers
 app.get("/admin/servers", async (c) => {
-    // Return minimal info
-    const gameServers = await Agones.listGameServers(GAME_SERVER_NAMESPACE);
-    const stats = await DB.getStats();
+    return c.json(await listServerStatuses());
+});
 
-    // Map pod names to session IDs
-    const podToSession = new Map<string, string>();
-    for (const [sid, raw] of Object.entries(stats.activeSessions)) {
-        try {
-            const data = JSON.parse(raw);
-            if (data.name) {
-                podToSession.set(data.name, sid);
-            }
-        } catch (e) { }
-    }
+app.get("/internal/servers", async (c) => {
+    const unauthorized = requireControlPlane(c);
+    if (unauthorized) return unauthorized;
+    return c.json(await listServerStatuses());
+});
 
-    return c.json(gameServers.map((gs: any) => ({
-        name: gs.name,
-        status: gs.state || gs.status, // Agones returns 'state' in status block, but 'status' is requested
-        sessionId: podToSession.get(gs.name) || null
-    })));
+app.post("/internal/sessions", async (c) => {
+    const unauthorized = requireControlPlane(c);
+    if (unauthorized) return unauthorized;
+    return createControlPlaneSession(c);
+});
+
+app.get("/internal/session/:id", async (c) => {
+    const unauthorized = requireControlPlane(c);
+    if (unauthorized) return unauthorized;
+    return getSessionDetails(c, c.req.param("id"), undefined, normalizeBaseUrl(c.req.query("publicGatewayUrl")));
+});
+
+app.delete("/internal/session/:id", async (c) => {
+    const unauthorized = requireControlPlane(c);
+    if (unauthorized) return unauthorized;
+    await deleteLocalSession(c.req.param("id"));
+    return c.json({ success: true }, 200);
 });
 
 // POST /admin/session

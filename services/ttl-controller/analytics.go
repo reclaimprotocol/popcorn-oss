@@ -21,10 +21,13 @@ var (
 func initAnalytics() {
 	log := ctrl.Log.WithName("analytics")
 
-	// Get analytics service URL
-	analyticsURL = os.Getenv("ANALYTICS_SERVICE_URL")
+	// Get control-plane URL. ANALYTICS_SERVICE_URL is kept as a compatibility alias.
+	analyticsURL = os.Getenv("CONTROL_PLANE_URL")
 	if analyticsURL == "" {
-		analyticsURL = "http://analytics-service.default.svc.cluster.local:3000"
+		analyticsURL = os.Getenv("ANALYTICS_SERVICE_URL")
+	}
+	if analyticsURL == "" {
+		analyticsURL = "http://control-plane.default.svc.cluster.local:3000"
 	}
 
 	// Get cluster name
@@ -34,7 +37,10 @@ func initAnalytics() {
 	}
 
 	// Get service auth token from environment (sourced from K8s secret via CSI secretObjects)
-	serviceAuthToken = os.Getenv("ANALYTICS_AUTH_TOKEN")
+	serviceAuthToken = os.Getenv("CONTROL_PLANE_AUTH_TOKEN")
+	if serviceAuthToken == "" {
+		serviceAuthToken = os.Getenv("ANALYTICS_AUTH_TOKEN")
+	}
 	tokenLength := len(serviceAuthToken)
 
 	log.Info("Analytics initialized",
@@ -67,7 +73,7 @@ func reportExpiry(ctx context.Context, gameServerName string, sessionID string) 
 	}()
 }
 
-// endSession posts a session end event to the analytics service
+// endSession posts a session end event to the control plane
 func endSession(sessionID string, status string) error {
 	reqBody := EndSessionRequest{Status: status}
 	body, err := json.Marshal(reqBody)
@@ -96,7 +102,7 @@ func endSession(sessionID string, status string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("analytics service returned status %d", resp.StatusCode)
+		return fmt.Errorf("control plane returned status %d", resp.StatusCode)
 	}
 
 	return nil

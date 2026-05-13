@@ -3,10 +3,8 @@ import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import {
-    authorizeGoogleUser,
     createAdminSession,
     isAdminAuthPath,
-    isGoogleOAuthConfigured,
     isPasswordLoginConfigured,
     isSameOriginAdminRequest,
     parseBasicAuth,
@@ -29,7 +27,7 @@ describe("admin auth", () => {
     test("treats login support routes as public admin auth paths", () => {
         expect(isAdminAuthPath("/admin/login")).toBe(true);
         expect(isAdminAuthPath("/admin/auth/config")).toBe(true);
-        expect(isAdminAuthPath("/admin/auth/google/callback")).toBe(true);
+        expect(isAdminAuthPath("/admin/auth/google/callback")).toBe(false);
         expect(isAdminAuthPath("/admin/servers")).toBe(false);
     });
 
@@ -97,17 +95,12 @@ legacy:{SHA}unsupported
 
     test("does not invent a random admin session secret", () => {
         const passwordFileOnly = readAdminAuthConfig({
-            ADMIN_AUTH_STRATEGIES: "password,google",
+            ADMIN_AUTH_STRATEGIES: "password",
             ADMIN_PASSWORD_FILE: "/tmp/admin.htpasswd",
-            ADMIN_GOOGLE_CLIENT_ID: "client",
-            ADMIN_GOOGLE_CLIENT_SECRET: "secret",
-            ADMIN_GOOGLE_REDIRECT_URI: "https://example.com/admin/auth/google/callback",
-            ADMIN_GOOGLE_ALLOWED_DOMAINS: "example.com",
         });
 
         expect(passwordFileOnly.sessionSecret).toBeUndefined();
         expect(isPasswordLoginConfigured(passwordFileOnly)).toBe(false);
-        expect(isGoogleOAuthConfigured(passwordFileOnly)).toBe(false);
     });
 
     test("verifies htpasswd bcrypt credentials", async () => {
@@ -149,32 +142,4 @@ legacy:{SHA}unsupported
         expect(verifyAdminSession(session, config, 62000)).toBeNull();
     });
 
-    test("authorizes Google users by email or domain", () => {
-        const config = readAdminAuthConfig({
-            ADMIN_AUTH_STRATEGIES: "google",
-            ADMIN_SESSION_SECRET: "test-secret",
-            ADMIN_GOOGLE_ALLOWED_EMAILS: "person@example.com",
-            ADMIN_GOOGLE_ALLOWED_DOMAINS: "example.com",
-        });
-
-        expect(authorizeGoogleUser({
-            email: "person@example.com",
-            email_verified: true,
-        }, config)?.id).toBe("person@example.com");
-
-        expect(authorizeGoogleUser({
-            email: "admin@example.com",
-            email_verified: "true",
-        }, config)?.id).toBe("admin@example.com");
-
-        expect(authorizeGoogleUser({
-            email: "outsider@example.net",
-            email_verified: true,
-        }, config)).toBeNull();
-
-        expect(authorizeGoogleUser({
-            email: "admin@example.com",
-            email_verified: false,
-        }, config)).toBeNull();
-    });
 });
