@@ -21,6 +21,8 @@ html {
 body {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  height: 100dvh;
   min-height: 100%;
   min-height: 100dvh;
   min-width: 320px;
@@ -109,7 +111,7 @@ small,
 
 main {
   display: grid;
-  flex: 1;
+  flex: 1 1 auto;
   gap: 0.85rem;
   min-height: 0;
   overflow: hidden;
@@ -165,6 +167,7 @@ main {
 .command-panel {
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .command-panel .panel-body {
@@ -483,12 +486,17 @@ code {
 .pods-panel .panel-body {
   display: flex;
   flex: 1;
+  flex-direction: column;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .pods-panel .table-scroll {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
 }
 
 .status-pill {
@@ -647,6 +655,8 @@ code {
 
 @media (max-width: 1120px) {
   body {
+    height: auto;
+    min-height: 100dvh;
     overflow: auto;
   }
 
