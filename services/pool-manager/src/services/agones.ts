@@ -6,10 +6,48 @@ import { buildK8sFetchRequest, getK8sClusterServer } from "./k8s-fetch";
 import { retry } from "./retry";
 
 const kc = new KubeConfig();
+const EXTRA_ROUTE_PORTS = readExtraRoutePorts(process.env.POOL_MANAGER_EXTRA_ROUTE_PORTS);
 try {
     kc.loadFromDefault();
 } catch (e) {
     console.warn("⚠️ Failed to load KubeConfig");
+}
+
+function readExtraRoutePorts(raw: string | undefined): Array<{ name: string; port: number; protocol: string }> {
+    if (!raw?.trim()) {
+        return [];
+    }
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is not a JSON object");
+            return [];
+        }
+
+        return Object.entries(parsed).flatMap(([name, value]) => {
+            const port = value && typeof value === "object" && !Array.isArray(value)
+                ? Number((value as any).port)
+                : NaN;
+
+            if (/^[A-Za-z0-9_-]+$/.test(name) && Number.isInteger(port) && port > 0 && port <= 65535) {
+                return [{ name, port, protocol: "TCP" }];
+            }
+            return [];
+        });
+    } catch (e) {
+        console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is invalid JSON:", e);
+        return [];
+    }
+}
+
+function staticInternalPorts() {
+    return [
+        { name: "http", port: 8082, protocol: "TCP" },
+        { name: "cdp", port: 9222, protocol: "TCP" },
+        { name: "kernel-api", port: 10001, protocol: "TCP" },
+        ...EXTRA_ROUTE_PORTS,
+    ];
 }
 
 async function agonesFetch(path: string, opts: any = {}) {
@@ -105,12 +143,7 @@ export const Agones = {
                     gameServerName: status.gameServerName,
                     address: status.address,
                     nodeName: status.nodeName,
-                    ports: [
-                        { name: "http", port: 8082, protocol: "TCP" },
-                        { name: "cdp", port: 9222, protocol: "TCP" },
-                        { name: "kernel-api", port: 10001, protocol: "TCP" },
-                        { name: "ai-http", port: 3000, protocol: "TCP" }
-                    ]
+                    ports: staticInternalPorts()
                 };
             }
 
@@ -121,12 +154,7 @@ export const Agones = {
                 address: podIp!, // Use Pod IP internally
                 nodeName: status.nodeName,
                 // Return internal ports as we don't have host ports
-                ports: [
-                    { name: "http", port: 8082, protocol: "TCP" },
-                    { name: "cdp", port: 9222, protocol: "TCP" },
-                    { name: "kernel-api", port: 10001, protocol: "TCP" },
-                    { name: "ai-http", port: 3000, protocol: "TCP" }
-                ]
+                ports: staticInternalPorts()
             };
         } catch (e) {
             console.error("❌ Agones allocation error:", e);

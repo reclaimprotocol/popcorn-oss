@@ -23,6 +23,8 @@ poolManager:
   gameServerNamespace: ""
   gameServerFleet: browser-fleet
   jwtSecretName: ""
+  extraSessionUrls: {}
+  extraRoutePorts: {}
   serviceAuth:
     secretName: ""
     secretKey: SERVICE_AUTH_TOKEN
@@ -43,6 +45,7 @@ gateway:
   serviceType: LoadBalancer
   nodePorts: {}
   serviceAnnotations: {}
+  extraSessionRoutes: []
   backendConfig:
     enabled: true
     timeoutSec: 3600

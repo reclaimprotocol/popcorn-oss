@@ -34,6 +34,7 @@ const ADMIN_CLIENT_NAME = "Admin UI";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const CONTROL_PLANE_AUTH_TOKEN = process.env.CONTROL_PLANE_AUTH_TOKEN || process.env.ANALYTICS_AUTH_TOKEN || "";
 const POOL_MANAGER_SERVICE_AUTH_TOKEN = process.env.POOL_MANAGER_SERVICE_AUTH_TOKEN || process.env.SERVICE_AUTH_TOKEN || CONTROL_PLANE_AUTH_TOKEN;
+const EXTRA_SESSION_URLS = readExtraSessionUrls(process.env.POOL_MANAGER_EXTRA_SESSION_URLS);
 
 app.use('/admin/*', async (c, next) => {
     if (isAdminAuthPath(new URL(c.req.url).pathname)) {
@@ -189,6 +190,34 @@ function normalizeBaseUrl(rawBaseUrl: string | undefined | null): string | null 
     }
 }
 
+function readExtraSessionUrls(raw: string | undefined): Record<string, string> {
+    if (!raw?.trim()) {
+        return {};
+    }
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            console.warn("Ignoring POOL_MANAGER_EXTRA_SESSION_URLS because it is not a JSON object");
+            return {};
+        }
+
+        return Object.fromEntries(
+            Object.entries(parsed).filter((entry): entry is [string, string] => {
+                const [key, value] = entry;
+                return /^[A-Za-z][A-Za-z0-9_]*$/.test(key) && typeof value === "string";
+            })
+        );
+    } catch (e) {
+        console.warn("Ignoring POOL_MANAGER_EXTRA_SESSION_URLS because it is invalid JSON:", e);
+        return {};
+    }
+}
+
+function expandSessionUrlTemplate(template: string, values: Record<string, string>): string {
+    return template.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (match, key) => values[key] ?? match);
+}
+
 function buildSessionDetails(c: any, sessionId: string, session: any, publicBaseUrl?: string | null) {
     const baseUrl = publicBaseUrl || requestBaseUrl(c);
     const parsedBase = new URL(baseUrl);
@@ -196,16 +225,30 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
     const token = Auth.signToken(sessionId, 'restricted');
     const internalToken = Auth.signToken(sessionId, 'internal');
 
-    return {
+    const details: Record<string, unknown> = {
         success: true,
         sessionId,
         url: `${baseUrl}/${session.name}/${sessionId}/${token}/`,
         cdpUrl: `${wsBase}/cdp/${sessionId}/${token}/`,
         cdpInternalUrl: `${wsBase}/cdp-internal/${sessionId}/${internalToken}/`,
         apiUrl: `${baseUrl}/api/${sessionId}/${internalToken}/`,
-        aiUrl: `${baseUrl}/ai/${sessionId}/${token}/`,
         browserPodId: session.name
     };
+
+    const templateValues = {
+        baseUrl,
+        wsBase,
+        sessionId,
+        browserPodId: session.name,
+        restrictedToken: token,
+        internalToken,
+    };
+
+    for (const [key, template] of Object.entries(EXTRA_SESSION_URLS)) {
+        details[key] = expandSessionUrlTemplate(template, templateValues);
+    }
+
+    return details;
 }
 
 async function allocateSessionLocally(identity: ClientIdentity, requestedSessionId?: string) {

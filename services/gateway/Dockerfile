@@ -14,6 +14,7 @@ COPY auth.lua /usr/local/openresty/lualib/auth.lua
 
 # Copy configuration
 COPY nginx.conf /usr/local/openresty/nginx/conf/nginx.conf
+RUN mkdir -p /usr/local/openresty/nginx/conf/session-routes
 
 # Copy entrypoint script
 COPY entrypoint.sh /entrypoint.sh

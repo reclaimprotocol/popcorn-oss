@@ -72,7 +72,6 @@ Response:
   "cdpUrl": "wss://asia.popcorn.example/cdp/demo-session/<token>/",
   "cdpInternalUrl": "wss://asia.popcorn.example/cdp-internal/demo-session/<token>/",
   "apiUrl": "https://asia.popcorn.example/api/demo-session/<token>/",
-  "aiUrl": "https://asia.popcorn.example/ai/demo-session/<token>/",
   "browserPodId": "browser-fleet-abc",
   "region": "asia-south1",
   "clusterName": "asia-cluster"

@@ -68,7 +68,6 @@ Response:
   "cdpUrl": "wss://asia.example.com/cdp/demo-session/<token>/",
   "cdpInternalUrl": "wss://asia.example.com/cdp-internal/demo-session/<token>/",
   "apiUrl": "https://asia.example.com/api/demo-session/<token>/",
-  "aiUrl": "https://asia.example.com/ai/demo-session/<token>/",
   "browserPodId": "browser-fleet-abc",
   "region": "asia-south1",
   "clusterName": "asia-cluster"
@@ -130,6 +129,9 @@ Fields:
 - `cdpInternalUrl`: trusted internal CDP endpoint with broader access.
 - `apiUrl`: browser runtime API route.
 - `browserPodId`: current browser pod or GameServer name.
+
+Deployments may add extra URL fields through Helm extension values. Those fields
+are deployment-specific and are not part of the OSS default response shape.
 
 ## Get Session
 

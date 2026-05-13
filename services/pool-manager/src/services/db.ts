@@ -3,6 +3,39 @@ import { Pod } from "../types";
 
 const REDIS_HOST = process.env.REDIS_HOST || "localhost";
 const REDIS_PORT = 6379;
+const EXTRA_ROUTE_PORTS = readExtraRoutePorts(process.env.POOL_MANAGER_EXTRA_ROUTE_PORTS);
+
+function readExtraRoutePorts(raw: string | undefined): Record<string, string> {
+    if (!raw?.trim()) {
+        return {};
+    }
+
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is not a JSON object");
+            return {};
+        }
+
+        return Object.fromEntries(
+            Object.entries(parsed).flatMap(([portName, value]) => {
+                const routeKey = typeof value === "string"
+                    ? value
+                    : value && typeof value === "object" && !Array.isArray(value) && typeof (value as any).routeKey === "string"
+                        ? (value as any).routeKey
+                        : "";
+
+                if (/^[A-Za-z0-9_-]+$/.test(portName) && /^[A-Za-z0-9_-]+$/.test(routeKey)) {
+                    return [[portName, routeKey]];
+                }
+                return [];
+            })
+        );
+    } catch (e) {
+        console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is invalid JSON:", e);
+        return {};
+    }
+}
 
 console.log(`🔌 Connecting to Redis at ${REDIS_HOST}:${REDIS_PORT}...`);
 export const redis = new Redis({
@@ -40,8 +73,8 @@ export const DB = {
                         await redis.set(`route:cdp-internal:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
                     } else if (p.name === "kernel-api") {
                         await redis.set(`route:api:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
-                    } else if (p.name === "ai-http") {
-                        await redis.set(`route:ai:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
+                    } else if (EXTRA_ROUTE_PORTS[p.name]) {
+                        await redis.set(`route:${EXTRA_ROUTE_PORTS[p.name]}:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
                     }
                 }
             }
@@ -81,8 +114,8 @@ export const DB = {
                 `route:${id}`,
                 `route:cdp:${id}`,
                 `route:api:${id}`,
-                `route:ai:${id}`,
                 `route:cdp-internal:${id}`,
+                ...Object.values(EXTRA_ROUTE_PORTS).map((routeKey) => `route:${routeKey}:${id}`),
             );
         }
         return session;

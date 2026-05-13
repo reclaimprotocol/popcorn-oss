@@ -14,10 +14,10 @@ export interface RoutedSessionResponse {
   cdpUrl: string;
   cdpInternalUrl?: string;
   apiUrl: string;
-  aiUrl?: string;
   browserPodId?: string;
   region: string;
   clusterName: string;
+  [key: string]: unknown;
 }
 
 export interface AllocationResult {

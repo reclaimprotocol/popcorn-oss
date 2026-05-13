@@ -69,7 +69,10 @@ Before installing into a GKE cluster, replace:
 | `poolManager.gameServerNamespace` | release namespace | Optional override for where pool-manager allocates and manages Agones GameServers. Leave empty for same-namespace deployments. |
 | `poolManager.controlPlaneUrl` | bundled control plane | Control-plane URL used for compatibility `/session` validation. `poolManager.analyticsServiceUrl` remains an alias. |
 | `poolManager.serviceAuth.secretName` | `secrets.poolManagerServiceAuthName` | Per-region token Secret trusted by this pool-manager and mounted by the control plane region config. |
+| `poolManager.extraSessionUrls` | `{}` | Optional map of additional session response URL fields. Values are templates expanded by the pool manager. |
+| `poolManager.extraRoutePorts` | `{}` | Optional map from extra Agones port names to gateway route keys and static fallback ports. |
 | `gateway.enabled` | public gateway | Required for browser/CDP access. |
+| `gateway.extraSessionRoutes` | `[]` | Optional list of additional gateway session proxy routes. |
 | `redis.enabled` | local Redis | Enable bundled Redis for simple installs. |
 | `postgres.enabled` | local Postgres | Optional analytics storage. |
 | `controlPlane.enabled` | client control plane | Enables client credentials, `/v1/sessions`, multi-region routing, and analytics storage. |
@@ -99,6 +102,55 @@ Before installing into a GKE cluster, replace:
 | `fleet.replicas` | desired browser capacity | Start small; use autoscaler limits for burst control. |
 | `autoscaler.minReplicas` | minimum fleet size | Keep low for development. |
 | `autoscaler.maxReplicas` | maximum fleet size | Set a hard cost guardrail. |
+
+## Session Route Extension Points
+
+OSS exposes browser view, CDP, internal CDP, runtime API, and proof routes by
+default. Internal or downstream deployments can add extra browser-runtime routes
+without patching OSS source by configuring three default-empty extension points:
+
+```yaml
+# browser-fleet values
+fleet:
+  extraPorts:
+    - name: tool-http
+      containerPort: 3000
+      portPolicy: None
+      protocol: TCP
+
+# platform values
+poolManager:
+  extraRoutePorts:
+    tool-http:
+      routeKey: tool
+      port: 3000
+  extraSessionUrls:
+    toolUrl: "{baseUrl}/tool/{sessionId}/{internalToken}/"
+
+gateway:
+  extraSessionRoutes:
+    - pathPrefix: tool
+      routeKey: tool
+      tokenScope: internal
+```
+
+The pieces must agree on names:
+
+- `fleet.extraPorts[].name` is the Agones port name exposed by the browser
+  runtime pod.
+- `poolManager.extraRoutePorts.<portName>.routeKey` controls the Redis route key
+  written as `route:<routeKey>:<sessionId>`.
+- `gateway.extraSessionRoutes[].routeKey` must match that route key.
+- `gateway.extraSessionRoutes[].pathPrefix` controls the public path
+  `/<pathPrefix>/<sessionId>/<token>/...`.
+- `poolManager.extraSessionUrls` controls any additional fields returned by
+  session APIs.
+
+`poolManager.extraSessionUrls` templates support `{baseUrl}`, `{wsBase}`,
+`{sessionId}`, `{browserPodId}`, `{restrictedToken}`, and `{internalToken}`.
+Use `{internalToken}` only for routes that set `tokenScope: internal`. If
+`tokenScope` is omitted, the gateway accepts any valid session token for that
+route.
 
 ## Secrets
 
