@@ -1,12 +1,13 @@
 {
-  "name": "analytics-service",
+  "name": "control-plane",
   "version": "1.0.0",
   "type": "module",
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun run --watch index.ts",
     "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
-    "db:migrate": "bun run src/migrate.ts"
+    "db:migrate": "bun run src/migrate.ts",
+    "test": "bun test"
   },
   "dependencies": {
     "hono": "^3.12.0",

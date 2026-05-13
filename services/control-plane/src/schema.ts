@@ -14,6 +14,7 @@ export const sessions = pgTable('sessions', {
   clientId: text('client_id').references(() => clients.id).notNull(),
   clientName: text('client_name').notNull(), // Denormalized for easy identification
   clusterName: text('cluster_name').notNull(),
+  region: text('region'),
 
   // Time tracking
   createdAt: timestamp('created_at', { mode: 'date' }).notNull(),
@@ -28,6 +29,7 @@ export const sessions = pgTable('sessions', {
   // Indexes for common query patterns
   clientIdx: index('sessions_client_idx').on(table.clientId),
   clusterIdx: index('sessions_cluster_idx').on(table.clusterName),
+  regionIdx: index('sessions_region_idx').on(table.region),
   createdAtIdx: index('sessions_created_at_idx').on(table.createdAt),
   endedAtIdx: index('sessions_ended_at_idx').on(table.endedAt),
   statusIdx: index('sessions_status_idx').on(table.status),

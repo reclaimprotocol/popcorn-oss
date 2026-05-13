@@ -1,16 +1,17 @@
 import { db } from './db';
 import { sessions, sessionEvents } from './schema';
-import { eq } from 'drizzle-orm';
+import { count, desc, eq } from 'drizzle-orm';
 
 export const SessionService = {
   // Create a new session
-  async createSession(sessionId: string, clientId: string, clientName: string, clusterName: string): Promise<void> {
+  async createSession(sessionId: string, clientId: string, clientName: string, clusterName: string, region?: string): Promise<void> {
     try {
       await db.insert(sessions).values({
         sessionId,
         clientId,
         clientName,
         clusterName,
+        region,
         createdAt: new Date(),
         status: 'active',
       });
@@ -41,5 +42,29 @@ export const SessionService = {
   // Get session info
   async getSession(sessionId: string) {
     return await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
+  },
+
+  async listSessions(limit = 100, clientId?: string, offset = 0) {
+    if (clientId) {
+      return await db.select()
+        .from(sessions)
+        .where(eq(sessions.clientId, clientId))
+        .orderBy(desc(sessions.createdAt))
+        .limit(limit)
+        .offset(offset);
+    }
+
+    return await db.select()
+      .from(sessions)
+      .orderBy(desc(sessions.createdAt))
+      .limit(limit)
+      .offset(offset);
+  },
+
+  async countSessionsForClient(clientId: string): Promise<number> {
+    const [row] = await db.select({ value: count() })
+      .from(sessions)
+      .where(eq(sessions.clientId, clientId));
+    return row?.value || 0;
   }
 };

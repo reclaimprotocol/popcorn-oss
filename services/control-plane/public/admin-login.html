@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Popcorn Control Plane</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f1519;
+      --panel: #172026;
+      --border: #2b3a42;
+      --text: #f5f7f8;
+      --muted: #a7b4bb;
+      --accent: #27b39d;
+      --danger: #df625d;
+    }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, sans-serif;
+    }
+
+    main {
+      width: min(420px, calc(100vw - 32px));
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px;
+    }
+
+    h1 {
+      margin: 0 0 20px;
+      font-size: 1.4rem;
+    }
+
+    label {
+      display: block;
+      color: var(--muted);
+      margin: 14px 0 8px;
+      font-size: 0.9rem;
+    }
+
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0c141b;
+      color: var(--text);
+      padding: 12px;
+    }
+
+    button,
+    .google {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 16px;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #06110f;
+      padding: 12px;
+      font-weight: 700;
+      text-align: center;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .google {
+      background: #f5f7f8;
+      color: #0f1519;
+    }
+
+    .error {
+      color: var(--danger);
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .empty {
+      color: var(--muted);
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>Popcorn Control Plane</h1>
+    <div id="error" class="error"></div>
+
+    <form id="password-form" method="post" action="/admin/auth/password" hidden>
+      <label for="username">Username</label>
+      <input id="username" name="username" autocomplete="username" required>
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+
+    <a id="google-link" class="google" href="/admin/auth/google" hidden>Sign in with Google</a>
+    <p id="empty" class="empty" hidden>No control-plane admin auth strategy is configured.</p>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const error = params.get('error');
+    if (error) {
+      const errorEl = document.getElementById('error');
+      errorEl.textContent = error;
+      errorEl.style.display = 'block';
+    }
+
+    fetch('/admin/auth/config')
+      .then((res) => res.json())
+      .then((config) => {
+        document.getElementById('password-form').hidden = !config.password;
+        document.getElementById('google-link').hidden = !config.google;
+        document.getElementById('empty').hidden = config.password || config.google;
+      })
+      .catch(() => {
+        const errorEl = document.getElementById('error');
+        errorEl.textContent = 'Unable to load admin auth configuration.';
+        errorEl.style.display = 'block';
+      });
+  </script>
+</body>
+
+</html>

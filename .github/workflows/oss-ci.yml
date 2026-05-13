@@ -68,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           services=(
-            services/analytics-service
+            services/control-plane
             services/pool-manager
           )
 
@@ -126,8 +126,8 @@ jobs:
             context: services/gateway
           - service: ttl-controller
             context: services/ttl-controller
-          - service: analytics-service
-            context: services/analytics-service
+          - service: control-plane
+            context: services/control-plane
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -81,6 +81,11 @@ export const ClientService = {
     console.log(`🚫 Revoked client: ${clientId}`);
   },
 
+  async deleteClient(clientId: string): Promise<void> {
+    await db.delete(clients).where(eq(clients.id, clientId));
+    console.log(`Deleted client: ${clientId}`);
+  },
+
   async listClients(): Promise<Client[]> {
     const result = await db.select({
       id: clients.id,
@@ -89,7 +94,12 @@ export const ClientService = {
       active: clients.active,
     }).from(clients);
 
-    return result;
+    return result.sort((a, b) => {
+      if (a.active !== b.active) {
+        return a.active ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name);
+    });
   },
 
   async getClient(clientId: string): Promise<Client | null> {
