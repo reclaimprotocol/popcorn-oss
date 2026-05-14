@@ -23,3 +23,4 @@ docker-compose.override.yml
 .venv/
 services/gateway/keys/
 services/pool-manager/keys/
+cosign.pub
