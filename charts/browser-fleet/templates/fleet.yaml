@@ -111,6 +111,8 @@ spec:
                   value: unixms
                 - name: NEKO_LOG_NOCOLOR
                   value: "true"
+                - name: REPLACE_DEFAULT_PAGE
+                  value: "true"
 {{- with .Values.extraBrowserRuntimeEnv }}
 {{ tpl (toYaml .) $ | nindent 16 }}
 {{- end }}
