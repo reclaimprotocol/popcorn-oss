@@ -1,8 +1,5 @@
 {{- if .Values.poolManager.enabled }}
-{{- $poolManagerSecret := default .Values.secrets.poolManagerName .Values.poolManager.adminAuth.sessionSecretName }}
 {{- $poolManagerServiceAuthSecret := default .Values.secrets.poolManagerServiceAuthName .Values.poolManager.serviceAuth.secretName }}
-{{- $controlPlaneSecret := default .Values.secrets.controlPlaneName .Values.controlPlane.secretName }}
-{{- $legacyAnalyticsSecret := default "analytics-service-secret" .Values.secrets.analyticsServiceName }}
 {{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.poolManager.jwtSecretName }}
 apiVersion: apps/v1
 kind: Deployment
@@ -28,14 +25,6 @@ spec:
             items:
               - key: private.pem
                 path: private.pem
-{{- if .Values.poolManager.adminAuth.passwordFileSecretName }}
-        - name: admin-password-file
-          secret:
-            secretName: {{ .Values.poolManager.adminAuth.passwordFileSecretName | quote }}
-            items:
-              - key: {{ .Values.poolManager.adminAuth.passwordFileSecretKey | quote }}
-                path: admin.htpasswd
-{{- end }}
       containers:
         - name: pool-manager
           image: "{{ .Values.registry }}/pool-manager:{{ .Values.imageTag }}"
@@ -46,33 +35,9 @@ spec:
             - name: jwt-keys
               mountPath: /app/keys
               readOnly: true
-{{- if .Values.poolManager.adminAuth.passwordFileSecretName }}
-            - name: admin-password-file
-              mountPath: /app/auth/admin.htpasswd
-              subPath: admin.htpasswd
-              readOnly: true
-{{- end }}
           env:
             - name: REDIS_HOST
               value: {{ .Values.poolManager.redisHost | quote }}
-            - name: ADMIN_AUTH_STRATEGIES
-              value: {{ .Values.poolManager.adminAuth.strategies | quote }}
-            - name: ADMIN_SESSION_TTL_SECONDS
-              value: {{ .Values.poolManager.adminAuth.sessionTtlSeconds | quote }}
-            - name: ADMIN_SESSION_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $poolManagerSecret | quote }}
-                  key: {{ .Values.poolManager.adminAuth.sessionSecretKey | quote }}
-                  optional: true
-{{- if .Values.poolManager.adminAuth.passwordFileSecretName }}
-            - name: ADMIN_PASSWORD_FILE
-              value: /app/auth/admin.htpasswd
-{{- end }}
-            - name: CONTROL_PLANE_URL
-              value: {{ default (default (printf "http://control-plane.%s.svc.cluster.local:3000" .Release.Namespace) .Values.poolManager.analyticsServiceUrl) .Values.poolManager.controlPlaneUrl | quote }}
-            - name: ANALYTICS_SERVICE_URL
-              value: {{ default (default (printf "http://control-plane.%s.svc.cluster.local:3000" .Release.Namespace) .Values.poolManager.controlPlaneUrl) .Values.poolManager.analyticsServiceUrl | quote }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
@@ -93,30 +58,11 @@ spec:
               value: {{ .Values.region | quote }}
             - name: OTEL_CLICKHOUSE_ENABLED
               value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
-            - name: CONTROL_PLANE_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $controlPlaneSecret | quote }}
-                  key: {{ .Values.controlPlane.serviceAuthSecretKey | quote }}
-                  optional: true
-            - name: ANALYTICS_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $legacyAnalyticsSecret | quote }}
-                  key: SERVICE_AUTH_TOKEN
-                  optional: true
             - name: POOL_MANAGER_SERVICE_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ $poolManagerServiceAuthSecret | quote }}
                   key: {{ .Values.poolManager.serviceAuth.secretKey | quote }}
-                  optional: true
-            - name: SERVICE_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $poolManagerServiceAuthSecret | quote }}
-                  key: {{ .Values.poolManager.serviceAuth.secretKey | quote }}
-                  optional: true
             - name: CLUSTER_NAME
               valueFrom:
                 configMapKeyRef:
@@ -146,9 +92,6 @@ spec:
             - name: OTEL_CLICKHOUSE_DATABASE
               value: {{ .Values.otel.clickhouse.database | quote }}
 {{- end }}
-          envFrom:
-            - secretRef:
-                name: {{ $poolManagerSecret | quote }}
 ---
 apiVersion: v1
 kind: Service

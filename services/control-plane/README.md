@@ -8,7 +8,7 @@ analytics storage. Pool managers remain the regional allocators.
 
 - Client credential authentication with client ID + secret
 - Region-prioritized `POST /v1/sessions` session creation
-- Compatibility APIs for existing pool-manager validation and session callbacks
+- TTL callback support for expired regional sessions
 - PostgreSQL-backed client and session records
 - Admin API and UI for clients, sessions, and regional pool state
 
@@ -19,7 +19,7 @@ export POSTGRES_HOST=<postgres-host>
 export POSTGRES_USER=analytics_admin
 export POSTGRES_PASSWORD=<password>
 export POSTGRES_DB=analytics
-export CONTROL_PLANE_SERVICE_AUTH_TOKEN=<global-compat-service-token>
+export CONTROL_PLANE_SERVICE_AUTH_TOKEN=<control-plane-service-token>
 export ADMIN_AUTH_STRATEGIES=password,google
 export ADMIN_USER=admin
 export ADMIN_PASS=<admin-password>
@@ -31,15 +31,14 @@ export CONTROL_PLANE_REGIONS='[
     "clusterName": "asia-cluster",
     "poolManagerUrl": "http://pool-manager.asia.svc.cluster.local",
     "publicGatewayUrl": "https://asia.popcorn.example",
-    "serviceAuthTokenFile": "/app/secrets/pool-managers/asia-south1/SERVICE_AUTH_TOKEN",
+    "serviceAuthTokenFile": "/app/secrets/pool-managers/asia-south1/POOL_MANAGER_SERVICE_AUTH_TOKEN",
     "enabled": true
   }
 ]'
 ```
 
-`SERVICE_AUTH_TOKEN` and `ADMIN_TOKEN` are still accepted as compatibility
-aliases. Prefer per-region pool-manager tokens through `serviceAuthTokenFile`
-or `serviceAuthToken` on each region.
+Prefer per-region pool-manager tokens through `serviceAuthTokenFile` or
+`serviceAuthToken` on each region.
 
 ## Client Session API
 
@@ -81,16 +80,10 @@ Response:
 }
 ```
 
-## Compatibility APIs
+## Service APIs
 
-Existing pool managers can continue to call:
-
-- `POST /validate`
-- `POST /sessions`
-- `POST /sessions/:id/end`
-
-These routes use the service token and preserve the old analytics callback
-contract while the canonical service name is now `control-plane`.
+The TTL controller reports expired sessions with `POST /sessions/:id/end`.
+Pool managers do not call compatibility validation or session-ingest APIs.
 
 ## Admin APIs
 

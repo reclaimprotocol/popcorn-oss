@@ -85,18 +85,24 @@ http://localhost:8080
 Create a browser session:
 
 ```bash
-POPCORN_ADMIN_USER="${POPCORN_ADMIN_USER:-admin}"
-POPCORN_ADMIN_PASS="${POPCORN_ADMIN_PASS:-admin}"
+CONTROL_PLANE_URL=http://localhost:8081
+CONTROL_PLANE_ADMIN_TOKEN=local_admin_token_for_dev
 
-curl -sS -X POST http://localhost:8080/admin/session \
-  -u "$POPCORN_ADMIN_USER:$POPCORN_ADMIN_PASS" \
+curl -sS -X POST "$CONTROL_PLANE_URL/admin/clients" \
+  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"sessionId":"demo-session"}'
+  -d '{"name":"demo client"}'
+
+CLIENT_ID=client_0123456789abcdef
+CLIENT_SECRET=secret_0123456789abcdef
+
+curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
+  -H "Authorization: Bearer $CLIENT_ID:$CLIENT_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"sessionId":"demo-session","regions":["local"]}'
 ```
 
-`/admin/session` is the local Kind smoke-test endpoint and uses the default local admin credentials `admin:admin`.
-New client session creation should use the control-plane `/v1/sessions` API. The existing pool-manager `/session` path remains available for compatibility and requires control-plane-backed client credentials.
-See [Control plane session creation](docs/control-plane-sessions.md) for the client credential and `/v1/sessions` workflow.
+Client session creation uses the control-plane `/v1/sessions` API. See [Control plane session creation](docs/control-plane-sessions.md) for the full client credential workflow.
 
 The response includes:
 
@@ -113,16 +119,16 @@ For a purely local demo, the OSS Helm example values include development credent
 ```js
 import { chromium } from "playwright";
 
-const gateway = "http://localhost:8080";
-const adminUser = process.env.POPCORN_ADMIN_USER ?? "admin";
-const adminPass = process.env.POPCORN_ADMIN_PASS ?? "admin";
-const response = await fetch(`${gateway}/admin/session`, {
+const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
+const clientId = process.env.POPCORN_CLIENT_ID;
+const clientSecret = process.env.POPCORN_CLIENT_SECRET;
+const response = await fetch(`${controlPlaneUrl}/v1/sessions`, {
   method: "POST",
   headers: {
-    Authorization: "Basic " + Buffer.from(`${adminUser}:${adminPass}`).toString("base64"),
+    Authorization: `Bearer ${clientId}:${clientSecret}`,
     "Content-Type": "application/json",
   },
-  body: JSON.stringify({ sessionId: `pw-${Date.now()}` }),
+  body: JSON.stringify({ sessionId: `pw-${Date.now()}`, regions: ["local"] }),
 });
 
 const session = await response.json();
@@ -139,16 +145,16 @@ await browser.close();
 ```js
 import puppeteer from "puppeteer-core";
 
-const gateway = "http://localhost:8080";
-const adminUser = process.env.POPCORN_ADMIN_USER ?? "admin";
-const adminPass = process.env.POPCORN_ADMIN_PASS ?? "admin";
-const response = await fetch(`${gateway}/admin/session`, {
+const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
+const clientId = process.env.POPCORN_CLIENT_ID;
+const clientSecret = process.env.POPCORN_CLIENT_SECRET;
+const response = await fetch(`${controlPlaneUrl}/v1/sessions`, {
   method: "POST",
   headers: {
-    Authorization: "Basic " + Buffer.from(`${adminUser}:${adminPass}`).toString("base64"),
+    Authorization: `Bearer ${clientId}:${clientSecret}`,
     "Content-Type": "application/json",
   },
-  body: JSON.stringify({ sessionId: `pptr-${Date.now()}` }),
+  body: JSON.stringify({ sessionId: `pptr-${Date.now()}`, regions: ["local"] }),
 });
 
 const session = await response.json();

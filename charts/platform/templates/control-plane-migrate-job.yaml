@@ -1,8 +1,4 @@
 {{- $controlPlane := .Values.controlPlane }}
-{{- $legacyAnalytics := .Values.analytics }}
-{{- if and (not $controlPlane.enabled) $legacyAnalytics.enabled }}
-{{- $controlPlane = mergeOverwrite (deepCopy $controlPlane) $legacyAnalytics }}
-{{- end }}
 {{- $databaseSecret := default .Values.secrets.controlPlaneDatabaseName $controlPlane.databaseSecretName }}
 {{- if $controlPlane.enabled }}
 apiVersion: batch/v1

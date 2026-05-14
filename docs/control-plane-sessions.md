@@ -5,9 +5,9 @@ sessions. Clients call one stable API, and the control plane chooses an enabled
 regional pool manager, records the session, and returns gateway URLs for the
 allocated browser pod.
 
-Use the regional pool-manager `/session` endpoint only for compatibility with
-older single-region clients. New integrations should call `POST /v1/sessions`
-on the control plane.
+Client integrations should call `POST /v1/sessions` on the control plane.
+Regional pool managers expose only internal allocation endpoints for the
+control plane.
 
 ## Endpoint
 
@@ -44,7 +44,7 @@ controlPlane:
       enabled: true
       poolManagerAuth:
         secretName: pool-manager-us-central1-service-auth
-        secretKey: SERVICE_AUTH_TOKEN
+        secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
 ```
 
 Regions are tried in the order configured unless a session request supplies a

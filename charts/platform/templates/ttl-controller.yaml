@@ -1,7 +1,6 @@
 {{- if .Values.ttlController.enabled }}
 {{- $controlPlaneSecret := default .Values.secrets.controlPlaneName .Values.controlPlane.secretName }}
-{{- $controlPlaneSecretKey := default "SERVICE_AUTH_TOKEN" .Values.controlPlane.serviceAuthSecretKey }}
-{{- $legacyAnalyticsSecret := default "analytics-service-secret" .Values.secrets.analyticsServiceName }}
+{{- $controlPlaneSecretKey := default "CONTROL_PLANE_SERVICE_AUTH_TOKEN" .Values.controlPlane.serviceAuthSecretKey }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -63,26 +62,17 @@ spec:
             - --ttl-duration={{ .Values.ttlController.ttlDuration }}
           env:
             - name: CONTROL_PLANE_URL
-              value: {{ default (default (printf "http://control-plane.%s.svc.cluster.local:3000" .Release.Namespace) .Values.ttlController.analyticsServiceUrl) .Values.ttlController.controlPlaneUrl | quote }}
-            - name: ANALYTICS_SERVICE_URL
-              value: {{ default (default (printf "http://control-plane.%s.svc.cluster.local:3000" .Release.Namespace) .Values.ttlController.controlPlaneUrl) .Values.ttlController.analyticsServiceUrl | quote }}
+              value: {{ default (printf "http://control-plane.%s.svc.cluster.local:3000" .Release.Namespace) .Values.ttlController.controlPlaneUrl | quote }}
             - name: CLUSTER_NAME
               valueFrom:
                 configMapKeyRef:
                   name: cluster-config
                   key: cluster_name
-            - name: CONTROL_PLANE_AUTH_TOKEN
+            - name: CONTROL_PLANE_SERVICE_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
                   name: {{ $controlPlaneSecret | quote }}
                   key: {{ $controlPlaneSecretKey | quote }}
-                  optional: true
-            - name: ANALYTICS_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $legacyAnalyticsSecret | quote }}
-                  key: SERVICE_AUTH_TOKEN
-                  optional: true
           ports:
             - name: health
               containerPort: 8081

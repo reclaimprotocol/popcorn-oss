@@ -6,10 +6,11 @@ Popcorn isolates each browser session in an ephemeral Kubernetes workload and ex
 
 - Client applications call the public gateway.
 - The gateway validates path tokens before routing browser, CDP, runtime API, and proof requests.
-- The pool manager validates session API credentials before creating, reading, or deleting sessions.
+- The control plane validates client session API credentials, then calls regional pool managers with a per-region service token.
+- The pool manager validates only internal control-plane requests before creating, reading, or deleting sessions.
 - Redis stores routing state and should remain cluster-internal.
 - Browser pods are ephemeral and should not be treated as trusted storage.
-- Admin endpoints are for trusted operators only.
+- Control-plane admin endpoints are for trusted operators only.
 
 ## Admin Authentication
 
@@ -29,26 +30,22 @@ and should be protected by TLS outside local development. Configure
 `ADMIN_SESSION_SECRET` for Google OAuth or password-file browser login so
 session cookies and OAuth state remain valid across restarts and replicas.
 
-Pool-manager admin auth is intentionally narrower: password or bcrypt
-htpasswd file only. Keep OAuth and cross-region client administration at the
-control plane.
+Pool managers do not expose an admin UI or public admin API.
 
 ## Session API Credentials
 
-Client session API credentials are required for the `/session` endpoint:
+Client session API credentials are required for the control-plane `/v1/sessions`
+endpoint:
 
 ```http
 Authorization: Bearer <client-id>:<client-secret>
 ```
 
-In the current pool-manager implementation, these credentials are not loaded
-from a local `SESSION_AUTH_CLIENTS` map. The pool manager calls the analytics
-service `POST /validate` endpoint and authenticates that service call with
-`CONTROL_PLANE_AUTH_TOKEN` (or legacy `ANALYTICS_AUTH_TOKEN`). Deployments that expose `/session` therefore need a
-control-plane endpoint plus Postgres-backed client records, even if the
-analytics UI or dashboards are otherwise optional.
+Pool managers no longer expose the public client `/session` compatibility API.
+They trust only control-plane calls authenticated with
+`POOL_MANAGER_SERVICE_AUTH_TOKEN`.
 
-Local Kind smoke tests should use `/admin/session` with local admin credentials (`admin:admin`) instead of client credentials.
+Local Kind smoke tests should use control-plane client credentials.
 
 Recommendations:
 
@@ -107,10 +104,9 @@ For OSS installations, store production secrets in Kubernetes Secrets or your ow
 Production deployments should manage:
 
 - gateway JWT private and public keys;
-- control-plane-backed session API client credentials (for `/session` and `/v1/sessions`);
-- the global control-plane compatibility service token;
+- control-plane-backed session API client credentials for `/v1/sessions`;
+- the control-plane service token;
 - one service-auth token per regional pool manager;
-- pool-manager admin credentials and admin session secret;
 - control-plane admin credentials, admin session secret, and optional Google OAuth client secret;
 - registry pull credentials, if needed;
 - attestation signing material, if attestation is enabled;

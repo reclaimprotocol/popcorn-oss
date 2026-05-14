@@ -18,7 +18,6 @@ The defaults are:
 | Helm value | Default Secret |
 | --- | --- |
 | `secrets.gatewayJwtName` | `gateway-jwt-keys` |
-| `secrets.poolManagerName` | `pool-manager-env-secrets` |
 | `secrets.poolManagerServiceAuthName` | `pool-manager-service-auth` |
 | `secrets.controlPlaneName` | `control-plane-secret` |
 | `secrets.controlPlaneDatabaseName` | `analytics-db-secret` |
@@ -44,51 +43,28 @@ kubectl create secret generic gateway-jwt-keys \
 
 Use stable production keys across rollouts. Rotating these keys invalidates outstanding browser URLs.
 
-### `pool-manager-env-secrets`
-
-Loaded into the pool manager with `envFrom`.
-
-| Key | Required | Purpose |
-| --- | --- | --- |
-| `ADMIN_USER` | yes, unless using only an admin password file | Username for admin Basic auth and password login fallback. |
-| `ADMIN_PASS` | yes, unless using only an admin password file | Password for admin Basic auth and password login fallback. Also used as a fallback cookie signing secret if `ADMIN_SESSION_SECRET` is absent. |
-| `ADMIN_SESSION_SECRET` | required for password-file browser login | Random secret used to sign admin browser login cookies. Legacy `ADMIN_PASS` is only a fallback for existing username/password deployments. |
-
-For file-based admin password auth, mount a separate Secret containing an
-htpasswd-style bcrypt file and set `poolManager.adminAuth.passwordFileSecretName`.
-Each line should be `username:$2b$...`; blank lines and `#` comments are
-ignored.
-
-The current pool manager does not read `SESSION_AUTH_CLIENTS`. Client
-credentials for `/session` are validated through the control plane, not a
-local JSON map in this Secret.
-
-Pool-manager admin login intentionally remains password/file based. Google
-OAuth admin login belongs on the control plane.
-
 ### `pool-manager-service-auth`
 
 Each regional pool manager should have its own service-auth Secret. The
 control plane uses that region's token to call `/internal/sessions`,
-`/internal/session/:id`, and `/internal/servers`; the pool manager uses the
-same token for compatibility callbacks to the control plane.
+`/internal/session/:id`, and `/internal/servers`.
 
 | Key | Used by | Purpose |
 | --- | --- | --- |
-| `SERVICE_AUTH_TOKEN` | control plane, one pool manager | Per-region service token for internal allocation and legacy analytics callbacks. |
+| `POOL_MANAGER_SERVICE_AUTH_TOKEN` | control plane, one pool manager | Per-region service token for internal allocation. |
 
 For multi-region deployments, create one Secret per region and reference it
 from `controlPlane.regions[].poolManagerAuth.secretName`.
 
 ### `control-plane-secret`
 
-Required by the control plane. TTL callbacks can still use the global
-`SERVICE_AUTH_TOKEN`; regional pool-manager allocation should use the
+Required by the control plane. TTL callbacks use
+`CONTROL_PLANE_SERVICE_AUTH_TOKEN`; regional pool-manager allocation should use the
 per-region `pool-manager-service-auth` token instead.
 
 | Key | Used by | Purpose |
 | --- | --- | --- |
-| `SERVICE_AUTH_TOKEN` | control plane, TTL controller, legacy deployments | Global compatibility service token. |
+| `CONTROL_PLANE_SERVICE_AUTH_TOKEN` | control plane, TTL controller | Control-plane service token. |
 | `ADMIN_USER` | control plane | Password-login username. |
 | `ADMIN_PASS` | control plane | Password-login password. |
 | `ADMIN_SESSION_SECRET` | control plane | Cookie signing secret for browser login. |
@@ -103,10 +79,9 @@ Google OAuth with allowed emails or domains. Configure the strategies with
 
 ### `analytics-db-secret`
 
-Required when running the bundled control plane, bundled Postgres
-deployment, or Metabase. Client `/session` authentication depends on analytics
-client records stored in Postgres, either in this deployment or in an external
-control plane you point `poolManager.controlPlaneUrl` at.
+Required when running the bundled control plane, bundled Postgres deployment,
+or Metabase. Client `/v1/sessions` authentication depends on client records
+stored in Postgres.
 
 | Key | Purpose |
 | --- | --- |
@@ -145,7 +120,7 @@ make local-secrets
 
 The generated values are intentionally local-only:
 
-- admin username/password default to `admin`/`admin`;
+- control-plane admin username/password default to `admin`/`admin`;
 - service tokens are fixed development placeholders;
 - TURN credentials are empty unless `TURN_KEY_ID` and `TURN_API_TOKEN` are set in your shell.
 
@@ -154,19 +129,11 @@ The generated values are intentionally local-only:
 Create Secrets directly before running Helm:
 
 ```bash
-kubectl create secret generic pool-manager-env-secrets \
-  --from-literal=ADMIN_USER="$ADMIN_USER" \
-  --from-literal=ADMIN_PASS="$ADMIN_PASS" \
-  --from-literal=ADMIN_SESSION_SECRET="$ADMIN_SESSION_SECRET"
-
 kubectl create secret generic pool-manager-service-auth \
-  --from-literal=SERVICE_AUTH_TOKEN="$POOL_MANAGER_SERVICE_AUTH_TOKEN"
-
-kubectl create secret generic pool-manager-admin-password-file \
-  --from-file=admin.htpasswd=./admin.htpasswd
+  --from-literal=POOL_MANAGER_SERVICE_AUTH_TOKEN="$POOL_MANAGER_SERVICE_AUTH_TOKEN"
 
 kubectl create secret generic control-plane-secret \
-  --from-literal=SERVICE_AUTH_TOKEN="$SERVICE_AUTH_TOKEN" \
+  --from-literal=CONTROL_PLANE_SERVICE_AUTH_TOKEN="$CONTROL_PLANE_SERVICE_AUTH_TOKEN" \
   --from-literal=ADMIN_USER="$CONTROL_PLANE_ADMIN_USER" \
   --from-literal=ADMIN_PASS="$CONTROL_PLANE_ADMIN_PASS" \
   --from-literal=ADMIN_SESSION_SECRET="$CONTROL_PLANE_ADMIN_SESSION_SECRET" \

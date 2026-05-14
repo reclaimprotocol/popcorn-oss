@@ -41,11 +41,9 @@ Popcorn reads Kubernetes Secrets. On GCP, the recommended production path is GCP
 Create the required secrets in Secret Manager, then sync them into Kubernetes Secrets with the names documented in [Secrets](secrets.md):
 
 - `gateway-jwt-keys`
-- `pool-manager-env-secrets`
 - one pool-manager service-auth Secret per region, for example `pool-manager-us-central1-service-auth`
-- `pool-manager-admin-password-file`, if using password-file admin auth
 - `control-plane-secret`
-- `analytics-db-secret`, if running bundled analytics/Postgres or Metabase
+- `analytics-db-secret`, if running bundled control-plane/Postgres or Metabase
 - `browser-turn-secret`
 - `otel-clickhouse-secret`, if observability is enabled
 
@@ -189,19 +187,19 @@ kubectl -n popcorn rollout status deployment/popcorn-gateway
 
 ## Verify A Session
 
-After the gateway DNS and certificate are ready, create a session through the admin endpoint:
+After the gateway DNS and certificate are ready, create a session through the
+control plane:
 
 ```bash
-curl -sS -X POST https://gateway.example.com/admin/session \
-  -u "$POPCORN_ADMIN_USER:$POPCORN_ADMIN_PASS" \
+curl -sS -X POST https://control-plane.example.com/v1/sessions \
+  -H "Authorization: Bearer $CLIENT_ID:$CLIENT_SECRET" \
   -H 'Content-Type: application/json' \
-  -d '{"sessionId":"gcp-smoke"}'
+  -d '{"sessionId":"gcp-smoke","regions":["us-central1"]}'
 ```
 
 For new public clients, configure the control plane and create client records,
-then call `POST /v1/sessions` on the control plane. The current pool manager
-compatibility `/session` path validates client credentials through
-`poolManager.controlPlaneUrl`, authenticated with that pool-manager region's
+then call `POST /v1/sessions` on the control plane. The pool manager exposes
+only internal session allocation endpoints authenticated with that region's
 service-auth Secret.
 
 ## Upgrade
@@ -236,7 +234,7 @@ helm uninstall agones --namespace agones-system
 ## Production Notes
 
 - Expose only the gateway publicly.
-- Keep Redis, pool manager, analytics, Postgres, and Metabase internal unless you intentionally expose them.
+- Keep Redis, pool manager, control plane, Postgres, and Metabase internal unless you intentionally expose them.
 - Use GKE Ingress with a managed certificate or another GCP-managed TLS path.
 - Store production secrets in GCP Secret Manager or pre-created Kubernetes Secrets, never in Helm values.
 - Configure Cloudflare TURN for browser access from real networks.

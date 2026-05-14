@@ -27,7 +27,3 @@ export const RuntimeConfig = {
     gameServerNamespace: readNamespace(),
     gameServerFleet: readOptionalEnv("GAME_SERVER_FLEET") || "browser-fleet",
 };
-
-export function namespacedServiceUrl(serviceName: string, port: number, namespace = RuntimeConfig.gameServerNamespace): string {
-    return `http://${serviceName}.${namespace}.svc:${port}`;
-}

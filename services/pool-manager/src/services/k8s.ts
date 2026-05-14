@@ -22,70 +22,6 @@ async function k8sJson(path: string, opts: any = {}) {
 }
 
 export const K8s = {
-    // ... existing methods ...
-    async listGameServers(namespace: string = RuntimeConfig.gameServerNamespace) {
-        try {
-            const res = await k8sJson(`/apis/agones.dev/v1/namespaces/${namespace}/gameservers`, { method: "GET" });
-            if (!res.ok) {
-                const txt = await res.text();
-                console.error(`❌ Raw fetch failed ${res.status}: ${txt}`);
-                return [];
-            }
-
-            const json = await res.json();
-            // @ts-ignore
-            const items = json.items || [];
-
-            return items.map((gs: any) => ({
-                name: gs.metadata.name,
-                state: gs.status.state,
-                address: gs.status.address,
-                port: gs.status.ports?.[0]?.port
-            }));
-
-        } catch (e) {
-            console.error("❌ Failed to list GameServers (raw):", e);
-            return [];
-        }
-    },
-
-    async orphanPod(podName: string, namespace: string = RuntimeConfig.gameServerNamespace) {
-        console.log(`🏷️  Orphaning pod ${podName} from Deployment...`);
-        try {
-            const patch = [
-                {
-                    op: "replace",
-                    path: "/metadata/labels/app",
-                    value: "browser-runtime-taken"
-                }
-            ];
-            const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods/${podName}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/json-patch+json" },
-                body: JSON.stringify(patch),
-            });
-            if (!res.ok) {
-                throw new Error(`Patch failed ${res.status}: ${await res.text()}`);
-            }
-        } catch (e) {
-            console.error("❌ Failed to patch pod labels:", e);
-        }
-    },
-
-    async deletePod(podName: string, namespace: string = RuntimeConfig.gameServerNamespace) {
-        console.log(`💀 Deleting pod: ${podName}`);
-        try {
-            const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods/${podName}`, {
-                method: "DELETE",
-            });
-            if (!res.ok && res.status !== 404) {
-                throw new Error(`Delete failed ${res.status}: ${await res.text()}`);
-            }
-        } catch (e) {
-            console.error("❌ Error deleting pod:", e);
-        }
-    },
-
     async listBrowserPods(namespace: string = RuntimeConfig.gameServerNamespace) {
         try {
             const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods`, {
@@ -116,38 +52,6 @@ export const K8s = {
         } catch (e) {
             console.error("❌ Failed to list pods:", e);
             return [];
-        }
-    },
-
-    async getDeploymentReplicas(name: string, namespace: string = RuntimeConfig.gameServerNamespace): Promise<number> {
-        try {
-            const res = await k8sJson(`/apis/apps/v1/namespaces/${namespace}/deployments/${name}`, {
-                method: "GET",
-            });
-            if (!res.ok) {
-                throw new Error(`Get deployment failed ${res.status}: ${await res.text()}`);
-            }
-            const json = await res.json() as any;
-            return json.spec?.replicas || 0;
-        } catch (e) {
-            console.error(`❌ Failed to get deployment ${name}:`, e);
-            return 0;
-        }
-    },
-
-    async scaleDeployment(name: string, replicas: number, namespace: string = RuntimeConfig.gameServerNamespace) {
-        console.log(`⚖️  Scaling deployment ${name} to ${replicas}...`);
-        try {
-            const res = await k8sJson(`/apis/apps/v1/namespaces/${namespace}/deployments/${name}`, {
-                method: "PATCH",
-                headers: { "Content-Type": "application/merge-patch+json" },
-                body: JSON.stringify({ spec: { replicas } }),
-            });
-            if (!res.ok) {
-                throw new Error(`Scale failed ${res.status}: ${await res.text()}`);
-            }
-        } catch (e) {
-            console.error(`❌ Failed to scale deployment ${name}:`, e);
         }
     },
 

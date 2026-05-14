@@ -103,39 +103,9 @@ curl -sS http://localhost:8081/health
 
 ## Create a Demo Session
 
-The quickest local smoke test uses the gateway admin endpoint, so external
-client credentials are not required:
-
-```bash
-POPCORN_ADMIN_USER="${POPCORN_ADMIN_USER:-admin}"
-POPCORN_ADMIN_PASS="${POPCORN_ADMIN_PASS:-admin}"
-
-curl -sS -X POST http://localhost:8080/admin/session \
-  -u "$POPCORN_ADMIN_USER:$POPCORN_ADMIN_PASS" \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId":"local-demo"}'
-```
-
-The response includes browser and automation URLs:
-
-```json
-{
-  "success": true,
-  "sessionId": "local-demo",
-  "url": "http://localhost:8080/browser-fleet-abc/local-demo/<token>/",
-  "cdpUrl": "ws://localhost:8080/cdp/local-demo/<token>/",
-  "cdpInternalUrl": "ws://localhost:8080/cdp-internal/local-demo/<token>/",
-  "apiUrl": "http://localhost:8080/api/local-demo/<token>/",
-  "browserPodId": "browser-fleet-abc"
-}
-```
-
-Open `url` in a browser, or connect automation to `cdpUrl`.
-
-New client integrations should use the control-plane `/v1/sessions` API. The
-local control plane uses the development admin token
-`local_admin_token_for_dev`, so you can create a client and then create a
-routed session:
+The local control plane uses the development admin token
+`local_admin_token_for_dev`, so create a client and then create a routed
+session:
 
 ```bash
 CONTROL_PLANE_URL=http://localhost:8081
@@ -156,26 +126,28 @@ CLIENT_SECRET=secret_0123456789abcdef
 curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
   -H "Authorization: Bearer $CLIENT_ID:$CLIENT_SECRET" \
   -H "Content-Type: application/json" \
-  -d '{"sessionId":"local-control-plane-demo","regions":["local"]}'
+  -d '{"sessionId":"local-demo","regions":["local"]}'
 ```
 
-See [Control plane session creation](control-plane-sessions.md) for the full
-workflow and response shape.
+The response includes browser and automation URLs. Open `url` in a browser, or
+connect automation to `cdpUrl`. See [Control plane session creation](control-plane-sessions.md)
+for the full workflow and response shape.
 
 ## Playwright Smoke Test
 
 ```js
 import { chromium } from "playwright";
 
-const adminUser = process.env.POPCORN_ADMIN_USER ?? "admin";
-const adminPass = process.env.POPCORN_ADMIN_PASS ?? "admin";
-const session = await fetch("http://localhost:8080/admin/session", {
+const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
+const clientId = process.env.POPCORN_CLIENT_ID;
+const clientSecret = process.env.POPCORN_CLIENT_SECRET;
+const session = await fetch(`${controlPlaneUrl}/v1/sessions`, {
   method: "POST",
   headers: {
-    Authorization: "Basic " + Buffer.from(`${adminUser}:${adminPass}`).toString("base64"),
+    Authorization: `Bearer ${clientId}:${clientSecret}`,
     "Content-Type": "application/json",
   },
-  body: JSON.stringify({ sessionId: "playwright-local" }),
+  body: JSON.stringify({ sessionId: "playwright-local", regions: ["local"] }),
 }).then((r) => r.json());
 
 const browser = await chromium.connectOverCDP(session.cdpUrl);
@@ -190,15 +162,16 @@ await browser.close();
 ```js
 import puppeteer from "puppeteer-core";
 
-const adminUser = process.env.POPCORN_ADMIN_USER ?? "admin";
-const adminPass = process.env.POPCORN_ADMIN_PASS ?? "admin";
-const session = await fetch("http://localhost:8080/admin/session", {
+const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
+const clientId = process.env.POPCORN_CLIENT_ID;
+const clientSecret = process.env.POPCORN_CLIENT_SECRET;
+const session = await fetch(`${controlPlaneUrl}/v1/sessions`, {
   method: "POST",
   headers: {
-    Authorization: "Basic " + Buffer.from(`${adminUser}:${adminPass}`).toString("base64"),
+    Authorization: `Bearer ${clientId}:${clientSecret}`,
     "Content-Type": "application/json",
   },
-  body: JSON.stringify({ sessionId: "puppeteer-local" }),
+  body: JSON.stringify({ sessionId: "puppeteer-local", regions: ["local"] }),
 }).then((r) => r.json());
 
 const browser = await puppeteer.connect({

@@ -13,7 +13,7 @@ The OSS quickstart is optimized for a local demo. A production deployment needs 
 ## Network Exposure
 
 - Expose only the gateway publicly.
-- Keep Redis, pool manager, analytics, Postgres, and internal services private.
+- Keep Redis, pool manager, control plane, Postgres, and internal services private.
 - Use TLS at the edge.
 - Restrict Kubernetes API access to operators and automation.
 - Use GKE Network Policy or Dataplane V2 policy controls where available.
@@ -48,8 +48,8 @@ See `docs/secrets.md` for the exact Secret names and keys.
 
 - Treat browser pods as ephemeral and untrusted storage.
 - Avoid storing sensitive browser artifacts unless a product workflow explicitly requires it.
-- Define retention for analytics data.
-- Back up production databases if analytics or Metabase are enabled.
+- Define retention for session and operational data.
+- Back up production databases if the control plane or Metabase are enabled.
 
 ## Observability
 

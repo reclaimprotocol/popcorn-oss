@@ -185,10 +185,6 @@ function resolveSessionRegion(session: { region?: string | null; clusterName?: s
   return findRegion(session?.region) || findUniqueRegionByCluster(session?.clusterName);
 }
 
-function normalizeReportedRegion(region: string | null | undefined, clusterName: string | null | undefined) {
-  return findRegion(region)?.name || findUniqueRegionByCluster(region)?.name || findUniqueRegionByCluster(clusterName)?.name || region || null;
-}
-
 async function routeSession(identity: { clientId: string; clientName: string }, body: any): Promise<{ status: number; body: any }> {
   const requestedSessionId = readRequestedSessionId(body);
   if (requestedSessionId === '') {
@@ -655,29 +651,7 @@ app.delete('/admin/session/:id', async (c) => {
   return c.json({ success: true });
 });
 
-// Compatibility: session creation/end ingestion from existing pool-managers.
-app.post('/sessions', async (c) => {
-  const unauthorized = requireService(c);
-  if (unauthorized) {
-    console.warn('⚠️ Unauthorized session creation attempt');
-    return unauthorized;
-  }
-
-  try {
-    const { sessionId, clientId, clientName, clusterName, region } = await c.req.json();
-
-    if (!sessionId || !clientId || !clientName || !clusterName) {
-      return c.json({ error: 'Missing required fields' }, 400);
-    }
-
-    await SessionService.createSession(sessionId, clientId, clientName, clusterName, normalizeReportedRegion(region, clusterName));
-    return c.json({ success: true });
-  } catch (error) {
-    console.error('❌ Error creating session:', error);
-    return c.json({ error: 'Internal server error' }, 500);
-  }
-});
-
+// TTL controller callback for expired regional sessions.
 app.post('/sessions/:id/end', async (c) => {
   const unauthorized = requireService(c);
   if (unauthorized) {
@@ -697,34 +671,6 @@ app.post('/sessions/:id/end', async (c) => {
     return c.json({ success: true });
   } catch (error) {
     console.error('❌ Error ending session:', error);
-    return c.json({ error: 'Internal server error' }, 500);
-  }
-});
-
-app.post('/validate', async (c) => {
-  const unauthorized = requireService(c);
-  if (unauthorized) {
-    console.warn('⚠️ Unauthorized validation attempt');
-    return unauthorized;
-  }
-
-  try {
-    const { clientId, clientSecret } = await c.req.json();
-
-    if (!clientId || !clientSecret) {
-      return c.json({ error: 'Missing credentials' }, 400);
-    }
-
-    const valid = await ClientService.validateCredentials(clientId, clientSecret);
-
-    if (valid) {
-      const client = await ClientService.getClient(clientId);
-      return c.json({ valid: true, clientId, clientName: client?.name });
-    }
-
-    return c.json({ valid: false });
-  } catch (error) {
-    console.error('❌ Error validating credentials:', error);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });

@@ -42,10 +42,6 @@ function buildAuthHeader() {
 }
 
 export const ClickHouse = {
-    isConfigured() {
-        return CLICKHOUSE_ENABLED;
-    },
-
     async createSessionBinding(input: SessionBindingInput): Promise<void> {
         if (!CLICKHOUSE_ENABLED) {
             return;

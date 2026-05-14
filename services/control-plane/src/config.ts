@@ -72,16 +72,6 @@ export function requireEnv(name: string): string {
   return value;
 }
 
-export function requireAnyEnv(names: string[]): string {
-  for (const name of names) {
-    const value = readOptionalEnv(name);
-    if (value) {
-      return value;
-    }
-  }
-  throw new Error(`Missing required environment variable: ${names.join(' or ')}`);
-}
-
 function readSecretFile(path: string): string | undefined {
   if (!path || !existsSync(path)) {
     return undefined;
@@ -92,7 +82,7 @@ function readSecretFile(path: string): string | undefined {
 
 export const ControlPlaneConfig = {
   port: Number(readOptionalEnv('PORT') || '3000'),
-  serviceAuthToken: requireAnyEnv(['CONTROL_PLANE_SERVICE_AUTH_TOKEN', 'SERVICE_AUTH_TOKEN', 'CONTROL_PLANE_AUTH_TOKEN', 'ANALYTICS_AUTH_TOKEN']),
+  serviceAuthToken: requireEnv('CONTROL_PLANE_SERVICE_AUTH_TOKEN'),
   adminToken: readOptionalEnv('CONTROL_PLANE_ADMIN_TOKEN') || readOptionalEnv('ADMIN_TOKEN'),
   regions: parseRegions(readOptionalEnv('CONTROL_PLANE_REGIONS')),
 };

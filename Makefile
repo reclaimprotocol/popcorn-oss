@@ -8,9 +8,6 @@ export GITHUB_ARTIFACT_MIRROR_REPO
 
 CLUSTER_NAME := popcorn
 ORBSTACK_NO_PROXY_EXTRA := .svc,.svc.cluster.local,cluster.local,kubernetes.default.svc,10.96.0.0/12,10.244.0.0/16,$(CLUSTER_NAME)-control-plane
-LOCAL_ADMIN_USER ?= admin
-LOCAL_ADMIN_PASS ?= admin
-LOCAL_ADMIN_SESSION_SECRET ?= local_admin_session_secret_for_dev
 LOCAL_SERVICE_AUTH_TOKEN ?= local_service_auth_token
 LOCAL_POOL_MANAGER_SERVICE_AUTH_TOKEN ?= local_pool_manager_service_auth_token
 LOCAL_CONTROL_PLANE_ADMIN_USER ?= admin
@@ -119,16 +116,11 @@ local-secrets: local-keys
 		--from-file=private.pem=services/pool-manager/keys/private.pem \
 		--from-file=public.pem=services/gateway/keys/public.pem \
 		--dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create secret generic pool-manager-env-secrets \
-		--from-literal=ADMIN_USER="$(LOCAL_ADMIN_USER)" \
-		--from-literal=ADMIN_PASS="$(LOCAL_ADMIN_PASS)" \
-		--from-literal=ADMIN_SESSION_SECRET="$(LOCAL_ADMIN_SESSION_SECRET)" \
-		--dry-run=client -o yaml | kubectl apply -f -
 	@kubectl create secret generic pool-manager-service-auth \
-		--from-literal=SERVICE_AUTH_TOKEN="$(LOCAL_POOL_MANAGER_SERVICE_AUTH_TOKEN)" \
+		--from-literal=POOL_MANAGER_SERVICE_AUTH_TOKEN="$(LOCAL_POOL_MANAGER_SERVICE_AUTH_TOKEN)" \
 		--dry-run=client -o yaml | kubectl apply -f -
 	@kubectl create secret generic control-plane-secret \
-		--from-literal=SERVICE_AUTH_TOKEN="$(LOCAL_SERVICE_AUTH_TOKEN)" \
+		--from-literal=CONTROL_PLANE_SERVICE_AUTH_TOKEN="$(LOCAL_SERVICE_AUTH_TOKEN)" \
 		--from-literal=ADMIN_USER="$(LOCAL_CONTROL_PLANE_ADMIN_USER)" \
 		--from-literal=ADMIN_PASS="$(LOCAL_CONTROL_PLANE_ADMIN_PASS)" \
 		--from-literal=ADMIN_SESSION_SECRET="$(LOCAL_CONTROL_PLANE_ADMIN_SESSION_SECRET)" \
@@ -181,7 +173,6 @@ deploy-local: up local-secrets load-local-images
 		--set provider=kind \
 		--set poolManager.enabled=true \
 		--set poolManager.imagePullPolicy=IfNotPresent \
-		--set poolManager.controlPlaneUrl=http://control-plane.default.svc.cluster.local:3000 \
 		--set controlPlane.enabled=true \
 		--set controlPlane.imagePullPolicy=IfNotPresent \
 		--set controlPlane.serviceType=NodePort \
@@ -192,7 +183,7 @@ deploy-local: up local-secrets load-local-images
 		--set 'controlPlane.regions[0].publicGatewayUrl=http://localhost:8080' \
 		--set 'controlPlane.regions[0].enabled=true' \
 		--set 'controlPlane.regions[0].poolManagerAuth.secretName=pool-manager-service-auth' \
-		--set 'controlPlane.regions[0].poolManagerAuth.secretKey=SERVICE_AUTH_TOKEN' \
+		--set 'controlPlane.regions[0].poolManagerAuth.secretKey=POOL_MANAGER_SERVICE_AUTH_TOKEN' \
 		--set postgres.enabled=true \
 		--set postgres.imagePullPolicy=IfNotPresent \
 		--set postgres.storageSize=1Gi \

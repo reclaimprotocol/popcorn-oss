@@ -1,11 +1,5 @@
 {{- $controlPlane := .Values.controlPlane }}
-{{- $legacyAnalytics := .Values.analytics }}
-{{- $compatAnalyticsMode := and (not $controlPlane.enabled) $legacyAnalytics.enabled }}
-{{- if $compatAnalyticsMode }}
-{{- $controlPlane = mergeOverwrite (deepCopy $controlPlane) $legacyAnalytics }}
-{{- end }}
-{{- $legacyAnalyticsSecret := default "analytics-service-secret" .Values.secrets.analyticsServiceName }}
-{{- $controlPlaneSecret := default (ternary $legacyAnalyticsSecret .Values.secrets.controlPlaneName $compatAnalyticsMode) $controlPlane.secretName }}
+{{- $controlPlaneSecret := default .Values.secrets.controlPlaneName $controlPlane.secretName }}
 {{- $databaseSecret := default .Values.secrets.controlPlaneDatabaseName $controlPlane.databaseSecretName }}
 {{- $regions := list }}
 {{- $hasSecretVolumes := false }}
@@ -19,7 +13,7 @@
 {{- end }}
 {{- with $region.poolManagerAuth }}
 {{- if .secretName }}
-{{- $_ := set $entry "serviceAuthTokenFile" (printf "/app/secrets/pool-managers/%s/%s" $region.name (default "SERVICE_AUTH_TOKEN" .secretKey)) }}
+{{- $_ := set $entry "serviceAuthTokenFile" (printf "/app/secrets/pool-managers/%s/%s" $region.name (default "POOL_MANAGER_SERVICE_AUTH_TOKEN" .secretKey)) }}
 {{- $hasSecretVolumes = true }}
 {{- end }}
 {{- end }}
@@ -177,25 +171,6 @@ spec:
                 secretKeyRef:
                   name: {{ $controlPlaneSecret | quote }}
                   key: {{ $controlPlane.serviceAuthSecretKey | quote }}
-                  optional: true
-            - name: CONTROL_PLANE_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $controlPlaneSecret | quote }}
-                  key: {{ $controlPlane.serviceAuthSecretKey | quote }}
-                  optional: true
-            - name: SERVICE_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ ternary $legacyAnalyticsSecret $controlPlaneSecret $compatAnalyticsMode | quote }}
-                  key: {{ $controlPlane.serviceAuthSecretKey | quote }}
-                  optional: true
-            - name: ANALYTICS_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $legacyAnalyticsSecret | quote }}
-                  key: SERVICE_AUTH_TOKEN
-                  optional: true
             - name: CONTROL_PLANE_ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -247,21 +222,4 @@ spec:
 {{- with $controlPlane.nodePorts.http }}
       nodePort: {{ . }}
 {{- end }}
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: analytics-service
-  labels:
-    app: control-plane
-    compatibility.popcorn.dev/name: analytics-service
-spec:
-  type: ClusterIP
-  selector:
-    app: control-plane
-  ports:
-    - name: http
-      port: 3000
-      targetPort: 3000
-      protocol: TCP
 {{- end }}

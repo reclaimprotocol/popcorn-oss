@@ -21,11 +21,8 @@ var (
 func initAnalytics() {
 	log := ctrl.Log.WithName("analytics")
 
-	// Get control-plane URL. ANALYTICS_SERVICE_URL is kept as a compatibility alias.
+	// Get control-plane URL.
 	analyticsURL = os.Getenv("CONTROL_PLANE_URL")
-	if analyticsURL == "" {
-		analyticsURL = os.Getenv("ANALYTICS_SERVICE_URL")
-	}
 	if analyticsURL == "" {
 		analyticsURL = "http://control-plane.default.svc.cluster.local:3000"
 	}
@@ -36,11 +33,8 @@ func initAnalytics() {
 		clusterName = "unknown"
 	}
 
-	// Get service auth token from environment (sourced from K8s secret via CSI secretObjects)
-	serviceAuthToken = os.Getenv("CONTROL_PLANE_AUTH_TOKEN")
-	if serviceAuthToken == "" {
-		serviceAuthToken = os.Getenv("ANALYTICS_AUTH_TOKEN")
-	}
+	// Get service auth token from environment.
+	serviceAuthToken = os.Getenv("CONTROL_PLANE_SERVICE_AUTH_TOKEN")
 	tokenLength := len(serviceAuthToken)
 
 	log.Info("Analytics initialized",

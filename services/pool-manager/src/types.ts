@@ -7,14 +7,6 @@ export interface Pod {
     createdAt?: number;
 }
 
-export interface Session {
-    id: string;
-    podName: string;
-    podUrl: string;
-    podIp: string;
-    createdAt: number;
-}
-
 export interface AllocationResponse {
     gameServerName: string;
     address: string;
@@ -24,18 +16,4 @@ export interface AllocationResponse {
         port: number;
         protocol?: string;
     }[];
-}
-
-export interface GameServerStatus {
-    name: string;
-    status: string;
-}
-
-export interface SessionResponse {
-    success: boolean;
-    sessionId: string;
-    url: string;
-    cdpUrl: string;
-    apiUrl: string;
-    browserPodId?: string;
 }

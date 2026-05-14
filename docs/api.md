@@ -3,8 +3,7 @@
 The control plane is the preferred client entry point for new deployments. It
 validates clients, tries preferred regions in order, asks a regional pool
 manager to allocate a browser pod, and returns gateway URLs for the selected
-region. The existing pool-manager `/session` API remains supported for
-single-region and compatibility deployments.
+region.
 
 For the end-to-end workflow of configuring regions, creating client
 credentials, and creating sessions through `/v1/sessions`, see
@@ -26,15 +25,12 @@ Authorization: Bearer <client-id>:<client-secret>
 ```
 
 The control plane validates these credentials directly against Postgres-backed
-client records. Existing pool-manager `/session` requests still validate by
-calling the compatibility `POST /validate` endpoint on the control plane using
-`CONTROL_PLANE_URL` and `CONTROL_PLANE_AUTH_TOKEN`. The legacy
-`ANALYTICS_SERVICE_URL` and `ANALYTICS_AUTH_TOKEN` names remain accepted as
-aliases.
+client records.
 
-Browser, CDP, and runtime API URLs returned from `/session` include signed path tokens. Treat those URLs as bearer secrets.
+Browser, CDP, and runtime API URLs returned from `/v1/sessions` include signed path tokens. Treat those URLs as bearer secrets.
 
-For local Kind smoke tests, use `/admin/session` with trusted local admin credentials (`admin:admin`) as documented in the local Kind guide.
+For local Kind smoke tests, create a control-plane client and call
+`/v1/sessions` as documented in the local Kind guide.
 
 ## Create Session (Control Plane API)
 
@@ -86,51 +82,6 @@ Response:
 If no requested region can allocate, the control plane returns `503` with an
 `attempts` array describing each regional failure.
 
-## Create Session (Pool Manager Compatibility API)
-
-```http
-POST /session
-```
-
-This endpoint is retained for existing single-region clients and requires client credentials to be configured in your deployment.
-
-If the pool manager cannot reach the control plane, the control plane rejects
-the configured token, or the client has not been created in the control plane,
-this endpoint returns `401`.
-
-Request:
-
-```bash
-curl -sS -X POST http://localhost:8080/session \
-  -H "Authorization: Bearer <client-id>:<client-secret>" \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId":"demo-session"}'
-```
-
-Body:
-
-```json
-{
-  "sessionId": "demo-session"
-}
-```
-
-`sessionId` is optional. If omitted, the pool manager generates a short ID.
-
-Response:
-
-```json
-{
-  "success": true,
-  "sessionId": "demo-session",
-  "url": "http://localhost:8080/browser-fleet-abc/demo-session/<token>/",
-  "cdpUrl": "ws://localhost:8080/cdp/demo-session/<token>/",
-  "cdpInternalUrl": "ws://localhost:8080/cdp-internal/demo-session/<token>/",
-  "apiUrl": "http://localhost:8080/api/demo-session/<token>/",
-  "browserPodId": "browser-fleet-abc"
-}
-```
-
 Fields:
 
 - `url`: interactive browser view.
@@ -141,44 +92,6 @@ Fields:
 
 Deployments may add extra URL fields through Helm extension values. Those fields
 are deployment-specific and are not part of the OSS default response shape.
-
-## Get Session
-
-```http
-GET /session/:id
-```
-
-Example:
-
-```bash
-curl -sS http://localhost:8080/session/demo-session \
-  -H "Authorization: Bearer <client-id>:<client-secret>"
-```
-
-Response shape is the same as create session. A missing session returns `404`.
-
-## Delete Session
-
-```http
-DELETE /session/:id
-```
-
-Example:
-
-```bash
-curl -sS -X DELETE http://localhost:8080/session/demo-session \
-  -H "Authorization: Bearer <client-id>:<client-secret>"
-```
-
-Response:
-
-```json
-{
-  "success": true
-}
-```
-
-Deleting a session removes route state and asks Agones to shut down the assigned GameServer.
 
 ## Health
 
@@ -201,15 +114,11 @@ OK
 ## Admin Endpoints
 
 Admin endpoints are intended for local operations and trusted internal tooling.
-Pool-manager keeps its per-region `/admin` UI and HTTP Basic/password-cookie
-auth for direct regional operations. Control-plane exposes the multi-region
-admin UI at `/admin` plus token/Basic/cookie-protected JSON helpers for client
-and session management. The client `/session` and `/v1/sessions` bearer
-credentials are separate and unchanged.
+Pool-manager exposes only internal allocation endpoints. Control-plane exposes
+the admin UI at `/admin` plus token/Basic/cookie-protected JSON helpers for
+client and session management. The client `/v1/sessions` bearer credentials
+are separate from admin credentials.
 
-- Pool-manager `GET /admin/servers`: list local GameServers and allocation status.
-- Pool-manager `POST /admin/session`: create a local session attributed to the admin client.
-- Pool-manager `DELETE /admin/gameserver/:name`: force shutdown for a local GameServer.
 - Control-plane `GET /admin/regions`: list configured regions and regional health.
 - Control-plane `GET /admin/sessions`: list stored sessions, optionally filtered by `clientId`.
 - Control-plane `POST /admin/sessions`: create a routed admin session.
@@ -218,23 +127,7 @@ credentials are separate and unchanged.
 
 Do not expose admin endpoints publicly without additional access control.
 
-### Create Session (Admin)
-
-```bash
-POPCORN_ADMIN_USER="${POPCORN_ADMIN_USER:-admin}"
-POPCORN_ADMIN_PASS="${POPCORN_ADMIN_PASS:-admin}"
-
-curl -sS -X POST http://localhost:8080/admin/session \
-  -u "$POPCORN_ADMIN_USER:$POPCORN_ADMIN_PASS" \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId":"admin-demo"}'
-```
-
-The response shape matches client session creation.
-
-For browser use, visit `/admin/login`. Password login uses the same
-username/password source as Basic auth. Google OAuth is handled by the
-control-plane admin UI, not the regional pool-manager admin UI.
+For browser use, visit the control-plane `/admin` UI.
 
 ## Gateway Paths
 
@@ -251,12 +144,13 @@ The gateway routes returned URLs by path:
 ```js
 import { chromium } from "playwright";
 
-const adminUser = process.env.POPCORN_ADMIN_USER ?? "admin";
-const adminPass = process.env.POPCORN_ADMIN_PASS ?? "admin";
-const session = await fetch("http://localhost:8080/admin/session", {
+const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
+const clientId = process.env.POPCORN_CLIENT_ID;
+const clientSecret = process.env.POPCORN_CLIENT_SECRET;
+const session = await fetch(`${controlPlaneUrl}/v1/sessions`, {
   method: "POST",
   headers: {
-    Authorization: "Basic " + Buffer.from(`${adminUser}:${adminPass}`).toString("base64"),
+    Authorization: `Bearer ${clientId}:${clientSecret}`,
     "Content-Type": "application/json",
   },
   body: JSON.stringify({ sessionId: `pw-${Date.now()}` }),
@@ -274,12 +168,13 @@ await browser.close();
 ```js
 import puppeteer from "puppeteer-core";
 
-const adminUser = process.env.POPCORN_ADMIN_USER ?? "admin";
-const adminPass = process.env.POPCORN_ADMIN_PASS ?? "admin";
-const session = await fetch("http://localhost:8080/admin/session", {
+const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
+const clientId = process.env.POPCORN_CLIENT_ID;
+const clientSecret = process.env.POPCORN_CLIENT_SECRET;
+const session = await fetch(`${controlPlaneUrl}/v1/sessions`, {
   method: "POST",
   headers: {
-    Authorization: "Basic " + Buffer.from(`${adminUser}:${adminPass}`).toString("base64"),
+    Authorization: `Bearer ${clientId}:${clientSecret}`,
     "Content-Type": "application/json",
   },
   body: JSON.stringify({ sessionId: `pptr-${Date.now()}` }),

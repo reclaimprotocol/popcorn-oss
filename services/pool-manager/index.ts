@@ -1,80 +1,21 @@
 import { Hono } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { timingSafeEqual } from "crypto";
 import { DB } from "./src/services/db";
 import { Agones } from "./src/services/agones";
 import { Auth } from "./src/services/auth";
-import { AnalyticsClient } from "./src/services/analytics-client";
 import { ClickHouse } from "./src/services/clickhouse";
 import { K8s } from "./src/services/k8s";
 import { RuntimeConfig } from "./src/config";
-import {
-    ADMIN_SESSION_COOKIE,
-    authenticateBasicAdmin,
-    createAdminSession,
-    isAdminAuthPath,
-    isPasswordLoginConfigured,
-    isSameOriginAdminRequest,
-    readAdminAuthConfig,
-    verifyAdminPassword,
-    verifyAdminSession,
-    wantsHtml,
-} from "./src/services/admin-auth";
 
 const app = new Hono();
 const PORT = 3000;
 
-// Read from environment variables populated by pool-manager-env-secrets.
-const ADMIN_AUTH_CONFIG = readAdminAuthConfig();
 const CLUSTER_NAME = process.env.CLUSTER_NAME || "unknown";
 const GAME_SERVER_NAMESPACE = RuntimeConfig.gameServerNamespace;
 const GAME_SERVER_FLEET = RuntimeConfig.gameServerFleet;
-const ADMIN_CLIENT_ID = "admin";
-const ADMIN_CLIENT_NAME = "Admin UI";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
-const CONTROL_PLANE_AUTH_TOKEN = process.env.CONTROL_PLANE_AUTH_TOKEN || process.env.ANALYTICS_AUTH_TOKEN || "";
-const POOL_MANAGER_SERVICE_AUTH_TOKEN = process.env.POOL_MANAGER_SERVICE_AUTH_TOKEN || process.env.SERVICE_AUTH_TOKEN || CONTROL_PLANE_AUTH_TOKEN;
+const POOL_MANAGER_SERVICE_AUTH_TOKEN = requireEnv("POOL_MANAGER_SERVICE_AUTH_TOKEN");
 const EXTRA_SESSION_URLS = readExtraSessionUrls(process.env.POOL_MANAGER_EXTRA_SESSION_URLS);
-
-app.use('/admin/*', async (c, next) => {
-    if (isAdminAuthPath(new URL(c.req.url).pathname)) {
-        return next();
-    }
-
-    const basicIdentity = await authenticateBasicAdmin(c.req.header("Authorization"), ADMIN_AUTH_CONFIG);
-    if (basicIdentity) {
-        return next();
-    }
-
-    const sessionIdentity = verifyAdminSession(getCookie(c, ADMIN_SESSION_COOKIE), ADMIN_AUTH_CONFIG);
-    if (sessionIdentity) {
-        if (!isSameOriginAdminRequest(c.req.raw)) {
-            return c.json({ error: "Cross-origin admin request rejected" }, 403);
-        }
-        return next();
-    }
-
-    if (wantsHtml(c.req.raw.headers)) {
-        return c.redirect("/admin/login", 302);
-    }
-
-    c.header("WWW-Authenticate", 'Basic realm="Popcorn Admin"');
-    return c.json({ error: "Unauthorized" }, 401);
-});
-
-app.use('/admin', async (c, next) => {
-    const basicIdentity = await authenticateBasicAdmin(c.req.header("Authorization"), ADMIN_AUTH_CONFIG);
-    if (basicIdentity || verifyAdminSession(getCookie(c, ADMIN_SESSION_COOKIE), ADMIN_AUTH_CONFIG)) {
-        return next();
-    }
-
-    if (wantsHtml(c.req.raw.headers)) {
-        return c.redirect("/admin/login", 302);
-    }
-
-    c.header("WWW-Authenticate", 'Basic realm="Popcorn Admin"');
-    return c.json({ error: "Unauthorized" }, 401);
-});
 
 interface ClientIdentity {
     clientId: string;
@@ -98,7 +39,7 @@ function getBearerCredential(c: any): string | null {
 
 function isControlPlaneRequest(c: any): boolean {
     const credential = getBearerCredential(c);
-    return constantTimeEqual(credential || undefined, POOL_MANAGER_SERVICE_AUTH_TOKEN || CONTROL_PLANE_AUTH_TOKEN || undefined);
+    return constantTimeEqual(credential || undefined, POOL_MANAGER_SERVICE_AUTH_TOKEN);
 }
 
 function constantTimeEqual(a: string | undefined, b: string | undefined): boolean {
@@ -116,53 +57,12 @@ function requireControlPlane(c: any): Response | null {
     return c.json({ error: "Unauthorized" }, 401);
 }
 
-async function authenticateClient(c: any): Promise<{ identity?: ClientIdentity; response?: Response }> {
-    const credential = getBearerCredential(c);
-
-    if (!credential) {
-        return {
-            response: c.json({ error: "Missing credentials. Use: Bearer clientId:clientSecret" }, 401)
-        };
+function requireEnv(name: string): string {
+    const value = process.env[name]?.trim();
+    if (!value) {
+        throw new Error(`Missing required environment variable: ${name}`);
     }
-
-    const separatorIndex = credential.indexOf(":");
-    if (separatorIndex <= 0 || separatorIndex === credential.length - 1) {
-        return {
-            response: c.json({ error: "Invalid credentials format. Use: Bearer clientId:clientSecret" }, 401)
-        };
-    }
-
-    const clientId = credential.slice(0, separatorIndex);
-    const clientSecret = credential.slice(separatorIndex + 1);
-    const validation = await AnalyticsClient.validateCredentials(clientId, clientSecret);
-
-    if (!validation.valid) {
-        return {
-            response: c.json({ error: "Invalid credentials" }, 401)
-        };
-    }
-
-    return {
-        identity: {
-            clientId,
-            clientName: validation.clientName || "Unknown",
-        }
-    };
-}
-
-async function readRequestedSessionId(c: any): Promise<string | null | undefined> {
-    try {
-        const body = await c.req.json();
-        if (!body || typeof body !== "object" || !("sessionId" in body)) {
-            return undefined;
-        }
-        const sessionId = body?.sessionId;
-        if (typeof sessionId !== "string") return null;
-        const trimmed = sessionId.trim();
-        return trimmed.length ? trimmed : null;
-    } catch (e) {
-        return undefined;
-    }
+    return value;
 }
 
 function isValidSessionId(sessionId: string): boolean {
@@ -352,16 +252,6 @@ function allocationErrorResponse(c: any, e: unknown): Response {
     return c.json({ error: "Failed to allocate browser instance" }, 503);
 }
 
-async function createSession(c: any, identity: ClientIdentity, requestedSessionId?: string): Promise<Response> {
-    try {
-        const { sessionId, podData } = await allocateSessionLocally(identity, requestedSessionId);
-        AnalyticsClient.createSession(sessionId, identity.clientId, identity.clientName, CLUSTER_NAME);
-        return c.json(buildSessionDetails(c, sessionId, podData));
-    } catch (e) {
-        return allocationErrorResponse(c, e);
-    }
-}
-
 async function createControlPlaneSession(c: any): Promise<Response> {
     try {
         const body = await c.req.json();
@@ -381,29 +271,21 @@ async function createControlPlaneSession(c: any): Promise<Response> {
     }
 }
 
-async function getSessionDetails(c: any, sessionId: string, identity?: ClientIdentity, publicBaseUrl?: string | null): Promise<Response> {
+async function getSessionDetails(c: any, sessionId: string, publicBaseUrl?: string | null): Promise<Response> {
     const session = await DB.getSession(sessionId);
 
     if (!session) {
-        return c.json({ success: false, error: "Session not found" }, 404);
-    }
-
-    if (identity && session.clientId !== identity.clientId) {
         return c.json({ success: false, error: "Session not found" }, 404);
     }
 
     return c.json(buildSessionDetails(c, sessionId, session, publicBaseUrl));
 }
 
-async function deleteLocalSession(sessionId: string, identity?: ClientIdentity) {
+async function deleteLocalSession(sessionId: string) {
     const session = await DB.getSession(sessionId);
 
     if (!session) {
-        return { deleted: false, notFound: true, forbidden: false, session: null };
-    }
-
-    if (identity && session.clientId !== identity.clientId) {
-        return { deleted: false, notFound: true, forbidden: true, session };
+        return { deleted: false, notFound: true, session: null };
     }
 
     if (session.name) {
@@ -411,39 +293,7 @@ async function deleteLocalSession(sessionId: string, identity?: ClientIdentity) 
     }
 
     await DB.deleteSession(sessionId);
-    return { deleted: true, notFound: false, forbidden: false, session };
-}
-
-async function deleteSession(c: any, sessionId: string, identity?: ClientIdentity): Promise<Response> {
-    const result = await deleteLocalSession(sessionId, identity);
-
-    if (result.forbidden) {
-        return c.json({ success: false, error: "Session not found" }, 404);
-    }
-
-    if (result.deleted) {
-        AnalyticsClient.endSession(sessionId, 'deleted');
-    }
-
-    return c.json({ success: true }, 200);
-}
-
-function isSecureRequest(c: any): boolean {
-    return new URL(c.req.url).protocol === "https:" || c.req.header("X-Forwarded-Proto") === "https";
-}
-
-function setAdminSessionCookie(c: any, session: string) {
-    setCookie(c, ADMIN_SESSION_COOKIE, session, {
-        httpOnly: true,
-        sameSite: "Lax",
-        secure: isSecureRequest(c),
-        path: "/admin",
-        maxAge: ADMIN_AUTH_CONFIG.sessionTtlSeconds,
-    });
-}
-
-function clearAdminCookies(c: any) {
-    deleteCookie(c, ADMIN_SESSION_COOKIE, { path: "/admin" });
+    return { deleted: true, notFound: false, session };
 }
 
 async function listServerStatuses() {
@@ -467,53 +317,6 @@ async function listServerStatuses() {
     }));
 }
 
-app.get("/admin/login", async (c) => {
-    return c.html(await Bun.file("./public/admin-login.html").text());
-});
-
-app.get("/admin/auth/config", (c) => {
-    return c.json({
-        password: isPasswordLoginConfigured(ADMIN_AUTH_CONFIG),
-        google: false,
-    });
-});
-
-app.post("/admin/auth/password", async (c) => {
-    const form = await c.req.formData();
-    const username = String(form.get("username") || "");
-    const password = String(form.get("password") || "");
-
-    if (!await verifyAdminPassword(username, password, ADMIN_AUTH_CONFIG)) {
-        return c.redirect("/admin/login?error=Invalid%20credentials", 302);
-    }
-
-    if (!isPasswordLoginConfigured(ADMIN_AUTH_CONFIG)) {
-        return c.redirect("/admin/login?error=Admin%20session%20secret%20is%20not%20configured", 302);
-    }
-
-    setAdminSessionCookie(c, createAdminSession({
-        id: username,
-        displayName: username,
-        strategy: "password",
-    }, ADMIN_AUTH_CONFIG));
-    return c.redirect("/admin", 302);
-});
-
-app.post("/admin/logout", (c) => {
-    clearAdminCookies(c);
-    return c.redirect("/admin/login", 302);
-});
-
-// Serve Admin UI Static File
-app.get("/admin", async (c) => {
-    return c.html(await Bun.file("./public/admin.html").text());
-});
-
-// GET /admin/servers
-app.get("/admin/servers", async (c) => {
-    return c.json(await listServerStatuses());
-});
-
 app.get("/internal/servers", async (c) => {
     const unauthorized = requireControlPlane(c);
     if (unauthorized) return unauthorized;
@@ -529,7 +332,7 @@ app.post("/internal/sessions", async (c) => {
 app.get("/internal/session/:id", async (c) => {
     const unauthorized = requireControlPlane(c);
     if (unauthorized) return unauthorized;
-    return getSessionDetails(c, c.req.param("id"), undefined, normalizeBaseUrl(c.req.query("publicGatewayUrl")));
+    return getSessionDetails(c, c.req.param("id"), normalizeBaseUrl(c.req.query("publicGatewayUrl")));
 });
 
 app.delete("/internal/session/:id", async (c) => {
@@ -539,80 +342,8 @@ app.delete("/internal/session/:id", async (c) => {
     return c.json({ success: true }, 200);
 });
 
-// POST /admin/session
-app.post("/admin/session", async (c) => {
-    const sessionId = await readRequestedSessionId(c);
-    if (sessionId === null) {
-        return c.json({ error: "Invalid session ID. Use 1-64 chars in [A-Za-z0-9_-]." }, 400);
-    }
-    return createSession(c, {
-        clientId: ADMIN_CLIENT_ID,
-        clientName: ADMIN_CLIENT_NAME,
-    }, sessionId);
-});
-
-// GET /admin/session/:id
-app.get("/admin/session/:id", async (c) => {
-    return getSessionDetails(c, c.req.param("id"));
-});
-
-// DELETE /admin/session/:id
-app.delete("/admin/session/:id", async (c) => {
-    return deleteSession(c, c.req.param("id"));
-});
-
-// GET /session/:id
-app.get("/session/:id", async (c) => {
-    const auth = await authenticateClient(c);
-    if (auth.response) {
-        return auth.response;
-    }
-    return getSessionDetails(c, c.req.param("id"), auth.identity);
-});
-
 // GET /health
 app.get("/health", (c) => c.text("OK"));
-
-// POST /session
-app.post("/session", async (c) => {
-    const auth = await authenticateClient(c);
-    if (auth.response) {
-        return auth.response;
-    }
-
-    const sessionId = await readRequestedSessionId(c);
-    if (sessionId === null) {
-        return c.json({ error: "Invalid session ID. Use 1-64 chars in [A-Za-z0-9_-]." }, 400);
-    }
-    return createSession(c, auth.identity!, sessionId);
-});
-
-// DELETE /session/:id
-app.delete("/session/:id", async (c) => {
-    const auth = await authenticateClient(c);
-    if (auth.response) {
-        return auth.response;
-    }
-
-    return deleteSession(c, c.req.param("id"), auth.identity);
-});
-
-// Admin: Force Shutdown GameServer
-app.delete("/admin/gameserver/:name", async (c) => {
-    const name = c.req.param("name");
-    console.log(`🛠️ Admin Force Shutdown: ${name}`);
-
-    // Look up session ID from GameServer name to report analytics
-    const sessions = await DB.getAllSessions();
-    const session = sessions.find(s => s.name === name);
-    if (session) {
-        AnalyticsClient.endSession(session.sessionId, 'deleted');
-        await DB.deleteSession(session.sessionId);
-    }
-
-    await Agones.shutdownGameServer(name, session?.namespace || GAME_SERVER_NAMESPACE);
-    return c.json({ success: true });
-});
 
 export default {
     port: PORT,

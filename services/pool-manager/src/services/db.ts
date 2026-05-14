@@ -94,18 +94,6 @@ export const DB = {
         return raw ? JSON.parse(raw) : null;
     },
 
-    async getAllSessions(): Promise<Array<Pod & { sessionId: string }>> {
-        const sessions = await redis.hgetall("sessions");
-        return Object.entries(sessions).flatMap(([sessionId, raw]) => {
-            try {
-                const parsed = JSON.parse(raw) as Pod;
-                return [{ sessionId, ...parsed }];
-            } catch {
-                return [];
-            }
-        });
-    },
-
     async deleteSession(id: string) {
         const session = await DB.getSession(id);
         if (session) {

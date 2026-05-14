@@ -13,11 +13,11 @@ Popcorn provides **two separate CDP (Chrome DevTools Protocol) endpoints** with 
 
 When you create a session, you receive **two CDP URLs** with different tokens:
 
-The `/session` API requires control-plane-backed client credentials.
+The `/v1/sessions` API requires control-plane-backed client credentials.
 
 ### Request
 ```bash
-curl -X POST http://popcorn-gateway/session \
+curl -X POST http://control-plane.example.com/v1/sessions \
   -H "Authorization: Bearer <client-id>:<client-secret>" \
   -H "Content-Type: application/json" \
   -d '{"sessionId": "my-session"}'
@@ -47,7 +47,7 @@ curl -X POST http://popcorn-gateway/session \
 For client-facing applications that should have limited access:
 
 ```javascript
-const session = await fetch('http://popcorn-gateway/session', {
+const session = await fetch('http://control-plane.example.com/v1/sessions', {
   method: 'POST',
   headers: {
     Authorization: 'Bearer <client-id>:<client-secret>',
@@ -69,7 +69,7 @@ const browser = await playwright.chromium.connectOverCDP(session.cdpUrl);
 For internal services, debugging tools, or administrative operations:
 
 ```javascript
-const session = await fetch('http://popcorn-gateway/session', {
+const session = await fetch('http://control-plane.example.com/v1/sessions', {
   method: 'POST',
   headers: {
     Authorization: 'Bearer <client-id>:<client-secret>',
@@ -94,7 +94,7 @@ const browser = await playwright.chromium.connectOverCDP(session.cdpInternalUrl)
 import { chromium } from 'playwright';
 
 // Get session
-const response = await fetch('http://popcorn-gateway/session', {
+const response = await fetch('http://control-plane.example.com/v1/sessions', {
   method: 'POST',
   headers: {
     Authorization: 'Bearer <client-id>:<client-secret>',
@@ -120,7 +120,7 @@ await browser.close(); // ✅ Works on internal endpoint
 const puppeteer = require('puppeteer');
 
 // Get session
-const session = await fetch('http://popcorn-gateway/session', {
+const session = await fetch('http://control-plane.example.com/v1/sessions', {
   method: 'POST',
   headers: {
     Authorization: 'Bearer <client-id>:<client-secret>',
@@ -144,7 +144,7 @@ await page.goto('https://example.com');
 const WebSocket = require('ws');
 
 // Get session
-const session = await fetch('http://popcorn-gateway/session', {
+const session = await fetch('http://control-plane.example.com/v1/sessions', {
   method: 'POST',
   headers: {
     Authorization: 'Bearer <client-id>:<client-secret>',
@@ -270,7 +270,7 @@ Blocked commands return:
 ```
 Client/Service
     ↓
-POST /session → Pool Manager
+POST /v1/sessions → Control Plane → Pool Manager
     ↓
 Generate 2 JWT tokens:
   - scope: "restricted"  → cdpUrl
@@ -334,10 +334,10 @@ res.json({ cdpUrl: session.cdpUrl });
 Always delete sessions when done:
 
 ```javascript
-await fetch(`http://popcorn-gateway/session/${sessionId}`, {
+await fetch(`http://control-plane.example.com/admin/session/${sessionId}`, {
   method: 'DELETE',
   headers: {
-    Authorization: 'Bearer <client-id>:<client-secret>'
+    Authorization: 'Bearer <admin-token>'
   }
 });
 ```

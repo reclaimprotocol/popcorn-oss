@@ -6,7 +6,7 @@ Start with the current state:
 kubectl get pods
 kubectl get gameservers
 kubectl get fleet,fleetautoscaler
-kubectl get secret gateway-jwt-keys pool-manager-env-secrets pool-manager-service-auth control-plane-secret browser-turn-secret
+kubectl get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret browser-turn-secret
 kubectl logs deployment/pool-manager
 kubectl logs deployment/popcorn-gateway
 ```
@@ -31,55 +31,45 @@ make run-local-cluster
 ## Pool Manager Does Not Start
 
 The platform chart injects the pool-manager service-auth Secret into the pool
-manager as `CONTROL_PLANE_AUTH_TOKEN` and legacy `ANALYTICS_AUTH_TOKEN`. The
-pool manager requires that token at startup.
-If the Secret or key is missing, `/session` will not return `401`; the pod fails
-to start or remains unready.
+manager as `POOL_MANAGER_SERVICE_AUTH_TOKEN`. The pool manager requires that
+token at startup. If the Secret or key is missing, the pod fails to start or
+remains unready.
 
 Check the pod events and required Secret:
 
 ```bash
 kubectl describe pod -l app=pool-manager
-kubectl get secret pool-manager-service-auth -o jsonpath='{.data.SERVICE_AUTH_TOKEN}' | base64 -d
+kubectl get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
 kubectl logs deployment/pool-manager
 ```
 
 Common signs:
 
-- `CreateContainerConfigError` mentioning `pool-manager-service-auth` or `SERVICE_AUTH_TOKEN`;
-- pool-manager logs mention missing `CONTROL_PLANE_AUTH_TOKEN` or `ANALYTICS_AUTH_TOKEN`;
+- `CreateContainerConfigError` mentioning `pool-manager-service-auth` or `POOL_MANAGER_SERVICE_AUTH_TOKEN`;
+- pool-manager logs mention missing `POOL_MANAGER_SERVICE_AUTH_TOKEN`;
 - deployment rollout never becomes ready.
 
 ## `401` Or `403` From Session APIs
 
-Pool-manager admin endpoints use password or password-file auth only. Basic
-credentials still work for automation when the password strategy is enabled.
-Control-plane admin endpoints additionally support Google OAuth with allowed
-emails or domains. Client endpoints use control-plane-backed client credentials.
+Pool-manager only accepts internal control-plane bearer calls. Control-plane
+admin endpoints support password auth and optional Google OAuth. Client
+endpoints use control-plane-backed client credentials.
 
-Check `pool-manager-env-secrets`:
-
-```bash
-kubectl get secret pool-manager-env-secrets -o jsonpath='{.data.ADMIN_USER}' | base64 -d
-kubectl get secret pool-manager-env-secrets -o jsonpath='{.data.ADMIN_PASS}' | base64 -d
-```
-
-For client `/session`, check the control-plane wiring:
+For client `/v1/sessions`, check the control-plane region wiring:
 
 ```bash
-kubectl get deploy pool-manager -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CONTROL_PLANE_URL")].value}'
-kubectl get secret pool-manager-service-auth -o jsonpath='{.data.SERVICE_AUTH_TOKEN}' | base64 -d
+kubectl get deploy control-plane -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CONTROL_PLANE_REGIONS")].value}'
+kubectl get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
 ```
 
 Common causes:
 
 - wrong admin username/password;
-- missing or mismatched `ADMIN_SESSION_SECRET` across pool-manager replicas;
+- missing or mismatched `ADMIN_SESSION_SECRET` across control-plane replicas;
 - control-plane Google OAuth user email is unverified or not in the configured allowed emails/domains;
-- control plane rejects the configured service token;
-- `poolManager.controlPlaneUrl` points at a missing or unreachable control plane;
+- pool manager rejects the configured regional service token;
 - the client ID/secret was not created in the control plane, or the client was revoked;
-- using `/session` when only the local admin path was configured.
+- using the removed pool-manager `/session` compatibility path instead of control-plane `/v1/sessions`.
 
 ## Browser URL Opens But CDP Fails
 
@@ -182,12 +172,11 @@ kubectl rollout restart deployment/pool-manager deployment/popcorn-gateway
 Check the control-plane token and database Secret:
 
 ```bash
-kubectl get secret control-plane-secret -o jsonpath='{.data.SERVICE_AUTH_TOKEN}' | base64 -d
+kubectl get secret control-plane-secret -o jsonpath='{.data.CONTROL_PLANE_SERVICE_AUTH_TOKEN}' | base64 -d
 kubectl get secret analytics-db-secret -o yaml
 ```
 
-If you only use the local admin session path, the control plane can stay disabled. If
-you expose client `/session` or `/v1/sessions`, the control plane is part of the authentication path and
+For client `/v1/sessions`, the control plane is the authentication path and
 must be reachable with valid client records.
 
 ## Public CI Fails

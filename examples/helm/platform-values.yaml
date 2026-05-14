@@ -9,10 +9,8 @@ imageTag: latest
 
 secrets:
   gatewayJwtName: gateway-jwt-keys
-  poolManagerName: pool-manager-env-secrets
   poolManagerServiceAuthName: pool-manager-us-central1-service-auth
   controlPlaneName: control-plane-secret
-  analyticsServiceName: analytics-service-secret
   controlPlaneDatabaseName: analytics-db-secret
   browserTurnName: browser-turn-secret
 
@@ -21,13 +19,11 @@ poolManager:
   replicas: 1
   imagePullPolicy: IfNotPresent
   redisHost: redis
-  controlPlaneUrl: ""
-  analyticsServiceUrl: ""
   gameServerNamespace: ""
   gameServerFleet: browser-fleet
   serviceAuth:
     secretName: pool-manager-us-central1-service-auth
-    secretKey: SERVICE_AUTH_TOKEN
+    secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
 
 gateway:
   enabled: true
@@ -81,7 +77,7 @@ controlPlane:
       enabled: true
       poolManagerAuth:
         secretName: pool-manager-us-central1-service-auth
-        secretKey: SERVICE_AUTH_TOKEN
+        secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
 
 metabase:
   enabled: false
@@ -101,7 +97,6 @@ ttlController:
   replicas: 1
   imagePullPolicy: IfNotPresent
   controlPlaneUrl: ""
-  analyticsServiceUrl: ""
   ttlDuration: 15m
 
 gkeNodePrescaler:

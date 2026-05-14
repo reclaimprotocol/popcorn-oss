@@ -8,16 +8,9 @@
 
 {{- define "popcorn-platform.controlPlaneDatabaseSsl" -}}
 {{- $controlPlane := .Values.controlPlane -}}
-{{- if and (not $controlPlane.enabled) .Values.analytics.enabled -}}
-{{- $controlPlane = .Values.analytics -}}
-{{- end -}}
 {{- if kindIs "bool" $controlPlane.databaseSsl -}}
 {{- ternary "true" "false" $controlPlane.databaseSsl -}}
 {{- else -}}
 {{- $controlPlane.databaseSsl -}}
 {{- end -}}
-{{- end -}}
-
-{{- define "popcorn-platform.analyticsDatabaseSsl" -}}
-{{- include "popcorn-platform.controlPlaneDatabaseSsl" . -}}
 {{- end -}}

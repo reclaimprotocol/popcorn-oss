@@ -1,8 +1,4 @@
 {{- $controlPlane := .Values.controlPlane }}
-{{- $legacyAnalytics := .Values.analytics }}
-{{- if and (not $controlPlane.enabled) $legacyAnalytics.enabled }}
-{{- $controlPlane = mergeOverwrite (deepCopy $controlPlane) $legacyAnalytics }}
-{{- end }}
 {{- if and $controlPlane.enabled $controlPlane.domainName $controlPlane.staticIpName }}
 apiVersion: networking.gke.io/v1beta1
 kind: FrontendConfig
