@@ -32,6 +32,8 @@ gateway:
   domainName: ""
   staticIpName: ""
   serviceType: LoadBalancer
+  redisHost: ""
+  poolManagerHost: ""
   nodePorts: {}
   serviceAnnotations: {}
   extraSessionRoutes: []
@@ -79,7 +81,7 @@ controlPlane:
   databaseSecretName: ""
   serviceAuthSecretKey: CONTROL_PLANE_SERVICE_AUTH_TOKEN
   adminAuth:
-    strategies: password
+    strategies: password,google
     sessionTtlSeconds: 43200
     sessionSecretKey: ADMIN_SESSION_SECRET
     userKey: ADMIN_USER

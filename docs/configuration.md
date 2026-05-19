@@ -11,6 +11,7 @@ Use `make run-local-cluster` for the fastest self-hosted smoke test. It builds l
 Local defaults are intentionally small:
 
 - `gateway.serviceType=NodePort`
+- one gateway replica
 - control plane enabled by `make run-local-cluster` and mapped to `http://localhost:8081`
 - generated local JWT keys
 - development control-plane admin credentials
@@ -69,6 +70,9 @@ Before installing into a GKE cluster, replace:
 | `poolManager.extraSessionUrls` | `{}` | Optional map of additional session response URL fields. Values are templates expanded by the pool manager. |
 | `poolManager.extraRoutePorts` | `{}` | Optional map from extra Agones port names to gateway route keys and static fallback ports. |
 | `gateway.enabled` | public gateway | Required for browser/CDP access. |
+| `gateway.replicas` | `1` | Number of gateway pods. Safe to increase for availability; routing uses Redis as the shared source of truth and only keeps a short per-pod cache. |
+| `gateway.redisHost` | release namespace Redis service | Optional override for the Redis service host used by gateway routing. Leave empty for same-namespace deployments. |
+| `gateway.poolManagerHost` | release namespace pool-manager service | Optional override for the pool-manager fallback service host. Leave empty for same-namespace deployments. |
 | `gateway.extraSessionRoutes` | `[]` | Optional list of additional gateway session proxy routes. |
 | `redis.enabled` | local Redis | Enable bundled Redis for simple installs. |
 | `postgres.enabled` | local Postgres | Optional analytics storage. |
@@ -78,7 +82,7 @@ Before installing into a GKE cluster, replace:
 | `ttlController.enabled` | session cleanup | Recommended outside throwaway demos. |
 | `otel.enabled` | observability | Optional; requires ClickHouse credentials when enabled. |
 | `gkeNodePrescaler.enabled` | GKE-only scaling helper | Enable only after GCP project, cluster, location, node pool, and IAM are configured. |
-| `gkeNodePrescaler.namespace` | release namespace | Optional override for the namespace watched by the prescaler. Leave empty for same-namespace deployments. |
+| `gkeNodePrescaler.namespace` | release namespace | Optional override for the namespace watched by the prescaler. The chart renders the watched-namespace Role and RoleBinding there. |
 
 ### Browser Fleet Chart
 

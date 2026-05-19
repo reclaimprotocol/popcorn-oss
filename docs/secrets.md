@@ -38,7 +38,7 @@ Generate local keys:
 ./scripts/local/generate-jwt-keys.sh
 kubectl create secret generic gateway-jwt-keys \
   --from-file=private.pem=services/pool-manager/keys/private.pem \
-  --from-file=public.pem=services/pool-manager/keys/public.pem
+  --from-file=public.pem=services/gateway/keys/public.pem
 ```
 
 Use stable production keys across rollouts. Rotating these keys invalidates outstanding browser URLs.
@@ -73,9 +73,10 @@ per-region `pool-manager-service-auth` token instead.
 | `ADMIN_GOOGLE_CLIENT_SECRET` | control plane OAuth | Optional Google OAuth client secret. |
 
 Control-plane admin auth supports password login, bcrypt htpasswd files, and
-Google OAuth with allowed emails or domains. Configure the strategies with
-`controlPlane.adminAuth.strategies`, for example `password` or
-`password,google`.
+Google OAuth with allowed emails or domains. The Helm default is
+`controlPlane.adminAuth.strategies=password,google`, so password login remains
+available while OAuth becomes active when the Google client credentials,
+redirect URI, and email/domain allowlist are configured.
 
 ### `analytics-db-secret`
 

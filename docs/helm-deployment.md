@@ -57,15 +57,19 @@ When both values are set, the platform chart renders GKE `ManagedCertificate`, `
 gateway:
   domainName: gateway.example.com
   staticIpName: popcorn-gateway-ip
+controlPlane:
+  domainName: control-plane.example.com
+  staticIpName: popcorn-control-plane-ip
 ```
 
-Create the static IP before installing the chart:
+Create the static IPs before installing the chart:
 
 ```bash
 gcloud compute addresses create popcorn-gateway-ip --global
+gcloud compute addresses create popcorn-control-plane-ip --global
 ```
 
-Point your DNS record at that IP. Managed certificate provisioning can take several minutes after DNS is correct.
+Point each DNS record at its matching IP. Managed certificate provisioning can take several minutes after DNS is correct.
 
 ## Install Agones
 
@@ -107,6 +111,8 @@ poolManager:
 
 controlPlane:
   enabled: true
+  domainName: control-plane.example.com
+  staticIpName: popcorn-control-plane-ip
   regions:
     - name: us-central1
       clusterName: popcorn-prod
@@ -116,6 +122,7 @@ controlPlane:
 
 gateway:
   enabled: true
+  replicas: 2
   domainName: gateway.example.com
   staticIpName: popcorn-gateway-ip
 

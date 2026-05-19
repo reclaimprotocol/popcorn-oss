@@ -1,5 +1,7 @@
 {{- if .Values.gateway.enabled }}
 {{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.gateway.jwtSecretName }}
+{{- $gatewayRedisHost := default (printf "redis.%s.svc.cluster.local" .Release.Namespace) .Values.gateway.redisHost }}
+{{- $gatewayPoolManagerHost := default (printf "pool-manager.%s.svc.cluster.local" .Release.Namespace) .Values.gateway.poolManagerHost }}
 {{- if .Values.gateway.extraSessionRoutes }}
 apiVersion: v1
 kind: ConfigMap
@@ -30,7 +32,7 @@ data:
 
                 local ip = cache:get(route_key .. ":" .. session_id)
                 if not ip then
-                    local ok, err = red:connect("redis.default.svc.cluster.local", 6379)
+                    local ok, err = red:connect({{ $gatewayRedisHost | quote }}, 6379)
                     if not ok then
                         ngx.log(ngx.ERR, "failed to connect to redis: ", err)
                         return ngx.exit(500)
@@ -130,6 +132,14 @@ spec:
           env:
             - name: GATEWAY_DOMAIN
               value: {{ .Values.gateway.domainName | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GATEWAY_REDIS_HOST
+              value: {{ $gatewayRedisHost | quote }}
+            - name: GATEWAY_POOL_MANAGER_HOST
+              value: {{ $gatewayPoolManagerHost | quote }}
           resources:
             requests:
               memory: 64Mi

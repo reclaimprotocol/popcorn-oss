@@ -17,11 +17,17 @@ else
     echo "🔧 Using provided RESOLVER_IP: $RESOLVER_IP"
 fi
 
-# Use RESOLVER_IP variable in sed
-NS=$RESOLVER_IP
+# Use same-namespace cluster-local services by default, but allow Helm/env overrides.
+POD_NAMESPACE="${POD_NAMESPACE:-default}"
+GATEWAY_REDIS_HOST="${GATEWAY_REDIS_HOST:-redis.${POD_NAMESPACE}.svc.cluster.local}"
+GATEWAY_POOL_MANAGER_HOST="${GATEWAY_POOL_MANAGER_HOST:-pool-manager.${POD_NAMESPACE}.svc.cluster.local}"
 
 # Inject into nginx.conf
-sed -i "s/RESOLVER_IP/$NS/g" /usr/local/openresty/nginx/conf/nginx.conf
+sed -i \
+    -e "s|RESOLVER_IP|$RESOLVER_IP|g" \
+    -e "s|GATEWAY_REDIS_HOST|$GATEWAY_REDIS_HOST|g" \
+    -e "s|GATEWAY_POOL_MANAGER_HOST|$GATEWAY_POOL_MANAGER_HOST|g" \
+    /usr/local/openresty/nginx/conf/nginx.conf
 
 # Start OpenResty
 exec /usr/local/openresty/bin/openresty -g "daemon off;"

@@ -1,4 +1,5 @@
 {{- if .Values.gkeNodePrescaler.enabled }}
+{{- $watchedNamespace := default .Release.Namespace .Values.gkeNodePrescaler.namespace }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -13,7 +14,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: gke-node-prescaler
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ $watchedNamespace | quote }}
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -29,7 +30,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: gke-node-prescaler
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ $watchedNamespace | quote }}
 subjects:
   - kind: ServiceAccount
     name: gke-node-prescaler

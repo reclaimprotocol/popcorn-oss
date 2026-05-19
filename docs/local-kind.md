@@ -69,6 +69,7 @@ The Makefile targets are composable, so you can also run the deployment in stage
 
 ```bash
 make up
+make build
 make local-secrets
 make load-local-images
 make deploy-local

@@ -1,4 +1,4 @@
-# GCP example values for rendering the platform chart.
+# GKE production baseline values for the platform chart.
 # Replace placeholders before installing into a GKE cluster.
 
 clusterName: example-gke-cluster
@@ -27,10 +27,10 @@ poolManager:
 
 gateway:
   enabled: true
-  replicas: 1
+  replicas: 2
   imagePullPolicy: IfNotPresent
   domainName: gateway.example.com
-  staticIpName: ""
+  staticIpName: popcorn-gateway-ip
   serviceType: ClusterIP
   nodePorts: {}
   serviceAnnotations: {}
@@ -59,20 +59,20 @@ postgres:
   passwordSecretKey: password
 
 controlPlane:
-  enabled: false
+  enabled: true
   replicas: 1
   imagePullPolicy: IfNotPresent
   nodeEnv: production
   databaseSsl: false
   serviceType: ClusterIP
   domainName: control-plane.example.com
-  staticIpName: ""
+  staticIpName: popcorn-control-plane-ip
   publicServicePort: 3000
   internalServiceUrl: ""
   regions:
     - name: us-central1
       clusterName: example-gke-cluster
-      poolManagerUrl: http://pool-manager.default.svc.cluster.local
+      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
       publicGatewayUrl: https://gateway.example.com
       enabled: true
       poolManagerAuth:
@@ -93,7 +93,7 @@ metabase:
   databaseSecretName: analytics-db-secret
 
 ttlController:
-  enabled: false
+  enabled: true
   replicas: 1
   imagePullPolicy: IfNotPresent
   controlPlaneUrl: ""
