@@ -1,150 +1,131 @@
-# Security
+# Self-Hosting Security
 
-Popcorn isolates each browser session in an ephemeral Kubernetes workload and exposes access through signed gateway paths. This document describes the OSS v1 security model and the limits operators should understand before hosting Popcorn.
+Popcorn runs each browser session in an ephemeral Kubernetes workload and
+exposes access through signed gateway paths. This page is the short operator
+checklist for hosting it safely.
+
+## Baseline Controls
+
+- Expose only the gateway publicly unless you have a clear reason to expose the
+  control plane.
+- Put TLS in front of every public gateway and control-plane endpoint.
+- Keep Redis, pool managers, Postgres, and internal service URLs private.
+- Use unique client credentials per integration.
+- Treat returned session URLs as bearer secrets and avoid logging them.
+- Set CPU and memory requests and limits for browser workloads.
+- Enable session cleanup with `ttlController` or your own operational cleanup.
+- Store secrets in Kubernetes Secrets or an external secret manager.
+- Pin production images by digest and scan images before release.
 
 ## Trust Boundaries
 
-- Client applications call the public gateway.
-- The gateway validates path tokens before routing browser, CDP, runtime API, and proof requests.
-- The control plane validates client session API credentials, then calls regional pool managers with a per-region service token.
-- The pool manager validates only internal control-plane requests before creating, reading, or deleting sessions.
-- Redis stores routing state and should remain cluster-internal.
-- Browser pods are ephemeral and should not be treated as trusted storage.
-- Control-plane admin endpoints are for trusted operators only.
+- Clients call the control-plane `POST /v1/sessions` API with client
+  credentials.
+- The control plane validates clients, chooses an enabled region, and calls that
+  region's pool manager with a service token.
+- Pool managers accept only internal control-plane authenticated allocation
+  requests.
+- The gateway validates signed path tokens before routing browser, CDP, and
+  runtime API requests. The optional proof route is session-routed and should be
+  exposed only when attestation is enabled and the caller model is understood.
+- Redis stores live route state and should be reachable only by platform
+  services.
+- Browser pods are disposable runtime workloads, not trusted storage.
 
-## Admin Authentication
+## Secrets To Manage
 
-Admin endpoints under `/admin` use a separate admin auth layer from the client
-session API. Control-plane deployments can enable one or more admin strategies:
+Production deployments should manage and rotate:
 
-- username/password through HTTP Basic auth for scripts;
-- username/password browser login backed by the same credential source;
-- Google OAuth browser login.
+- gateway JWT private and public keys;
+- control-plane client credentials for `/v1/sessions`;
+- `CONTROL_PLANE_SERVICE_AUTH_TOKEN`;
+- one `POOL_MANAGER_SERVICE_AUTH_TOKEN` per region;
+- admin credentials, admin session secret, and optional Google OAuth secret;
+- Postgres credentials;
+- TURN credentials, if WebRTC users connect from outside the cluster network;
+- registry pull credentials, if using private images;
+- attestation signing material, if attestation is enabled.
 
-The default username/password source is still `ADMIN_USER` / `ADMIN_PASS` for
-backward compatibility. Production deployments should prefer a mounted
-htpasswd-style bcrypt password file or Google OAuth with explicit allow rules.
-Google users must have verified email and match either an allowed email or an
-allowed domain. Admin browser sessions are stored in signed, HTTP-only cookies
-and should be protected by TLS outside local development. Configure
-`ADMIN_SESSION_SECRET` for Google OAuth or password-file browser login so
-session cookies and OAuth state remain valid across restarts and replicas.
+Never commit private keys, client secrets, registry credentials, cloud
+credentials, or real production values.
 
-Pool managers do not expose an admin UI or public admin API.
+## Session URLs
 
-## Session API Credentials
+Session creation returns signed gateway URLs:
 
-Client session API credentials are required for the control-plane `/v1/sessions`
-endpoint:
+- `url`: browser view.
+- `cdpUrl`: client-facing CDP endpoint.
+- `cdpInternalUrl`: trusted internal CDP endpoint.
+- `apiUrl`: browser runtime API endpoint.
 
-```http
-Authorization: Bearer <client-id>:<client-secret>
-```
+Anyone with a live URL can use that route until the token expires or the
+session is deleted. Redact full URLs in logs, analytics, tickets, and support
+screenshots. Prefer logging `sessionId`, `browserPodId`, `region`, and
+`clusterName`.
 
-Pool managers no longer expose the public client `/session` compatibility API.
-They trust only control-plane calls authenticated with
-`POOL_MANAGER_SERVICE_AUTH_TOKEN`.
+## Admin Access
 
-Local Kind smoke tests should use control-plane client credentials.
+Admin endpoints under `/admin` use a separate auth layer from client session
+credentials. Supported strategies include token or Basic auth for scripts,
+password login, password-file login, and Google OAuth login.
 
-Recommendations:
+For production:
 
-- Use unique client credentials per integration.
-- Store client secrets outside source control.
-- Rotate credentials on a regular schedule.
-- Prefer short-lived or revocable credentials when integrating with your own auth layer.
-- Return the minimum session details needed by untrusted callers.
+- prefer a bcrypt htpasswd-style password file or Google OAuth allow lists over
+  static `ADMIN_USER` and `ADMIN_PASS` values;
+- set `ADMIN_SESSION_SECRET` so browser admin cookies and OAuth state survive
+  restarts and replicas;
+- restrict Google OAuth by verified email or allowed domain;
+- keep `/admin` behind trusted network access when possible;
+- do not share admin credentials with client applications.
 
-## Gateway Path Tokens
+Pool managers do not expose a public admin UI.
 
-Session creation returns URLs containing signed path tokens:
+## Kubernetes Hardening
 
-- Browser view token in `url`.
-- Restricted CDP token in `cdpUrl`.
-- Internal CDP token in `cdpInternalUrl`.
-- Runtime API token in `apiUrl`.
+Use standard cluster isolation around the browser fleet:
 
-Treat these URLs as bearer secrets. Anyone with a live URL can use that route until the token expires or the session is deleted.
+- run browser containers with the least privileges supported by the runtime;
+- avoid hostPath mounts and broad service account permissions;
+- use network policies to keep Redis, Postgres, and pool-manager traffic
+  internal;
+- dedicate browser nodes or node pools when tenant isolation matters;
+- set resource requests and limits for browser runtime and attestor containers;
+- use digest-pinned runtime images and controlled rollout windows;
+- delete sessions promptly when work is complete.
 
-Recommended controls:
-
-- Terminate TLS in front of the gateway for non-local deployments.
-- Keep path-token signing keys stable during rollouts.
-- Rotate signing keys with an overlap plan if long-lived sessions are supported.
-- Avoid writing returned URLs to shared logs.
-- Delete sessions when work is complete.
-
-## CDP Access
+## Advanced: CDP Scope
 
 The gateway exposes two CDP paths:
 
-- `/cdp/<sessionId>/<token>/...`: client-facing endpoint.
-- `/cdp-internal/<sessionId>/<token>/...`: trusted internal endpoint.
+- `/cdp/<sessionId>/<token>/...`: client-facing CDP path.
+- `/cdp-internal/<sessionId>/<token>/...`: trusted internal CDP path.
 
-The internal endpoint uses a distinct token scope. It should only be used by trusted automation or operational tools.
+The internal path uses a distinct token scope and should be used only by trusted
+automation or operations tooling. In OSS v1, do not rely on command-level CDP
+filtering as the only security boundary. Use path-token scope, network exposure,
+client ownership, and short session lifetime as the primary controls.
 
-In OSS v1, do not rely on command-level CDP filtering as the only security boundary. The primary controls are session ownership, path-token scope, network exposure, and short session lifetime.
+## Advanced: Gateway Keys
 
-## Browser Isolation
+Gateway path tokens depend on stable JWT keys. Rotating keys invalidates
+outstanding browser, CDP, and API URLs unless you deploy an overlap strategy.
+Plan key rotation around session lifetime and active workloads.
 
-Each session is allocated to a dedicated Agones GameServer pod. Operators should still configure normal Kubernetes isolation:
+## Advanced: Attestation
 
-- run browser workloads with the least privileges supported by the runtime;
-- set CPU and memory requests and limits;
-- keep Redis, pool manager, and internal services off the public internet;
-- use network policies when available;
-- avoid mounting host paths or broad service account permissions into browser pods;
-- expire idle sessions through the TTL controller.
+Attestation is optional. When enabled on compatible confidential-computing
+infrastructure, the attestor can produce a proof that binds a caller nonce to
+the running browser runtime image digest, attestor image digest, and platform
+attestation token. See [attestation.md](attestation.md).
 
-## Secrets
+## Preflight Checklist
 
-Public quickstarts should not require production secret tooling. Local development uses generated development keys and local-only credentials.
-For OSS installations, store production secrets in Kubernetes Secrets or your own external secret manager.
-
-Production deployments should manage:
-
-- gateway JWT private and public keys;
-- control-plane-backed session API client credentials for `/v1/sessions`;
-- the control-plane service token;
-- one service-auth token per regional pool manager;
-- control-plane admin credentials, admin session secret, and optional Google OAuth client secret;
-- registry pull credentials, if needed;
-- attestation signing material, if attestation is enabled;
-- observability secrets, if optional observability services are enabled.
-
-Never commit private keys, client secrets, registry credentials, or cloud credentials.
-
-## Attestation
-
-Attestation is optional in OSS v1. When enabled on compatible confidential-computing infrastructure, the attestor can produce a proof that binds:
-
-- caller-provided nonce;
-- running browser runtime image digest;
-- running attestor image digest;
-- platform attestation token.
-
-See [attestation.md](attestation.md).
-
-## Logging
-
-Avoid logging:
-
-- full session URLs;
-- path tokens;
-- client secrets;
-- admin credentials;
-- proof tokens unless needed for explicit verification workflows.
-
-Prefer structured logs with session IDs and pod IDs, while redacting tokens.
-
-## Public Deployment Checklist
-
-- Confirm the root `LICENSE` matches the intended release license.
-- Use TLS for gateway traffic.
-- Keep admin endpoints behind trusted access controls.
-- Keep Redis and internal services private.
-- Use digest-pinned runtime images.
-- Keep private deployment extensions out of OSS release manifests.
-- Use GHCR or your own GCP Artifact Registry mirror with digest-pinned images.
-- Set session TTLs and resource limits.
-- Run dependency and container scans as part of release.
+- TLS is configured for public traffic.
+- Only intended services are internet reachable.
+- Client credentials and admin credentials are distinct.
+- Session URLs and path tokens are redacted from logs.
+- Redis and Postgres are private.
+- Browser workloads have limits, cleanup, and minimal permissions.
+- Production images are digest pinned.
+- Secrets are stored outside source control.

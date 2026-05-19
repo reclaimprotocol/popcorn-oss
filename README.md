@@ -41,17 +41,18 @@ flowchart LR
 - `charts/platform`: platform Helm chart.
 - `charts/browser-fleet`: browser fleet Helm chart.
 - `popcorn-images`: separate OSS image repository, tracked as a submodule.
-- `docs`: self-hosting, API, security, attestation, and release docs.
+- `docs`: quickstart, deployment, configuration, operations, security, and reference docs.
 
 ## Quickstart
 
-Prerequisites:
+Prerequisites on your local machine:
 
-- Docker
+- Docker Engine or Docker Desktop, running locally, with BuildKit enabled
 - Kind
 - kubectl
 - Helm
 - Make
+- jq
 
 Clone with submodules so the browser image assets are present:
 
@@ -71,10 +72,11 @@ Expected OSS local flow:
 ```bash
 make local-keys
 make run-local-cluster
-make connect
 ```
 
-`make run-local-cluster` builds the local platform images used by the Kind demo.
+`make run-local-cluster` builds the local platform images, creates or updates
+the Kind cluster, deploys Popcorn, and publishes the local ports. `make connect`
+is optional and only prints the local endpoint reminder.
 
 The local gateway is expected at:
 
@@ -88,13 +90,13 @@ Create a browser session:
 CONTROL_PLANE_URL=http://localhost:8081
 CONTROL_PLANE_ADMIN_TOKEN=local_admin_token_for_dev
 
-curl -sS -X POST "$CONTROL_PLANE_URL/admin/clients" \
+CLIENT_JSON=$(curl -sS -X POST "$CONTROL_PLANE_URL/admin/clients" \
   -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"name":"demo client"}'
+  -d '{"name":"demo client"}')
 
-CLIENT_ID=client_0123456789abcdef
-CLIENT_SECRET=secret_0123456789abcdef
+export CLIENT_ID=$(printf '%s' "$CLIENT_JSON" | jq -r .clientId)
+export CLIENT_SECRET=$(printf '%s' "$CLIENT_JSON" | jq -r .clientSecret)
 
 curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
   -H "Authorization: Bearer $CLIENT_ID:$CLIENT_SECRET" \
@@ -102,7 +104,9 @@ curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
   -d '{"sessionId":"demo-session","regions":["local"]}'
 ```
 
-Client session creation uses the control-plane `/v1/sessions` API. See [Control plane session creation](docs/control-plane-sessions.md) for the full client credential workflow.
+Client session creation uses the control-plane `/v1/sessions` API. See
+[Reference](docs/reference.md) for the client credential workflow and response
+shape.
 
 The response includes:
 
@@ -171,14 +175,13 @@ await browser.close();
 ## Documentation
 
 - [Docs index](docs/index.md)
-- [Local Kind deployment](docs/local-kind.md)
-- [GCP deployment](docs/helm-deployment.md)
+- [Quickstart](docs/quickstart.md)
+- [Deployment](docs/deployment.md)
 - [Configuration](docs/configuration.md)
 - [Secrets](docs/secrets.md)
-- [Control plane session creation](docs/control-plane-sessions.md)
-- [Session API](docs/api.md)
-- [Security model](docs/security.md)
-- [Production hardening](docs/production-hardening.md)
+- [Reference](docs/reference.md)
+- [Operations](docs/operations.md)
+- [Security](docs/security.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Attestation](docs/attestation.md)
 - [Images and releases](docs/images-and-releases.md)

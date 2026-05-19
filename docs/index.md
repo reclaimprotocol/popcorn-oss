@@ -1,32 +1,57 @@
 # Popcorn Docs
 
-Popcorn OSS v1 is a self-hostable browser platform for Kubernetes. These docs cover local Kind development, GCP/GKE deployment, the session API, browser automation, security, GCP attestation, and release practices.
+Popcorn is a self-hostable browser runtime platform for Kubernetes. It starts
+ephemeral Chromium sessions, routes browser/CDP/API traffic through a gateway,
+and lets clients create sessions through the control plane.
 
-## Start Here
+These docs are organized for operators who want to run Popcorn themselves.
 
-- [README](../README.md): project overview and quickstart.
-- [Local Kind deployment](local-kind.md): run Popcorn on a local Kind cluster.
-- [GCP deployment](helm-deployment.md): deploy Popcorn to Google Kubernetes Engine.
-- [Configuration](configuration.md): chart values, deployment profiles, and optional components.
-- [Secrets](secrets.md): required Kubernetes Secret names, keys, and GCP Secret Manager patterns.
-- [Control plane session creation](control-plane-sessions.md): create client credentials and route new sessions through `/v1/sessions`.
-- [Session API](api.md): create, inspect, and delete browser sessions.
+## Read This First
 
-## Operations
+1. [Quickstart](quickstart.md): run Popcorn locally with Kind.
+2. [Deployment](deployment.md): deploy the supported production shape on GKE.
+3. [Configuration](configuration.md): understand required and optional settings.
+4. [Secrets](secrets.md): create the Kubernetes Secrets Popcorn expects.
+5. [Reference](reference.md): session API, gateway paths, and config index.
 
-- [Security](security.md): trust boundaries, authentication, runtime isolation, and safe defaults.
-- [Production hardening](production-hardening.md): production checklist for identity, network, secrets, runtime, and operations.
-- [Troubleshooting](troubleshooting.md): common local, Helm, auth, browser, and CI failures.
-- [Attestation](attestation.md): optional proof flow for GCP confidential-computing deployments.
-- [Images and releases](images-and-releases.md): image ownership, tags, digests, and OSS release dependencies.
+## Operate It
 
-## Related Projects
+- [Operations](operations.md): validate, upgrade, scale, and run optional services.
+- [Security](security.md): practical self-hosting security model and hardening.
+- [Browser networking](networking.md): Cloudflare TURN, static ICE servers, and direct Agones UDP.
+- [Observability](observability.md): optional OpenTelemetry log export and ClickHouse session bindings.
+- [Troubleshooting](troubleshooting.md): diagnose local, Helm, auth, and browser issues.
 
-- [popcorn-images](../popcorn-images/README.md): separate OSS repository for browser image assets.
+## Optional Areas
 
-## OSS v1 Notes
+- [Attestation](attestation.md): GCP confidential-computing proof flow.
+- [Images and releases](images-and-releases.md): images, tags, digests, and release inputs.
 
-- There is no hosted public demo for OSS v1.
-- Production deployment support is GCP/GKE only for now.
-- OSS sync smoke test marker: 2026-05-13.
-- Rebase sync smoke test marker: 2026-05-13.
+## Repository Map
+
+| Path | Purpose |
+| --- | --- |
+| `charts/platform` | Gateway, pool manager, Redis, control plane, Postgres, TTL controller, and optional operations services. |
+| `charts/browser-fleet` | Agones browser Fleet, browser runtime, WebRTC/TURN settings, autoscaler, and optional attestor. |
+| `services/*` | Source for platform services. |
+| `popcorn-images` | Browser image assets and runtime image build inputs. |
+| `examples/helm` | Starting values for production-style GKE installs. |
+| `examples/kubernetes` | Secret bootstrap examples. |
+
+## What Runs In A Normal Install
+
+```mermaid
+flowchart LR
+    client["Client or user"] --> control["Control plane"]
+    control --> pool["Pool manager"]
+    pool --> agones["Agones"]
+    agones --> browser["Browser GameServer"]
+    client --> gateway["Gateway"]
+    gateway --> browser
+    pool --> redis[("Redis")]
+    control --> pg[("Postgres")]
+```
+
+The gateway is the only service that normally needs to be public. The control
+plane can be public if clients create sessions directly, but protect its admin
+surface carefully.

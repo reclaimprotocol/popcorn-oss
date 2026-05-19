@@ -73,6 +73,9 @@ redis:
       cpu: 250m
 
 postgres:
+  # Production examples assume a managed Postgres instance referenced by
+  # analytics-db-secret. Set enabled=true only when you intentionally want the
+  # chart to run an in-cluster Postgres service named postgres.
   enabled: false
   image: postgres:16
   imagePullPolicy: IfNotPresent
@@ -186,7 +189,7 @@ otel:
   image: otel/opentelemetry-collector-contrib:0.149.0
   imagePullPolicy: IfNotPresent
   exporter:
-    grpcEndpoint: https://otel-grpc.example.com:4317
+    grpcEndpoint: otel-grpc.example.com:4317
   clickhouse:
     database: otel
     secretName: otel-clickhouse-secret

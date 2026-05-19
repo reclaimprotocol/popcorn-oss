@@ -4,6 +4,19 @@
 region: us-central1
 gatewayDomain: gateway.example.com
 
+agones:
+  install: true
+
+agonesInstaller:
+  agones:
+    controller:
+      generateTLS: false
+  gameservers:
+    namespaces:
+      - popcorn
+    minPort: 59000
+    maxPort: 61000
+
 externalSecrets:
   enabled: false
 

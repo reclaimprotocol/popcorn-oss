@@ -1,6 +1,19 @@
 region: asia-south1
 gatewayDomain: ""
 
+agones:
+  install: false
+
+agonesInstaller:
+  agones:
+    controller:
+      generateTLS: false
+  gameservers:
+    namespaces:
+      - default
+    minPort: 59000
+    maxPort: 61000
+
 externalSecrets:
   enabled: false
 

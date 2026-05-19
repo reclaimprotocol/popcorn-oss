@@ -1,119 +1,180 @@
 # Configuration
 
-Popcorn is configured through Helm values and Kubernetes Secrets. The same charts support a local Kind demo and a GCP/GKE production deployment, but production operators should replace all example registries, domains, credentials, and resource values.
+Popcorn is configured through Helm values and Kubernetes Secrets. Keep the base
+deployment small, then enable optional pieces one at a time.
 
-## Deployment Profiles
+## Required Configuration
 
-### Local Kind
+| Area | Values | Why it matters |
+| --- | --- | --- |
+| Deployment identity | `clusterName`, `provider`, `region` | Labels sessions and chooses provider-specific behavior. |
+| Images | `registry`, `imageTag`, `browserRuntimeImage`, `imagePullSecrets` | Controls what runs in the cluster. Pin digests for production. |
+| Gateway | `gateway.enabled`, `gateway.domainName`, `gateway.staticIpName`, `gateway.serviceType` | Public entry point for browser, CDP, API, and proof routes. |
+| Pool manager | `poolManager.enabled`, `poolManager.serviceAuth`, `poolManager.gameServerFleet` | Allocates Agones browser GameServers. |
+| Browser fleet | `gatewayDomain`, `fleet.replicas`, `autoscaler.*` | Controls browser capacity and returned URLs. |
+| Agones | `agones.install`, `agonesInstaller.*` | Optionally installs Agones from the browser-fleet chart for fresh clusters. |
+| Control plane | `controlPlane.enabled`, `controlPlane.regions` | Client credential API and regional session routing. |
+| Secrets | `secrets.*`, `browser-fleet.secrets.browserTurnName` | Names of required Kubernetes Secrets. |
 
-Use `make run-local-cluster` for the fastest self-hosted smoke test. It builds local images, creates development Secrets, installs the charts, and exposes the gateway on `http://localhost:8080`.
+## Optional Configuration
 
-Local defaults are intentionally small:
+| Option | Values | Use when |
+| --- | --- | --- |
+| Bundled Redis | `redis.enabled` | You want the chart to run Redis for route state. |
+| Bundled Postgres | `postgres.enabled` | You want a simple in-cluster database. Managed Postgres is better for production. |
+| TTL cleanup | `ttlController.enabled`, `ttlController.ttlDuration` | You want old sessions cleaned up automatically. Recommended. |
+| Browser TURN | `browser-turn-secret`, `webrtc.*` | Browser users are outside the same machine or direct UDP is unreliable. |
+| Admin auth | `controlPlane.adminAuth.*` | You need password, htpasswd, or Google OAuth admin login. |
+| Observability | `otel.*` | You want browser GameServer log export and ClickHouse session bindings. |
+| Metabase | `metabase.*` | You want an internal analytics UI. |
+| GKE node prescaler | `gkeNodePrescaler.*` | You want browser node pools scaled ahead of demand on GKE. |
+| Attestation | `browserRuntimeAttestor.*`, `ccDevicePlugin.*` | You run compatible GCP confidential-computing nodes. |
+| Extra routes | `fleet.extraPorts`, `poolManager.extraRoutePorts`, `gateway.extraSessionRoutes` | Your browser runtime exposes additional services. |
 
-- `gateway.serviceType=NodePort`
-- one gateway replica
-- control plane enabled by `make run-local-cluster` and mapped to `http://localhost:8081`
-- generated local JWT keys
-- development control-plane admin credentials
-- empty TURN credentials unless supplied
-- one browser replica
+## Base Production Example
 
-The quickest local smoke test creates client records in the local control plane
-and calls `POST /v1/sessions`; see [Control plane session creation](control-plane-sessions.md).
-The local Kind path can create browser sessions without TURN credentials, but browser streaming is only dependable from networks that can reach the browser pod's WebRTC candidates. For realistic browser access, especially from another device, a VPN, a corporate network, or a cloud-hosted cluster, configure Cloudflare TURN through `browser-turn-secret`.
+```yaml
+# platform values
+clusterName: popcorn-prod
+provider: gcp
+region: us-central1
+registry: ghcr.io/reclaimprotocol/popcorn-oss
+imageTag: <release-or-commit-tag>
 
-For same-machine local development without TURN, `kind-config.yaml` publishes UDP ports `7000-7010` from the Kind node and the local Makefile constrains Agones GameServer allocations to that same range. The browser fleet also sets `webrtc.advertiseHost=127.0.0.1`, so Neko advertises a host candidate the local browser can actually reach. If you change the local Agones port range, update both `kind-config.yaml` and the Agones `gameservers.minPort` / `gameservers.maxPort` values together, then recreate the Kind cluster because Docker port mappings are fixed when the node container is created.
+poolManager:
+  enabled: true
 
-### GCP/GKE
+gateway:
+  enabled: true
+  replicas: 2
+  domainName: gateway.example.com
+  staticIpName: popcorn-gateway-ip
 
-Use the example values as a starting point:
+controlPlane:
+  enabled: true
+  regions:
+    - name: us-central1
+      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
+      publicGatewayUrl: https://gateway.example.com
+      enabled: true
 
-```bash
-helm upgrade --install popcorn-platform charts/platform \
-  --namespace popcorn \
-  --create-namespace \
-  --values examples/helm/platform-values.yaml
+redis:
+  enabled: true
 
-helm upgrade --install browser-fleet charts/browser-fleet \
-  --namespace popcorn \
-  --values examples/helm/browser-fleet-values.yaml
+ttlController:
+  enabled: true
 ```
 
-The namespace can be any GKE workload namespace you choose; `popcorn` is the documentation example. Keep the platform and browser-fleet releases in the same namespace for the normal deployment shape. In that shape, pool-manager allocates Agones GameServers in its own release namespace, the GKE node prescaler watches the same namespace, and in-cluster service URLs resolve to services in that namespace.
+```yaml
+# browser-fleet values
+region: us-central1
+gatewayDomain: gateway.example.com
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 
-If you deliberately split platform and browser workloads across namespaces, set `poolManager.gameServerNamespace` and `gkeNodePrescaler.namespace` to the browser workload namespace, and make sure the pool-manager RBAC plus required Secrets are rendered for the namespaces they reference.
+agones:
+  install: true
 
-Before installing into a GKE cluster, replace:
+agonesInstaller:
+  gameservers:
+    namespaces:
+      - popcorn
+    minPort: 59000
+    maxPort: 61000
 
-- `registry`
-- `imageTag`
-- public domains
-- GKE Ingress, static IP, and managed certificate settings
-- Secret names or external secret mappings
-- CPU and memory requests
-- autoscaler limits
+fleet:
+  replicas: 2
 
-## Important Values
+autoscaler:
+  minReplicas: 2
+  maxReplicas: 20
+```
 
-### Platform Chart
+## Advanced: Existing Database
 
-| Value | Default intent | Notes |
-| --- | --- | --- |
-| `clusterName` | identifies the deployment | Used in service metadata and analytics. |
-| `provider` | `gcp` for OSS examples | Production support is GCP/GKE only for now. |
-| `registry` | image registry prefix | OSS examples use GHCR. You may mirror images into your own GCP Artifact Registry. |
-| `imageTag` | runtime image tag | Prefer immutable tags or digests for production. |
-| `imagePullSecrets` | `[]` | Optional pull Secrets applied to platform pods when using private mirrors. |
-| `nodeSelector`, `tolerations`, `affinity` | empty | Optional scheduling controls applied to platform pods. |
-| `secrets.*` | central Secret names | One place to override Kubernetes Secret names for JWT keys, pool-manager service auth, control-plane admin/service auth, and database. |
-| `poolManager.enabled` | Regional allocator | Required for local pool-manager session creation. |
-| `poolManager.resources` | small default | CPU and memory requests/limits for the pool manager. |
-| `poolManager.gameServerNamespace` | release namespace | Optional override for where pool-manager allocates and manages Agones GameServers. Leave empty for same-namespace deployments. |
-| `poolManager.serviceAuth.secretName` | `secrets.poolManagerServiceAuthName` | Per-region token Secret trusted by this pool-manager and mounted by the control plane region config. |
-| `poolManager.extraSessionUrls` | `{}` | Optional map of additional session response URL fields. Values are templates expanded by the pool manager. |
-| `poolManager.extraRoutePorts` | `{}` | Optional map from extra Agones port names to gateway route keys and static fallback ports. |
-| `gateway.enabled` | public gateway | Required for browser/CDP access. |
-| `gateway.replicas` | `1` | Number of gateway pods. Safe to increase for availability; routing uses Redis as the shared source of truth and only keeps a short per-pod cache. |
-| `gateway.resources` | small default | CPU and memory requests/limits for the gateway. |
-| `gateway.redisHost` | release namespace Redis service | Optional override for the Redis service host used by gateway routing. Leave empty for same-namespace deployments. |
-| `gateway.poolManagerHost` | release namespace pool-manager service | Optional override for the pool-manager fallback service host. Leave empty for same-namespace deployments. |
-| `gateway.extraSessionRoutes` | `[]` | Optional list of additional gateway session proxy routes. |
-| `redis.enabled` | local Redis | Enable bundled Redis for simple installs. |
-| `postgres.enabled` | local Postgres | Optional analytics storage. |
-| `controlPlane.enabled` | client control plane | Enables client credentials, `/v1/sessions`, multi-region routing, and analytics storage. |
-| `controlPlane.resources`, `redis.resources`, `postgres.resources`, `ttlController.resources`, `metabase.resources` | workload defaults | CPU and memory requests/limits for bundled platform workloads. |
-| `controlPlane.adminAuth` | password login | Supports password, bcrypt htpasswd file, and Google OAuth with allowed emails/domains. |
-| `controlPlane.regions` | `[]` | Ordered regional pool-manager config used by `/v1/sessions`; set `poolManagerAuth.secretName` per region. |
-| `ttlController.enabled` | session cleanup | Recommended outside throwaway demos. |
-| `otel.enabled` | observability | Optional; requires ClickHouse credentials when enabled. |
-| `gkeNodePrescaler.enabled` | GKE-only scaling helper | Enable only after GCP project, cluster, location, node pool, and IAM are configured. |
-| `gkeNodePrescaler.namespace` | release namespace | Optional override for the namespace watched by the prescaler. The chart renders the watched-namespace Role and RoleBinding there. |
+Disable bundled Postgres and point `analytics-db-secret` at your database:
 
-### Browser Fleet Chart
+```yaml
+postgres:
+  enabled: false
 
-| Value | Default intent | Notes |
-| --- | --- | --- |
-| `gatewayDomain` | gateway host | Browser runtime uses this to form callback URLs. |
-| `externalSecrets.enabled` | optional GCP Secret Manager sync | If enabled, requires External Secrets Operator and `ClusterSecretStore/gcpsm`. |
-| `ccDevicePlugin.enabled` | GCP confidential-computing support | Keep disabled unless GKE nodes support it. |
-| `browserRuntimeImage` | browser runtime image | Use GHCR or a GCP Artifact Registry mirror, pinned by digest for production. |
-| `browserRuntimeAttestor.enabled` | optional attestation sidecar | Keep disabled unless using attestation. |
-| `imagePrepuller.enabled` | pre-pull runtime image | Useful for larger fleets. |
-| `extraBrowserRuntimeEnv` | extra runtime env vars | Optional list appended to the browser runtime container env. |
-| `fleet.extraPorts` | extra Agones Fleet ports | Optional list for additional public or internal runtime ports. |
-| `fleet.extraContainers` | extra pod containers | Optional list appended to the Fleet pod containers. |
-| `imagePrepuller.extraInitContainers` | extra prepuller init containers | Optional list prepended to the image prepuller DaemonSet as init containers. |
-| `imagePrepuller.extraContainers` | extra prepuller containers | Optional list appended to the image prepuller DaemonSet containers. |
-| `webrtc.advertiseHost` | optional host override | Use `127.0.0.1` only for local Kind with matching UDP port mappings. Leave empty in production so the runtime uses the node or GameServer address plus TURN fallback. |
-| `fleet.replicas` | desired browser capacity | Start small; use autoscaler limits for burst control. |
-| `autoscaler.minReplicas` | minimum fleet size | Keep low for development. |
-| `autoscaler.maxReplicas` | maximum fleet size | Set a hard cost guardrail. |
+controlPlane:
+  enabled: true
+  databaseSecretName: analytics-db-secret
+  databaseSsl: true
+```
 
-## Session Route Extension Points
+`analytics-db-secret` must contain `host`, `port`, `database`, `username`, and
+`password`.
 
-OSS exposes browser view, CDP, internal CDP, runtime API, and proof routes by
-default. Internal or downstream deployments can add extra browser-runtime routes
-without patching OSS source by configuring three default-empty extension points:
+## Advanced: Observability
+
+Keep observability disabled until the base deployment can create sessions:
+
+```yaml
+otel:
+  enabled: false
+```
+
+When enabled, `otel.*` deploys an OpenTelemetry collector DaemonSet for browser
+GameServer logs and enables pool-manager ClickHouse writes for session
+bindings:
+
+```yaml
+otel:
+  enabled: true
+  exporter:
+    grpcEndpoint: otel-grpc.example.com:4317
+  clickhouse:
+    database: otel
+    secretName: otel-clickhouse-secret
+```
+
+See [Observability](observability.md) for the required Secret, table shape, and
+what data is exported.
+
+## Advanced: Split Namespaces
+
+Same-namespace installs are easier. If browser workloads must run elsewhere:
+
+```yaml
+poolManager:
+  gameServerNamespace: popcorn-browsers
+
+gkeNodePrescaler:
+  namespace: popcorn-browsers
+```
+
+Make sure RBAC and referenced Secrets exist in the namespaces the charts use.
+
+## Advanced: Existing Agones
+
+If your cluster already has Agones installed, leave the dependency disabled:
+
+```yaml
+agones:
+  install: false
+```
+
+For a fresh self-hosted cluster, enable the dependency in browser-fleet values:
+
+```yaml
+agones:
+  install: true
+
+agonesInstaller:
+  gameservers:
+    namespaces:
+      - popcorn
+    minPort: 59000
+    maxPort: 61000
+```
+
+Agones is cluster-level infrastructure. Do not enable the dependency from more
+than one browser-fleet release in the same cluster.
+
+## Advanced: Extra Session Routes
+
+Use matching names across the browser fleet, pool manager, and gateway:
 
 ```yaml
 # browser-fleet values
@@ -140,57 +201,15 @@ gateway:
       tokenScope: internal
 ```
 
-The pieces must agree on names:
+`extraSessionUrls` supports `{baseUrl}`, `{wsBase}`, `{sessionId}`,
+`{browserPodId}`, `{restrictedToken}`, and `{internalToken}`.
 
-- `fleet.extraPorts[].name` is the Agones port name exposed by the browser
-  runtime pod.
-- `poolManager.extraRoutePorts.<portName>.routeKey` controls the Redis route key
-  written as `route:<routeKey>:<sessionId>`.
-- `gateway.extraSessionRoutes[].routeKey` must match that route key.
-- `gateway.extraSessionRoutes[].pathPrefix` controls the public path
-  `/<pathPrefix>/<sessionId>/<token>/...`.
-- `poolManager.extraSessionUrls` controls any additional fields returned by
-  session APIs.
-
-`poolManager.extraSessionUrls` templates support `{baseUrl}`, `{wsBase}`,
-`{sessionId}`, `{browserPodId}`, `{restrictedToken}`, and `{internalToken}`.
-Use `{internalToken}` only for routes that set `tokenScope: internal`. If
-`tokenScope` is omitted, the gateway accepts any valid session token for that
-route.
-
-## Secrets
-
-Use `docs/secrets.md` as the source of truth for required Secret names and keys. On GCP, use GCP Secret Manager with External Secrets Operator and a `ClusterSecretStore` named `gcpsm`, or create the Kubernetes Secrets directly before installing the charts.
-
-Browser WebRTC access should have a TURN fallback. Popcorn supports Cloudflare TURN by reading `TURN_KEY_ID` and `TURN_API_TOKEN` from `browser-turn-secret`; the browser runtime then requests short-lived ICE server credentials on startup. Keep `NEKO_ICESERVERS` empty for this dynamic Cloudflare flow, or set it only when using a static custom ICE server list.
-
-## Optional Components
-
-Enable optional components one at a time:
-
-- Control plane: required for `/v1/sessions`; requires control-plane and database Secrets when hosted in this deployment.
-- TTL controller: requires the control-plane service token when session callbacks are enabled.
-- Attestation: requires compatible GCP confidential-computing nodes and digest-pinned images.
-- Observability: requires exporter endpoints and ClickHouse credentials.
-- GKE node prescaler: requires GCP IAM and should remain disabled until the target node pool settings are correct.
-
-## Validation
-
-Before applying to a cluster:
+## Validate Values
 
 ```bash
 helm template popcorn-platform charts/platform \
-  --values examples/helm/platform-values.yaml
+  --values /tmp/popcorn-platform.yaml
 
 helm template browser-fleet charts/browser-fleet \
-  --values examples/helm/browser-fleet-values.yaml
-```
-
-After applying:
-
-```bash
-kubectl get pods
-kubectl get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret browser-turn-secret
-kubectl rollout status deployment/pool-manager
-kubectl rollout status deployment/popcorn-gateway
+  --values /tmp/popcorn-browser-fleet.yaml
 ```

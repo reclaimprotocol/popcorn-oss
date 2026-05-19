@@ -1,0 +1,6 @@
+dependencies:
+- name: agones
+  repository: https://agones.dev/chart/stable
+  version: 1.57.0
+digest: sha256:e4af1dcbb7698c70355b52e7ca94abc55ca45f92f94d3e96472a75aa051dd83a
+generated: "2026-05-19T21:30:43.059004+05:30"

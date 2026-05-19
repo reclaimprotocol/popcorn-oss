@@ -25,11 +25,9 @@ When a browser pod starts, `entrypoint.sh`:
 
 The browser pod includes a `browser-runtime-attestor` sidecar when `browserRuntimeAttestor.enabled` is true in the browser-fleet chart. That sidecar exposes `/proof` on port `8085`, verifies the running `browser-runtime` and `browser-runtime-attestor` image signatures, and returns the current GCP AMD SEV v3 attestation proof.
 
-Use the verifier in `scripts/attestation`:
-
-```bash
-node scripts/attestation/verify_gcp_proof.js --session <SESSION_ID> --nonce <HEX_NONCE> --gateway-url <GATEWAY_URL>
-```
+Popcorn OSS does not currently ship a standalone verifier script. Fetch proof
+JSON through the gateway proof endpoint and verify it in your own GCP-aware
+verifier.
 
 The browser runtime image does not generate attestation proofs or upload attestation artifacts.
 

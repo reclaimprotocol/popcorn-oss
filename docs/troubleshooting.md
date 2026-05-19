@@ -1,19 +1,217 @@
 # Troubleshooting
 
-Start with the current state:
+Use this page when a self-hosted Popcorn install does not create or serve
+browser sessions. Start with Kubernetes state, then follow the symptom that
+matches the failure.
+
+## First Checks
 
 ```bash
-kubectl get pods
-kubectl get gameservers
-kubectl get fleet,fleetautoscaler
-kubectl get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret browser-turn-secret
-kubectl logs deployment/pool-manager
-kubectl logs deployment/popcorn-gateway
+kubectl -n popcorn get pods
+kubectl -n popcorn get fleet,fleetautoscaler,gameservers
+kubectl -n popcorn get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret analytics-db-secret browser-turn-secret
+kubectl -n popcorn logs deployment/control-plane --tail=100
+kubectl -n popcorn logs deployment/pool-manager --tail=100
+kubectl -n popcorn logs deployment/popcorn-gateway --tail=100
 ```
 
-## Local Gateway Is Not Reachable
+If pods are pending, check capacity first. If pods are in
+`CreateContainerConfigError`, check missing Secrets first. If session creation
+returns `401`, `403`, or `5xx`, check control-plane and pool-manager auth.
 
-Check the Kind cluster and port mapping:
+## Helm Install Or Upgrade Fails
+
+Render locally with the same values file used for the release:
+
+```bash
+helm template popcorn-platform charts/platform --values <your-platform-values.yaml>
+helm template browser-fleet charts/browser-fleet --values <your-browser-fleet-values.yaml>
+```
+
+Common causes:
+
+- a values key has the wrong type;
+- External Secrets templates are enabled but External Secrets Operator is not installed;
+- a Secret name in values does not match the Secret created in the cluster;
+- GKE-only options are enabled on a non-GKE cluster.
+
+If you are not using External Secrets Operator, disable the relevant
+`externalSecrets.enabled` value and create Kubernetes Secrets directly.
+
+## Pods Are Stuck In CreateContainerConfigError
+
+Describe the pod and look for the missing Secret or key:
+
+```bash
+kubectl -n popcorn describe pod <pod-name>
+```
+
+Check the required defaults:
+
+```bash
+kubectl -n popcorn get secret gateway-jwt-keys
+kubectl -n popcorn get secret pool-manager-service-auth
+kubectl -n popcorn get secret control-plane-secret
+kubectl -n popcorn get secret analytics-db-secret
+kubectl -n popcorn get secret browser-turn-secret
+```
+
+Create the missing Secret with the keys listed in `docs/secrets.md`, then
+restart the affected deployment:
+
+```bash
+kubectl -n popcorn rollout restart deployment/pool-manager deployment/popcorn-gateway deployment/control-plane
+```
+
+## Pool Manager Does Not Become Ready
+
+The pool manager requires `POOL_MANAGER_SERVICE_AUTH_TOKEN` from
+`pool-manager-service-auth`.
+
+```bash
+kubectl -n popcorn describe pod -l app=pool-manager
+kubectl -n popcorn get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
+kubectl -n popcorn logs deployment/pool-manager --tail=100
+```
+
+Common causes:
+
+- the Secret is missing;
+- the key name is wrong;
+- the token differs from the token configured for the region in the control plane;
+- Redis is unavailable;
+- the pod cannot reach the Kubernetes API or Agones resources.
+
+## Session API Returns 401 Or 403
+
+Use the control-plane `/v1/sessions` API for client-created sessions. The pool
+manager internal session endpoints are bearer-protected and are not public
+client APIs.
+
+Check the region wiring and service token:
+
+```bash
+kubectl -n popcorn get deploy control-plane -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CONTROL_PLANE_REGIONS")].value}'
+kubectl -n popcorn get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
+```
+
+Common causes:
+
+- client ID or client secret was not created in the control plane;
+- the client was revoked;
+- admin username or password is wrong;
+- `ADMIN_SESSION_SECRET` differs across control-plane replicas;
+- Google OAuth user email is unverified or outside the allowlist;
+- control-plane region token does not match the regional pool-manager token.
+
+## Session API Returns 5xx
+
+Check the control plane, database, pool manager, and Agones state:
+
+```bash
+kubectl -n popcorn logs deployment/control-plane --tail=200
+kubectl -n popcorn logs deployment/pool-manager --tail=200
+kubectl -n popcorn get fleet,fleetautoscaler,gameservers
+kubectl -n popcorn get endpoints
+```
+
+Common causes:
+
+- Postgres is unavailable or credentials are wrong;
+- no Ready GameServers are available;
+- the pool-manager service URL in `controlPlane.regions` is wrong;
+- gateway JWT keys are missing or invalid;
+- browser pods are failing image pull or readiness checks.
+
+## Browser URL Opens But CDP Or Runtime API Fails
+
+Use the URL returned for that access path. Browser, CDP, and runtime API URLs
+each have scoped tokens. The optional proof route is separate and uses
+`/proof/<sessionId>?nonce=<hex>`.
+
+Check the CDP scheme:
+
+- local HTTP gateway: `ws://.../cdp/...`
+- TLS gateway: `wss://.../cdp/...`
+
+Do not reuse a browser URL token for CDP or a CDP token for the runtime API.
+If all scoped URLs fail, check gateway logs and JWT key consistency between
+pool manager and gateway.
+
+## Browser Pods Do Not Become Ready
+
+Inspect the GameServer and browser pod:
+
+```bash
+kubectl -n popcorn get gameservers -o wide
+kubectl -n popcorn describe gameserver <name>
+kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
+```
+
+Common causes:
+
+- browser runtime image cannot be pulled;
+- private registry credentials are missing;
+- CPU or memory requests cannot fit on browser nodes;
+- TURN credentials are missing or invalid;
+- confidential-computing or sandbox settings do not match the node pool.
+
+## Browser Opens But WebRTC Does Not Connect
+
+Check TURN first for production or remote users:
+
+```bash
+kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200 | grep -i cloudflare
+kubectl -n popcorn get secret browser-turn-secret -o jsonpath='{.data.TURN_KEY_ID}' | grep -q . && echo TURN_KEY_ID=set
+kubectl -n popcorn get secret browser-turn-secret -o jsonpath='{.data.TURN_API_TOKEN}' | grep -q . && echo TURN_API_TOKEN=set
+```
+
+Common causes:
+
+- `TURN_KEY_ID` or `TURN_API_TOKEN` is empty;
+- the TURN key was deleted, expired, or copied incorrectly;
+- browser GameServers were not recycled after updating `browser-turn-secret`;
+- a firewall blocks direct UDP and no TURN relay is configured;
+- a custom `NEKO_ICESERVERS` value is malformed.
+
+After changing TURN credentials, recycle browser GameServers:
+
+```bash
+kubectl -n popcorn delete gameserver --all
+```
+
+## Optional Component Fails
+
+For TTL controller, verify the control-plane service token and logs:
+
+```bash
+kubectl -n popcorn get secret control-plane-secret -o jsonpath='{.data.CONTROL_PLANE_SERVICE_AUTH_TOKEN}' | base64 -d
+kubectl -n popcorn logs deployment/ttl-controller --tail=100
+```
+
+For Metabase or analytics failures, verify the database Secret and network
+path:
+
+```bash
+kubectl -n popcorn get secret analytics-db-secret -o yaml
+kubectl -n popcorn get pods -l app=postgres
+```
+
+For OpenTelemetry issues, check the collector and ClickHouse binding path:
+
+```bash
+kubectl -n popcorn get daemonset otel-agent
+kubectl -n popcorn logs daemonset/otel-agent --tail=100
+kubectl -n popcorn logs deployment/pool-manager --tail=100 | grep -i clickhouse
+```
+
+For attestation or GKE node prescaler issues, disable the optional component and
+confirm the base session lifecycle still works before debugging the add-on.
+
+## Advanced: Local Kind
+
+For the local Makefile path, the gateway should be reachable at
+`http://localhost:8080`:
 
 ```bash
 kubectl config current-context
@@ -21,164 +219,27 @@ kubectl get svc popcorn-gateway
 curl -i http://localhost:8080/health
 ```
 
-For the local Makefile path, the gateway should be exposed on `http://localhost:8080`. If the service exists but curl fails, recreate the Kind cluster:
+If the service exists but curl fails, recreate the Kind cluster:
 
 ```bash
 make clean
 make run-local-cluster
 ```
 
-## Pool Manager Does Not Start
-
-The platform chart injects the pool-manager service-auth Secret into the pool
-manager as `POOL_MANAGER_SERVICE_AUTH_TOKEN`. The pool manager requires that
-token at startup. If the Secret or key is missing, the pod fails to start or
-remains unready.
-
-Check the pod events and required Secret:
-
-```bash
-kubectl describe pod -l app=pool-manager
-kubectl get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
-kubectl logs deployment/pool-manager
-```
-
-Common signs:
-
-- `CreateContainerConfigError` mentioning `pool-manager-service-auth` or `POOL_MANAGER_SERVICE_AUTH_TOKEN`;
-- pool-manager logs mention missing `POOL_MANAGER_SERVICE_AUTH_TOKEN`;
-- deployment rollout never becomes ready.
-
-## `401` Or `403` From Session APIs
-
-Pool-manager only accepts internal control-plane bearer calls. Control-plane
-admin endpoints support password auth and optional Google OAuth. Client
-endpoints use control-plane-backed client credentials.
-
-For client `/v1/sessions`, check the control-plane region wiring:
-
-```bash
-kubectl get deploy control-plane -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CONTROL_PLANE_REGIONS")].value}'
-kubectl get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
-```
-
-Common causes:
-
-- wrong admin username/password;
-- missing or mismatched `ADMIN_SESSION_SECRET` across control-plane replicas;
-- control-plane Google OAuth user email is unverified or not in the configured allowed emails/domains;
-- pool manager rejects the configured regional service token;
-- the client ID/secret was not created in the control plane, or the client was revoked;
-- using the removed pool-manager `/session` compatibility path instead of control-plane `/v1/sessions`.
-
-## Browser URL Opens But CDP Fails
-
-Check that the CDP URL has the right scheme and token:
-
-- local HTTP gateway: `ws://.../cdp/...`
-- TLS gateway: `wss://.../cdp/...`
-
-The token in each URL is scoped. A browser URL token cannot be reused for CDP, and a CDP token cannot be reused for the runtime API.
-
-## Browser Pods Do Not Become Ready
-
-Inspect the GameServer and browser pod:
-
-```bash
-kubectl get gameservers -o wide
-kubectl describe gameserver <name>
-kubectl logs <browser-pod-name> -c browser-runtime
-```
-
-Common causes:
-
-- image cannot be pulled;
-- TURN credentials are missing or invalid for public access;
-- insufficient CPU or memory;
-- node does not support required sandbox or confidential-computing settings;
-- `browserRuntimeImage` points at a private registry without image pull credentials.
-
-## Browser Opens But WebRTC Does Not Connect
-
-If the browser session URL loads but the video stream stays disconnected, check the TURN configuration first. The browser runtime should log that Cloudflare ICE servers were generated:
-
-```bash
-kubectl logs <browser-pod-name> -c browser-runtime | grep -i cloudflare
-kubectl get secret browser-turn-secret -o jsonpath='{.data.TURN_KEY_ID}' | grep -q . && echo TURN_KEY_ID=set
-kubectl get secret browser-turn-secret -o jsonpath='{.data.TURN_API_TOKEN}' | grep -q . && echo TURN_API_TOKEN=set
-```
-
-Common causes:
-
-- `TURN_KEY_ID` or `TURN_API_TOKEN` is empty;
-- the Cloudflare TURN key was deleted, expired, or copied incorrectly;
-- the browser pod was not restarted after updating `browser-turn-secret`;
-- a firewall blocks direct UDP and no TURN relay is configured;
-- a custom `NEKO_ICESERVERS` override is malformed.
-
-For same-machine Kind without TURN, also verify that the Agones UDP port is published through Docker and that the browser runtime advertises localhost:
+For same-machine Kind without TURN, verify the Agones UDP range is published
+and the browser runtime advertises localhost:
 
 ```bash
 docker port popcorn-control-plane | grep udp
-kubectl get gameservers -o wide
-kubectl logs <browser-pod-name> -c browser-runtime | grep -E 'advertise host|Direct WebRTC'
+kubectl -n popcorn get gameservers -o wide
+kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200 | grep -E 'advertise host|Direct WebRTC'
 ```
 
-You should see UDP `7000-7010` mapped on the Kind node, a GameServer port in that range, and `external=127.0.0.1` in the browser runtime logs. If `docker port` shows only `8080/tcp`, recreate the Kind cluster so the UDP mappings from `kind-config.yaml` are applied:
+You should see UDP `7000-7010` mapped on the Kind node, a GameServer port in
+that range, and `external=127.0.0.1` in browser-runtime logs.
 
-```bash
-make clean
-make run-local-cluster
-```
+## Advanced: Public Repo Checks
 
-After updating TURN credentials, recycle browser GameServers so new pods fetch fresh Cloudflare ICE server credentials:
-
-```bash
-kubectl delete gameserver --all
-```
-
-## Helm Template Fails
-
-Render locally first:
-
-```bash
-helm template popcorn-platform charts/platform --values examples/helm/platform-values.yaml
-helm template browser-fleet charts/browser-fleet --values examples/helm/browser-fleet-values.yaml
-```
-
-If the error mentions External Secrets resources, either install External Secrets Operator or set:
-
-```yaml
-externalSecrets:
-  enabled: false
-```
-
-## Missing Secret Errors
-
-A pod stuck in `CreateContainerConfigError` often means a Secret or key is missing:
-
-```bash
-kubectl describe pod <pod-name>
-```
-
-Create the missing Secret with the names and keys in `docs/secrets.md`, then restart the workload:
-
-```bash
-kubectl rollout restart deployment/pool-manager deployment/popcorn-gateway
-```
-
-## Control Plane Or TTL Controller Fails
-
-Check the control-plane token and database Secret:
-
-```bash
-kubectl get secret control-plane-secret -o jsonpath='{.data.CONTROL_PLANE_SERVICE_AUTH_TOKEN}' | base64 -d
-kubectl get secret analytics-db-secret -o yaml
-```
-
-For client `/v1/sessions`, the control plane is the authentication path and
-must be reachable with valid client records.
-
-## Public CI Fails
-
-Run the OSS checks locally where possible. The public tree must not contain private deployment paths, private GitHub URLs, production domains, or secret material.
+Public OSS changes should not include private deployment paths, private GitHub
+URLs, production domains, or secret material. Run local checks where possible
+before opening a release PR.

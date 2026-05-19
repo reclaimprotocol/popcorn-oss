@@ -43,7 +43,7 @@ Prefer per-region pool-manager tokens through `serviceAuthTokenFile` or
 ## Client Session API
 
 For the complete client setup and session creation guide, see
-[Control plane session creation](../../docs/control-plane-sessions.md).
+[Reference](../../docs/reference.md).
 
 ```http
 POST /v1/sessions

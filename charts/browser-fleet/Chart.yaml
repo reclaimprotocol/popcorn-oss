@@ -4,3 +4,9 @@ description: Shared Agones browser fleet chart for GCP workload clusters
 type: application
 version: 0.1.0
 appVersion: "1.0.0"
+dependencies:
+  - name: agones
+    alias: agonesInstaller
+    version: 1.57.0
+    repository: https://agones.dev/chart/stable
+    condition: agones.install
