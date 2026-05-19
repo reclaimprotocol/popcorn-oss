@@ -15,12 +15,15 @@ spec:
       labels:
         app: redis
     spec:
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
       containers:
         - name: redis
           image: {{ .Values.redis.image | quote }}
           imagePullPolicy: {{ .Values.redis.imagePullPolicy }}
           ports:
             - containerPort: 6379
+          resources:
+{{ toYaml .Values.redis.resources | indent 12 }}
 ---
 apiVersion: v1
 kind: Service

@@ -1,6 +1,8 @@
 {{- if .Values.ttlController.enabled }}
 {{- $controlPlaneSecret := default .Values.secrets.controlPlaneName .Values.controlPlane.secretName }}
 {{- $controlPlaneSecretKey := default "CONTROL_PLANE_SERVICE_AUTH_TOKEN" .Values.controlPlane.serviceAuthSecretKey }}
+{{- $ttlClusterRoleName := printf "%s-ttl-controller-role" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- $ttlClusterRoleBindingName := printf "%s-ttl-controller-rolebinding" .Release.Name | trunc 63 | trimSuffix "-" }}
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -9,7 +11,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: ttl-controller-role
+  name: {{ $ttlClusterRoleName | quote }}
 rules:
   - apiGroups: ["agones.dev"]
     resources: ["gameservers"]
@@ -24,14 +26,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: ttl-controller-rolebinding
+  name: {{ $ttlClusterRoleBindingName | quote }}
 subjects:
   - kind: ServiceAccount
     name: ttl-controller-sa
     namespace: {{ .Release.Namespace }}
 roleRef:
   kind: ClusterRole
-  name: ttl-controller-role
+  name: {{ $ttlClusterRoleName | quote }}
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: apps/v1
@@ -51,6 +53,7 @@ spec:
         app: ttl-controller
     spec:
       serviceAccountName: ttl-controller-sa
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
       containers:
         - name: manager
           image: "{{ .Values.registry }}/ttl-controller:{{ .Values.imageTag }}"
@@ -89,10 +92,5 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 20
           resources:
-            requests:
-              cpu: 200m
-              memory: 64Mi
-            limits:
-              cpu: 500m
-              memory: 128Mi
+{{ toYaml .Values.ttlController.resources | indent 12 }}
 {{- end }}

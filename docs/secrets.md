@@ -12,7 +12,8 @@ Do not commit generated private keys, client credentials, registry credentials, 
 
 ## Required Secrets
 
-Secret names are centralized under `secrets.*` in the platform Helm values.
+Platform Secret names are centralized under `secrets.*` in the platform Helm
+values. Browser TURN Secret naming is configured in the browser-fleet chart.
 The defaults are:
 
 | Helm value | Default Secret |
@@ -21,7 +22,7 @@ The defaults are:
 | `secrets.poolManagerServiceAuthName` | `pool-manager-service-auth` |
 | `secrets.controlPlaneName` | `control-plane-secret` |
 | `secrets.controlPlaneDatabaseName` | `analytics-db-secret` |
-| `secrets.browserTurnName` | `browser-turn-secret` |
+| `browser-fleet.secrets.browserTurnName` | `browser-turn-secret` |
 
 ### `gateway-jwt-keys`
 

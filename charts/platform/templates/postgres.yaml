@@ -33,6 +33,7 @@ spec:
       labels:
         app: postgres
     spec:
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
       volumes:
         - name: postgres-config
           configMap:
@@ -70,12 +71,7 @@ spec:
             - name: postgres-storage
               mountPath: /var/lib/postgresql/data
           resources:
-            requests:
-              memory: 256Mi
-              cpu: 250m
-            limits:
-              memory: 512Mi
-              cpu: 500m
+{{ toYaml .Values.postgres.resources | indent 12 }}
   volumeClaimTemplates:
     - apiVersion: v1
       kind: PersistentVolumeClaim

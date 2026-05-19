@@ -63,20 +63,25 @@ Before installing into a GKE cluster, replace:
 | `provider` | `gcp` for OSS examples | Production support is GCP/GKE only for now. |
 | `registry` | image registry prefix | OSS examples use GHCR. You may mirror images into your own GCP Artifact Registry. |
 | `imageTag` | runtime image tag | Prefer immutable tags or digests for production. |
-| `secrets.*` | central Secret names | One place to override Kubernetes Secret names for JWT keys, pool-manager service auth, control-plane admin/service auth, database, and TURN. |
+| `imagePullSecrets` | `[]` | Optional pull Secrets applied to platform pods when using private mirrors. |
+| `nodeSelector`, `tolerations`, `affinity` | empty | Optional scheduling controls applied to platform pods. |
+| `secrets.*` | central Secret names | One place to override Kubernetes Secret names for JWT keys, pool-manager service auth, control-plane admin/service auth, and database. |
 | `poolManager.enabled` | Regional allocator | Required for local pool-manager session creation. |
+| `poolManager.resources` | small default | CPU and memory requests/limits for the pool manager. |
 | `poolManager.gameServerNamespace` | release namespace | Optional override for where pool-manager allocates and manages Agones GameServers. Leave empty for same-namespace deployments. |
 | `poolManager.serviceAuth.secretName` | `secrets.poolManagerServiceAuthName` | Per-region token Secret trusted by this pool-manager and mounted by the control plane region config. |
 | `poolManager.extraSessionUrls` | `{}` | Optional map of additional session response URL fields. Values are templates expanded by the pool manager. |
 | `poolManager.extraRoutePorts` | `{}` | Optional map from extra Agones port names to gateway route keys and static fallback ports. |
 | `gateway.enabled` | public gateway | Required for browser/CDP access. |
 | `gateway.replicas` | `1` | Number of gateway pods. Safe to increase for availability; routing uses Redis as the shared source of truth and only keeps a short per-pod cache. |
+| `gateway.resources` | small default | CPU and memory requests/limits for the gateway. |
 | `gateway.redisHost` | release namespace Redis service | Optional override for the Redis service host used by gateway routing. Leave empty for same-namespace deployments. |
 | `gateway.poolManagerHost` | release namespace pool-manager service | Optional override for the pool-manager fallback service host. Leave empty for same-namespace deployments. |
 | `gateway.extraSessionRoutes` | `[]` | Optional list of additional gateway session proxy routes. |
 | `redis.enabled` | local Redis | Enable bundled Redis for simple installs. |
 | `postgres.enabled` | local Postgres | Optional analytics storage. |
 | `controlPlane.enabled` | client control plane | Enables client credentials, `/v1/sessions`, multi-region routing, and analytics storage. |
+| `controlPlane.resources`, `redis.resources`, `postgres.resources`, `ttlController.resources`, `metabase.resources` | workload defaults | CPU and memory requests/limits for bundled platform workloads. |
 | `controlPlane.adminAuth` | password login | Supports password, bcrypt htpasswd file, and Google OAuth with allowed emails/domains. |
 | `controlPlane.regions` | `[]` | Ordered regional pool-manager config used by `/v1/sessions`; set `poolManagerAuth.secretName` per region. |
 | `ttlController.enabled` | session cleanup | Recommended outside throwaway demos. |

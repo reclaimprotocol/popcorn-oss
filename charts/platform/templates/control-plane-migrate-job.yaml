@@ -17,6 +17,7 @@ spec:
         app: control-plane-migrate
     spec:
       restartPolicy: Never
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
       containers:
         - name: control-plane-migrate
           image: "{{ .Values.registry }}/control-plane:{{ .Values.imageTag }}"
@@ -60,4 +61,6 @@ spec:
                 secretKeyRef:
                   name: {{ $databaseSecret | quote }}
                   key: password
+          resources:
+{{ toYaml $controlPlane.resources | indent 12 }}
 {{- end }}

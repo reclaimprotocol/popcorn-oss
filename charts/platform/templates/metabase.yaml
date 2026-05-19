@@ -16,6 +16,7 @@ spec:
       labels:
         app: metabase
     spec:
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
       securityContext:
         fsGroup: 2000
         fsGroupChangePolicy: OnRootMismatch
@@ -95,12 +96,7 @@ spec:
             - containerPort: 3000
               name: http
           resources:
-            requests:
-              memory: 512Mi
-              cpu: 250m
-            limits:
-              memory: 1Gi
-              cpu: "1000m"
+{{ toYaml .Values.metabase.resources | indent 12 }}
           readinessProbe:
             httpGet:
               path: /api/health

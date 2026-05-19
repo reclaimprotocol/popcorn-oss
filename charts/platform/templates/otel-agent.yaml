@@ -17,6 +17,7 @@ spec:
         app: otel-agent
     spec:
       serviceAccountName: otel-agent
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
       containers:
         - name: otel-agent
           image: {{ .Values.otel.image | quote }}

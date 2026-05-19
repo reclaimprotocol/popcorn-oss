@@ -90,6 +90,7 @@ spec:
         app: gateway
     spec:
       serviceAccountName: gateway
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
       volumes:
         - name: jwt-keys
           secret:
@@ -141,12 +142,7 @@ spec:
             - name: GATEWAY_POOL_MANAGER_HOST
               value: {{ $gatewayPoolManagerHost | quote }}
           resources:
-            requests:
-              memory: 64Mi
-              cpu: 100m
-            limits:
-              memory: 256Mi
-              cpu: 500m
+{{ toYaml .Values.gateway.resources | indent 12 }}
 ---
 apiVersion: v1
 kind: Service

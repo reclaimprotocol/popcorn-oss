@@ -14,3 +14,23 @@
 {{- $controlPlane.databaseSsl -}}
 {{- end -}}
 {{- end -}}
+
+{{- define "popcorn-platform.podScheduling" -}}
+{{- $root := .root -}}
+{{- with $root.Values.imagePullSecrets }}
+imagePullSecrets:
+{{ toYaml . | nindent 2 }}
+{{- end }}
+{{- with $root.Values.nodeSelector }}
+nodeSelector:
+{{ toYaml . | nindent 2 }}
+{{- end }}
+{{- with $root.Values.tolerations }}
+tolerations:
+{{ toYaml . | nindent 2 }}
+{{- end }}
+{{- with $root.Values.affinity }}
+affinity:
+{{ toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}

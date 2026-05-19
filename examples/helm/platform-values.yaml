@@ -7,12 +7,16 @@ region: us-central1
 registry: ghcr.io/reclaimprotocol/popcorn-oss
 imageTag: latest
 
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
 secrets:
   gatewayJwtName: gateway-jwt-keys
   poolManagerServiceAuthName: pool-manager-us-central1-service-auth
   controlPlaneName: control-plane-secret
   controlPlaneDatabaseName: analytics-db-secret
-  browserTurnName: browser-turn-secret
 
 poolManager:
   enabled: true
@@ -24,6 +28,13 @@ poolManager:
   serviceAuth:
     secretName: pool-manager-us-central1-service-auth
     secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 500m
 
 gateway:
   enabled: true
@@ -40,12 +51,26 @@ gateway:
     connectionDrainingTimeoutSec: 60
   jwtPrivateKeySecretId: ""
   jwtPublicKeySecretId: ""
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 500m
 
 redis:
   enabled: true
   replicas: 1
   image: redis:7-alpine
   imagePullPolicy: IfNotPresent
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 250m
 
 postgres:
   enabled: false
@@ -57,6 +82,13 @@ postgres:
   storageSize: 20Gi
   storageClassName: ""
   passwordSecretKey: password
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
 
 controlPlane:
   enabled: true
@@ -68,7 +100,6 @@ controlPlane:
   domainName: control-plane.example.com
   staticIpName: popcorn-control-plane-ip
   publicServicePort: 3000
-  internalServiceUrl: ""
   regions:
     - name: us-central1
       clusterName: example-gke-cluster
@@ -78,6 +109,13 @@ controlPlane:
       poolManagerAuth:
         secretName: pool-manager-us-central1-service-auth
         secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
 
 metabase:
   enabled: false
@@ -91,6 +129,13 @@ metabase:
   siteUrl: ""
   databaseName: metabase
   databaseSecretName: analytics-db-secret
+  resources:
+    requests:
+      memory: 512Mi
+      cpu: 250m
+    limits:
+      memory: 1Gi
+      cpu: "1000m"
 
 ttlController:
   enabled: true
@@ -98,6 +143,13 @@ ttlController:
   imagePullPolicy: IfNotPresent
   controlPlaneUrl: ""
   ttlDuration: 15m
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 200m
+    limits:
+      memory: 128Mi
+      cpu: 500m
 
 gkeNodePrescaler:
   enabled: false
@@ -135,10 +187,8 @@ otel:
   imagePullPolicy: IfNotPresent
   exporter:
     grpcEndpoint: https://otel-grpc.example.com:4317
-    httpEndpoint: https://otel-http.example.com
   clickhouse:
     database: otel
-    createSchema: false
     secretName: otel-clickhouse-secret
   agent:
     resources:

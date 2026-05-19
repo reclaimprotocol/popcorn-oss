@@ -2,13 +2,13 @@ region: asia-south1
 gatewayDomain: ""
 
 externalSecrets:
-  enabled: true
+  enabled: false
 
 secrets:
   browserTurnName: browser-turn-secret
 
 ccDevicePlugin:
-  enabled: true
+  enabled: false
 
 serviceAccount:
   gcpServiceAccount: browser-attestor.iam.gserviceaccount.com
@@ -17,7 +17,7 @@ browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
 browserRuntimeImagePullPolicy: IfNotPresent
 
 browserRuntimeAttestor:
-  enabled: true
+  enabled: false
   imagePullPolicy: IfNotPresent
 
 browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:latest

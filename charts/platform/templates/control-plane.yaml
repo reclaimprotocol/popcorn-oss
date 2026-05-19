@@ -40,6 +40,7 @@ spec:
         app: control-plane
     spec:
       serviceAccountName: control-plane-sa
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
 {{- if $hasSecretVolumes }}
       volumes:
 {{- if $controlPlane.adminAuth.passwordFileSecretName }}
@@ -187,12 +188,7 @@ spec:
             - containerPort: 3000
               name: http
           resources:
-            requests:
-              memory: 256Mi
-              cpu: 250m
-            limits:
-              memory: 512Mi
-              cpu: 500m
+{{ toYaml $controlPlane.resources | indent 12 }}
           livenessProbe:
             httpGet:
               path: /health
