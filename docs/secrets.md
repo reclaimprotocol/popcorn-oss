@@ -76,7 +76,7 @@ Keys:
 
 | Key | Purpose |
 | --- | --- |
-| `host` | Postgres host. Use your managed Postgres host for production, or `postgres` only when `postgres.enabled=true`. |
+| `host` | Postgres host. Use `postgres` for the bundled chart database, or your managed Postgres host when `postgres.enabled=false`. |
 | `port` | Postgres port, usually `5432`. |
 | `database` | Database name. |
 | `username` | Database user. |
@@ -126,8 +126,9 @@ See [Observability](observability.md) for the table schema and exported fields.
 
 ## Direct Kubernetes Secret Bootstrap
 
-Generate values first. Use your real managed database and TURN values for
-production:
+Generate values first. The starter self-hosting path uses the bundled Postgres
+service named `postgres`; replace those database values only when using managed
+Postgres. Use real TURN values for production browser traffic:
 
 ```bash
 export POOL_MANAGER_SERVICE_AUTH_TOKEN=$(openssl rand -hex 32)
@@ -136,7 +137,7 @@ export CONTROL_PLANE_ADMIN_USER=admin
 export CONTROL_PLANE_ADMIN_PASS=$(openssl rand -base64 32)
 export CONTROL_PLANE_ADMIN_SESSION_SECRET=$(openssl rand -hex 32)
 export CONTROL_PLANE_ADMIN_TOKEN=$(openssl rand -hex 32)
-export POSTGRES_HOST="replace-with-managed-postgres-host"
+export POSTGRES_HOST="postgres"
 export POSTGRES_PORT=5432
 export POSTGRES_DATABASE=analytics
 export POSTGRES_USER=analytics_admin

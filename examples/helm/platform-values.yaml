@@ -73,10 +73,11 @@ redis:
       cpu: 250m
 
 postgres:
-  # Production examples assume a managed Postgres instance referenced by
-  # analytics-db-secret. Set enabled=true only when you intentionally want the
-  # chart to run an in-cluster Postgres service named postgres.
-  enabled: false
+  # The self-hosting starter path runs an in-cluster Postgres service named
+  # postgres and reads its password from analytics-db-secret.
+  # For production hardening, disable this and point analytics-db-secret at a
+  # managed Postgres instance.
+  enabled: true
   image: postgres:16
   imagePullPolicy: IfNotPresent
   database: analytics

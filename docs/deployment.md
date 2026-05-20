@@ -73,6 +73,11 @@ browser workloads.
 - Kubernetes Secrets from [Secrets](secrets.md).
 - TURN credentials for browser access from real networks.
 
+The starter values run bundled Postgres inside the cluster. That is the fastest
+way to self-host a first working install. For production hardening, move the
+database to managed Postgres later by disabling `postgres.enabled` and pointing
+`analytics-db-secret` at the managed database.
+
 External Secrets Operator is optional, but recommended when syncing from GCP
 Secret Manager.
 
@@ -139,6 +144,9 @@ controlPlane:
       enabled: true
 
 redis:
+  enabled: true
+
+postgres:
   enabled: true
 
 ttlController:
