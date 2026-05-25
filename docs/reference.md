@@ -18,15 +18,35 @@ Request body:
 ```json
 {
   "sessionId": "demo-session",
+  "ttlSeconds": 900,
   "regions": ["us-central1", "asia-south1"]
 }
 ```
 
 - `sessionId` is optional. When set, use 1-64 characters from `A-Z`, `a-z`,
   `0-9`, `_`, and `-`.
+- `ttlSeconds` is optional. When set, it must be a positive integer no larger
+  than the control-plane `SESSION_MAX_TTL_SECONDS` setting.
 - `regions` is optional. When set, the control plane tries only those enabled
   regions in order.
-- If `sessionId` is omitted, Popcorn generates one.
+- If `sessionId` is omitted, Popcorn generates one. If `ttlSeconds` is omitted,
+  GameServer cleanup uses the configured TTL controller fallback.
+
+Client integrations extend their own browser sessions through the control plane:
+
+```http
+PATCH /v1/session/:id/ttl
+Authorization: Bearer <client-id>:<client-secret>
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "extendBySeconds": 900
+}
+```
 
 Client integrations delete their own browser sessions through the control plane:
 
@@ -55,6 +75,7 @@ Successful response:
   "cdpInternalUrl": "wss://gateway.example.com/cdp-internal/demo-session/<token>/",
   "apiUrl": "https://gateway.example.com/api/demo-session/<token>/",
   "browserPodId": "browser-fleet-abc",
+  "expiresAt": "2026-05-26T12:30:00.000Z",
   "region": "us-central1",
   "clusterName": "prod-us-central1"
 }
@@ -65,6 +86,8 @@ Successful response:
 - `cdpInternalUrl`: trusted internal CDP endpoint.
 - `apiUrl`: browser runtime API endpoint.
 - `browserPodId`: allocated browser pod or Agones GameServer name.
+- `expiresAt`: explicit session expiry when the session was created or extended
+  with a per-session TTL.
 - `region`: control-plane region that allocated the session.
 - `clusterName`: Kubernetes cluster name configured for that region.
 
@@ -111,6 +134,7 @@ Control-plane admin routes are for trusted operators:
 - `POST /admin/sessions`: create an operator session.
 - `GET /admin/session/:id`: inspect a routed session.
 - `DELETE /admin/session/:id`: delete a routed session.
+- `PATCH /admin/session/:id/ttl`: extend a routed session.
 
 Create a client with the admin bearer token:
 
@@ -130,6 +154,7 @@ Regional pool managers expose only control-plane authenticated internal routes:
 - `POST /internal/sessions`
 - `GET /internal/session/:id`
 - `DELETE /internal/session/:id`
+- `PATCH /internal/session/:id/ttl`
 - `GET /health`
 
 ## Config Option Index

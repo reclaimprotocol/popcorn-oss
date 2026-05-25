@@ -13,7 +13,7 @@ deployment small, then enable optional pieces one at a time.
 | Pool manager | `poolManager.enabled`, `poolManager.serviceAuth`, `poolManager.gameServerFleet` | Allocates Agones browser GameServers. |
 | Browser fleet | `gatewayDomain`, `fleet.replicas`, `autoscaler.*` | Controls browser capacity and returned URLs. |
 | Agones | `agones.install`, `agonesInstaller.*` | Optionally installs Agones from the browser-fleet chart for fresh clusters. |
-| Control plane | `controlPlane.enabled`, `controlPlane.regions` | Client credential API and regional session routing. |
+| Control plane | `controlPlane.enabled`, `controlPlane.regions`, `controlPlane.sessionMaxTtlSeconds` | Client credential API, regional session routing, and maximum client-requested TTL. |
 | Secrets | `secrets.*`, `browser-fleet.secrets.browserTurnName` | Names of required Kubernetes Secrets. |
 
 ## Optional Configuration

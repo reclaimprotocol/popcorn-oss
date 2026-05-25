@@ -98,6 +98,8 @@ spec:
             {{- end }}
             - name: CONTROL_PLANE_REGIONS
               value: {{ toJson $regions | quote }}
+            - name: SESSION_MAX_TTL_SECONDS
+              value: {{ $controlPlane.sessionMaxTtlSeconds | quote }}
             - name: POSTGRES_HOST
               valueFrom:
                 secretKeyRef:

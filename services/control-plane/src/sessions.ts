@@ -4,7 +4,7 @@ import { count, desc, eq } from 'drizzle-orm';
 
 export const SessionService = {
   // Create a new session
-  async createSession(sessionId: string, clientId: string, clientName: string, clusterName: string, region?: string): Promise<void> {
+  async createSession(sessionId: string, clientId: string, clientName: string, clusterName: string, region?: string, metadata?: Record<string, unknown>): Promise<void> {
     try {
       await db.insert(sessions).values({
         sessionId,
@@ -14,6 +14,7 @@ export const SessionService = {
         region,
         createdAt: new Date(),
         status: 'active',
+        metadata,
       });
 
       console.log(`📊 Created session: ${sessionId} (client: ${clientName}, cluster: ${clusterName})`);
@@ -66,5 +67,21 @@ export const SessionService = {
       .from(sessions)
       .where(eq(sessions.clientId, clientId));
     return row?.value || 0;
+  },
+
+  async updateSessionExpiresAt(sessionId: string, expiresAt: string): Promise<void> {
+    const [session] = await this.getSession(sessionId);
+    const metadata = {
+      ...(session?.metadata && typeof session.metadata === 'object' && !Array.isArray(session.metadata) ? session.metadata as Record<string, unknown> : {}),
+      expiresAt,
+    };
+
+    await this.updateSessionMetadata(sessionId, metadata);
+  },
+
+  async updateSessionMetadata(sessionId: string, metadata: Record<string, unknown> | null): Promise<void> {
+    await db.update(sessions)
+      .set({ metadata })
+      .where(eq(sessions.sessionId, sessionId));
   }
 };

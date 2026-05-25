@@ -23,9 +23,10 @@ import {
 } from './src/admin-auth';
 import { ClientService } from './src/clients';
 import { ControlPlaneConfig } from './src/config';
-import { allocateInRegion, deleteRegionalSession, getRegionalServers, getRegionalSession } from './src/pool-manager';
+import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession } from './src/pool-manager';
 import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
+import { expiresAtFromTtlSeconds, extendExpiresAt, readOptionalSeconds, validateTtlSeconds } from './src/ttl';
 import {
   renderClientSessionsPanelHtml,
   renderClientsViewHtml,
@@ -151,6 +152,22 @@ function readRequestedSessionId(body: any): string | undefined {
   return body.sessionId.trim();
 }
 
+function readSessionExpiresAt(session: { metadata?: unknown } | null | undefined): string | undefined {
+  const metadata = session?.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return undefined;
+  }
+  const expiresAt = (metadata as Record<string, unknown>).expiresAt;
+  return typeof expiresAt === 'string' && expiresAt.trim() ? expiresAt : undefined;
+}
+
+function readSessionMetadata(session: { metadata?: unknown } | null | undefined): Record<string, unknown> | null {
+  const metadata = session?.metadata;
+  return metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+    ? { ...(metadata as Record<string, unknown>) }
+    : null;
+}
+
 function isValidSessionId(sessionId: string): boolean {
   return SESSION_ID_PATTERN.test(sessionId);
 }
@@ -261,6 +278,13 @@ async function routeSession(identity: { clientId: string; clientName: string }, 
     return { status: 400, body: { error: 'Invalid session ID. Use 1-64 chars in [A-Za-z0-9_-].' } };
   }
 
+  const ttlSeconds = readOptionalSeconds(body, 'ttlSeconds');
+  const ttlError = validateTtlSeconds(ttlSeconds, ControlPlaneConfig.sessionMaxTtlSeconds, 'ttlSeconds');
+  if (ttlError) {
+    return { status: 400, body: { error: ttlError } };
+  }
+  const expiresAt = ttlSeconds ? expiresAtFromTtlSeconds(ttlSeconds) : undefined;
+
   const selection = selectRegions(ControlPlaneConfig.regions, body?.regions);
   if (selection.error) {
     return { status: 400, body: { error: selection.error } };
@@ -281,6 +305,7 @@ async function routeSession(identity: { clientId: string; clientName: string }, 
       sessionId,
       clientId: identity.clientId,
       clientName: identity.clientName,
+      expiresAt,
     }, ControlPlaneConfig.serviceAuthToken);
     attempts.push(result.attempt);
 
@@ -289,7 +314,14 @@ async function routeSession(identity: { clientId: string; clientName: string }, 
     }
 
     try {
-      await SessionService.createSession(sessionId, identity.clientId, identity.clientName, region.clusterName, region.name);
+      await SessionService.createSession(
+        sessionId,
+        identity.clientId,
+        identity.clientName,
+        region.clusterName,
+        region.name,
+        expiresAt ? { expiresAt } : undefined,
+      );
       return { status: 200, body: { ...result.session, attempts } };
     } catch (error) {
       await deleteRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken).catch(() => null);
@@ -299,6 +331,115 @@ async function routeSession(identity: { clientId: string; clientName: string }, 
   }
 
   return { status: 503, body: { error: 'No requested region could allocate a session', attempts } };
+}
+
+async function extendRoutedSessionTtl(sessionId: string, body: any, clientId?: string) {
+  const [session] = await SessionService.getSession(sessionId);
+
+  if (!session) {
+    return {
+      status: 404,
+      body: { success: false, error: 'Session not found' },
+    };
+  }
+
+  if (clientId && session.clientId !== clientId) {
+    return {
+      status: 404,
+      body: { success: false, error: 'Session not found' },
+    };
+  }
+
+  if (session.status !== 'active') {
+    return {
+      status: 409,
+      body: { success: false, error: 'Session is not active' },
+    };
+  }
+
+  const region = resolveSessionRegion(session);
+  if (!region) {
+    return {
+      status: 409,
+      body: { success: false, error: 'Session region is not configured' },
+    };
+  }
+
+  const extendBySeconds = readOptionalSeconds(body, 'extendBySeconds');
+  const ttlError = validateTtlSeconds(extendBySeconds, ControlPlaneConfig.sessionMaxTtlSeconds, 'extendBySeconds');
+  if (ttlError || !extendBySeconds) {
+    return { status: 400, body: { success: false, error: ttlError || 'extendBySeconds must be a positive integer' } };
+  }
+
+  const currentExpiresAt = readSessionExpiresAt(session);
+  const now = new Date();
+  const expiresAt = extendExpiresAt(currentExpiresAt, extendBySeconds, now);
+  if (Date.parse(expiresAt) > now.getTime() + ControlPlaneConfig.sessionMaxTtlSeconds * 1000) {
+    return {
+      status: 400,
+      body: {
+        success: false,
+        error: `Requested extension would exceed the maximum TTL of ${ControlPlaneConfig.sessionMaxTtlSeconds} seconds`,
+      },
+    };
+  }
+
+  const previousMetadata = readSessionMetadata(session);
+  try {
+    await SessionService.updateSessionMetadata(sessionId, {
+      ...(previousMetadata || {}),
+      expiresAt,
+    });
+  } catch (error) {
+    console.error('❌ Error recording session TTL extension:', error);
+    return {
+      status: 500,
+      body: { success: false, error: 'Failed to record session TTL extension' },
+    };
+  }
+
+  let remoteUpdate;
+  try {
+    remoteUpdate = await extendRegionalSessionTtl(region, sessionId, expiresAt, ControlPlaneConfig.serviceAuthToken);
+  } catch (error) {
+    await SessionService.updateSessionMetadata(sessionId, previousMetadata).catch((rollbackError) => {
+      console.error('❌ Failed to roll back session TTL metadata:', rollbackError);
+    });
+    return {
+      status: 502,
+      body: {
+        success: false,
+        error: 'Failed to contact regional pool manager',
+        details: (error as Error).message,
+      },
+    };
+  }
+
+  if (!remoteUpdate.response.ok) {
+    await SessionService.updateSessionMetadata(sessionId, previousMetadata).catch((rollbackError) => {
+      console.error('❌ Failed to roll back session TTL metadata:', rollbackError);
+    });
+    return {
+      status: 502,
+      body: {
+        success: false,
+        error: 'Regional pool manager failed to extend session TTL',
+        region: region.name,
+        statusCode: remoteUpdate.response.status,
+        details: remoteUpdate.body,
+      },
+    };
+  }
+
+  return {
+    status: 200,
+    body: {
+      ...remoteUpdate.body,
+      expiresAt,
+      region: region.name,
+      clusterName: region.clusterName,
+    },
+  };
 }
 
 async function createRoutedSession(c: any, identity: { clientId: string; clientName: string }, body: any) {
@@ -411,6 +552,17 @@ app.delete('/v1/session/:id', async (c) => {
   }
 
   const result = await deleteRoutedSession(c.req.param('id'), auth.identity!.clientId);
+  return c.json(result.body, result.status as any);
+});
+
+app.patch('/v1/session/:id/ttl', async (c) => {
+  const auth = await authenticateClient(c);
+  if (auth.response) {
+    return auth.response;
+  }
+
+  const body = await c.req.json().catch(() => ({}));
+  const result = await extendRoutedSessionTtl(c.req.param('id'), body, auth.identity!.clientId);
   return c.json(result.body, result.status as any);
 });
 
@@ -718,6 +870,15 @@ app.delete('/admin/session/:id', async (c) => {
   if (unauthorized) return unauthorized;
 
   const result = await deleteRoutedSession(c.req.param('id'));
+  return c.json(result.body, result.status as any);
+});
+
+app.patch('/admin/session/:id/ttl', async (c) => {
+  const unauthorized = await requireAdmin(c);
+  if (unauthorized) return unauthorized;
+
+  const body = await c.req.json().catch(() => ({}));
+  const result = await extendRoutedSessionTtl(c.req.param('id'), body);
   return c.json(result.body, result.status as any);
 });
 

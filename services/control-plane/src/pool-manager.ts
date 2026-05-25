@@ -5,6 +5,7 @@ export interface RoutedSessionRequest {
   sessionId: string;
   clientId: string;
   clientName: string;
+  expiresAt?: string;
 }
 
 export interface RoutedSessionResponse {
@@ -108,6 +109,15 @@ export async function deleteRegionalSession(region: RegionConfig, sessionId: str
   const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
     headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+  });
+  return { response, body: await readJsonSafe(response) };
+}
+
+export async function extendRegionalSessionTtl(region: RegionConfig, sessionId: string, expiresAt: string, serviceAuthToken: string) {
+  const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/ttl?publicGatewayUrl=${encodeURIComponent(region.publicGatewayUrl)}`, {
+    method: 'PATCH',
+    headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    body: JSON.stringify({ expiresAt }),
   });
   return { response, body: await readJsonSafe(response) };
 }
