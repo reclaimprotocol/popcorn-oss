@@ -338,8 +338,16 @@ app.get("/internal/session/:id", async (c) => {
 app.delete("/internal/session/:id", async (c) => {
     const unauthorized = requireControlPlane(c);
     if (unauthorized) return unauthorized;
-    await deleteLocalSession(c.req.param("id"));
-    return c.json({ success: true }, 200);
+    try {
+        const result = await deleteLocalSession(c.req.param("id"));
+        if (result.notFound) {
+            return c.json({ success: false, error: "Session not found" }, 404);
+        }
+        return c.json({ success: true, deleted: result.deleted }, 200);
+    } catch (error) {
+        console.error("❌ Failed to delete session:", error);
+        return c.json({ success: false, error: "Failed to delete session" }, 502);
+    }
 });
 
 // GET /health

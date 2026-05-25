@@ -204,12 +204,12 @@ export const Agones = {
             });
             if (!res.ok && res.status !== 404) {
                 const txt = await res.text();
-                console.error(`❌ GameServer Delete failed ${res.status}: ${txt}`);
-            } else {
-                console.log(`✅ GameServer ${name} shutdown signaled.`);
+                throw new Error(`GameServer delete failed ${res.status}: ${txt}`);
             }
+            console.log(`✅ GameServer ${name} shutdown signaled.`);
         } catch (e) {
             console.error(`❌ Failed to shutdown GameServer ${name}:`, e);
+            throw e;
         }
     }
 }

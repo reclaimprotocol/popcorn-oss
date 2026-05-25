@@ -95,7 +95,7 @@ automation.
 - `GET /admin/sessions`
 - `POST /admin/sessions`
 - `GET /admin/session/:id`
-- `DELETE /admin/session/:id`
+- `DELETE /admin/session/:id` (`?region=<name>` is supported for regional sessions missing from control-plane records)
 - `GET /admin/clients`
 - `POST /admin/clients`
 - `DELETE /admin/clients/:id`
