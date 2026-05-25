@@ -445,11 +445,11 @@ export function ClientSessionsPanel({ client, sessions, pagination }: {
           </thead>
           <tbody>
             {!client ? (
-              <tr><td colspan="4"><div class="empty">Select a client to view sessions.</div></td></tr>
+              <tr><td colSpan={4}><div class="empty">Select a client to view sessions.</div></td></tr>
             ) : sessions.length ? sessions.map((session) => (
               <SessionRowItem session={session} refreshPath={`/admin/ui/clients?clientId=${encodeURIComponent(client.id)}`} />
             )) : (
-              <tr><td colspan="4"><div class="empty">No sessions on this page.</div></td></tr>
+              <tr><td colSpan={4}><div class="empty">No sessions on this page.</div></td></tr>
             )}
           </tbody>
         </table>
@@ -822,7 +822,7 @@ function PodsTable({ servers, selectedRegion }: { servers: ReturnType<typeof reg
                       class="contrast"
                       disabled={!active}
                       {...(active ? {
-                        'hx-delete': `/admin/ui/sessions/${encodeURIComponent(server.sessionId!)}?refresh=${encodeURIComponent(`/admin/ui/clusters?region=${selectedRegion}`)}`,
+                        'hx-delete': `/admin/ui/sessions/${encodeURIComponent(server.sessionId!)}?region=${encodeURIComponent(server.region)}&refresh=${encodeURIComponent(`/admin/ui/clusters?region=${selectedRegion}`)}`,
                         'hx-target': '#admin-content',
                         'hx-swap': 'innerHTML',
                         'hx-confirm': `Delete session ${server.sessionId}?`,
@@ -835,7 +835,7 @@ function PodsTable({ servers, selectedRegion }: { servers: ReturnType<typeof reg
               </tr>
             );
           }) : (
-            <tr><td colspan="5"><div class="empty">No pods in this view.</div></td></tr>
+            <tr><td colSpan={5}><div class="empty">No pods in this view.</div></td></tr>
           )}
         </tbody>
       </table>

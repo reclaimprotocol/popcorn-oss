@@ -102,7 +102,7 @@ Control-plane admin routes are for trusted operators:
 - `GET /admin/sessions`: list stored sessions.
 - `POST /admin/sessions`: create an operator session.
 - `GET /admin/session/:id`: inspect a routed session.
-- `DELETE /admin/session/:id`: delete a routed session.
+- `DELETE /admin/session/:id`: delete a routed session. Add `?region=<name>` to delete a regional session that is visible in pool-manager state but missing from control-plane records.
 
 Create a client with the admin bearer token:
 

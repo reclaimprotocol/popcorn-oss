@@ -185,6 +185,95 @@ function resolveSessionRegion(session: { region?: string | null; clusterName?: s
   return findRegion(session?.region) || findUniqueRegionByCluster(session?.clusterName);
 }
 
+function getRefreshRegion(c: any): string | null {
+  const refresh = c.req.query('refresh');
+  if (!refresh?.startsWith('/admin/ui/clusters')) {
+    return null;
+  }
+
+  try {
+    const region = new URL(`http://local${refresh}`).searchParams.get('region')?.trim();
+    return region && region !== 'all' ? region : null;
+  } catch {
+    return null;
+  }
+}
+
+function getRequestedDeleteRegion(c: any): string | null {
+  const explicitRegion = c.req.query('region')?.trim();
+  if (explicitRegion && explicitRegion !== 'all') {
+    return explicitRegion;
+  }
+  return getRefreshRegion(c);
+}
+
+async function deleteRoutedSession(sessionId: string, requestedRegionName?: string | null) {
+  const [session] = await SessionService.getSession(sessionId);
+  const region = requestedRegionName ? findRegion(requestedRegionName) : resolveSessionRegion(session);
+
+  if (requestedRegionName && !region) {
+    return {
+      status: 400,
+      body: { success: false, error: `Unknown region: ${requestedRegionName}` },
+    };
+  }
+
+  if (!session && !region) {
+    return {
+      status: 404,
+      body: { success: false, error: 'Session not found' },
+    };
+  }
+
+  if (!region) {
+    return {
+      status: 409,
+      body: { success: false, error: 'Session region is not configured' },
+    };
+  }
+
+  let remoteDelete;
+  try {
+    remoteDelete = await deleteRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken);
+  } catch (error) {
+    return {
+      status: 502,
+      body: {
+        success: false,
+        error: 'Failed to contact regional pool manager',
+        details: (error as Error).message,
+      },
+    };
+  }
+
+  if (!remoteDelete.response.ok && remoteDelete.response.status !== 404) {
+    return {
+      status: 502,
+      body: {
+        success: false,
+        error: 'Regional pool manager failed to delete session',
+        region: region.name,
+        statusCode: remoteDelete.response.status,
+        details: remoteDelete.body,
+      },
+    };
+  }
+
+  if (session) {
+    await SessionService.endSession(sessionId, 'deleted');
+  }
+
+  return {
+    status: 200,
+    body: {
+      success: true,
+      region: region.name,
+      localRecordUpdated: Boolean(session),
+      regionalStatusCode: remoteDelete.response.status,
+    },
+  };
+}
+
 async function routeSession(identity: { clientId: string; clientName: string }, body: any): Promise<{ status: number; body: any }> {
   const requestedSessionId = readRequestedSessionId(body);
   if (requestedSessionId === '') {
@@ -555,12 +644,11 @@ app.get('/admin/ui/session/:id/open', async (c) => {
 
 app.delete('/admin/ui/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
-  const [session] = await SessionService.getSession(sessionId);
-  const region = resolveSessionRegion(session);
-  if (region) {
-    await deleteRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken);
-  }
-  await SessionService.endSession(sessionId, 'deleted');
+  const result = await deleteRoutedSession(sessionId, getRequestedDeleteRegion(c));
+  const success = result.status >= 200 && result.status < 300;
+  const notice: ActionNotice = success
+    ? { tone: 'success', title: 'Session deleted', message: `Session ${sessionId} has been deleted.` }
+    : { tone: 'error', title: 'Session not deleted', message: result.body.error || 'Failed to delete session.' };
 
   const refresh = c.req.query('refresh') || '/admin/ui/clusters';
   if (refresh.startsWith('/admin/ui/clients')) {
@@ -568,12 +656,12 @@ app.delete('/admin/ui/sessions/:id', async (c) => {
     const selectedClientId = url.searchParams.get('clientId');
     return renderClientsPage(c, {
       selectedClientId,
-      notice: { tone: 'success', title: 'Session deleted', message: `Session ${sessionId} has been deleted.` },
+      notice,
     });
   }
   return renderClustersPage(c, {
     selectedRegion: new URL(`http://local${refresh}`).searchParams.get('region') || undefined,
-    notice: { tone: 'success', title: 'Session deleted', message: `Session ${sessionId} has been deleted.` },
+    notice,
   });
 });
 
@@ -641,14 +729,8 @@ app.delete('/admin/session/:id', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;
 
-  const sessionId = c.req.param('id');
-  const [session] = await SessionService.getSession(sessionId);
-  const region = resolveSessionRegion(session);
-  if (region) {
-    await deleteRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken);
-  }
-  await SessionService.endSession(sessionId, 'deleted');
-  return c.json({ success: true });
+  const result = await deleteRoutedSession(c.req.param('id'), getRequestedDeleteRegion(c));
+  return c.json(result.body, result.status as any);
 });
 
 // TTL controller callback for expired regional sessions.
