@@ -80,6 +80,13 @@ Response:
 }
 ```
 
+Delete a session owned by the client:
+
+```http
+DELETE /v1/session/:id
+Authorization: Bearer <client-id>:<client-secret>
+```
+
 ## Service APIs
 
 The TTL controller reports expired sessions with `POST /sessions/:id/end`.
@@ -95,7 +102,7 @@ automation.
 - `GET /admin/sessions`
 - `POST /admin/sessions`
 - `GET /admin/session/:id`
-- `DELETE /admin/session/:id` (`?region=<name>` is supported for regional sessions missing from control-plane records)
+- `DELETE /admin/session/:id`
 - `GET /admin/clients`
 - `POST /admin/clients`
 - `DELETE /admin/clients/:id`

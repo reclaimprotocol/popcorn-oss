@@ -28,6 +28,13 @@ Request body:
   regions in order.
 - If `sessionId` is omitted, Popcorn generates one.
 
+Client integrations delete their own browser sessions through the control plane:
+
+```http
+DELETE /v1/session/:id
+Authorization: Bearer <client-id>:<client-secret>
+```
+
 Local defaults:
 
 ```text
@@ -71,6 +78,7 @@ Common errors:
 - `403`: invalid gateway path token or insufficient token scope.
 - `404`: session or route not found.
 - `409`: requested session ID already exists.
+- `502`: regional pool manager could not delete the session.
 - `503`: no requested region could allocate a browser session.
 
 ## Gateway Paths
@@ -102,7 +110,7 @@ Control-plane admin routes are for trusted operators:
 - `GET /admin/sessions`: list stored sessions.
 - `POST /admin/sessions`: create an operator session.
 - `GET /admin/session/:id`: inspect a routed session.
-- `DELETE /admin/session/:id`: delete a routed session. Add `?region=<name>` to delete a regional session that is visible in pool-manager state but missing from control-plane records.
+- `DELETE /admin/session/:id`: delete a routed session.
 
 Create a client with the admin bearer token:
 

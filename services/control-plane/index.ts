@@ -185,40 +185,18 @@ function resolveSessionRegion(session: { region?: string | null; clusterName?: s
   return findRegion(session?.region) || findUniqueRegionByCluster(session?.clusterName);
 }
 
-function getRefreshRegion(c: any): string | null {
-  const refresh = c.req.query('refresh');
-  if (!refresh?.startsWith('/admin/ui/clusters')) {
-    return null;
-  }
-
-  try {
-    const region = new URL(`http://local${refresh}`).searchParams.get('region')?.trim();
-    return region && region !== 'all' ? region : null;
-  } catch {
-    return null;
-  }
-}
-
-function getRequestedDeleteRegion(c: any): string | null {
-  const explicitRegion = c.req.query('region')?.trim();
-  if (explicitRegion && explicitRegion !== 'all') {
-    return explicitRegion;
-  }
-  return getRefreshRegion(c);
-}
-
-async function deleteRoutedSession(sessionId: string, requestedRegionName?: string | null) {
+async function deleteRoutedSession(sessionId: string, clientId?: string) {
   const [session] = await SessionService.getSession(sessionId);
-  const region = requestedRegionName ? findRegion(requestedRegionName) : resolveSessionRegion(session);
+  const region = resolveSessionRegion(session);
 
-  if (requestedRegionName && !region) {
+  if (!session) {
     return {
-      status: 400,
-      body: { success: false, error: `Unknown region: ${requestedRegionName}` },
+      status: 404,
+      body: { success: false, error: 'Session not found' },
     };
   }
 
-  if (!session && !region) {
+  if (clientId && session.clientId !== clientId) {
     return {
       status: 404,
       body: { success: false, error: 'Session not found' },
@@ -424,6 +402,16 @@ app.post('/v1/sessions', async (c) => {
   }
   const body = await c.req.json().catch(() => ({}));
   return createRoutedSession(c, auth.identity!, body);
+});
+
+app.delete('/v1/session/:id', async (c) => {
+  const auth = await authenticateClient(c);
+  if (auth.response) {
+    return auth.response;
+  }
+
+  const result = await deleteRoutedSession(c.req.param('id'), auth.identity!.clientId);
+  return c.json(result.body, result.status as any);
 });
 
 app.get('/admin/login', async (c) => c.html(await Bun.file('./public/admin-login.html').text()));
@@ -644,7 +632,7 @@ app.get('/admin/ui/session/:id/open', async (c) => {
 
 app.delete('/admin/ui/sessions/:id', async (c) => {
   const sessionId = c.req.param('id');
-  const result = await deleteRoutedSession(sessionId, getRequestedDeleteRegion(c));
+  const result = await deleteRoutedSession(sessionId);
   const success = result.status >= 200 && result.status < 300;
   const notice: ActionNotice = success
     ? { tone: 'success', title: 'Session deleted', message: `Session ${sessionId} has been deleted.` }
@@ -729,7 +717,7 @@ app.delete('/admin/session/:id', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;
 
-  const result = await deleteRoutedSession(c.req.param('id'), getRequestedDeleteRegion(c));
+  const result = await deleteRoutedSession(c.req.param('id'));
   return c.json(result.body, result.status as any);
 });
 

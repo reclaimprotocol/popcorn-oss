@@ -822,7 +822,7 @@ function PodsTable({ servers, selectedRegion }: { servers: ReturnType<typeof reg
                       class="contrast"
                       disabled={!active}
                       {...(active ? {
-                        'hx-delete': `/admin/ui/sessions/${encodeURIComponent(server.sessionId!)}?region=${encodeURIComponent(server.region)}&refresh=${encodeURIComponent(`/admin/ui/clusters?region=${selectedRegion}`)}`,
+                        'hx-delete': `/admin/ui/sessions/${encodeURIComponent(server.sessionId!)}?refresh=${encodeURIComponent(`/admin/ui/clusters?region=${selectedRegion}`)}`,
                         'hx-target': '#admin-content',
                         'hx-swap': 'innerHTML',
                         'hx-confirm': `Delete session ${server.sessionId}?`,
