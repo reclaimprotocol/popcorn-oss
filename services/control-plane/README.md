@@ -56,13 +56,15 @@ Request:
 ```json
 {
   "sessionId": "demo-session",
+  "ttlSeconds": 900,
   "regions": ["asia-south1", "us-central1"]
 }
 ```
 
 `sessionId` and `regions` are optional. When `regions` is omitted, enabled
 regions are tried in configured order. When it is present, only those regions
-are tried, in the provided priority order.
+are tried, in the provided priority order. `ttlSeconds` is optional and is
+capped by `SESSION_MAX_TTL_SECONDS`.
 
 Response:
 
@@ -75,9 +77,20 @@ Response:
   "cdpInternalUrl": "wss://asia.popcorn.example/cdp-internal/demo-session/<token>/",
   "apiUrl": "https://asia.popcorn.example/api/demo-session/<token>/",
   "browserPodId": "browser-fleet-abc",
+  "expiresAt": "2026-05-26T12:30:00.000Z",
   "region": "asia-south1",
   "clusterName": "asia-cluster"
 }
+```
+
+Extend a session owned by the client:
+
+```http
+PATCH /v1/session/:id/ttl
+Authorization: Bearer <client-id>:<client-secret>
+Content-Type: application/json
+
+{ "extendBySeconds": 900 }
 ```
 
 Delete a session owned by the client:

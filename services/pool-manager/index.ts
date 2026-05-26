@@ -6,6 +6,7 @@ import { Auth } from "./src/services/auth";
 import { ClickHouse } from "./src/services/clickhouse";
 import { K8s } from "./src/services/k8s";
 import { RuntimeConfig } from "./src/config";
+import { normalizeExpiresAt } from "./src/session-ttl";
 
 const app = new Hono();
 const PORT = 3000;
@@ -16,6 +17,7 @@ const GAME_SERVER_FLEET = RuntimeConfig.gameServerFleet;
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const POOL_MANAGER_SERVICE_AUTH_TOKEN = requireEnv("POOL_MANAGER_SERVICE_AUTH_TOKEN");
 const EXTRA_SESSION_URLS = readExtraSessionUrls(process.env.POOL_MANAGER_EXTRA_SESSION_URLS);
+const ANNOTATION_SESSION_EXPIRES_AT = "popcorn.dev/expires-at";
 
 interface ClientIdentity {
     clientId: string;
@@ -122,8 +124,8 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
     const baseUrl = publicBaseUrl || requestBaseUrl(c);
     const parsedBase = new URL(baseUrl);
     const wsBase = `${parsedBase.protocol === "https:" ? "wss:" : "ws:"}//${parsedBase.host}`;
-    const token = Auth.signToken(sessionId, 'restricted');
-    const internalToken = Auth.signToken(sessionId, 'internal');
+    const token = Auth.signToken(sessionId, 'restricted', session.expiresAt);
+    const internalToken = Auth.signToken(sessionId, 'internal', session.expiresAt);
 
     const details: Record<string, unknown> = {
         success: true,
@@ -134,6 +136,10 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
         apiUrl: `${baseUrl}/api/${sessionId}/${internalToken}/`,
         browserPodId: session.name
     };
+
+    if (session.expiresAt) {
+        details.expiresAt = session.expiresAt;
+    }
 
     const templateValues = {
         baseUrl,
@@ -151,7 +157,7 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
     return details;
 }
 
-async function allocateSessionLocally(identity: ClientIdentity, requestedSessionId?: string) {
+async function allocateSessionLocally(identity: ClientIdentity, requestedSessionId?: string, expiresAt?: string) {
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
         throw new Error("INVALID_SESSION_ID");
     }
@@ -181,6 +187,7 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
             ports: allocation.ports,
             clientId: identity.clientId,
             createdAt: Date.now(),
+            ...(expiresAt ? { expiresAt } : {}),
         };
 
         const created = await DB.createSession(sessionId, podData);
@@ -193,6 +200,7 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
         const sessionAnnotations = {
             "popcorn.dev/session-id": sessionId,
             "popcorn.dev/session-bound-at": boundAt,
+            ...(expiresAt ? { [ANNOTATION_SESSION_EXPIRES_AT]: expiresAt } : {}),
         };
 
         try {
@@ -203,6 +211,9 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
             });
         } catch (e) {
             console.error(`❌ Failed to annotate GameServer with session metadata:`, e);
+            if (expiresAt) {
+                throw e;
+            }
         }
 
         if (podMetadata.uid) {
@@ -259,15 +270,65 @@ async function createControlPlaneSession(c: any): Promise<Response> {
         const clientId = typeof body?.clientId === "string" ? body.clientId.trim() : "";
         const clientName = typeof body?.clientName === "string" ? body.clientName.trim() : "";
         const publicBaseUrl = normalizeBaseUrl(body?.publicGatewayUrl);
+        const expiresAt = normalizeExpiresAt(body?.expiresAt);
 
         if (!sessionId || !clientId || !clientName || !publicBaseUrl) {
             return c.json({ error: "Missing sessionId, clientId, clientName, or valid publicGatewayUrl" }, 400);
         }
 
-        const allocation = await allocateSessionLocally({ clientId, clientName }, sessionId);
+        if (body?.expiresAt && !expiresAt) {
+            return c.json({ error: "Invalid expiresAt" }, 400);
+        }
+
+        const allocation = await allocateSessionLocally({ clientId, clientName }, sessionId, expiresAt);
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (e) {
         return allocationErrorResponse(c, e);
+    }
+}
+
+async function extendLocalSessionTtl(c: any, sessionId: string): Promise<Response> {
+    try {
+        const body = await c.req.json();
+        const expiresAt = normalizeExpiresAt(body?.expiresAt);
+        if (!expiresAt) {
+            return c.json({ success: false, error: "Missing or invalid expiresAt" }, 400);
+        }
+
+        const session = await DB.getSession(sessionId);
+        if (!session) {
+            return c.json({ success: false, error: "Session not found" }, 404);
+        }
+
+        if (!session.name) {
+            return c.json({ success: false, error: "Session has no GameServer name" }, 409);
+        }
+
+        const updatedSession = {
+            ...session,
+            expiresAt,
+        };
+        await DB.updateSession(sessionId, updatedSession);
+
+        // Refresh Redis/session state before extending Kubernetes cleanup. If Redis
+        // fails, the GameServer still expires at the previous annotation.
+        try {
+            await K8s.patchGameServer(session.namespace || GAME_SERVER_NAMESPACE, session.name, {
+                metadata: {
+                    annotations: {
+                        [ANNOTATION_SESSION_EXPIRES_AT]: expiresAt,
+                    },
+                },
+            });
+        } catch (error) {
+            await DB.updateSession(sessionId, session);
+            throw error;
+        }
+
+        return c.json(buildSessionDetails(c, sessionId, updatedSession, normalizeBaseUrl(c.req.query("publicGatewayUrl"))));
+    } catch (error) {
+        console.error("❌ Failed to extend session TTL:", error);
+        return c.json({ success: false, error: "Failed to extend session TTL" }, 502);
     }
 }
 
@@ -333,6 +394,12 @@ app.get("/internal/session/:id", async (c) => {
     const unauthorized = requireControlPlane(c);
     if (unauthorized) return unauthorized;
     return getSessionDetails(c, c.req.param("id"), normalizeBaseUrl(c.req.query("publicGatewayUrl")));
+});
+
+app.patch("/internal/session/:id/ttl", async (c) => {
+    const unauthorized = requireControlPlane(c);
+    if (unauthorized) return unauthorized;
+    return extendLocalSessionTtl(c, c.req.param("id"));
 });
 
 app.delete("/internal/session/:id", async (c) => {

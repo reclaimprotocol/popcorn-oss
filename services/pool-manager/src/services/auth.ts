@@ -29,11 +29,12 @@ function loadPrivateKey(): Buffer | string {
 loadPrivateKey();
 
 export const Auth = {
-    signToken(sessionId: string, scope: 'restricted' | 'internal' = 'restricted'): string {
+    signToken(sessionId: string, scope: 'restricted' | 'internal' = 'restricted', expiresAt?: string): string {
         const privateKey = loadPrivateKey();
         if (!privateKey) {
             throw new Error("Private key missing when trying to sign token");
         }
-        return jwt.sign({ sub: sessionId, scope }, privateKey, { algorithm: 'RS256', expiresIn: '24h' });
+        const expiresIn = expiresAt ? Math.max(1, Math.ceil((Date.parse(expiresAt) - Date.now()) / 1000)) : '24h';
+        return jwt.sign({ sub: sessionId, scope }, privateKey, { algorithm: 'RS256', expiresIn });
     }
 }

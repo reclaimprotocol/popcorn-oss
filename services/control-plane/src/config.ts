@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'fs';
+import { readTtlConfig } from './ttl';
 
 export interface RegionConfig {
   name: string;
@@ -85,4 +86,5 @@ export const ControlPlaneConfig = {
   serviceAuthToken: requireEnv('CONTROL_PLANE_SERVICE_AUTH_TOKEN'),
   adminToken: readOptionalEnv('CONTROL_PLANE_ADMIN_TOKEN') || readOptionalEnv('ADMIN_TOKEN'),
   regions: parseRegions(readOptionalEnv('CONTROL_PLANE_REGIONS')),
+  sessionMaxTtlSeconds: readTtlConfig().maxTtlSeconds,
 };

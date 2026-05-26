@@ -211,7 +211,7 @@ deploy-local: up local-secrets load-local-images
 		--set autoscaler.bufferSize=1 \
 		--set autoscaler.minReplicas=1 \
 		--set autoscaler.maxReplicas=3
-	kubectl rollout restart deployment/pool-manager deployment/control-plane deployment/popcorn-gateway || true
+	kubectl rollout restart deployment/pool-manager deployment/control-plane deployment/popcorn-gateway deployment/ttl-controller || true
 	kubectl exec deployment/redis -- redis-cli DEL idle_pods sessions || true
 	@echo "Local cluster deployed. Gateway: http://localhost:8080"
 	@echo "Control plane: http://localhost:8081"

@@ -107,6 +107,7 @@ controlPlane:
   domainName: ""
   staticIpName: ""
   publicServicePort: 3000
+  sessionMaxTtlSeconds: 900
   nodePorts: {}
   secretName: ""
   databaseSecretName: ""

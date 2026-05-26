@@ -5,6 +5,7 @@ export interface Pod {
     ip?: string;
     clientId?: string;
     createdAt?: number;
+    expiresAt?: string;
 }
 
 export interface AllocationResponse {

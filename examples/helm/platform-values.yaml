@@ -104,6 +104,7 @@ controlPlane:
   domainName: control-plane.example.com
   staticIpName: popcorn-control-plane-ip
   publicServicePort: 3000
+  sessionMaxTtlSeconds: 900
   regions:
     - name: us-central1
       clusterName: example-gke-cluster

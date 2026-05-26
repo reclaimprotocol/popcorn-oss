@@ -1,5 +1,6 @@
 import { Redis } from "ioredis";
 import { Pod } from "../types";
+import { routeTtlSeconds } from "../session-ttl";
 
 const REDIS_HOST = process.env.REDIS_HOST || "localhost";
 const REDIS_PORT = 6379;
@@ -46,6 +47,42 @@ export const redis = new Redis({
 redis.on("connect", () => console.log("✅ Redis connected!"));
 redis.on("error", (err) => console.error("❌ Redis error:", err));
 
+function sessionRouteKeys(id: string): string[] {
+    return [
+        `route:${id}`,
+        `route:cdp:${id}`,
+        `route:api:${id}`,
+        `route:cdp-internal:${id}`,
+        ...Object.values(EXTRA_ROUTE_PORTS).map((routeKey) => `route:${routeKey}:${id}`),
+    ];
+}
+
+async function writeSessionRoutes(id: string, pod: Pod & { ports?: { name: string, port: number }[] }): Promise<void> {
+    const u = new URL(pod.url);
+    const host = u.hostname;
+    const mainPort = u.port;
+    const ttlSeconds = routeTtlSeconds(pod.expiresAt);
+
+    await redis.set(`route:${id}`, `${host}:${mainPort}`, "EX", ttlSeconds);
+
+    if (pod.ports) {
+        for (const p of pod.ports) {
+            if (p.name === "cdp") {
+                await redis.set(`route:cdp:${id}`, `${host}:${p.port}`, "EX", ttlSeconds);
+            } else if (p.name === "cdp-internal") {
+                await redis.set(`route:cdp-internal:${id}`, `${host}:${p.port}`, "EX", ttlSeconds);
+            } else if (p.name === "kernel-api") {
+                await redis.set(`route:api:${id}`, `${host}:${p.port}`, "EX", ttlSeconds);
+            } else if (EXTRA_ROUTE_PORTS[p.name]) {
+                await redis.set(`route:${EXTRA_ROUTE_PORTS[p.name]}:${id}`, `${host}:${p.port}`, "EX", ttlSeconds);
+            }
+        }
+    }
+
+    // The cdp-internal port is static because it uses portPolicy: None in the fleet.
+    await redis.set(`route:cdp-internal:${id}`, `${host}:9226`, "EX", ttlSeconds);
+}
+
 export const DB = {
     async sessionExists(id: string): Promise<boolean> {
         return (await redis.hexists("sessions", id)) === 1;
@@ -58,35 +95,17 @@ export const DB = {
         }
 
         try {
-            // 1. Primary Route (http/neko)
-            const u = new URL(pod.url);
-            const host = u.hostname;
-            const mainPort = u.port;
-            await redis.set(`route:${id}`, `${host}:${mainPort}`, "EX", 3600 * 24);
-
-            // 2. Additional routes from Agones ports
-            if (pod.ports) {
-                for (const p of pod.ports) {
-                    if (p.name === "cdp") {
-                        await redis.set(`route:cdp:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
-                    } else if (p.name === "cdp-internal") {
-                        await redis.set(`route:cdp-internal:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
-                    } else if (p.name === "kernel-api") {
-                        await redis.set(`route:api:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
-                    } else if (EXTRA_ROUTE_PORTS[p.name]) {
-                        await redis.set(`route:${EXTRA_ROUTE_PORTS[p.name]}:${id}`, `${host}:${p.port}`, "EX", 3600 * 24);
-                    }
-                }
-            }
-
-            // 3. Static cdp-internal port (not returned by Agones allocation because portPolicy: None)
-            // The cdp-internal port is always 9226 (static port defined in fleet.yaml)
-            await redis.set(`route:cdp-internal:${id}`, `${host}:9226`, "EX", 3600 * 24);
+            await writeSessionRoutes(id, pod);
             return true;
         } catch (error) {
             await redis.hdel("sessions", id);
             throw error;
         }
+    },
+
+    async updateSession(id: string, pod: Pod & { ports?: { name: string, port: number }[] }): Promise<void> {
+        await redis.hset("sessions", id, JSON.stringify(pod));
+        await writeSessionRoutes(id, pod);
     },
 
     async getSession(id: string): Promise<Pod | null> {
@@ -98,13 +117,7 @@ export const DB = {
         const session = await DB.getSession(id);
         if (session) {
             await redis.hdel("sessions", id);
-            await redis.del(
-                `route:${id}`,
-                `route:cdp:${id}`,
-                `route:api:${id}`,
-                `route:cdp-internal:${id}`,
-                ...Object.values(EXTRA_ROUTE_PORTS).map((routeKey) => `route:${routeKey}:${id}`),
-            );
+            await redis.del(...sessionRouteKeys(id));
         }
         return session;
     },
