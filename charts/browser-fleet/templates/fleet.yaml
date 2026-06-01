@@ -1,4 +1,5 @@
 {{- $browserTurnSecret := default "browser-turn-secret" .Values.secrets.browserTurnName }}
+{{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
 apiVersion: agones.dev/v1
 kind: Fleet
 metadata:
@@ -98,6 +99,12 @@ spec:
                     secretKeyRef:
                       name: {{ $browserTurnSecret | quote }}
                       key: NEKO_ICESERVERS
+                      optional: true
+                - name: HTTPS_PROXY_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $browserRuntimeProxySecret | quote }}
+                      key: HTTPS_PROXY_URL
                       optional: true
 {{- if .Values.webrtc.advertiseHost }}
                 - name: POPCORN_WEBRTC_ADVERTISE_HOST

@@ -19,6 +19,7 @@ externalSecrets:
 
 secrets:
   browserTurnName: browser-turn-secret
+  browserRuntimeProxyName: browser-runtime-proxy-secret
 
 ccDevicePlugin:
   enabled: false
