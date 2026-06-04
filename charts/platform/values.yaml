@@ -76,25 +76,6 @@ redis:
       memory: 256Mi
       cpu: 250m
 
-postgres:
-  enabled: false
-  image: postgres:16
-  imagePullPolicy: IfNotPresent
-  database: analytics
-  username: analytics_admin
-  hostAuthMethod: scram-sha-256
-  storageSize: 20Gi
-  storageClassName: ""
-  existingSecretName: ""
-  passwordSecretKey: password
-  resources:
-    requests:
-      memory: 256Mi
-      cpu: 250m
-    limits:
-      memory: 512Mi
-      cpu: 500m
-
 controlPlane:
   enabled: false
   replicas: 1

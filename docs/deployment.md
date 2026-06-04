@@ -145,9 +145,6 @@ controlPlane:
 redis:
   enabled: true
 
-postgres:
-  enabled: true
-
 ttlController:
   enabled: true
 ```

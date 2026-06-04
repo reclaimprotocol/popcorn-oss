@@ -21,7 +21,6 @@ deployment small, then enable optional pieces one at a time.
 | Option | Values | Use when |
 | --- | --- | --- |
 | Bundled Redis | `redis.enabled` | You want the chart to run Redis for route state. |
-| Legacy bundled Postgres | `postgres.enabled` | Existing installs need the in-chart database during migration. Use external Postgres for new production installs. |
 | TTL cleanup | `ttlController.enabled`, `ttlController.ttlDuration` | You want old sessions cleaned up automatically. Recommended. |
 | Browser TURN | `browser-turn-secret`, `webrtc.*` | Browser users are outside the same machine or direct UDP is unreliable. |
 | Admin auth | `controlPlane.adminAuth.*` | You need password, htpasswd, or Google OAuth admin login. |
