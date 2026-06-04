@@ -21,7 +21,7 @@ deployment small, then enable optional pieces one at a time.
 | Option | Values | Use when |
 | --- | --- | --- |
 | Bundled Redis | `redis.enabled` | You want the chart to run Redis for route state. |
-| Bundled Postgres | `postgres.enabled` | Default starter database for self-hosting. Move to managed Postgres when you need managed backups, HA, and cloud-native operations. |
+| Legacy bundled Postgres | `postgres.enabled` | Existing installs need the in-chart database during migration. Use external Postgres for new production installs. |
 | TTL cleanup | `ttlController.enabled`, `ttlController.ttlDuration` | You want old sessions cleaned up automatically. Recommended. |
 | Browser TURN | `browser-turn-secret`, `webrtc.*` | Browser users are outside the same machine or direct UDP is unreliable. |
 | Admin auth | `controlPlane.adminAuth.*` | You need password, htpasswd, or Google OAuth admin login. |
@@ -61,9 +61,6 @@ controlPlane:
 redis:
   enabled: true
 
-postgres:
-  enabled: true
-
 ttlController:
   enabled: true
 ```
@@ -92,14 +89,11 @@ autoscaler:
   maxReplicas: 20
 ```
 
-## Advanced: Managed Or Existing Postgres
+## Advanced: Existing Postgres
 
-Disable bundled Postgres and point `analytics-db-secret` at your database:
+Point `analytics-db-secret` at your database:
 
 ```yaml
-postgres:
-  enabled: false
-
 controlPlane:
   enabled: true
   databaseSecretName: analytics-db-secret

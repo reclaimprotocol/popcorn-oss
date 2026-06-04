@@ -31,7 +31,7 @@ These docs are organized for operators who want to run Popcorn themselves.
 
 | Path | Purpose |
 | --- | --- |
-| `charts/platform` | Gateway, pool manager, Redis, control plane, Postgres, TTL controller, and optional operations services. |
+| `charts/platform` | Gateway, pool manager, Redis, control plane, transitional bundled Postgres, TTL controller, and optional operations services. |
 | `charts/browser-fleet` | Agones browser Fleet, browser runtime, WebRTC/TURN settings, autoscaler, and optional attestor. |
 | `services/*` | Source for platform services. |
 | `popcorn-images` | Browser image assets and runtime image build inputs. |

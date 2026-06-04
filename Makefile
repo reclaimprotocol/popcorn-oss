@@ -127,7 +127,7 @@ local-secrets: local-keys
 		--from-literal=ADMIN_TOKEN="$(LOCAL_CONTROL_PLANE_ADMIN_TOKEN)" \
 		--dry-run=client -o yaml | kubectl apply -f -
 	@kubectl create secret generic analytics-db-secret \
-		--from-literal=host=postgres \
+		--from-literal=host=local-postgres \
 		--from-literal=port=5432 \
 		--from-literal=database=analytics \
 		--from-literal=username=analytics_admin \
@@ -165,6 +165,8 @@ load-local-images:
 	kind load docker-image $(TTL_CONTROLLER_IMAGE) --name $(CLUSTER_NAME)
 
 deploy-local: up local-secrets load-local-images
+	kubectl apply -f examples/kubernetes/local-postgres.yaml
+	kubectl rollout status statefulset/local-postgres --namespace default --timeout=180s
 	helm upgrade --install popcorn-platform charts/platform \
 		--namespace default \
 		--set registry=popcorn \
@@ -184,9 +186,6 @@ deploy-local: up local-secrets load-local-images
 		--set 'controlPlane.regions[0].enabled=true' \
 		--set 'controlPlane.regions[0].poolManagerAuth.secretName=pool-manager-service-auth' \
 		--set 'controlPlane.regions[0].poolManagerAuth.secretKey=POOL_MANAGER_SERVICE_AUTH_TOKEN' \
-		--set postgres.enabled=true \
-		--set postgres.imagePullPolicy=IfNotPresent \
-		--set postgres.storageSize=1Gi \
 		--set gateway.enabled=true \
 		--set gateway.imagePullPolicy=IfNotPresent \
 		--set gateway.serviceType=NodePort \

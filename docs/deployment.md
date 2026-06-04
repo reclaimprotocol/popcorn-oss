@@ -52,8 +52,8 @@ server options, and direct Agones UDP guidance.
 
 Install two Helm releases into the same namespace:
 
-- `charts/platform`: gateway, pool manager, Redis, control plane, Postgres,
-  TTL controller, RBAC, and optional operations services.
+- `charts/platform`: gateway, pool manager, Redis, control plane, transitional
+  bundled Postgres, TTL controller, RBAC, and optional operations services.
 - `charts/browser-fleet`: Agones Fleet, browser runtime, WebRTC/TURN settings,
   autoscaler, and optional attestor.
 
@@ -73,10 +73,9 @@ browser workloads.
 - Kubernetes Secrets from [Secrets](secrets.md).
 - TURN credentials for browser access from real networks.
 
-The starter values run bundled Postgres inside the cluster. That is the fastest
-way to self-host a first working install. For production hardening, move the
-database to managed Postgres later by disabling `postgres.enabled` and pointing
-`analytics-db-secret` at the managed database.
+The control plane and Metabase expect `analytics-db-secret` to point at an
+existing Postgres database. Use managed Postgres or a database you operate
+outside the platform chart.
 
 External Secrets Operator is optional, but recommended when syncing from GCP
 Secret Manager.

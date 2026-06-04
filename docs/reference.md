@@ -170,7 +170,7 @@ Core Helm values:
 | Admin auth | `controlPlane.adminAuth.*` | Password, password file, token, and Google OAuth settings. |
 | Secrets | `secrets.*`, `*.secretName`, `*.secretKey` | JWT keys, service tokens, database credentials, admin auth, and TURN credentials. |
 | Redis | `redis.enabled`, `poolManager.redisHost`, `gateway.redisHost` | Stores active route and session state. Keep private. |
-| Postgres | `postgres.*`, `controlPlane.database*` | Stores clients, sessions, and analytics metadata. |
+| Postgres | `controlPlane.database*`, `metabase.database*` | Stores clients, sessions, analytics metadata, and optional Metabase state. |
 | Browser fleet | `fleet.*`, `autoscaler.*`, `webrtc.*`, `extraBrowserRuntimeEnv` | Capacity, resource limits, streaming network settings, and runtime environment. |
 | Cleanup | `ttlController.*` | Expires sessions and reports terminal state to the control plane. |
 | Operations | `metabase.*`, `otel.*`, `gkeNodePrescaler.*`, `imagePrepuller.*` | Optional analytics UI, browser log export, capacity, and image warmup helpers. |

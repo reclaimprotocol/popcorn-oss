@@ -147,6 +147,10 @@ metabase:
   siteUrl: ""
   databaseName: metabase
   databaseSecretName: ""
+  databaseBootstrap:
+    enabled: true
+    image: postgres:16
+    imagePullPolicy: IfNotPresent
   resources:
     requests:
       memory: 512Mi
