@@ -103,11 +103,6 @@ Enable optional components after the base session lifecycle is healthy.
 Keeps old sessions and GameServers from lingering. Verify it can reach the
 control plane and has `CONTROL_PLANE_SERVICE_AUTH_TOKEN`.
 
-### Metabase
-
-Provides a lightweight analytics UI. Keep it private, and use the same database
-Secret shape documented in `docs/secrets.md`.
-
 ### OpenTelemetry
 
 Use the bundled collector when you need browser GameServer log export. Enabling

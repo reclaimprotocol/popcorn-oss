@@ -33,10 +33,50 @@ Common causes:
 - a values key has the wrong type;
 - External Secrets templates are enabled but External Secrets Operator is not installed;
 - a Secret name in values does not match the Secret created in the cluster;
-- GKE-only options are enabled on a non-GKE cluster.
+- GKE-only options are enabled on a non-GKE cluster;
+- IP-only values still contain `http://REPLACE_WITH_GATEWAY_IP` instead of the
+  reserved gateway IP.
+- a fresh cluster is trying to install Agones CRDs and browser Fleet resources
+  in the same release. Install Agones first, wait for the controller, then
+  install browser-fleet with `agones.install=false`.
+
+If a platform upgrade fails because `control-plane-migrate` already exists and
+its pod template is immutable, delete only that completed Job and retry:
+
+```bash
+kubectl -n popcorn delete job control-plane-migrate --ignore-not-found
+```
 
 If you are not using External Secrets Operator, disable the relevant
 `externalSecrets.enabled` value and create Kubernetes Secrets directly.
+
+## Pods Are Stuck In ImagePullBackOff
+
+Describe the pod and check the registry error:
+
+```bash
+kubectl -n popcorn describe pod <pod-name>
+```
+
+Common causes:
+
+- GHCR packages are private and the namespace is missing an `imagePullSecrets`
+  entry;
+- the GitHub token used for the pull Secret does not have `read:packages`;
+- `browser-runtime:latest` does not exist. Use a published commit tag or digest;
+- the cluster is pulling from Artifact Registry without node/service account
+  permissions.
+
+If you need a private GHCR pull while packages are not public, create a
+`docker-registry` Secret and reference it from platform and browser-fleet
+values:
+
+```bash
+kubectl -n popcorn create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io \
+  --docker-username=<github-user> \
+  --docker-password=<token-with-read-packages>
+```
 
 ## Pods Are Stuck In CreateContainerConfigError
 
@@ -138,6 +178,16 @@ Do not reuse a browser URL token for CDP or a CDP token for the runtime API.
 If all scoped URLs fail, check gateway logs and JWT key consistency between
 pool manager and gateway.
 
+For IP-only GKE deployments, the returned browser URL should start with
+`http://<gateway-ip>` and the returned CDP URL should start with
+`ws://<gateway-ip>`. If they still use the placeholder or a DNS name, fix
+`controlPlane.regions[].publicGatewayUrl` and restart the control plane.
+
+If a newly created public IP-only control-plane Ingress briefly returns
+connection resets or default backend `404`, wait for the GKE forwarding rule and
+URL map to finish warming up. `kubectl describe ingress control-plane` should
+show the control-plane backend as `HEALTHY`.
+
 ## Browser Pods Do Not Become Ready
 
 Inspect the GameServer and browser pod:
@@ -173,6 +223,7 @@ Common causes:
 - browser GameServers were not recycled after updating `browser-turn-secret`;
 - a firewall blocks direct UDP and no TURN relay is configured;
 - a custom `NEKO_ICESERVERS` value is malformed.
+- direct UDP tests used the wrong client CIDR in the GCP firewall rule.
 
 After changing TURN credentials, recycle browser GameServers:
 
@@ -189,8 +240,7 @@ kubectl -n popcorn get secret control-plane-secret -o jsonpath='{.data.CONTROL_P
 kubectl -n popcorn logs deployment/ttl-controller --tail=100
 ```
 
-For Metabase or analytics failures, verify the database Secret and network
-path:
+For control-plane database failures, verify the database Secret and network path:
 
 ```bash
 kubectl -n popcorn get secret analytics-db-secret -o yaml

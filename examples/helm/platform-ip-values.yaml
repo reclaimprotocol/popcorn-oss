@@ -1,0 +1,89 @@
+# GKE IP-only baseline values for the platform chart.
+# This exposes the gateway and, for a temporary public smoke test, the control
+# plane through HTTP-only GKE Ingresses on reserved global static IPs. It does
+# not create ManagedCertificate resources.
+
+clusterName: popcorn-oss-ip-test
+provider: gcp
+region: us-central1
+registry: ghcr.io/reclaimprotocol/popcorn-oss
+imageTag: latest
+
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+secrets:
+  gatewayJwtName: gateway-jwt-keys
+  poolManagerServiceAuthName: pool-manager-service-auth
+  controlPlaneName: control-plane-secret
+  controlPlaneDatabaseName: analytics-db-secret
+
+poolManager:
+  enabled: true
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  redisHost: redis
+  gameServerNamespace: ""
+  gameServerFleet: browser-fleet
+  serviceAuth:
+    secretName: pool-manager-service-auth
+    secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+
+gateway:
+  enabled: true
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  domainName: ""
+  staticIpName: popcorn-oss-ip-test-gateway-ip
+  serviceType: ClusterIP
+  backendConfig:
+    enabled: true
+    timeoutSec: 3600
+    connectionDrainingTimeoutSec: 60
+
+redis:
+  enabled: true
+
+postgres:
+  enabled: true
+  database: analytics
+  username: analytics_admin
+  storageSize: 20Gi
+
+controlPlane:
+  enabled: true
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  nodeEnv: production
+  databaseSsl: false
+  serviceType: ClusterIP
+  domainName: ""
+  # Temporary IP-only public test path. For a private operator control plane,
+  # leave this empty and use port-forward, VPN, or an internal ingress.
+  staticIpName: popcorn-oss-ip-test-control-plane-ip
+  publicServicePort: 3000
+  regions:
+    - name: us-central1
+      clusterName: popcorn-oss-ip-test
+      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
+      # Replace after reserving the gateway static IP:
+      # gcloud compute addresses describe popcorn-oss-ip-test-gateway-ip --global --format='value(address)'
+      publicGatewayUrl: http://REPLACE_WITH_GATEWAY_IP
+      enabled: true
+      poolManagerAuth:
+        secretName: pool-manager-service-auth
+        secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+
+ttlController:
+  enabled: true
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  ttlDuration: 15m
+
+otel:
+  enabled: false
+
+gkeNodePrescaler:
+  enabled: false

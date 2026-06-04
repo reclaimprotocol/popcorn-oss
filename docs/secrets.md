@@ -10,7 +10,7 @@ or commit generated credentials.
 | `gateway-jwt-keys` | yes | pool manager, gateway | Signs and verifies browser/CDP/API path tokens. |
 | `pool-manager-service-auth` | yes | control plane, pool manager | Authenticates internal allocation calls. Use one per region in production. |
 | `control-plane-secret` | yes when control plane is enabled | control plane, TTL controller | Admin auth and control-plane service token. |
-| `analytics-db-secret` | yes when control plane or Metabase is enabled | control plane, Postgres, Metabase | Postgres connection settings. |
+| `analytics-db-secret` | yes when control plane is enabled | control plane, Postgres | Postgres connection settings. |
 | `browser-turn-secret` | recommended | browser runtime | TURN credentials or static ICE server JSON. |
 | `otel-clickhouse-secret` | only when `otel.enabled=true` | pool manager, observability setup | ClickHouse credentials for session bindings. |
 

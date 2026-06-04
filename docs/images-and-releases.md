@@ -39,6 +39,15 @@ Those digest refs are signed with keyless cosign by `.github/workflows/reproduci
 
 Production deployments can either pull the published GHCR images directly or mirror them into their own GCP Artifact Registry. Public examples use GHCR.
 
+If GHCR packages are still private during a test, create a Kubernetes
+`docker-registry` Secret and reference it with `imagePullSecrets` in both
+charts. The live IP-only GKE test required this until package visibility is
+made public.
+
+Browser runtime images are published by commit tag or digest. Do not assume
+`browser-runtime:latest` exists; use a known commit tag or an immutable digest
+in `browserRuntimeImage`.
+
 ## Browser Images
 
 `popcorn-images` remains a separate OSS project and the source tree for browser image builds. Chromium artifact release assets are mirrored through `reclaimprotocol/popcorn-oss`. Clone Popcorn with submodules:

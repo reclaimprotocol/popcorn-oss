@@ -24,7 +24,8 @@ Recommended baseline:
 - A GCP global static IP for the gateway Ingress.
 - Optional: a separate GCP global static IP and DNS name for the control plane
   if you expose the client/admin API publicly.
-- DNS pointed at those IPs before relying on managed certificates.
+- DNS pointed at those IPs before relying on managed certificates. DNS is not
+  required for an HTTP IP-only smoke test.
 
 If you want attestation, create the browser node pool with Confidential GKE
 Nodes enabled and use a machine family that supports GCP confidential computing,
@@ -63,10 +64,10 @@ browser workloads.
 ## Requirements
 
 - GKE Standard cluster with the settings above.
-- Agones installed in the cluster, or `agones.install=true` in the
-  browser-fleet values for a fresh cluster.
+- Agones installed in the cluster before installing the browser fleet.
 - `gcloud`, `kubectl`, Helm 3, jq, and openssl.
-- DNS name and GCP global static IP for the gateway.
+- GCP global static IP for the gateway. Use a DNS name when you want the chart
+  to create a GKE ManagedCertificate and HTTPS redirect.
 - Optional control-plane DNS name and GCP global static IP, or a private access
   plan such as port-forward, VPN, or internal ingress.
 - Popcorn images available to the cluster.
@@ -80,15 +81,34 @@ outside the platform chart.
 External Secrets Operator is optional, but recommended when syncing from GCP
 Secret Manager.
 
+If you do not have DNS ready, use [GKE IP-only deployment](gke-ip-only-deployment.md)
+first. That path exposes the gateway at `http://<gateway-ip>`, can temporarily
+expose the control plane at `http://<control-plane-ip>`, and avoids GKE
+ManagedCertificate.
+
 ## Install Agones
 
-For a fresh self-hosted cluster, the browser-fleet chart can install Agones as
-an optional dependency:
+For a fresh self-hosted cluster, install Agones before the browser-fleet chart:
+
+```bash
+helm upgrade --install agones charts/browser-fleet/charts/agones-1.57.0.tgz \
+  --namespace agones-system \
+  --create-namespace \
+  --set agones.controller.generateTLS=false \
+  --set gameservers.minPort=59000 \
+  --set gameservers.maxPort=61000 \
+  --set-json 'gameservers.namespaces=["popcorn"]'
+
+kubectl -n agones-system rollout status deployment/agones-controller
+kubectl -n agones-system rollout status deployment/agones-extensions
+```
+
+Then keep the dependency disabled in browser-fleet values:
 
 ```yaml
 # browser-fleet values
 agones:
-  install: true
+  install: false
 
 agonesInstaller:
   gameservers:
@@ -98,7 +118,6 @@ agonesInstaller:
     maxPort: 61000
 ```
 
-If Agones is already installed in the cluster, keep `agones.install=false`.
 Agones is cluster-level infrastructure, so avoid letting multiple Helm releases
 manage it.
 
@@ -109,6 +128,13 @@ Start from examples and edit copies outside the repo:
 ```bash
 cp examples/helm/platform-values.yaml /tmp/popcorn-platform.yaml
 cp examples/helm/browser-fleet-values.yaml /tmp/popcorn-browser-fleet.yaml
+```
+
+For an IP-only GKE smoke test, start from:
+
+```bash
+cp examples/helm/platform-ip-values.yaml /tmp/popcorn-platform-ip.yaml
+cp examples/helm/browser-fleet-ip-values.yaml /tmp/popcorn-browser-fleet-ip.yaml
 ```
 
 Minimum platform shape:
@@ -157,7 +183,7 @@ gatewayDomain: gateway.example.com
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 
 agones:
-  install: true
+  install: false
 
 agonesInstaller:
   gameservers:
@@ -175,6 +201,14 @@ autoscaler:
 ```
 
 Leave `webrtc.advertiseHost` empty in GKE. It is for same-machine Kind only.
+
+For IP-only deployments, leave `gateway.domainName` empty, set
+`gateway.staticIpName` to the reserved global static IP name, and set
+`controlPlane.regions[].publicGatewayUrl` to `http://<gateway-ip>`. The chart
+will render a hostless HTTP GKE Ingress without ManagedCertificate. For a
+temporary public control-plane smoke test, also set
+`controlPlane.staticIpName` to a second reserved global static IP and keep
+`controlPlane.domainName` empty.
 
 ## Install
 

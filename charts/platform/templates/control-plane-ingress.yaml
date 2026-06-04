@@ -1,5 +1,6 @@
 {{- $controlPlane := .Values.controlPlane }}
-{{- if and $controlPlane.enabled $controlPlane.domainName $controlPlane.staticIpName }}
+{{- if and $controlPlane.enabled $controlPlane.staticIpName }}
+{{- if $controlPlane.domainName }}
 apiVersion: networking.gke.io/v1beta1
 kind: FrontendConfig
 metadata:
@@ -16,6 +17,7 @@ spec:
   domains:
     - {{ $controlPlane.domainName | quote }}
 ---
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -23,10 +25,13 @@ metadata:
   annotations:
     kubernetes.io/ingress.class: gce
     kubernetes.io/ingress.global-static-ip-name: {{ $controlPlane.staticIpName | quote }}
+{{- if $controlPlane.domainName }}
     networking.gke.io/managed-certificates: control-plane
     networking.gke.io/v1beta1.FrontendConfig: control-plane
+{{- end }}
 spec:
   rules:
+{{- if $controlPlane.domainName }}
     - host: {{ $controlPlane.domainName | quote }}
       http:
         paths:
@@ -37,4 +42,15 @@ spec:
                 name: control-plane
                 port:
                   number: {{ $controlPlane.publicServicePort }}
+{{- else }}
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: control-plane
+                port:
+                  number: {{ $controlPlane.publicServicePort }}
+{{- end }}
 {{- end }}

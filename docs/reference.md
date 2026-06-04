@@ -173,7 +173,7 @@ Core Helm values:
 | Postgres | `controlPlane.database*`, `metabase.database*` | Stores clients, sessions, analytics metadata, and optional Metabase state. |
 | Browser fleet | `fleet.*`, `autoscaler.*`, `webrtc.*`, `extraBrowserRuntimeEnv` | Capacity, resource limits, streaming network settings, and runtime environment. |
 | Cleanup | `ttlController.*` | Expires sessions and reports terminal state to the control plane. |
-| Operations | `metabase.*`, `otel.*`, `gkeNodePrescaler.*`, `imagePrepuller.*` | Optional analytics UI, browser log export, capacity, and image warmup helpers. |
+| Operations | `otel.*`, `gkeNodePrescaler.*`, `imagePrepuller.*` | Browser log export, capacity, and image warmup helpers. |
 | Attestation | `browserRuntimeAttestor.*`, `ccDevicePlugin.*` | Optional confidential-computing proof support. |
 
 Advanced details live in [Configuration](configuration.md),

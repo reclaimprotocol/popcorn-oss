@@ -132,6 +132,11 @@ from. Keep Cloudflare TURN or another TURN service configured if users may be
 behind symmetric NAT, corporate firewalls, mobile networks, or UDP-blocking
 networks.
 
+For a one-person IP-only smoke test, use the operator's public IP as a `/32`
+source range and a small Agones range such as `59000-59100`. If the browser URL
+loads but the stream does not connect, update the firewall source range to the
+actual client network or add TURN.
+
 ## Direct Agones UDP
 
 The browser fleet exposes a `webrtc-udp` Agones port with `portPolicy:

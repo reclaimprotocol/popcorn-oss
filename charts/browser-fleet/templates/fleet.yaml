@@ -49,6 +49,10 @@ spec:
       template:
         spec:
           serviceAccountName: browser-sa
+{{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+{{ toYaml . | nindent 12 }}
+{{- end }}
           containers:
             - name: browser-runtime
               image: {{ .Values.browserRuntimeImage | quote }}

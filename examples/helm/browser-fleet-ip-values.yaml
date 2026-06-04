@@ -1,8 +1,8 @@
-# GCP example values for rendering the browser-fleet chart.
-# Replace placeholders before installing into a GKE cluster.
+# GKE IP-only baseline values for the browser-fleet chart.
+# Pair this with examples/helm/platform-ip-values.yaml.
 
 region: us-central1
-gatewayDomain: gateway.example.com
+gatewayDomain: ""
 
 agones:
   install: false
@@ -15,7 +15,7 @@ agonesInstaller:
     namespaces:
       - popcorn
     minPort: 59000
-    maxPort: 61000
+    maxPort: 59100
 
 externalSecrets:
   enabled: false
@@ -28,9 +28,6 @@ secrets:
 ccDevicePlugin:
   enabled: false
 
-serviceAccount:
-  gcpServiceAccount: browser-runtime@example-project.iam.gserviceaccount.com
-
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:REPLACE_WITH_COMMIT_SHA
 browserRuntimeImagePullPolicy: IfNotPresent
 
@@ -40,19 +37,8 @@ browserRuntimeAttestor:
 
 browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:REPLACE_WITH_COMMIT_SHA
 
-imagePrepuller:
-  enabled: false
-  imagePullPolicy: IfNotPresent
-  nodeSelector: {}
-  tolerations: []
-  affinity: {}
-  resources:
-    requests:
-      cpu: 10m
-      memory: 32Mi
-    limits:
-      cpu: 50m
-      memory: 128Mi
+webrtc:
+  advertiseHost: ""
 
 fleet:
   replicas: 1
@@ -65,10 +51,6 @@ fleet:
   browserRuntimeCpuLimit: "2000m"
   browserRuntimeMemoryRequest: 2Gi
   browserRuntimeMemoryLimit: 4Gi
-  browserRuntimeAttestorCpuRequest: "100m"
-  browserRuntimeAttestorCpuLimit: "200m"
-  browserRuntimeAttestorMemoryRequest: 128Mi
-  browserRuntimeAttestorMemoryLimit: 256Mi
 
 autoscaler:
   bufferSize: 1

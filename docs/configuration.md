@@ -9,10 +9,10 @@ deployment small, then enable optional pieces one at a time.
 | --- | --- | --- |
 | Deployment identity | `clusterName`, `provider`, `region` | Labels sessions and chooses provider-specific behavior. |
 | Images | `registry`, `imageTag`, `browserRuntimeImage`, `imagePullSecrets` | Controls what runs in the cluster. Pin digests for production. |
-| Gateway | `gateway.enabled`, `gateway.domainName`, `gateway.staticIpName`, `gateway.serviceType` | Public entry point for browser, CDP, API, and proof routes. |
+| Gateway | `gateway.enabled`, `gateway.domainName`, `gateway.staticIpName`, `gateway.serviceType` | Public entry point for browser, CDP, API, and proof routes. `staticIpName` can be used without `domainName` for an HTTP IP-only GKE Ingress. |
 | Pool manager | `poolManager.enabled`, `poolManager.serviceAuth`, `poolManager.gameServerFleet` | Allocates Agones browser GameServers. |
 | Browser fleet | `gatewayDomain`, `fleet.replicas`, `autoscaler.*` | Controls browser capacity and returned URLs. |
-| Agones | `agones.install`, `agonesInstaller.*` | Optionally installs Agones from the browser-fleet chart for fresh clusters. |
+| Agones | `agones.install`, `agonesInstaller.*` | Optionally installs Agones from the browser-fleet chart for fresh clusters. Keep `agones.install=false` after installing Agones as cluster infrastructure. |
 | Control plane | `controlPlane.enabled`, `controlPlane.regions`, `controlPlane.sessionMaxTtlSeconds` | Client credential API, regional session routing, and maximum client-requested TTL. |
 | Secrets | `secrets.*`, `browser-fleet.secrets.browserTurnName` | Names of required Kubernetes Secrets. |
 
@@ -25,12 +25,17 @@ deployment small, then enable optional pieces one at a time.
 | Browser TURN | `browser-turn-secret`, `webrtc.*` | Browser users are outside the same machine or direct UDP is unreliable. |
 | Admin auth | `controlPlane.adminAuth.*` | You need password, htpasswd, or Google OAuth admin login. |
 | Observability | `otel.*` | You want browser GameServer log export and ClickHouse session bindings. |
-| Metabase | `metabase.*` | You want an internal analytics UI. |
 | GKE node prescaler | `gkeNodePrescaler.*` | You want browser node pools scaled ahead of demand on GKE. |
 | Attestation | `browserRuntimeAttestor.*`, `ccDevicePlugin.*` | You run compatible GCP confidential-computing nodes. |
 | Extra routes | `fleet.extraPorts`, `poolManager.extraRoutePorts`, `gateway.extraSessionRoutes` | Your browser runtime exposes additional services. |
 
 ## Base Production Example
+
+The default production example uses DNS and GKE ManagedCertificate. For a
+domainless smoke test, use
+[`examples/helm/platform-ip-values.yaml`](../examples/helm/platform-ip-values.yaml)
+and
+[`examples/helm/browser-fleet-ip-values.yaml`](../examples/helm/browser-fleet-ip-values.yaml).
 
 ```yaml
 # platform values
@@ -71,7 +76,7 @@ gatewayDomain: gateway.example.com
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 
 agones:
-  install: true
+  install: false
 
 agonesInstaller:
   gameservers:
@@ -151,11 +156,23 @@ agones:
   install: false
 ```
 
-For a fresh self-hosted cluster, enable the dependency in browser-fleet values:
+For a fresh self-hosted cluster, install Agones before browser-fleet:
+
+```bash
+helm upgrade --install agones charts/browser-fleet/charts/agones-1.57.0.tgz \
+  --namespace agones-system \
+  --create-namespace \
+  --set agones.controller.generateTLS=false \
+  --set gameservers.minPort=59000 \
+  --set gameservers.maxPort=61000 \
+  --set-json 'gameservers.namespaces=["popcorn"]'
+```
+
+Then keep the dependency disabled in browser-fleet values:
 
 ```yaml
 agones:
-  install: true
+  install: false
 
 agonesInstaller:
   gameservers:
@@ -167,6 +184,40 @@ agonesInstaller:
 
 Agones is cluster-level infrastructure. Do not enable the dependency from more
 than one browser-fleet release in the same cluster.
+
+## Advanced: GKE IP-Only Gateway
+
+Use this when DNS is not ready and you only need a GKE smoke test:
+
+```yaml
+gateway:
+  enabled: true
+  domainName: ""
+  staticIpName: popcorn-oss-ip-test-gateway-ip
+
+controlPlane:
+  enabled: true
+  serviceType: ClusterIP
+  regions:
+    - name: us-central1
+      publicGatewayUrl: http://<gateway-ip>
+```
+
+With `staticIpName` set and `domainName` empty, the chart renders a hostless
+HTTP GKE Ingress. ManagedCertificate and HTTPS redirect are created only when a
+domain name is configured.
+
+For a temporary public control-plane test without DNS, reserve a second global
+static IP and set:
+
+```yaml
+controlPlane:
+  domainName: ""
+  staticIpName: popcorn-oss-ip-test-control-plane-ip
+```
+
+This is HTTP-only. For production, use DNS and TLS or keep the control plane on
+a private access path.
 
 ## Advanced: Extra Session Routes
 

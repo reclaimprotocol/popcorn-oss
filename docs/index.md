@@ -10,9 +10,11 @@ These docs are organized for operators who want to run Popcorn themselves.
 
 1. [Quickstart](quickstart.md): run Popcorn locally with Kind.
 2. [Deployment](deployment.md): deploy the supported production shape on GKE.
-3. [Configuration](configuration.md): understand required and optional settings.
-4. [Secrets](secrets.md): create the Kubernetes Secrets Popcorn expects.
-5. [Reference](reference.md): session API, gateway paths, and config index.
+3. [GKE IP-only deployment](gke-ip-only-deployment.md): smoke-test GKE
+   self-hosting before DNS and managed certificates are ready.
+4. [Configuration](configuration.md): understand required and optional settings.
+5. [Secrets](secrets.md): create the Kubernetes Secrets Popcorn expects.
+6. [Reference](reference.md): session API, gateway paths, and config index.
 
 ## Operate It
 

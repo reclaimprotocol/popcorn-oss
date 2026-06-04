@@ -116,30 +116,6 @@ controlPlane:
       memory: 512Mi
       cpu: 500m
 
-metabase:
-  enabled: false
-  replicas: 1
-  image: metabase/metabase:v0.57.6.x
-  imagePullPolicy: IfNotPresent
-  serviceType: ClusterIP
-  publicServicePort: 3000
-  domainName: ""
-  staticIpName: ""
-  siteUrl: ""
-  databaseName: metabase
-  databaseSecretName: ""
-  databaseBootstrap:
-    enabled: true
-    image: postgres:16
-    imagePullPolicy: IfNotPresent
-  resources:
-    requests:
-      memory: 512Mi
-      cpu: 250m
-    limits:
-      memory: 1Gi
-      cpu: "1000m"
-
 ttlController:
   enabled: false
   replicas: 1

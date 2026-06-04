@@ -160,7 +160,7 @@ metadata:
 spec:
   selector:
     app: gateway
-  type: {{ if and .Values.gateway.domainName .Values.gateway.staticIpName }}ClusterIP{{ else }}{{ .Values.gateway.serviceType }}{{ end }}
+  type: {{ if .Values.gateway.staticIpName }}ClusterIP{{ else }}{{ .Values.gateway.serviceType }}{{ end }}
   ports:
     - name: http
       port: 80

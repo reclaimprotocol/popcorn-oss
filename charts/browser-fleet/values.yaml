@@ -17,6 +17,8 @@ agonesInstaller:
 externalSecrets:
   enabled: false
 
+imagePullSecrets: []
+
 secrets:
   browserTurnName: browser-turn-secret
   browserRuntimeProxyName: browser-runtime-proxy-secret
