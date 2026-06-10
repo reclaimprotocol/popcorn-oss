@@ -1,4 +1,5 @@
 {{- if .Values.otel.enabled }}
+{{- include "popcorn-platform.validateOtelHeaders" . }}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -29,6 +30,9 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
+{{- with .Values.otel.exporter.headers }}
+{{- include "popcorn-platform.otelHeaderSecretEnvVars" $ | trim | nindent 12 }}
+{{- end }}
           securityContext:
             runAsUser: 0
           resources:
@@ -37,6 +41,8 @@ spec:
             - name: config
               mountPath: /conf
               readOnly: true
+            - name: file-storage
+              mountPath: /var/lib/otelcol/file_storage
             - name: varlogpods
               mountPath: /var/log/pods
               readOnly: true
@@ -47,6 +53,10 @@ spec:
         - name: config
           configMap:
             name: otel-agent-config
+        - name: file-storage
+          hostPath:
+            path: /var/lib/popcorn/otel-agent/file-storage
+            type: DirectoryOrCreate
         - name: varlogpods
           hostPath:
             path: /var/log/pods

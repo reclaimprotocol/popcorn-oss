@@ -166,7 +166,12 @@ otel:
   imagePullPolicy: IfNotPresent
   exporter:
     grpcEndpoint: null
+    httpEndpoint: null
+    headersSecretName: ""
+    headers: {}
+    tls: {}
   clickhouse:
+    enabled: false
     database: otel
     secretName: otel-clickhouse-secret
   agent:

@@ -1,6 +1,13 @@
 {{- if .Values.poolManager.enabled }}
 {{- $poolManagerServiceAuthSecret := default .Values.secrets.poolManagerServiceAuthName .Values.poolManager.serviceAuth.secretName }}
 {{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.poolManager.jwtSecretName }}
+{{- $otelGrpcEndpoint := default "" .Values.otel.exporter.grpcEndpoint }}
+{{- $otelHttpEndpoint := default "" .Values.otel.exporter.httpEndpoint }}
+{{- $otelLogsEnabled := and .Values.otel.enabled (or (ne $otelGrpcEndpoint "") (ne $otelHttpEndpoint "")) }}
+{{- $otelHeaders := .Values.otel.exporter.headers | default dict }}
+{{- if $otelLogsEnabled }}
+{{- include "popcorn-platform.validateOtelHeaders" . }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,7 +65,33 @@ spec:
             - name: POPCORN_REGION
               value: {{ .Values.region | quote }}
             - name: OTEL_CLICKHOUSE_ENABLED
-              value: {{ ternary "true" "false" .Values.otel.enabled | quote }}
+              value: {{ ternary "true" "false" (and .Values.otel.enabled .Values.otel.clickhouse.enabled) | quote }}
+            - name: OTEL_LOGS_ENABLED
+              value: {{ ternary "true" "false" $otelLogsEnabled | quote }}
+{{- if $otelLogsEnabled }}
+{{- if gt (len $otelHeaders) 0 }}
+{{- include "popcorn-platform.otelHeaderSecretEnvVars" . | trim | nindent 12 }}
+{{- end }}
+{{- if ne $otelGrpcEndpoint "" }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ $otelGrpcEndpoint | quote }}
+{{- if .Values.otel.exporter.tls.insecure }}
+            - name: OTEL_EXPORTER_OTLP_LOGS_INSECURE
+              value: "true"
+{{- end }}
+{{- else }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http"
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ printf "%s/v1/logs" (trimSuffix "/" $otelHttpEndpoint) | quote }}
+{{- end }}
+{{- if gt (len $otelHeaders) 0 }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              value: {{ include "popcorn-platform.otelHeadersEnvValue" . | quote }}
+{{- end }}
+{{- end }}
             - name: POOL_MANAGER_SERVICE_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:
@@ -69,7 +102,7 @@ spec:
                 configMapKeyRef:
                   name: cluster-config
                   key: cluster_name
-{{- if .Values.otel.enabled }}
+{{- if and .Values.otel.enabled .Values.otel.clickhouse.enabled }}
             - name: OTEL_CLICKHOUSE_ENDPOINT
               valueFrom:
                 secretKeyRef:

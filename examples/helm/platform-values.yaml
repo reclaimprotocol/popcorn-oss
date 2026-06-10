@@ -149,8 +149,13 @@ otel:
   image: otel/opentelemetry-collector-contrib:0.149.0
   imagePullPolicy: IfNotPresent
   exporter:
-    grpcEndpoint: otel-grpc.example.com:4317
+    grpcEndpoint: null
+    httpEndpoint: null
+    headersSecretName: ""
+    headers: {}
+    tls: {}
   clickhouse:
+    enabled: false
     database: otel
     secretName: otel-clickhouse-secret
   agent:
