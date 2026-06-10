@@ -106,9 +106,9 @@ control plane and has `CONTROL_PLANE_SERVICE_AUTH_TOKEN`.
 ### OpenTelemetry
 
 Use the bundled collector when you need browser GameServer log export. Enabling
-`otel.enabled=true` also enables pool-manager ClickHouse writes for session
-bindings, so prepare `otel-clickhouse-secret` and the `session_bindings` table
-first. See [Observability](observability.md).
+`otel.enabled=true` requires exactly one external OTLP collector endpoint.
+Pool-manager ClickHouse writes are an optional legacy fallback behind
+`otel.clickhouse.enabled=true`. See [Observability](observability.md).
 
 ### GKE Node Prescaler
 

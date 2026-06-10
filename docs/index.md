@@ -21,7 +21,7 @@ These docs are organized for operators who want to run Popcorn themselves.
 - [Operations](operations.md): validate, upgrade, scale, and run optional services.
 - [Security](security.md): practical self-hosting security model and hardening.
 - [Browser networking](networking.md): Cloudflare TURN, static ICE servers, and direct Agones UDP.
-- [Observability](observability.md): optional OpenTelemetry log export and ClickHouse session bindings.
+- [Observability](observability.md): backend-neutral OpenTelemetry log and session lifecycle export.
 - [Troubleshooting](troubleshooting.md): diagnose local, Helm, auth, and browser issues.
 
 ## Optional Areas

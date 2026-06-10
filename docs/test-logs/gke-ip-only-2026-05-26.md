@@ -279,12 +279,21 @@ because direct UDP can be blocked by client NAT or local network policy.
 
 ## Cleanup Status
 
-Deferred for manual testing after the user asked for public test endpoints.
-Cleanup still needs to remove:
+Cluster deletion completed on `2026-06-04 17:16:02 IST`:
 
 ```text
-Helm releases: browser-fleet, popcorn-platform, agones
-GKE cluster: popcorn-oss-ip-test
+gcloud container clusters delete popcorn-oss-ip-test \
+  --zone us-central1-a \
+  --project rc-popcorn \
+  --quiet
+
+Result: deleted.
+Verification: gcloud container clusters describe returned 404 Not found.
+```
+
+Remaining cleanup still needs to remove:
+
+```text
 Firewall rule: popcorn-oss-ip-test-webrtc-udp
 Global IPs: popcorn-oss-ip-test-gateway-ip, popcorn-oss-ip-test-control-plane-ip
 ```

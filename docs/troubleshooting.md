@@ -247,12 +247,12 @@ kubectl -n popcorn get secret analytics-db-secret -o yaml
 kubectl -n popcorn get pods -l app=postgres
 ```
 
-For OpenTelemetry issues, check the collector and ClickHouse binding path:
+For OpenTelemetry issues, check the collector and configured exporter path:
 
 ```bash
 kubectl -n popcorn get daemonset otel-agent
 kubectl -n popcorn logs daemonset/otel-agent --tail=100
-kubectl -n popcorn logs deployment/pool-manager --tail=100 | grep -i clickhouse
+kubectl -n popcorn logs deployment/pool-manager --tail=100 | grep -i otel
 ```
 
 For attestation or GKE node prescaler issues, disable the optional component and

@@ -12,7 +12,8 @@ or commit generated credentials.
 | `control-plane-secret` | yes when control plane is enabled | control plane, TTL controller | Admin auth and control-plane service token. |
 | `analytics-db-secret` | yes when control plane is enabled | control plane, Postgres | Postgres connection settings. |
 | `browser-turn-secret` | recommended | browser runtime | TURN credentials or static ICE server JSON. |
-| `otel-clickhouse-secret` | only when `otel.enabled=true` | pool manager, observability setup | ClickHouse credentials for session bindings. |
+| `otel-exporter-headers` | only when your OTLP backend requires headers | otel agent, pool manager | OTLP exporter header values such as authorization tokens. |
+| `otel-clickhouse-secret` | only when `otel.enabled=true` and `otel.clickhouse.enabled=true` | pool manager, observability setup | Legacy ClickHouse credentials for optional session bindings. |
 
 Default Secret names come from `charts/platform/values.yaml` and
 `charts/browser-fleet/values.yaml`.
@@ -104,9 +105,37 @@ requests short-lived ICE credentials on startup.
 See [Browser networking](networking.md) for Cloudflare TURN setup and direct
 Agones UDP guidance.
 
+## `otel-exporter-headers`
+
+Required only when your external OTLP backend requires exporter headers.
+
+Keys are operator-defined. Map OTLP header names to Secret keys with
+`otel.exporter.headers`:
+
+```yaml
+otel:
+  exporter:
+    headersSecretName: otel-exporter-headers
+    headers:
+      Authorization: authorization
+      x-scope-orgid: tenant
+```
+
+Create the Secret with the actual header values:
+
+```bash
+kubectl -n popcorn create secret generic otel-exporter-headers \
+  --from-literal=authorization="$OTEL_EXPORTER_AUTHORIZATION" \
+  --from-literal=tenant="$OTEL_EXPORTER_TENANT"
+```
+
+The chart renders only Secret references and environment variable references;
+header values are not written into the collector ConfigMap or literal Pod env
+values.
+
 ## `otel-clickhouse-secret`
 
-Required only when `otel.enabled=true`.
+Required only when `otel.enabled=true` and `otel.clickhouse.enabled=true`.
 
 Keys:
 
@@ -117,12 +146,12 @@ Keys:
 | `CLICKHOUSE_USERNAME` | ClickHouse username. |
 | `CLICKHOUSE_PASSWORD` | ClickHouse password. |
 
-The bundled collector exports browser GameServer logs to
-`otel.exporter.grpcEndpoint`. The ClickHouse Secret is used by the pool manager
-to write `session_bindings`, which lets operators join a session ID to the
-browser pod UID in exported logs.
+The bundled collector exports browser GameServer logs and session lifecycle
+events through `otel.exporter.*`. The ClickHouse Secret is used only by the
+optional legacy pool-manager `session_bindings` writer.
 
-See [Observability](observability.md) for the table schema and exported fields.
+See [Observability](observability.md) for backend-neutral OTLP configuration,
+the legacy table schema, and exported fields.
 
 ## Direct Kubernetes Secret Bootstrap
 
@@ -145,7 +174,7 @@ export POSTGRES_PASSWORD=$(openssl rand -base64 32)
 export TURN_KEY_ID="replace-with-cloudflare-turn-key-id"
 export TURN_API_TOKEN="replace-with-cloudflare-turn-api-token"
 
-# Only needed when otel.enabled=true.
+# Only needed when otel.enabled=true and otel.clickhouse.enabled=true.
 export CLICKHOUSE_ENDPOINT="replace-with-clickhouse-native-or-service-endpoint"
 export CLICKHOUSE_HTTP_ENDPOINT="replace-with-clickhouse-http-endpoint"
 export CLICKHOUSE_USERNAME="replace-with-clickhouse-username"
@@ -183,7 +212,7 @@ kubectl -n popcorn create secret generic browser-turn-secret \
   --from-literal=TURN_API_TOKEN="$TURN_API_TOKEN" \
   --from-literal=NEKO_ICESERVERS=""
 
-# Only needed when otel.enabled=true.
+# Only needed when otel.enabled=true and otel.clickhouse.enabled=true.
 kubectl -n popcorn create secret generic otel-clickhouse-secret \
   --from-literal=CLICKHOUSE_ENDPOINT="$CLICKHOUSE_ENDPOINT" \
   --from-literal=CLICKHOUSE_HTTP_ENDPOINT="$CLICKHOUSE_HTTP_ENDPOINT" \

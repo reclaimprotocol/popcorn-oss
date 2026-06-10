@@ -24,7 +24,7 @@ deployment small, then enable optional pieces one at a time.
 | TTL cleanup | `ttlController.enabled`, `ttlController.ttlDuration` | You want old sessions cleaned up automatically. Recommended. |
 | Browser TURN | `browser-turn-secret`, `webrtc.*` | Browser users are outside the same machine or direct UDP is unreliable. |
 | Admin auth | `controlPlane.adminAuth.*` | You need password, htpasswd, or Google OAuth admin login. |
-| Observability | `otel.*` | You want browser GameServer log export and ClickHouse session bindings. |
+| Observability | `otel.*` | You want backend-neutral OTLP export for browser logs and session lifecycle events. |
 | GKE node prescaler | `gkeNodePrescaler.*` | You want browser node pools scaled ahead of demand on GKE. |
 | Attestation | `browserRuntimeAttestor.*`, `ccDevicePlugin.*` | You run compatible GCP confidential-computing nodes. |
 | Extra routes | `fleet.extraPorts`, `poolManager.extraRoutePorts`, `gateway.extraSessionRoutes` | Your browser runtime exposes additional services. |
@@ -117,21 +117,41 @@ otel:
 ```
 
 When enabled, `otel.*` deploys an OpenTelemetry collector DaemonSet for browser
-GameServer logs and enables pool-manager ClickHouse writes for session
-bindings:
+GameServer logs. Pool-manager session lifecycle events are sent directly to the
+configured external OTLP endpoint over the selected protocol. Configure exactly
+one external collector endpoint:
 
 ```yaml
 otel:
   enabled: true
   exporter:
     grpcEndpoint: otel-grpc.example.com:4317
+```
+
+If your OTLP backend requires headers, create a Secret and map header names to
+Secret keys:
+
+```yaml
+otel:
+  exporter:
+    headersSecretName: otel-exporter-headers
+    headers:
+      Authorization: authorization
+```
+
+ClickHouse session bindings are a legacy fallback and must be enabled
+explicitly:
+
+```yaml
+otel:
   clickhouse:
+    enabled: true
     database: otel
     secretName: otel-clickhouse-secret
 ```
 
-See [Observability](observability.md) for the required Secret, table shape, and
-what data is exported.
+See [Observability](observability.md) for session correlation semantics,
+exporter recipes, and exported fields.
 
 ## Advanced: Split Namespaces
 
