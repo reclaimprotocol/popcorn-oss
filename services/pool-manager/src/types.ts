@@ -3,6 +3,8 @@ export interface Pod {
     namespace?: string;
     url: string;
     ip?: string;
+    podUid?: string;
+    boundAt?: string;
     clientId?: string;
     createdAt?: number;
     expiresAt?: string;

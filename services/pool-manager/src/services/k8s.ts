@@ -21,6 +21,14 @@ async function k8sJson(path: string, opts: any = {}) {
     return res;
 }
 
+export function buildMetadataAnnotationsPatch(annotations: Record<string, string>) {
+    return {
+        metadata: {
+            annotations,
+        },
+    };
+}
+
 export const K8s = {
     async listBrowserPods(namespace: string = RuntimeConfig.gameServerNamespace) {
         try {
@@ -133,6 +141,25 @@ export const K8s = {
             }
         } catch (e) {
             console.error(`❌ Failed to patch GameServer ${name}:`, e);
+            throw e;
+        }
+    },
+
+    async patchPod(namespace: string, name: string, patch: any): Promise<void> {
+        try {
+            const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods/${name}`, {
+                method: "PATCH",
+                headers: {
+                    "Content-Type": "application/merge-patch+json"
+                },
+                body: JSON.stringify(patch)
+            });
+            if (!res.ok) {
+                const txt = await res.text();
+                throw new Error(`Patch failed ${res.status}: ${txt}`);
+            }
+        } catch (e) {
+            console.error(`❌ Failed to patch Pod ${name}:`, e);
             throw e;
         }
     }

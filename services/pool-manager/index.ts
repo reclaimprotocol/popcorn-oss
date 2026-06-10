@@ -4,9 +4,12 @@ import { DB } from "./src/services/db";
 import { Agones } from "./src/services/agones";
 import { Auth } from "./src/services/auth";
 import { ClickHouse } from "./src/services/clickhouse";
-import { K8s } from "./src/services/k8s";
+import { buildMetadataAnnotationsPatch, K8s } from "./src/services/k8s";
 import { RuntimeConfig } from "./src/config";
 import { normalizeExpiresAt } from "./src/session-ttl";
+import { OtelEvents } from "./src/services/otel";
+import { retry } from "./src/services/retry";
+import { buildSessionMetadata } from "./src/session-metadata";
 
 const app = new Hono();
 const PORT = 3000;
@@ -14,7 +17,10 @@ const PORT = 3000;
 const CLUSTER_NAME = process.env.CLUSTER_NAME || "unknown";
 const GAME_SERVER_NAMESPACE = RuntimeConfig.gameServerNamespace;
 const GAME_SERVER_FLEET = RuntimeConfig.gameServerFleet;
+const POPCORN_REGION = process.env.POPCORN_REGION || "unknown";
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const SESSION_METADATA_PATCH_ATTEMPTS = 3;
+const SESSION_METADATA_PATCH_DELAY_MS = 250;
 const POOL_MANAGER_SERVICE_AUTH_TOKEN = requireEnv("POOL_MANAGER_SERVICE_AUTH_TOKEN");
 const EXTRA_SESSION_URLS = readExtraSessionUrls(process.env.POOL_MANAGER_EXTRA_SESSION_URLS);
 const ANNOTATION_SESSION_EXPIRES_AT = "popcorn.dev/expires-at";
@@ -28,6 +34,14 @@ class DuplicateSessionIdError extends Error {
     constructor() {
         super("Session ID already exists");
         this.name = "DuplicateSessionIdError";
+    }
+}
+
+class SessionTelemetryAnnotationError extends Error {
+    constructor(namespace: string, podName: string, cause: unknown) {
+        super(`Failed to annotate Pod ${namespace}/${podName} with session metadata; refusing allocation because session log correlation would be unavailable`);
+        this.name = "SessionTelemetryAnnotationError";
+        this.cause = cause;
     }
 }
 
@@ -120,6 +134,26 @@ function expandSessionUrlTemplate(template: string, values: Record<string, strin
     return template.replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g, (match, key) => values[key] ?? match);
 }
 
+async function annotatePodWithSessionMetadata(namespace: string, podName: string, sessionId: string) {
+    let metadata = buildSessionMetadata(sessionId);
+    try {
+        await retry(async () => {
+            metadata = buildSessionMetadata(sessionId);
+            await K8s.patchPod(
+                namespace,
+                podName,
+                buildMetadataAnnotationsPatch(metadata.annotations),
+            );
+        }, {
+            attempts: SESSION_METADATA_PATCH_ATTEMPTS,
+            delayMs: SESSION_METADATA_PATCH_DELAY_MS,
+        });
+    } catch (error) {
+        throw new SessionTelemetryAnnotationError(namespace, podName, error);
+    }
+    return metadata;
+}
+
 function buildSessionDetails(c: any, sessionId: string, session: any, publicBaseUrl?: string | null) {
     const baseUrl = publicBaseUrl || requestBaseUrl(c);
     const parsedBase = new URL(baseUrl);
@@ -164,6 +198,7 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
 
     const sessionId = requestedSessionId || crypto.randomUUID().slice(0, 8);
     let allocatedGameServerName: string | null = null;
+    let sessionCreated = false;
 
     if (requestedSessionId) {
         const duplicate = await DB.sessionExists(sessionId);
@@ -180,26 +215,23 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
         const port = allocation.ports?.[0]?.port || 8080;
         const podUrl = `http://${allocation.address}:${port}`;
 
+        const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
+        const bound = await annotatePodWithSessionMetadata(podMetadata.namespace, allocation.gameServerName, sessionId);
+
         const podData = {
             name: allocation.gameServerName,
             namespace: GAME_SERVER_NAMESPACE,
             url: podUrl,
             ports: allocation.ports,
+            podUid: podMetadata.uid || undefined,
+            boundAt: bound.boundAt,
             clientId: identity.clientId,
             createdAt: Date.now(),
             ...(expiresAt ? { expiresAt } : {}),
         };
 
-        const created = await DB.createSession(sessionId, podData);
-        if (!created) {
-            throw new DuplicateSessionIdError();
-        }
-
-        const boundAt = new Date().toISOString();
-        const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
         const sessionAnnotations = {
-            "popcorn.dev/session-id": sessionId,
-            "popcorn.dev/session-bound-at": boundAt,
+            ...bound.annotations,
             ...(expiresAt ? { [ANNOTATION_SESSION_EXPIRES_AT]: expiresAt } : {}),
         };
 
@@ -216,6 +248,24 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
             }
         }
 
+        const created = await DB.createSession(sessionId, podData);
+        if (!created) {
+            throw new DuplicateSessionIdError();
+        }
+        sessionCreated = true;
+
+        OtelEvents.sessionStart({
+            sessionId,
+            clusterName: CLUSTER_NAME,
+            namespace: podMetadata.namespace,
+            podName: allocation.gameServerName,
+            podUid: podMetadata.uid,
+            at: bound.boundAt,
+            region: POPCORN_REGION,
+        }).catch((error) => {
+            console.error("❌ Failed to emit session.start OTEL event:", error);
+        });
+
         if (podMetadata.uid) {
             ClickHouse.createSessionBinding({
                 sessionId,
@@ -223,7 +273,7 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
                 namespace: podMetadata.namespace,
                 podName: allocation.gameServerName,
                 podUid: podMetadata.uid,
-                boundAt,
+                boundAt: bound.boundAt,
             }).catch((error) => {
                 console.error("❌ Failed to write session binding to ClickHouse:", error);
             });
@@ -234,10 +284,12 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
         return { sessionId, podData };
     } catch (e) {
         if (allocatedGameServerName) {
-            try {
-                await DB.deleteSession(sessionId);
-            } catch (cleanupError) {
-                console.error(`Failed to clean up session state for ${sessionId}:`, cleanupError);
+            if (sessionCreated) {
+                try {
+                    await DB.deleteSession(sessionId);
+                } catch (cleanupError) {
+                    console.error(`Failed to clean up session state for ${sessionId}:`, cleanupError);
+                }
             }
 
             try {
@@ -257,6 +309,11 @@ function allocationErrorResponse(c: any, e: unknown): Response {
 
     if (e instanceof DuplicateSessionIdError) {
         return c.json({ error: e.message }, 409);
+    }
+
+    if (e instanceof SessionTelemetryAnnotationError) {
+        console.error("Failed to allocate session with required telemetry correlation:", e);
+        return c.json({ error: "Failed to allocate browser instance with session log correlation" }, 503);
     }
 
     console.error("Failed to allocate session:", e);
@@ -349,11 +406,32 @@ async function deleteLocalSession(sessionId: string) {
         return { deleted: false, notFound: true, session: null };
     }
 
+    const namespace = session.namespace || GAME_SERVER_NAMESPACE;
+    const endedAt = new Date().toISOString();
+    let podUid = session.podUid || null;
+
+    if (session.name && !podUid) {
+        const podMetadata = await K8s.getPodMetadata(session.name, namespace);
+        podUid = podMetadata.uid;
+    }
+
     if (session.name) {
-        await Agones.shutdownGameServer(session.name, session.namespace || GAME_SERVER_NAMESPACE);
+        await Agones.shutdownGameServer(session.name, namespace);
     }
 
     await DB.deleteSession(sessionId);
+    OtelEvents.sessionEnd({
+        sessionId,
+        clusterName: CLUSTER_NAME,
+        namespace,
+        podName: session.name,
+        podUid,
+        at: endedAt,
+        region: POPCORN_REGION,
+    }).catch((error) => {
+        console.error("❌ Failed to emit session.end OTEL event:", error);
+    });
+
     return { deleted: true, notFound: false, session };
 }
 
