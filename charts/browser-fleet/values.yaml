@@ -27,7 +27,7 @@ ccDevicePlugin:
   enabled: false
 
 serviceAccount:
-  gcpServiceAccount: browser-attestor.iam.gserviceaccount.com
+  gcpServiceAccount: ""
 
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
 browserRuntimeImagePullPolicy: IfNotPresent

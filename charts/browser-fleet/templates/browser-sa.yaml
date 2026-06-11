@@ -5,8 +5,10 @@ kind: ServiceAccount
 metadata:
   name: browser-sa
   namespace: {{ .Release.Namespace }}
+{{- if .Values.serviceAccount.gcpServiceAccount }}
   annotations:
     iam.gke.io/gcp-service-account: {{ .Values.serviceAccount.gcpServiceAccount | quote }}
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
