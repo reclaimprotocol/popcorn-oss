@@ -332,7 +332,10 @@ def calculate_target(
 
     live_gameservers = len(demand_relevant_gameservers(gameservers))
     free_ready_gameservers = ready_gameserver_count(gameservers)
-    demand_game_server_count = max(int(desired_replicas or 0), live_gameservers)
+    # FleetAutoscaler desired replicas track real session demand plus buffer.
+    # Live GameServers can temporarily spike during Agones replacement churn and
+    # should not be treated as user demand.
+    demand_game_server_count = int(desired_replicas or 0)
     baseline_gameservers = int(buffer_spec.get("minReplicas") or fleet.get("spec", {}).get("replicas") or 0)
 
     configured_headroom = CONFIG["burst_headroom_gameservers"]

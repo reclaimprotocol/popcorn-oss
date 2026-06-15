@@ -159,6 +159,17 @@ class CalculateTargetTest(unittest.TestCase):
         self.assertEqual(target["targetNodesTotal"], 6)
         self.assertEqual(target["desiredNodesPerZone"], 2)
 
+    def test_ignores_transient_live_gameserver_churn_as_demand(self):
+        target = self.calculate(desired=10, live=15, current_nodes=4)
+
+        self.assertEqual(target["desiredReplicas"], 10)
+        self.assertEqual(target["liveGameServers"], 15)
+        self.assertEqual(target["demandGameServers"], 10)
+        self.assertEqual(target["headroomGameServers"], 0)
+        self.assertFalse(target["headroomApplied"])
+        self.assertEqual(target["targetGameServers"], 10)
+        self.assertEqual(target["targetNodesTotal"], 2)
+
     def test_falls_back_to_fleet_replicas_when_autoscaler_status_is_missing(self):
         target = self.calculate(desired=None, live=8, fas={})
 
