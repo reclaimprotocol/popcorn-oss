@@ -34,6 +34,19 @@ data:
             type: regex_parser
             parse_from: attributes["log.file.path"]
             regex: '^/var/log/pods/(?P<k8s_namespace_name>[^_]+)_(?P<k8s_pod_name>.+)_(?P<k8s_pod_uid>[0-9a-f-]+)/(?P<k8s_container_name>[^/]+)/(?P<k8s_restart_count>\d+)\.log$'
+      filelog/prescaler:
+        include:
+          - /var/log/pods/{{ .Release.Namespace }}_gke-node-prescaler-*_*/*/*.log
+        include_file_path: true
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - id: container-parser
+            type: container
+          - id: extract-k8s-path
+            type: regex_parser
+            parse_from: attributes["log.file.path"]
+            regex: '^/var/log/pods/(?P<k8s_namespace_name>[^_]+)_(?P<k8s_pod_name>.+)_(?P<k8s_pod_uid>[0-9a-f-]+)/(?P<k8s_container_name>[^/]+)/(?P<k8s_restart_count>\d+)\.log$'
 
     processors:
       memory_limiter:
@@ -151,8 +164,12 @@ data:
     service:
       extensions: [file_storage]
       pipelines:
-        logs:
+        logs/browser:
           receivers: [filelog/browser]
           processors: [memory_limiter, resource/from-filepath, k8sattributes, transform/session, resource/drop-session-internals, filter/browser, batch]
+          exporters: [{{ ternary "otlp" "otlphttp" (ne $grpcEndpoint "") }}]
+        logs/prescaler:
+          receivers: [filelog/prescaler]
+          processors: [memory_limiter, resource/from-filepath, k8sattributes, batch]
           exporters: [{{ ternary "otlp" "otlphttp" (ne $grpcEndpoint "") }}]
 {{- end }}

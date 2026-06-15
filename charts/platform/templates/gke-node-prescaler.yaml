@@ -98,6 +98,10 @@ spec:
           image: {{ .Values.gkeNodePrescaler.image | quote }}
           imagePullPolicy: {{ .Values.gkeNodePrescaler.imagePullPolicy }}
           command: ["python", "/app/prescaler.py"]
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.gkeNodePrescaler.metrics.port }}
+              protocol: TCP
           env:
 {{- with .Values.gkeNodePrescaler.project }}
             - name: GCP_PROJECT
@@ -119,6 +123,12 @@ spec:
               value: {{ .Values.gkeNodePrescaler.intervalSeconds | quote }}
             - name: PODS_PER_NODE
               value: {{ .Values.gkeNodePrescaler.podsPerNode | quote }}
+            - name: NODE_STEP
+              value: {{ .Values.gkeNodePrescaler.nodeStep | quote }}
+            - name: EMERGENCY_NODE_STEP
+              value: {{ .Values.gkeNodePrescaler.emergencyNodeStep | quote }}
+            - name: LOOKAHEAD_SECONDS
+              value: {{ .Values.gkeNodePrescaler.lookaheadSeconds | quote }}
             - name: TARGET_SESSIONS_PER_MINUTE
               value: {{ .Values.gkeNodePrescaler.targetSessionsPerMinute | quote }}
             - name: DESIRED_COVERAGE_MINUTES
@@ -133,6 +143,16 @@ spec:
               value: {{ .Values.gkeNodePrescaler.maxNodesTotal | quote }}
             - name: SCALE_UP_COOLDOWN_SECONDS
               value: {{ .Values.gkeNodePrescaler.scaleUpCooldownSeconds | quote }}
+            - name: COOLDOWN_BYPASS_PENDING_PODS
+              value: {{ .Values.gkeNodePrescaler.cooldownBypassPendingPods | quote }}
+            - name: COOLDOWN_BYPASS_OLDEST_PENDING_SECONDS
+              value: {{ .Values.gkeNodePrescaler.cooldownBypassOldestPendingSeconds | quote }}
+            - name: INFLIGHT_RESIZE_GRACE_SECONDS
+              value: {{ .Values.gkeNodePrescaler.inflightResizeGraceSeconds | quote }}
+            - name: METRICS_ENABLED
+              value: {{ .Values.gkeNodePrescaler.metrics.enabled | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.gkeNodePrescaler.metrics.port | quote }}
             - name: DRY_RUN
               value: {{ .Values.gkeNodePrescaler.dryRun | quote }}
           resources:
@@ -145,4 +165,23 @@ spec:
         - name: script
           configMap:
             name: gke-node-prescaler
+{{- if .Values.gkeNodePrescaler.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gke-node-prescaler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: gke-node-prescaler
+spec:
+  selector:
+    app: gke-node-prescaler
+  type: ClusterIP
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: {{ .Values.gkeNodePrescaler.metrics.port }}
+      targetPort: metrics
+{{- end }}
 {{- end }}
