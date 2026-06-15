@@ -20,8 +20,11 @@ def load_prescaler():
 prescaler = load_prescaler()
 
 
-def game_server(state="Ready"):
-    return {"metadata": {}, "status": {"state": state}}
+def game_server(state="Ready", allocated_at=None):
+    annotations = {}
+    if allocated_at:
+        annotations["agones.dev/last-allocated"] = allocated_at
+    return {"metadata": {"annotations": annotations}, "status": {"state": state}}
 
 
 def pending_pod(created_at="2026-06-16T00:00:00Z", unschedulable=False):
@@ -61,7 +64,7 @@ def fleet(replicas=10):
     return {"spec": {"replicas": replicas}}
 
 
-def fleet_autoscaler(desired=None, min_replicas=10):
+def fleet_autoscaler(desired=None, min_replicas=10, buffer_size=10, max_replicas=150):
     status = {}
     if desired is not None:
         status["desiredReplicas"] = desired
@@ -69,7 +72,9 @@ def fleet_autoscaler(desired=None, min_replicas=10):
         "spec": {
             "policy": {
                 "buffer": {
+                    "bufferSize": buffer_size,
                     "minReplicas": min_replicas,
+                    "maxReplicas": max_replicas,
                 }
             }
         },
@@ -109,6 +114,15 @@ class CalculateTargetTest(unittest.TestCase):
                 "desired_coverage_minutes": 2,
                 "burst_headroom_gameservers": 15,
                 "apply_headroom_only_when_demand_above_baseline": True,
+                "dynamic_buffer_enabled": False,
+                "dynamic_buffer_patch_fleet_autoscaler": True,
+                "dynamic_buffer_min_ready_gameservers": 0,
+                "dynamic_buffer_max_ready_gameservers": 0,
+                "dynamic_buffer_lead_seconds": 180,
+                "dynamic_buffer_allocation_window_seconds": 120,
+                "dynamic_buffer_safety_margin_gameservers": 0,
+                "dynamic_buffer_scale_down_delay_seconds": 900,
+                "dynamic_buffer_decay_step_gameservers": 5,
                 "scale_ahead_free_slots": 4,
                 "max_nodes_total": 18,
                 "node_step": 1,
@@ -133,19 +147,22 @@ class CalculateTargetTest(unittest.TestCase):
         current_nodes=3,
         fas=None,
         demand_history=None,
+        gameservers=None,
+        buffer_state=None,
         now=None,
     ):
         nodes = [node(f"us-central1-{suffix}") for suffix in ("a", "b", "c")][:current_nodes]
         return prescaler.calculate_target(
             fleet(10),
             fas if fas is not None else fleet_autoscaler(desired),
-            [game_server() for _ in range(live)],
+            gameservers if gameservers is not None else [game_server() for _ in range(live)],
             nodes,
             NODE_POOL,
             pending_pods=pending,
             current_nodes_total=current_nodes,
             demand_history=demand_history,
             now=now,
+            buffer_state=buffer_state,
         )
 
     def test_uses_fleet_autoscaler_desired_replicas_as_primary_demand(self):
@@ -296,6 +313,120 @@ class CalculateTargetTest(unittest.TestCase):
         self.assertEqual(target["demandGrowthPerMinute"], 20.0)
         self.assertEqual(target["lookaheadGameServers"], 30)
         self.assertEqual(target["targetGameServers"], 75)
+
+    def test_dynamic_buffer_increases_from_recent_allocations(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 10,
+                "dynamic_buffer_max_ready_gameservers": 60,
+                "dynamic_buffer_lead_seconds": 180,
+                "dynamic_buffer_allocation_window_seconds": 120,
+                "dynamic_buffer_safety_margin_gameservers": 5,
+                "burst_headroom_gameservers": 0,
+            }
+        )
+        gameservers = [
+            game_server("Allocated", allocated_at="2026-06-16T00:00:30Z")
+            for _ in range(10)
+        ] + [game_server() for _ in range(10)]
+        now = prescaler.datetime(2026, 6, 16, 0, 1, 0, tzinfo=prescaler.timezone.utc).timestamp()
+
+        target = self.calculate(
+            desired=20,
+            live=20,
+            current_nodes=6,
+            gameservers=gameservers,
+            now=now,
+        )
+
+        self.assertEqual(target["allocationRatePerMinute"], 5.0)
+        self.assertEqual(target["dynamicBufferLoadGameServers"], 15)
+        self.assertEqual(target["desiredReadyBufferGameServers"], 30)
+        self.assertEqual(target["desiredFleetAutoscalerMinReplicas"], 30)
+        self.assertEqual(target["estimatedActiveSessions"], 10)
+        self.assertEqual(target["targetFleetReplicas"], 40)
+        self.assertEqual(target["targetGameServers"], 40)
+        self.assertTrue(target["dynamicBufferPatchRequired"])
+
+    def test_dynamic_buffer_holds_before_idle_delay_then_decays(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 10,
+                "dynamic_buffer_scale_down_delay_seconds": 900,
+                "dynamic_buffer_decay_step_gameservers": 5,
+                "burst_headroom_gameservers": 0,
+            }
+        )
+        buffer_spec = {"bufferSize": 40, "minReplicas": 40, "maxReplicas": 150}
+        buffer_state = {"lastLoadAt": 100.0}
+
+        held = prescaler.calculate_dynamic_buffer(
+            buffer_spec,
+            [game_server() for _ in range(10)],
+            demand_game_server_count=10,
+            baseline_gameservers=10,
+            buffer_state=buffer_state,
+            now=500,
+        )
+        decayed = prescaler.calculate_dynamic_buffer(
+            buffer_spec,
+            [game_server() for _ in range(10)],
+            demand_game_server_count=10,
+            baseline_gameservers=10,
+            buffer_state=buffer_state,
+            now=1100,
+        )
+
+        self.assertEqual(held["desiredReadyBufferGameServers"], 40)
+        self.assertEqual(held["desiredFleetAutoscalerMinReplicas"], 40)
+        self.assertFalse(held["dynamicBufferPatchRequired"])
+        self.assertEqual(decayed["desiredReadyBufferGameServers"], 35)
+        self.assertEqual(decayed["desiredFleetAutoscalerMinReplicas"], 35)
+        self.assertTrue(decayed["dynamicBufferPatchRequired"])
+
+    def test_dynamic_buffer_respects_configured_max(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 10,
+                "dynamic_buffer_max_ready_gameservers": 20,
+                "dynamic_buffer_lead_seconds": 180,
+                "dynamic_buffer_allocation_window_seconds": 120,
+                "dynamic_buffer_safety_margin_gameservers": 5,
+                "burst_headroom_gameservers": 0,
+            }
+        )
+        gameservers = [
+            game_server("Allocated", allocated_at="2026-06-16T00:00:30Z")
+            for _ in range(20)
+        ]
+        now = prescaler.datetime(2026, 6, 16, 0, 1, 0, tzinfo=prescaler.timezone.utc).timestamp()
+
+        target = self.calculate(desired=30, live=20, gameservers=gameservers, now=now)
+
+        self.assertEqual(target["desiredReadyBufferGameServers"], 20)
+        self.assertEqual(target["dynamicBufferMaxGameServers"], 20)
+
+    def test_dynamic_buffer_uses_configured_baseline_when_live_min_replicas_is_high(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 10,
+                "burst_headroom_gameservers": 0,
+            }
+        )
+
+        target = self.calculate(
+            desired=40,
+            live=40,
+            fas=fleet_autoscaler(desired=40, min_replicas=40, buffer_size=40),
+        )
+
+        self.assertEqual(target["baselineGameServers"], 10)
+        self.assertEqual(target["currentFleetAutoscalerMinReplicas"], 40)
+        self.assertEqual(target["targetFleetReplicas"], 40)
 
     def test_browser_pod_pressure_counts_unschedulable_and_oldest_pending(self):
         pressure = prescaler.browser_pod_pressure(

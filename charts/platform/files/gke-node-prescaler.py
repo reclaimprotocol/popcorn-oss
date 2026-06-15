@@ -18,6 +18,7 @@ METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instanc
 
 DEMAND_HISTORY = []
 RESIZE_STATE = {}
+BUFFER_STATE = {}
 DECISION_COUNTER = 0
 METRIC_GAUGES = {}
 METRIC_COUNTERS = {}
@@ -62,6 +63,15 @@ CONFIG = {
     "desired_coverage_minutes": env_int("DESIRED_COVERAGE_MINUTES", 2),
     "burst_headroom_gameservers": env_int("BURST_HEADROOM_GAMESERVERS", 0),
     "apply_headroom_only_when_demand_above_baseline": env_bool("APPLY_HEADROOM_ONLY_WHEN_DEMAND_ABOVE_BASELINE", True),
+    "dynamic_buffer_enabled": env_bool("DYNAMIC_BUFFER_ENABLED", False),
+    "dynamic_buffer_patch_fleet_autoscaler": env_bool("DYNAMIC_BUFFER_PATCH_FLEET_AUTOSCALER", True),
+    "dynamic_buffer_min_ready_gameservers": env_int("DYNAMIC_BUFFER_MIN_READY_GAMESERVERS", 0),
+    "dynamic_buffer_max_ready_gameservers": env_int("DYNAMIC_BUFFER_MAX_READY_GAMESERVERS", 0),
+    "dynamic_buffer_lead_seconds": env_int("DYNAMIC_BUFFER_LEAD_SECONDS", 180),
+    "dynamic_buffer_allocation_window_seconds": env_int("DYNAMIC_BUFFER_ALLOCATION_WINDOW_SECONDS", 120),
+    "dynamic_buffer_safety_margin_gameservers": env_int("DYNAMIC_BUFFER_SAFETY_MARGIN_GAMESERVERS", 0),
+    "dynamic_buffer_scale_down_delay_seconds": env_int("DYNAMIC_BUFFER_SCALE_DOWN_DELAY_SECONDS", 900),
+    "dynamic_buffer_decay_step_gameservers": env_int("DYNAMIC_BUFFER_DECAY_STEP_GAMESERVERS", 5),
     "scale_ahead_free_slots": env_int("SCALE_AHEAD_FREE_SLOTS", 4),
     "max_nodes_total": env_int("MAX_NODES_TOTAL", 0),
     "scale_up_cooldown_seconds": env_int("SCALE_UP_COOLDOWN_SECONDS", 60),
@@ -84,11 +94,11 @@ def log(level, message, **fields):
     print(json.dumps(payload, separators=(",", ":")), flush=True)
 
 
-def request_json(url, method="GET", headers=None, body=None, context=None, timeout=20):
+def request_json(url, method="GET", headers=None, body=None, context=None, timeout=20, content_type="application/json"):
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
-        headers = {"Content-Type": "application/json", **(headers or {})}
+        headers = {"Content-Type": content_type, **(headers or {})}
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
         with urllib.request.urlopen(req, context=context, timeout=timeout) as resp:
@@ -122,6 +132,19 @@ def k8s_get_optional(path):
         if "failed 404:" in str(exc):
             return None
         raise
+
+
+def k8s_patch(path, body):
+    with open(K8S_TOKEN_PATH, "r", encoding="utf-8") as token_file:
+        token = token_file.read().strip()
+    return request_json(
+        f"{K8S_API}{path}",
+        method="PATCH",
+        headers={"Authorization": f"Bearer {token}"},
+        body=body,
+        context=k8s_context(),
+        content_type="application/merge-patch+json",
+    )
 
 
 def metadata_token():
@@ -192,6 +215,32 @@ def ready_gameserver_count(items):
         for item in active_items(items)
         if item.get("status", {}).get("state") == "Ready"
     )
+
+
+def allocated_gameserver_count(items):
+    return sum(
+        1
+        for item in active_items(items)
+        if item.get("status", {}).get("state") == "Allocated"
+    )
+
+
+def gameserver_allocation_age_seconds(item, now):
+    annotations = item.get("metadata", {}).get("annotations", {})
+    raw = annotations.get("agones.dev/last-allocated") or annotations.get("popcorn.dev/session-bound-at")
+    return parse_k8s_timestamp_seconds(raw, now=now)
+
+
+def recent_allocation_rate_per_minute(items, now, window_seconds):
+    window_seconds = max(1, int(window_seconds or 1))
+    recent_allocations = 0
+    for item in active_items(items):
+        if item.get("status", {}).get("state") != "Allocated":
+            continue
+        age = gameserver_allocation_age_seconds(item, now)
+        if age is not None and age <= window_seconds:
+            recent_allocations += 1
+    return (recent_allocations / window_seconds) * 60.0
 
 
 def is_browser_gameserver_pod(pod):
@@ -305,6 +354,110 @@ def demand_growth_per_minute(history, now, current_demand):
     return max(0.0, (growth / elapsed) * 60.0)
 
 
+def int_or_zero(raw):
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def calculate_dynamic_buffer(
+    buffer_spec,
+    gameservers,
+    demand_game_server_count,
+    baseline_gameservers,
+    buffer_state=None,
+    now=None,
+):
+    if now is None:
+        now = time.time()
+
+    current_buffer = int_or_zero(buffer_spec.get("bufferSize"))
+    current_min_replicas = int_or_zero(buffer_spec.get("minReplicas"))
+    if not CONFIG["dynamic_buffer_enabled"]:
+        return {
+            "dynamicBufferEnabled": False,
+            "dynamicBufferPatchEnabled": CONFIG["dynamic_buffer_patch_fleet_autoscaler"],
+            "currentReadyBufferGameServers": current_buffer,
+            "desiredReadyBufferGameServers": current_buffer,
+            "currentFleetAutoscalerMinReplicas": current_min_replicas,
+            "desiredFleetAutoscalerMinReplicas": current_min_replicas,
+            "baseReadyBufferGameServers": current_buffer,
+            "dynamicBufferMaxGameServers": 0,
+            "dynamicBufferLeadSeconds": CONFIG["dynamic_buffer_lead_seconds"],
+            "dynamicBufferAllocationWindowSeconds": CONFIG["dynamic_buffer_allocation_window_seconds"],
+            "dynamicBufferSafetyMarginGameServers": 0,
+            "dynamicBufferScaleDownDelaySeconds": CONFIG["dynamic_buffer_scale_down_delay_seconds"],
+            "dynamicBufferDecayStepGameServers": max(1, CONFIG["dynamic_buffer_decay_step_gameservers"]),
+            "allocationRatePerMinute": 0.0,
+            "dynamicBufferLoadGameServers": 0,
+            "dynamicBufferPatchRequired": False,
+        }
+
+    max_replicas = int_or_zero(buffer_spec.get("maxReplicas"))
+    base_buffer = CONFIG["dynamic_buffer_min_ready_gameservers"]
+    if base_buffer <= 0:
+        base_buffer = current_buffer
+
+    allocation_window_seconds = CONFIG["dynamic_buffer_allocation_window_seconds"]
+    allocation_rate = recent_allocation_rate_per_minute(gameservers, now, allocation_window_seconds)
+    load_buffer = math.ceil(allocation_rate * CONFIG["dynamic_buffer_lead_seconds"] / 60.0)
+    safety_margin = CONFIG["dynamic_buffer_safety_margin_gameservers"] if allocation_rate > 0 else 0
+    desired_buffer = max(base_buffer, base_buffer + load_buffer + safety_margin)
+
+    configured_max_buffer = CONFIG["dynamic_buffer_max_ready_gameservers"]
+    if configured_max_buffer <= 0 and max_replicas > 0:
+        configured_max_buffer = max_replicas
+    if configured_max_buffer > 0:
+        desired_buffer = min(desired_buffer, configured_max_buffer)
+
+    state = buffer_state if buffer_state is not None else {}
+    if allocation_rate > 0 or demand_game_server_count > baseline_gameservers:
+        state["lastLoadAt"] = now
+
+    last_load_at = float(state.get("lastLoadAt", 0.0))
+    decay_step = max(1, CONFIG["dynamic_buffer_decay_step_gameservers"])
+    scale_down_delay = max(0, CONFIG["dynamic_buffer_scale_down_delay_seconds"])
+    applied_buffer = desired_buffer
+
+    if current_buffer > desired_buffer:
+        idle_seconds = now - last_load_at if last_load_at > 0 else float("inf")
+        if idle_seconds < scale_down_delay:
+            applied_buffer = current_buffer
+        else:
+            applied_buffer = max(desired_buffer, current_buffer - decay_step)
+
+    if applied_buffer > current_buffer:
+        state["lastIncreaseAt"] = now
+
+    desired_min_replicas = max(base_buffer, applied_buffer)
+
+    if buffer_state is not None:
+        buffer_state.update(state)
+
+    return {
+        "dynamicBufferEnabled": CONFIG["dynamic_buffer_enabled"],
+        "dynamicBufferPatchEnabled": CONFIG["dynamic_buffer_patch_fleet_autoscaler"],
+        "currentReadyBufferGameServers": current_buffer,
+        "desiredReadyBufferGameServers": applied_buffer,
+        "currentFleetAutoscalerMinReplicas": current_min_replicas,
+        "desiredFleetAutoscalerMinReplicas": desired_min_replicas,
+        "baseReadyBufferGameServers": base_buffer,
+        "dynamicBufferMaxGameServers": configured_max_buffer,
+        "dynamicBufferLeadSeconds": CONFIG["dynamic_buffer_lead_seconds"],
+        "dynamicBufferAllocationWindowSeconds": allocation_window_seconds,
+        "dynamicBufferSafetyMarginGameServers": safety_margin,
+        "dynamicBufferScaleDownDelaySeconds": scale_down_delay,
+        "dynamicBufferDecayStepGameServers": decay_step,
+        "allocationRatePerMinute": round(allocation_rate, 3),
+        "dynamicBufferLoadGameServers": load_buffer,
+        "dynamicBufferPatchRequired": (
+            applied_buffer != current_buffer
+            or desired_min_replicas != current_min_replicas
+        ),
+    }
+
+
 def calculate_target(
     fleet,
     fleet_autoscaler,
@@ -317,6 +470,7 @@ def calculate_target(
     now=None,
     unschedulable_pods=0,
     oldest_pending_pod_seconds=0,
+    buffer_state=None,
 ):
     if now is None:
         now = time.time()
@@ -331,32 +485,58 @@ def calculate_target(
         desired_replicas_source = "fleetSpec"
 
     live_gameservers = len(demand_relevant_gameservers(gameservers))
+    allocated_gameservers = allocated_gameserver_count(gameservers)
     free_ready_gameservers = ready_gameserver_count(gameservers)
     # FleetAutoscaler desired replicas track real session demand plus buffer.
     # Live GameServers can temporarily spike during Agones replacement churn and
     # should not be treated as user demand.
     demand_game_server_count = int(desired_replicas or 0)
-    baseline_gameservers = int(buffer_spec.get("minReplicas") or fleet.get("spec", {}).get("replicas") or 0)
+    fleet_spec_replicas = int_or_zero(fleet.get("spec", {}).get("replicas"))
+    if CONFIG["dynamic_buffer_enabled"] and CONFIG["dynamic_buffer_min_ready_gameservers"] > 0:
+        baseline_gameservers = max(fleet_spec_replicas, CONFIG["dynamic_buffer_min_ready_gameservers"])
+    else:
+        baseline_gameservers = int(buffer_spec.get("minReplicas") or fleet_spec_replicas or 0)
+    current_ready_buffer = int_or_zero(buffer_spec.get("bufferSize"))
+    estimated_active_sessions = max(allocated_gameservers, demand_game_server_count - current_ready_buffer)
+    dynamic_buffer = calculate_dynamic_buffer(
+        buffer_spec,
+        gameservers,
+        demand_game_server_count,
+        baseline_gameservers,
+        buffer_state=buffer_state,
+        now=now,
+    )
+    if CONFIG["dynamic_buffer_enabled"]:
+        target_fleet_replicas = max(
+            demand_game_server_count,
+            baseline_gameservers,
+            estimated_active_sessions + dynamic_buffer["desiredReadyBufferGameServers"],
+        )
+        max_replicas = int_or_zero(buffer_spec.get("maxReplicas"))
+        if max_replicas > 0:
+            target_fleet_replicas = min(target_fleet_replicas, max_replicas)
+    else:
+        target_fleet_replicas = demand_game_server_count
 
     configured_headroom = CONFIG["burst_headroom_gameservers"]
-    if configured_headroom <= 0:
+    if configured_headroom <= 0 and not CONFIG["dynamic_buffer_enabled"]:
         configured_headroom = CONFIG["target_sessions_per_minute"] * CONFIG["desired_coverage_minutes"]
 
     apply_headroom = True
     if CONFIG["apply_headroom_only_when_demand_above_baseline"]:
-        apply_headroom = demand_game_server_count > baseline_gameservers
+        apply_headroom = target_fleet_replicas > baseline_gameservers
 
     growth_per_minute = 0.0
     lookahead_gameservers = 0
     if demand_history is not None:
-        append_demand_history(demand_history, now, demand_game_server_count)
-        growth_per_minute = demand_growth_per_minute(demand_history, now, demand_game_server_count)
+        append_demand_history(demand_history, now, target_fleet_replicas)
+        growth_per_minute = demand_growth_per_minute(demand_history, now, target_fleet_replicas)
         lookahead_gameservers = math.ceil(growth_per_minute * CONFIG["lookahead_seconds"] / 60.0)
 
     headroom = configured_headroom if apply_headroom else 0
     scale_ahead_free_slots = max(0, CONFIG["scale_ahead_free_slots"])
     pending_pressure_bump = min(max(0, int(pending_pods or 0)), scale_ahead_free_slots)
-    target_gameservers = demand_game_server_count + headroom + lookahead_gameservers + pending_pressure_bump
+    target_gameservers = target_fleet_replicas + headroom + lookahead_gameservers + pending_pressure_bump
 
     node_locations = node_pool.get("locations") or node_zones(nodes) or [CONFIG["location"]]
     zone_count = max(1, len(node_locations))
@@ -385,9 +565,12 @@ def calculate_target(
         "desiredReplicas": desired_replicas,
         "desiredReplicasSource": desired_replicas_source,
         "liveGameServers": live_gameservers,
+        "allocatedGameServers": allocated_gameservers,
         "freeReadyGameServers": free_ready_gameservers,
         "baselineGameServers": baseline_gameservers,
         "demandGameServers": demand_game_server_count,
+        "estimatedActiveSessions": estimated_active_sessions,
+        "targetFleetReplicas": target_fleet_replicas,
         "headroomGameServers": headroom,
         "demandGrowthPerMinute": round(growth_per_minute, 3),
         "lookaheadSeconds": CONFIG["lookahead_seconds"],
@@ -405,6 +588,7 @@ def calculate_target(
         "scaleAheadFreeSlots": scale_ahead_free_slots,
         "scaleAheadApplied": scale_ahead_applied,
         "headroomApplied": apply_headroom,
+        **dynamic_buffer,
     }
 
 
@@ -551,6 +735,13 @@ def update_metrics(target, current_nodes_total, decision, reconcile_duration_sec
     set_gauge("popcorn_prescaler_unschedulable_pods_total", target["unschedulableBrowserPods"])
     set_gauge("popcorn_prescaler_oldest_pending_pod_seconds", target["oldestPendingPodSeconds"])
     set_gauge("popcorn_prescaler_free_ready_gameservers", target["freeReadyGameServers"])
+    set_gauge("popcorn_prescaler_allocated_gameservers", target["allocatedGameServers"])
+    set_gauge("popcorn_prescaler_allocation_rate_per_minute", target["allocationRatePerMinute"])
+    set_gauge("popcorn_prescaler_current_ready_buffer_gameservers", target["currentReadyBufferGameServers"])
+    set_gauge("popcorn_prescaler_desired_ready_buffer_gameservers", target["desiredReadyBufferGameServers"])
+    set_gauge("popcorn_prescaler_current_fleetautoscaler_min_replicas", target["currentFleetAutoscalerMinReplicas"])
+    set_gauge("popcorn_prescaler_desired_fleetautoscaler_min_replicas", target["desiredFleetAutoscalerMinReplicas"])
+    set_gauge("popcorn_prescaler_target_fleet_replicas", target["targetFleetReplicas"])
     set_gauge("popcorn_prescaler_reconcile_duration_seconds", reconcile_duration_seconds)
     for state, count in target.get("gameServerStates", {}).items():
         set_gauge("popcorn_prescaler_gameservers", count, {"state": state})
@@ -616,6 +807,7 @@ def reconcile(last_scale_at):
         now=now,
         unschedulable_pods=pod_pressure["unschedulable"],
         oldest_pending_pod_seconds=pod_pressure["oldestPendingSeconds"],
+        buffer_state=BUFFER_STATE,
     )
     gs_counts = state_counts(active_items(gameservers))
     target["gameServerStates"] = gs_counts
@@ -631,6 +823,32 @@ def reconcile(last_scale_at):
         **target,
         **decision,
     }
+
+    if (
+        target["dynamicBufferEnabled"]
+        and target["dynamicBufferPatchEnabled"]
+        and target["dynamicBufferPatchRequired"]
+    ):
+        patch = {
+            "spec": {
+                "policy": {
+                    "buffer": {
+                        "bufferSize": target["desiredReadyBufferGameServers"],
+                        "minReplicas": target["desiredFleetAutoscalerMinReplicas"],
+                    }
+                }
+            }
+        }
+        if CONFIG["dry_run"]:
+            log("info", "dry-run would patch FleetAutoscaler buffer", patch=patch, **fields)
+        else:
+            try:
+                k8s_patch(api_path("fleetautoscaler", CONFIG["fleet_autoscaler"]), patch)
+                inc_counter("popcorn_prescaler_fleetautoscaler_buffer_patches_total")
+                log("info", "patched FleetAutoscaler buffer", patch=patch, **fields)
+            except Exception as exc:
+                inc_counter("popcorn_prescaler_fleetautoscaler_buffer_patch_errors_total")
+                log("error", "failed to patch FleetAutoscaler buffer", error=str(exc), patch=patch, **fields)
 
     if decision["action"] == "none":
         log("info", "node capacity is sufficient", **fields)

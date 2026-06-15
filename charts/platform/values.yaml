@@ -151,6 +151,16 @@ gkeNodePrescaler:
   desiredCoverageMinutes: 2
   burstHeadroomGameServers: 0
   applyHeadroomOnlyWhenDemandAboveBaseline: true
+  dynamicBuffer:
+    enabled: false
+    patchFleetAutoscaler: true
+    minReadyGameServers: 0
+    maxReadyGameServers: 0
+    leadSeconds: 180
+    allocationWindowSeconds: 120
+    safetyMarginGameServers: 0
+    scaleDownDelaySeconds: 900
+    decayStepGameServers: 5
   scaleAheadFreeSlots: 4
   maxNodesTotal: 0
   scaleUpCooldownSeconds: 30
