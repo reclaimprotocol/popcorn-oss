@@ -26,7 +26,7 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["autoscaling.agones.dev"]
     resources: ["fleetautoscalers"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -98,6 +98,10 @@ spec:
           image: {{ .Values.gkeNodePrescaler.image | quote }}
           imagePullPolicy: {{ .Values.gkeNodePrescaler.imagePullPolicy }}
           command: ["python", "/app/prescaler.py"]
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.gkeNodePrescaler.metrics.port }}
+              protocol: TCP
           env:
 {{- with .Values.gkeNodePrescaler.project }}
             - name: GCP_PROJECT
@@ -119,6 +123,12 @@ spec:
               value: {{ .Values.gkeNodePrescaler.intervalSeconds | quote }}
             - name: PODS_PER_NODE
               value: {{ .Values.gkeNodePrescaler.podsPerNode | quote }}
+            - name: NODE_STEP
+              value: {{ .Values.gkeNodePrescaler.nodeStep | quote }}
+            - name: EMERGENCY_NODE_STEP
+              value: {{ .Values.gkeNodePrescaler.emergencyNodeStep | quote }}
+            - name: LOOKAHEAD_SECONDS
+              value: {{ .Values.gkeNodePrescaler.lookaheadSeconds | quote }}
             - name: TARGET_SESSIONS_PER_MINUTE
               value: {{ .Values.gkeNodePrescaler.targetSessionsPerMinute | quote }}
             - name: DESIRED_COVERAGE_MINUTES
@@ -127,12 +137,40 @@ spec:
               value: {{ .Values.gkeNodePrescaler.burstHeadroomGameServers | quote }}
             - name: APPLY_HEADROOM_ONLY_WHEN_DEMAND_ABOVE_BASELINE
               value: {{ .Values.gkeNodePrescaler.applyHeadroomOnlyWhenDemandAboveBaseline | quote }}
+            - name: DYNAMIC_BUFFER_ENABLED
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.enabled | quote }}
+            - name: DYNAMIC_BUFFER_PATCH_FLEET_AUTOSCALER
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.patchFleetAutoscaler | quote }}
+            - name: DYNAMIC_BUFFER_MIN_READY_GAMESERVERS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.minReadyGameServers | quote }}
+            - name: DYNAMIC_BUFFER_MAX_READY_GAMESERVERS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.maxReadyGameServers | quote }}
+            - name: DYNAMIC_BUFFER_LEAD_SECONDS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.leadSeconds | quote }}
+            - name: DYNAMIC_BUFFER_ALLOCATION_WINDOW_SECONDS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.allocationWindowSeconds | quote }}
+            - name: DYNAMIC_BUFFER_SAFETY_MARGIN_GAMESERVERS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.safetyMarginGameServers | quote }}
+            - name: DYNAMIC_BUFFER_SCALE_DOWN_DELAY_SECONDS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.scaleDownDelaySeconds | quote }}
+            - name: DYNAMIC_BUFFER_DECAY_STEP_GAMESERVERS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.decayStepGameServers | quote }}
             - name: SCALE_AHEAD_FREE_SLOTS
               value: {{ .Values.gkeNodePrescaler.scaleAheadFreeSlots | quote }}
             - name: MAX_NODES_TOTAL
               value: {{ .Values.gkeNodePrescaler.maxNodesTotal | quote }}
             - name: SCALE_UP_COOLDOWN_SECONDS
               value: {{ .Values.gkeNodePrescaler.scaleUpCooldownSeconds | quote }}
+            - name: COOLDOWN_BYPASS_PENDING_PODS
+              value: {{ .Values.gkeNodePrescaler.cooldownBypassPendingPods | quote }}
+            - name: COOLDOWN_BYPASS_OLDEST_PENDING_SECONDS
+              value: {{ .Values.gkeNodePrescaler.cooldownBypassOldestPendingSeconds | quote }}
+            - name: INFLIGHT_RESIZE_GRACE_SECONDS
+              value: {{ .Values.gkeNodePrescaler.inflightResizeGraceSeconds | quote }}
+            - name: METRICS_ENABLED
+              value: {{ .Values.gkeNodePrescaler.metrics.enabled | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.gkeNodePrescaler.metrics.port | quote }}
             - name: DRY_RUN
               value: {{ .Values.gkeNodePrescaler.dryRun | quote }}
           resources:
@@ -145,4 +183,23 @@ spec:
         - name: script
           configMap:
             name: gke-node-prescaler
+{{- if .Values.gkeNodePrescaler.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gke-node-prescaler
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: gke-node-prescaler
+spec:
+  selector:
+    app: gke-node-prescaler
+  type: ClusterIP
+  ports:
+    - name: metrics
+      protocol: TCP
+      port: {{ .Values.gkeNodePrescaler.metrics.port }}
+      targetPort: metrics
+{{- end }}
 {{- end }}

@@ -2,9 +2,12 @@ import json
 import math
 import os
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 K8S_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
 K8S_PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
@@ -12,6 +15,13 @@ K8S_API = f"https://{K8S_HOST}:{K8S_PORT}"
 K8S_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 K8S_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 METADATA_TOKEN_URL = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+
+DEMAND_HISTORY = []
+RESIZE_STATE = {}
+BUFFER_STATE = {}
+DECISION_COUNTER = 0
+METRIC_GAUGES = {}
+METRIC_COUNTERS = {}
 
 
 def env_int(name, default):
@@ -46,13 +56,30 @@ CONFIG = {
     "fleet_autoscaler": os.environ.get("FLEET_AUTOSCALER_NAME", "browser-autoscaler"),
     "interval_seconds": env_int("INTERVAL_SECONDS", 15),
     "pods_per_node": env_int("PODS_PER_NODE", 4),
+    "node_step": env_int("NODE_STEP", 1),
+    "emergency_node_step": env_int("EMERGENCY_NODE_STEP", 2),
+    "lookahead_seconds": env_int("LOOKAHEAD_SECONDS", 90),
     "target_sessions_per_minute": env_int("TARGET_SESSIONS_PER_MINUTE", 5),
     "desired_coverage_minutes": env_int("DESIRED_COVERAGE_MINUTES", 2),
     "burst_headroom_gameservers": env_int("BURST_HEADROOM_GAMESERVERS", 0),
     "apply_headroom_only_when_demand_above_baseline": env_bool("APPLY_HEADROOM_ONLY_WHEN_DEMAND_ABOVE_BASELINE", True),
+    "dynamic_buffer_enabled": env_bool("DYNAMIC_BUFFER_ENABLED", False),
+    "dynamic_buffer_patch_fleet_autoscaler": env_bool("DYNAMIC_BUFFER_PATCH_FLEET_AUTOSCALER", True),
+    "dynamic_buffer_min_ready_gameservers": env_int("DYNAMIC_BUFFER_MIN_READY_GAMESERVERS", 0),
+    "dynamic_buffer_max_ready_gameservers": env_int("DYNAMIC_BUFFER_MAX_READY_GAMESERVERS", 0),
+    "dynamic_buffer_lead_seconds": env_int("DYNAMIC_BUFFER_LEAD_SECONDS", 180),
+    "dynamic_buffer_allocation_window_seconds": env_int("DYNAMIC_BUFFER_ALLOCATION_WINDOW_SECONDS", 120),
+    "dynamic_buffer_safety_margin_gameservers": env_int("DYNAMIC_BUFFER_SAFETY_MARGIN_GAMESERVERS", 0),
+    "dynamic_buffer_scale_down_delay_seconds": env_int("DYNAMIC_BUFFER_SCALE_DOWN_DELAY_SECONDS", 900),
+    "dynamic_buffer_decay_step_gameservers": env_int("DYNAMIC_BUFFER_DECAY_STEP_GAMESERVERS", 5),
     "scale_ahead_free_slots": env_int("SCALE_AHEAD_FREE_SLOTS", 4),
     "max_nodes_total": env_int("MAX_NODES_TOTAL", 0),
     "scale_up_cooldown_seconds": env_int("SCALE_UP_COOLDOWN_SECONDS", 60),
+    "cooldown_bypass_pending_pods": env_int("COOLDOWN_BYPASS_PENDING_PODS", 1),
+    "cooldown_bypass_oldest_pending_seconds": env_int("COOLDOWN_BYPASS_OLDEST_PENDING_SECONDS", 20),
+    "inflight_resize_grace_seconds": env_int("INFLIGHT_RESIZE_GRACE_SECONDS", 180),
+    "metrics_enabled": env_bool("METRICS_ENABLED", True),
+    "metrics_port": env_int("METRICS_PORT", 9102),
     "dry_run": env_bool("DRY_RUN", False),
 }
 
@@ -67,11 +94,11 @@ def log(level, message, **fields):
     print(json.dumps(payload, separators=(",", ":")), flush=True)
 
 
-def request_json(url, method="GET", headers=None, body=None, context=None, timeout=20):
+def request_json(url, method="GET", headers=None, body=None, context=None, timeout=20, content_type="application/json"):
     data = None
     if body is not None:
         data = json.dumps(body).encode("utf-8")
-        headers = {"Content-Type": "application/json", **(headers or {})}
+        headers = {"Content-Type": content_type, **(headers or {})}
     req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
     try:
         with urllib.request.urlopen(req, context=context, timeout=timeout) as resp:
@@ -105,6 +132,19 @@ def k8s_get_optional(path):
         if "failed 404:" in str(exc):
             return None
         raise
+
+
+def k8s_patch(path, body):
+    with open(K8S_TOKEN_PATH, "r", encoding="utf-8") as token_file:
+        token = token_file.read().strip()
+    return request_json(
+        f"{K8S_API}{path}",
+        method="PATCH",
+        headers={"Authorization": f"Bearer {token}"},
+        body=body,
+        context=k8s_context(),
+        content_type="application/merge-patch+json",
+    )
 
 
 def metadata_token():
@@ -169,15 +209,104 @@ def state_counts(items):
     return counts
 
 
-def browser_pending_pods(pods):
-    pending = 0
-    for pod in active_items(pods):
-        labels = pod.get("metadata", {}).get("labels", {})
-        if labels.get("agones.dev/role") != "gameserver":
+def ready_gameserver_count(items):
+    return sum(
+        1
+        for item in active_items(items)
+        if item.get("status", {}).get("state") == "Ready"
+    )
+
+
+def allocated_gameserver_count(items):
+    return sum(
+        1
+        for item in active_items(items)
+        if item.get("status", {}).get("state") == "Allocated"
+    )
+
+
+def gameserver_allocation_age_seconds(item, now):
+    annotations = item.get("metadata", {}).get("annotations", {})
+    raw = annotations.get("agones.dev/last-allocated") or annotations.get("popcorn.dev/session-bound-at")
+    return parse_k8s_timestamp_seconds(raw, now=now)
+
+
+def recent_allocation_rate_per_minute(items, now, window_seconds):
+    window_seconds = max(1, int(window_seconds or 1))
+    recent_allocations = 0
+    for item in active_items(items):
+        if item.get("status", {}).get("state") != "Allocated":
             continue
-        if pod.get("status", {}).get("phase") == "Pending":
-            pending += 1
-    return pending
+        age = gameserver_allocation_age_seconds(item, now)
+        if age is not None and age <= window_seconds:
+            recent_allocations += 1
+    return (recent_allocations / window_seconds) * 60.0
+
+
+def is_browser_gameserver_pod(pod):
+    labels = pod.get("metadata", {}).get("labels", {})
+    return labels.get("agones.dev/role") == "gameserver"
+
+
+def parse_k8s_timestamp_seconds(raw, now=None):
+    if not raw:
+        return None
+    if now is None:
+        now = time.time()
+    try:
+        timestamp = raw
+        if timestamp.endswith("Z"):
+            timestamp = f"{timestamp[:-1]}+00:00"
+        parsed = datetime.fromisoformat(timestamp)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, now - parsed.timestamp())
+    except ValueError:
+        return None
+
+
+def pod_is_unschedulable(pod):
+    conditions = pod.get("status", {}).get("conditions", [])
+    for condition in conditions:
+        if condition.get("type") != "PodScheduled":
+            continue
+        if condition.get("status") == "False" and condition.get("reason") == "Unschedulable":
+            return True
+    return False
+
+
+def browser_pod_pressure(pods, now=None):
+    if now is None:
+        now = time.time()
+    pending = 0
+    unschedulable = 0
+    oldest_pending = 0.0
+
+    for pod in active_items(pods):
+        if not is_browser_gameserver_pod(pod):
+            continue
+        if pod.get("status", {}).get("phase") != "Pending":
+            continue
+
+        pending += 1
+        if pod_is_unschedulable(pod):
+            unschedulable += 1
+        age = parse_k8s_timestamp_seconds(
+            pod.get("metadata", {}).get("creationTimestamp"),
+            now=now,
+        )
+        if age is not None:
+            oldest_pending = max(oldest_pending, age)
+
+    return {
+        "pending": pending,
+        "unschedulable": unschedulable,
+        "oldestPendingSeconds": oldest_pending,
+    }
+
+
+def browser_pending_pods(pods):
+    return browser_pod_pressure(pods)["pending"]
 
 
 def nodes_for_pool(nodes):
@@ -204,7 +333,148 @@ def nodepool_path():
     )
 
 
-def calculate_target(fleet, fleet_autoscaler, gameservers, nodes, node_pool, pending_pods=0, current_nodes_total=None):
+def append_demand_history(history, now, demand):
+    history.append({"ts": now, "demand": demand})
+    window_seconds = max(120, CONFIG["lookahead_seconds"] * 2)
+    oldest_allowed = now - window_seconds
+    while len(history) > 1 and history[0]["ts"] < oldest_allowed:
+        history.pop(0)
+
+
+def demand_growth_per_minute(history, now, current_demand):
+    if len(history) < 2:
+        return 0.0
+
+    oldest = history[0]
+    elapsed = max(0.0, now - oldest["ts"])
+    if elapsed <= 0:
+        return 0.0
+
+    growth = current_demand - int(oldest["demand"])
+    return max(0.0, (growth / elapsed) * 60.0)
+
+
+def int_or_zero(raw):
+    try:
+        return int(raw or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def calculate_dynamic_buffer(
+    buffer_spec,
+    gameservers,
+    demand_game_server_count,
+    baseline_gameservers,
+    buffer_state=None,
+    now=None,
+):
+    if now is None:
+        now = time.time()
+
+    current_buffer = int_or_zero(buffer_spec.get("bufferSize"))
+    current_min_replicas = int_or_zero(buffer_spec.get("minReplicas"))
+    if not CONFIG["dynamic_buffer_enabled"]:
+        return {
+            "dynamicBufferEnabled": False,
+            "dynamicBufferPatchEnabled": CONFIG["dynamic_buffer_patch_fleet_autoscaler"],
+            "currentReadyBufferGameServers": current_buffer,
+            "desiredReadyBufferGameServers": current_buffer,
+            "currentFleetAutoscalerMinReplicas": current_min_replicas,
+            "desiredFleetAutoscalerMinReplicas": current_min_replicas,
+            "baseReadyBufferGameServers": current_buffer,
+            "dynamicBufferMaxGameServers": 0,
+            "dynamicBufferLeadSeconds": CONFIG["dynamic_buffer_lead_seconds"],
+            "dynamicBufferAllocationWindowSeconds": CONFIG["dynamic_buffer_allocation_window_seconds"],
+            "dynamicBufferSafetyMarginGameServers": 0,
+            "dynamicBufferScaleDownDelaySeconds": CONFIG["dynamic_buffer_scale_down_delay_seconds"],
+            "dynamicBufferDecayStepGameServers": max(1, CONFIG["dynamic_buffer_decay_step_gameservers"]),
+            "allocationRatePerMinute": 0.0,
+            "dynamicBufferLoadGameServers": 0,
+            "dynamicBufferPatchRequired": False,
+        }
+
+    max_replicas = int_or_zero(buffer_spec.get("maxReplicas"))
+    base_buffer = CONFIG["dynamic_buffer_min_ready_gameservers"]
+    if base_buffer <= 0:
+        base_buffer = current_buffer
+
+    allocation_window_seconds = CONFIG["dynamic_buffer_allocation_window_seconds"]
+    allocation_rate = recent_allocation_rate_per_minute(gameservers, now, allocation_window_seconds)
+    load_buffer = math.ceil(allocation_rate * CONFIG["dynamic_buffer_lead_seconds"] / 60.0)
+    safety_margin = CONFIG["dynamic_buffer_safety_margin_gameservers"] if allocation_rate > 0 else 0
+    desired_buffer = max(base_buffer, base_buffer + load_buffer + safety_margin)
+
+    configured_max_buffer = CONFIG["dynamic_buffer_max_ready_gameservers"]
+    if configured_max_buffer <= 0 and max_replicas > 0:
+        configured_max_buffer = max_replicas
+    if configured_max_buffer > 0:
+        desired_buffer = min(desired_buffer, configured_max_buffer)
+
+    state = buffer_state if buffer_state is not None else {}
+    if allocation_rate > 0 or demand_game_server_count > baseline_gameservers:
+        state["lastLoadAt"] = now
+
+    last_load_at = float(state.get("lastLoadAt", 0.0))
+    decay_step = max(1, CONFIG["dynamic_buffer_decay_step_gameservers"])
+    scale_down_delay = max(0, CONFIG["dynamic_buffer_scale_down_delay_seconds"])
+    applied_buffer = desired_buffer
+
+    if current_buffer > desired_buffer:
+        idle_seconds = now - last_load_at if last_load_at > 0 else float("inf")
+        if idle_seconds < scale_down_delay:
+            applied_buffer = current_buffer
+        else:
+            applied_buffer = max(desired_buffer, current_buffer - decay_step)
+
+    if applied_buffer > current_buffer:
+        state["lastIncreaseAt"] = now
+
+    desired_min_replicas = max(base_buffer, applied_buffer)
+
+    if buffer_state is not None:
+        buffer_state.update(state)
+
+    return {
+        "dynamicBufferEnabled": CONFIG["dynamic_buffer_enabled"],
+        "dynamicBufferPatchEnabled": CONFIG["dynamic_buffer_patch_fleet_autoscaler"],
+        "currentReadyBufferGameServers": current_buffer,
+        "desiredReadyBufferGameServers": applied_buffer,
+        "currentFleetAutoscalerMinReplicas": current_min_replicas,
+        "desiredFleetAutoscalerMinReplicas": desired_min_replicas,
+        "baseReadyBufferGameServers": base_buffer,
+        "dynamicBufferMaxGameServers": configured_max_buffer,
+        "dynamicBufferLeadSeconds": CONFIG["dynamic_buffer_lead_seconds"],
+        "dynamicBufferAllocationWindowSeconds": allocation_window_seconds,
+        "dynamicBufferSafetyMarginGameServers": safety_margin,
+        "dynamicBufferScaleDownDelaySeconds": scale_down_delay,
+        "dynamicBufferDecayStepGameServers": decay_step,
+        "allocationRatePerMinute": round(allocation_rate, 3),
+        "dynamicBufferLoadGameServers": load_buffer,
+        "dynamicBufferPatchRequired": (
+            applied_buffer != current_buffer
+            or desired_min_replicas != current_min_replicas
+        ),
+    }
+
+
+def calculate_target(
+    fleet,
+    fleet_autoscaler,
+    gameservers,
+    nodes,
+    node_pool,
+    pending_pods=0,
+    current_nodes_total=None,
+    demand_history=None,
+    now=None,
+    unschedulable_pods=0,
+    oldest_pending_pod_seconds=0,
+    buffer_state=None,
+):
+    if now is None:
+        now = time.time()
+
     autoscaler_status = fleet_autoscaler.get("status", {})
     autoscaler_spec = fleet_autoscaler.get("spec", {})
     buffer_spec = autoscaler_spec.get("policy", {}).get("buffer", {})
@@ -215,21 +485,58 @@ def calculate_target(fleet, fleet_autoscaler, gameservers, nodes, node_pool, pen
         desired_replicas_source = "fleetSpec"
 
     live_gameservers = len(demand_relevant_gameservers(gameservers))
-    demand_game_server_count = max(int(desired_replicas or 0), live_gameservers)
-    baseline_gameservers = int(buffer_spec.get("minReplicas") or fleet.get("spec", {}).get("replicas") or 0)
+    allocated_gameservers = allocated_gameserver_count(gameservers)
+    free_ready_gameservers = ready_gameserver_count(gameservers)
+    # FleetAutoscaler desired replicas track real session demand plus buffer.
+    # Live GameServers can temporarily spike during Agones replacement churn and
+    # should not be treated as user demand.
+    demand_game_server_count = int(desired_replicas or 0)
+    fleet_spec_replicas = int_or_zero(fleet.get("spec", {}).get("replicas"))
+    if CONFIG["dynamic_buffer_enabled"] and CONFIG["dynamic_buffer_min_ready_gameservers"] > 0:
+        baseline_gameservers = max(fleet_spec_replicas, CONFIG["dynamic_buffer_min_ready_gameservers"])
+    else:
+        baseline_gameservers = int(buffer_spec.get("minReplicas") or fleet_spec_replicas or 0)
+    current_ready_buffer = int_or_zero(buffer_spec.get("bufferSize"))
+    estimated_active_sessions = max(allocated_gameservers, demand_game_server_count - current_ready_buffer)
+    dynamic_buffer = calculate_dynamic_buffer(
+        buffer_spec,
+        gameservers,
+        demand_game_server_count,
+        baseline_gameservers,
+        buffer_state=buffer_state,
+        now=now,
+    )
+    if CONFIG["dynamic_buffer_enabled"]:
+        target_fleet_replicas = max(
+            demand_game_server_count,
+            baseline_gameservers,
+            estimated_active_sessions + dynamic_buffer["desiredReadyBufferGameServers"],
+        )
+        max_replicas = int_or_zero(buffer_spec.get("maxReplicas"))
+        if max_replicas > 0:
+            target_fleet_replicas = min(target_fleet_replicas, max_replicas)
+    else:
+        target_fleet_replicas = demand_game_server_count
 
     configured_headroom = CONFIG["burst_headroom_gameservers"]
-    if configured_headroom <= 0:
+    if configured_headroom <= 0 and not CONFIG["dynamic_buffer_enabled"]:
         configured_headroom = CONFIG["target_sessions_per_minute"] * CONFIG["desired_coverage_minutes"]
 
     apply_headroom = True
     if CONFIG["apply_headroom_only_when_demand_above_baseline"]:
-        apply_headroom = demand_game_server_count > baseline_gameservers
+        apply_headroom = target_fleet_replicas > baseline_gameservers
+
+    growth_per_minute = 0.0
+    lookahead_gameservers = 0
+    if demand_history is not None:
+        append_demand_history(demand_history, now, target_fleet_replicas)
+        growth_per_minute = demand_growth_per_minute(demand_history, now, target_fleet_replicas)
+        lookahead_gameservers = math.ceil(growth_per_minute * CONFIG["lookahead_seconds"] / 60.0)
 
     headroom = configured_headroom if apply_headroom else 0
     scale_ahead_free_slots = max(0, CONFIG["scale_ahead_free_slots"])
     pending_pressure_bump = min(max(0, int(pending_pods or 0)), scale_ahead_free_slots)
-    target_gameservers = demand_game_server_count + headroom + pending_pressure_bump
+    target_gameservers = target_fleet_replicas + headroom + lookahead_gameservers + pending_pressure_bump
 
     node_locations = node_pool.get("locations") or node_zones(nodes) or [CONFIG["location"]]
     zone_count = max(1, len(node_locations))
@@ -258,9 +565,20 @@ def calculate_target(fleet, fleet_autoscaler, gameservers, nodes, node_pool, pen
         "desiredReplicas": desired_replicas,
         "desiredReplicasSource": desired_replicas_source,
         "liveGameServers": live_gameservers,
+        "allocatedGameServers": allocated_gameservers,
+        "freeReadyGameServers": free_ready_gameservers,
         "baselineGameServers": baseline_gameservers,
+        "demandGameServers": demand_game_server_count,
+        "estimatedActiveSessions": estimated_active_sessions,
+        "targetFleetReplicas": target_fleet_replicas,
         "headroomGameServers": headroom,
+        "demandGrowthPerMinute": round(growth_per_minute, 3),
+        "lookaheadSeconds": CONFIG["lookahead_seconds"],
+        "lookaheadGameServers": lookahead_gameservers,
         "pendingPressureBump": pending_pressure_bump,
+        "pendingBrowserPods": int(pending_pods or 0),
+        "unschedulableBrowserPods": int(unschedulable_pods or 0),
+        "oldestPendingPodSeconds": round(float(oldest_pending_pod_seconds or 0), 3),
         "targetGameServers": target_gameservers,
         "targetNodesTotal": target_nodes_total,
         "desiredNodesPerZone": desired_per_zone,
@@ -270,10 +588,202 @@ def calculate_target(fleet, fleet_autoscaler, gameservers, nodes, node_pool, pen
         "scaleAheadFreeSlots": scale_ahead_free_slots,
         "scaleAheadApplied": scale_ahead_applied,
         "headroomApplied": apply_headroom,
+        **dynamic_buffer,
     }
 
 
+def observed_nodes_per_zone(current_nodes_total, zone_count):
+    return math.ceil(current_nodes_total / max(1, zone_count))
+
+
+def active_inflight_resize(resize_state, current_nodes_total, now):
+    if not resize_state:
+        return None
+
+    requested_at = float(resize_state.get("requestedAt", 0))
+    requested_total = int(resize_state.get("requestedNodesTotal", 0))
+    if requested_at <= 0 or requested_total <= 0:
+        return None
+    if now - requested_at > CONFIG["inflight_resize_grace_seconds"]:
+        return None
+    if current_nodes_total >= requested_total:
+        return None
+    return resize_state
+
+
+def emergency_reasons(target):
+    reasons = []
+    pending_threshold = max(0, CONFIG["cooldown_bypass_pending_pods"])
+    oldest_pending_threshold = max(0, CONFIG["cooldown_bypass_oldest_pending_seconds"])
+
+    if pending_threshold > 0 and target["unschedulableBrowserPods"] >= pending_threshold:
+        reasons.append("unschedulable_pending_pods")
+    if oldest_pending_threshold > 0 and target["oldestPendingPodSeconds"] >= oldest_pending_threshold:
+        reasons.append("oldest_pending_pod")
+    if target["freeReadyGameServers"] <= 0 and target["demandGameServers"] > target["baselineGameServers"]:
+        reasons.append("no_ready_gameserver_capacity")
+
+    return reasons
+
+
+def plan_scale_request(target, current_nodes_total, now, last_scale_at, resize_state=None):
+    zone_count = target["zoneCount"]
+    observed_per_zone = observed_nodes_per_zone(current_nodes_total, zone_count)
+    full_desired_per_zone = target["desiredNodesPerZone"]
+    full_desired_total = full_desired_per_zone * zone_count
+    inflight = active_inflight_resize(resize_state or {}, current_nodes_total, now)
+    inflight_per_zone = int(inflight.get("requestedNodesPerZone", 0)) if inflight else 0
+    basis_per_zone = max(observed_per_zone, inflight_per_zone)
+    reasons = emergency_reasons(target)
+    mode = "emergency" if reasons else "normal"
+    cooldown_remaining = 0.0
+
+    decision = {
+        "action": "none",
+        "mode": mode,
+        "reason": "capacity_sufficient",
+        "reasons": reasons,
+        "observedNodesPerZone": observed_per_zone,
+        "basisNodesPerZone": basis_per_zone,
+        "fullDesiredNodesPerZone": full_desired_per_zone,
+        "fullDesiredNodesTotal": full_desired_total,
+        "requestedNodesPerZone": observed_per_zone,
+        "requestedNodesTotal": current_nodes_total,
+        "cooldownRemainingSeconds": 0.0,
+        "cooldownBypassed": False,
+        "inflightResizeActive": bool(inflight),
+        "inflightRequestedNodesPerZone": inflight_per_zone,
+    }
+
+    if target["targetNodesTotal"] <= current_nodes_total or full_desired_per_zone <= observed_per_zone:
+        return decision
+
+    if full_desired_per_zone <= basis_per_zone:
+        decision.update(
+            {
+                "action": "skip_duplicate",
+                "reason": "resize_already_inflight",
+                "requestedNodesPerZone": basis_per_zone,
+                "requestedNodesTotal": basis_per_zone * zone_count,
+            }
+        )
+        return decision
+
+    if last_scale_at > 0:
+        cooldown_remaining = CONFIG["scale_up_cooldown_seconds"] - (now - last_scale_at)
+        if mode != "emergency" and cooldown_remaining > 0:
+            decision.update(
+                {
+                    "action": "skip_cooldown",
+                    "reason": "scale_up_cooldown",
+                    "cooldownRemainingSeconds": round(cooldown_remaining, 3),
+                }
+            )
+            return decision
+
+    step = max(1, CONFIG["emergency_node_step"] if mode == "emergency" else CONFIG["node_step"])
+    requested_per_zone = min(full_desired_per_zone, basis_per_zone + step)
+    decision.update(
+        {
+            "action": "resize",
+            "reason": ",".join(reasons) if reasons else "target_above_capacity",
+            "requestedNodesPerZone": requested_per_zone,
+            "requestedNodesTotal": requested_per_zone * zone_count,
+            "cooldownBypassed": mode == "emergency" and last_scale_at > 0 and cooldown_remaining > 0,
+        }
+    )
+    return decision
+
+
+def metric_key(name, labels=None):
+    label_items = tuple(sorted((labels or {}).items()))
+    return name, label_items
+
+
+def set_gauge(name, value, labels=None):
+    METRIC_GAUGES[metric_key(name, labels)] = float(value)
+
+
+def inc_counter(name, amount=1, labels=None):
+    key = metric_key(name, labels)
+    METRIC_COUNTERS[key] = METRIC_COUNTERS.get(key, 0.0) + float(amount)
+
+
+def format_metric_labels(labels):
+    if not labels:
+        return ""
+    rendered = ",".join(f'{key}="{str(value).replace(chr(34), chr(92) + chr(34))}"' for key, value in labels)
+    return f"{{{rendered}}}"
+
+
+def render_metrics():
+    lines = []
+    for (name, labels), value in sorted(METRIC_GAUGES.items()):
+        lines.append(f"{name}{format_metric_labels(labels)} {value:g}")
+    for (name, labels), value in sorted(METRIC_COUNTERS.items()):
+        lines.append(f"{name}{format_metric_labels(labels)} {value:g}")
+    return "\n".join(lines) + "\n"
+
+
+def update_metrics(target, current_nodes_total, decision, reconcile_duration_seconds):
+    set_gauge("popcorn_prescaler_current_nodes_total", current_nodes_total)
+    set_gauge("popcorn_prescaler_target_nodes_total", target["targetNodesTotal"])
+    set_gauge("popcorn_prescaler_observed_nodes_per_zone", decision["observedNodesPerZone"])
+    set_gauge("popcorn_prescaler_requested_nodes_per_zone", decision["requestedNodesPerZone"])
+    set_gauge("popcorn_prescaler_fleet_desired_replicas", int(target["desiredReplicas"] or 0))
+    set_gauge("popcorn_prescaler_pending_pods_total", target["pendingBrowserPods"])
+    set_gauge("popcorn_prescaler_unschedulable_pods_total", target["unschedulableBrowserPods"])
+    set_gauge("popcorn_prescaler_oldest_pending_pod_seconds", target["oldestPendingPodSeconds"])
+    set_gauge("popcorn_prescaler_free_ready_gameservers", target["freeReadyGameServers"])
+    set_gauge("popcorn_prescaler_allocated_gameservers", target["allocatedGameServers"])
+    set_gauge("popcorn_prescaler_allocation_rate_per_minute", target["allocationRatePerMinute"])
+    set_gauge("popcorn_prescaler_current_ready_buffer_gameservers", target["currentReadyBufferGameServers"])
+    set_gauge("popcorn_prescaler_desired_ready_buffer_gameservers", target["desiredReadyBufferGameServers"])
+    set_gauge("popcorn_prescaler_current_fleetautoscaler_min_replicas", target["currentFleetAutoscalerMinReplicas"])
+    set_gauge("popcorn_prescaler_desired_fleetautoscaler_min_replicas", target["desiredFleetAutoscalerMinReplicas"])
+    set_gauge("popcorn_prescaler_target_fleet_replicas", target["targetFleetReplicas"])
+    set_gauge("popcorn_prescaler_reconcile_duration_seconds", reconcile_duration_seconds)
+    for state, count in target.get("gameServerStates", {}).items():
+        set_gauge("popcorn_prescaler_gameservers", count, {"state": state})
+
+
+class MetricsHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/metrics":
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = render_metrics().encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format, *args):
+        return
+
+
+def start_metrics_server():
+    if not CONFIG["metrics_enabled"]:
+        return None
+    server = ThreadingHTTPServer(("0.0.0.0", CONFIG["metrics_port"]), MetricsHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    log("info", "started prescaler metrics endpoint", port=CONFIG["metrics_port"])
+    return server
+
+
+def next_decision_id(now):
+    global DECISION_COUNTER
+    DECISION_COUNTER += 1
+    return f"{int(now * 1000)}-{DECISION_COUNTER}"
+
+
 def reconcile(last_scale_at):
+    start = time.time()
+    now = start
+    decision_id = next_decision_id(now)
     namespace = CONFIG["namespace"]
     fleet = k8s_get(api_path("fleet", CONFIG["fleet"]))
     fleet_autoscaler = k8s_get_optional(api_path("fleetautoscaler", CONFIG["fleet_autoscaler"])) or {}
@@ -284,37 +794,104 @@ def reconcile(last_scale_at):
 
     pool_nodes = nodes_for_pool(nodes)
     current_nodes_total = len(pool_nodes)
-    pending_pods = browser_pending_pods(pods)
-    target = calculate_target(fleet, fleet_autoscaler, gameservers, pool_nodes, node_pool, pending_pods, current_nodes_total)
+    pod_pressure = browser_pod_pressure(pods, now=now)
+    target = calculate_target(
+        fleet,
+        fleet_autoscaler,
+        gameservers,
+        pool_nodes,
+        node_pool,
+        pod_pressure["pending"],
+        current_nodes_total,
+        demand_history=DEMAND_HISTORY,
+        now=now,
+        unschedulable_pods=pod_pressure["unschedulable"],
+        oldest_pending_pod_seconds=pod_pressure["oldestPendingSeconds"],
+        buffer_state=BUFFER_STATE,
+    )
     gs_counts = state_counts(active_items(gameservers))
+    target["gameServerStates"] = gs_counts
+    decision = plan_scale_request(target, current_nodes_total, now, last_scale_at, RESIZE_STATE)
 
     fields = {
+        "decisionId": decision_id,
         "namespace": namespace,
         "fleet": CONFIG["fleet"],
         "currentNodesTotal": current_nodes_total,
-        "pendingBrowserPods": pending_pods,
         "gameServerStates": gs_counts,
         "fleetAutoscalerFound": bool(fleet_autoscaler),
         **target,
+        **decision,
     }
 
-    if target["targetNodesTotal"] <= current_nodes_total:
+    if (
+        target["dynamicBufferEnabled"]
+        and target["dynamicBufferPatchEnabled"]
+        and target["dynamicBufferPatchRequired"]
+    ):
+        patch = {
+            "spec": {
+                "policy": {
+                    "buffer": {
+                        "bufferSize": target["desiredReadyBufferGameServers"],
+                        "minReplicas": target["desiredFleetAutoscalerMinReplicas"],
+                    }
+                }
+            }
+        }
+        if CONFIG["dry_run"]:
+            log("info", "dry-run would patch FleetAutoscaler buffer", patch=patch, **fields)
+        else:
+            try:
+                k8s_patch(api_path("fleetautoscaler", CONFIG["fleet_autoscaler"]), patch)
+                inc_counter("popcorn_prescaler_fleetautoscaler_buffer_patches_total")
+                log("info", "patched FleetAutoscaler buffer", patch=patch, **fields)
+            except Exception as exc:
+                inc_counter("popcorn_prescaler_fleetautoscaler_buffer_patch_errors_total")
+                log("error", "failed to patch FleetAutoscaler buffer", error=str(exc), patch=patch, **fields)
+
+    if decision["action"] == "none":
         log("info", "node capacity is sufficient", **fields)
-        return last_scale_at
+    elif decision["action"] == "skip_duplicate":
+        inc_counter("popcorn_prescaler_duplicate_resize_skips_total")
+        log("info", "scale-up skipped because resize is already in flight", **fields)
+    elif decision["action"] == "skip_cooldown":
+        inc_counter("popcorn_prescaler_cooldown_skips_total")
+        log("info", "scale-up skipped during cooldown", **fields)
+    elif decision["action"] == "resize":
+        if decision["cooldownBypassed"]:
+            inc_counter("popcorn_prescaler_cooldown_bypasses_total")
 
-    now = time.time()
-    cooldown_remaining = CONFIG["scale_up_cooldown_seconds"] - (now - last_scale_at)
-    if last_scale_at > 0 and cooldown_remaining > 0:
-        log("info", "scale-up skipped during cooldown", cooldownRemainingSeconds=round(cooldown_remaining, 1), **fields)
-        return last_scale_at
+        if CONFIG["dry_run"]:
+            log("info", "dry-run would resize node pool", **fields)
+        else:
+            operation = gcp_post(f"{nodepool_path()}:setSize", {"nodeCount": decision["requestedNodesPerZone"]})
+            fields["operation"] = operation.get("name")
+            log("info", "requested node pool resize", **fields)
 
-    if CONFIG["dry_run"]:
-        log("info", "dry-run would resize node pool", **fields)
-        return now
+        inc_counter(
+            "popcorn_prescaler_scale_requests_total",
+            labels={"mode": decision["mode"], "reason": decision["reason"]},
+        )
+        RESIZE_STATE.update(
+            {
+                "requestedAt": now,
+                "requestedNodesPerZone": decision["requestedNodesPerZone"],
+                "requestedNodesTotal": decision["requestedNodesTotal"],
+                "mode": decision["mode"],
+                "reason": decision["reason"],
+            }
+        )
+        last_scale_at = now
 
-    operation = gcp_post(f"{nodepool_path()}:setSize", {"nodeCount": target["desiredNodesPerZone"]})
-    log("info", "requested node pool resize", operation=operation.get("name"), **fields)
-    return now
+    active_resize = active_inflight_resize(RESIZE_STATE, current_nodes_total, now)
+    if not active_resize and RESIZE_STATE.get("requestedAt"):
+        observed_seconds = max(0.0, now - float(RESIZE_STATE["requestedAt"]))
+        set_gauge("popcorn_prescaler_resize_to_node_observed_seconds", observed_seconds)
+        RESIZE_STATE.clear()
+
+    update_metrics(target, current_nodes_total, decision, time.time() - start)
+    return last_scale_at
 
 
 def main():
@@ -323,6 +900,7 @@ def main():
     if missing:
         raise RuntimeError(f"missing required config: {', '.join(missing)}")
 
+    start_metrics_server()
     log("info", "starting GKE node pre-scaler", config=CONFIG)
     last_scale_at = 0.0
     while True:

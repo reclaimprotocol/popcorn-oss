@@ -144,13 +144,32 @@ gkeNodePrescaler:
   fleetAutoscalerName: browser-autoscaler
   intervalSeconds: 15
   podsPerNode: 4
+  nodeStep: 1
+  emergencyNodeStep: 2
+  lookaheadSeconds: 90
   targetSessionsPerMinute: 5
   desiredCoverageMinutes: 2
   burstHeadroomGameServers: 0
   applyHeadroomOnlyWhenDemandAboveBaseline: true
+  dynamicBuffer:
+    enabled: false
+    patchFleetAutoscaler: true
+    minReadyGameServers: 0
+    maxReadyGameServers: 0
+    leadSeconds: 180
+    allocationWindowSeconds: 120
+    safetyMarginGameServers: 0
+    scaleDownDelaySeconds: 900
+    decayStepGameServers: 5
   scaleAheadFreeSlots: 4
   maxNodesTotal: 0
   scaleUpCooldownSeconds: 30
+  cooldownBypassPendingPods: 1
+  cooldownBypassOldestPendingSeconds: 20
+  inflightResizeGraceSeconds: 180
+  metrics:
+    enabled: true
+    port: 9102
   dryRun: false
   resources:
     requests:
