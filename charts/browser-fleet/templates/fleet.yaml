@@ -1,5 +1,9 @@
 {{- $browserTurnSecret := default "browser-turn-secret" .Values.secrets.browserTurnName }}
 {{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
+{{- $streamingMode := default "webrtc" .Values.streaming.mode }}
+{{- if not (has $streamingMode (list "webrtc" "vnc")) }}
+{{- fail "streaming.mode must be either 'webrtc' or 'vnc'" }}
+{{- end }}
 apiVersion: agones.dev/v1
 kind: Fleet
 metadata:
@@ -24,13 +28,21 @@ spec:
         periodSeconds: {{ .Values.fleet.health.periodSeconds }}
         failureThreshold: {{ .Values.fleet.health.failureThreshold }}
       ports:
+{{- if eq $streamingMode "webrtc" }}
         - name: webrtc-udp
           portPolicy: Passthrough
           protocol: UDP
+{{- end }}
         - name: http
           containerPort: 8082
           portPolicy: None
           protocol: TCP
+{{- if eq $streamingMode "vnc" }}
+        - name: novnc
+          containerPort: 6080
+          portPolicy: None
+          protocol: TCP
+{{- end }}
         - name: cdp
           containerPort: 9222
           portPolicy: None
@@ -88,6 +100,7 @@ spec:
                   value: neko
                 - name: NEKO_PASSWORD_ADMIN
                   value: admin
+{{- if eq $streamingMode "webrtc" }}
                 - name: TURN_KEY_ID
                   valueFrom:
                     secretKeyRef:
@@ -104,6 +117,7 @@ spec:
                       name: {{ $browserTurnSecret | quote }}
                       key: NEKO_ICESERVERS
                       optional: true
+{{- end }}
                 - name: HTTPS_PROXY_URL
                   valueFrom:
                     secretKeyRef:
@@ -124,6 +138,8 @@ spec:
                   value: "true"
                 - name: REPLACE_DEFAULT_PAGE
                   value: "true"
+                - name: POPCORN_BROWSER_STREAMING_MODE
+                  value: {{ $streamingMode | quote }}
 {{- with .Values.extraBrowserRuntimeEnv }}
 {{ tpl (toYaml .) $ | nindent 16 }}
 {{- end }}

@@ -18,6 +18,10 @@ LOCAL_ANALYTICS_DB_PASSWORD ?= local_analytics_password
 LOCAL_TURN_KEY_ID ?= $(TURN_KEY_ID)
 LOCAL_TURN_API_TOKEN ?= $(TURN_API_TOKEN)
 LOCAL_NEKO_ICESERVERS ?= $(NEKO_ICESERVERS)
+LOCAL_BROWSER_STREAMING_MODE ?= webrtc
+LOCAL_BROWSER_STARTUP_URL ?= https://www.google.com
+LOCAL_PLATFORM_STREAMING_ARGS = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),--set 'poolManager.extraRoutePorts.novnc.routeKey=vnc' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.url=\{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000' --set-string 'poolManager.extraSessionUrls.vncUrl=\{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000' --set 'gateway.extraSessionRoutes[0].pathPrefix=vnc' --set 'gateway.extraSessionRoutes[0].routeKey=vnc',)
+LOCAL_BROWSER_STARTUP_ARGS = $(if $(LOCAL_BROWSER_STARTUP_URL),--set 'extraBrowserRuntimeEnv[0].name=POPCORN_BROWSER_STARTUP_URL' --set-string 'extraBrowserRuntimeEnv[0].value=$(LOCAL_BROWSER_STARTUP_URL)',)
 
 POOL_MANAGER_IMAGE := popcorn/pool-manager:local
 CONTROL_PLANE_IMAGE := popcorn/control-plane:local
@@ -165,6 +169,10 @@ load-local-images:
 	kind load docker-image $(TTL_CONTROLLER_IMAGE) --name $(CLUSTER_NAME)
 
 deploy-local: up local-secrets load-local-images
+	@if [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "webrtc" ] && [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "vnc" ]; then \
+		echo "LOCAL_BROWSER_STREAMING_MODE must be either 'webrtc' or 'vnc'."; \
+		exit 1; \
+	fi
 	kubectl apply -f examples/kubernetes/local-postgres.yaml
 	kubectl rollout status statefulset/local-postgres --namespace default --timeout=180s
 	helm upgrade --install popcorn-platform charts/platform \
@@ -193,7 +201,8 @@ deploy-local: up local-secrets load-local-images
 		--set gateway.backendConfig.enabled=false \
 		--set redis.enabled=true \
 		--set ttlController.enabled=true \
-		--set ttlController.imagePullPolicy=IfNotPresent
+		--set ttlController.imagePullPolicy=IfNotPresent \
+		$(LOCAL_PLATFORM_STREAMING_ARGS)
 	helm upgrade --install --force-conflicts browser-fleet charts/browser-fleet \
 		--namespace default \
 		--set externalSecrets.enabled=false \
@@ -202,6 +211,8 @@ deploy-local: up local-secrets load-local-images
 		--set browserRuntimeImagePullPolicy=IfNotPresent \
 		--set browserRuntimeAttestor.enabled=false \
 		--set webrtc.advertiseHost=127.0.0.1 \
+		--set streaming.mode=$(LOCAL_BROWSER_STREAMING_MODE) \
+		$(LOCAL_BROWSER_STARTUP_ARGS) \
 		--set fleet.replicas=1 \
 		--set fleet.browserRuntimeCpuRequest=500m \
 		--set fleet.browserRuntimeCpuLimit=2000m \
