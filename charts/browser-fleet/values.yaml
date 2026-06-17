@@ -59,6 +59,9 @@ imagePrepuller:
 webrtc:
   advertiseHost: ""
 
+streaming:
+  mode: webrtc
+
 fleet:
   replicas: 10
   scheduling: Packed

@@ -50,6 +50,7 @@ K8S_CA_FILE="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 
 export NEKO_LEGACY=true
 export NEKO_ICELITE=false
+POPCORN_BROWSER_STREAMING_MODE="${POPCORN_BROWSER_STREAMING_MODE:-webrtc}"
 
 # Agones health is process liveness, not allocation readiness. Start pings before
 # slower browser/TURN/bootstrap work so the sidecar does not retire the pod while
@@ -166,7 +167,7 @@ configure_direct_webrtc() {
 # 2. Register with Pool Manager (Legacy / Dynamic Mode) - SKIPPED FOR AGONES
 # Fleet configuration provides NEKO_ICESERVERS via environment variables.
 
-if [ ! -z "$TURN_KEY_ID" ] && [ ! -z "$TURN_API_TOKEN" ]; then
+if [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ] && [ ! -z "$TURN_KEY_ID" ] && [ ! -z "$TURN_API_TOKEN" ]; then
     echo "🔄 Fetching TURN credentials from Cloudflare..."
     RESPONSE=$(curl -s -X POST \
         -H "Authorization: Bearer $TURN_API_TOKEN" \
@@ -197,23 +198,31 @@ if [ ! -z "$TURN_KEY_ID" ] && [ ! -z "$TURN_API_TOKEN" ]; then
     else
         echo "❌ Failed to fetch TURN credentials. Response: $RESPONSE"
     fi
-else
+elif [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ]; then
     echo "⚠️  TURN_KEY_ID or TURN_API_TOKEN not set; skipping dynamic Cloudflare TURN configuration."
 fi
 
-if [ -z "${NEKO_ICESERVERS}" ]; then
-    echo "⚠️  NEKO_ICESERVERS not set. WebRTC might fail if not behind a NAT."
-else
-    echo "❄️  NEKO_ICESERVERS found in environment."
-fi
+if [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ]; then
+    if [ -z "${NEKO_ICESERVERS}" ]; then
+        echo "⚠️  NEKO_ICESERVERS not set. WebRTC might fail if not behind a NAT."
+    else
+        echo "❄️  NEKO_ICESERVERS found in environment."
+    fi
 
-configure_direct_webrtc
-if [ -z "${NEKO_UDPMUX:-}" ] || [ -z "${NEKO_NAT1TO1:-}" ]; then
-    echo "[entrypoint] ℹ️ WebRTC mode: TURN fallback only"
+    configure_direct_webrtc
+    if [ -z "${NEKO_UDPMUX:-}" ] || [ -z "${NEKO_NAT1TO1:-}" ]; then
+        echo "[entrypoint] ℹ️ WebRTC mode: TURN fallback only"
+    fi
+else
+    echo "[entrypoint] ℹ️ Browser streaming mode: ${POPCORN_BROWSER_STREAMING_MODE}"
 fi
 
 # 4. Start wrapper (Chromium + Neko + Supervisord)
-export ENABLE_WEBRTC=true
+if [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ]; then
+    export ENABLE_WEBRTC=true
+else
+    export ENABLE_WEBRTC=false
+fi
 # Fix Neko bind address and port to avoid conflicts (Agones SDK uses 8080)
 sed -i "s/0.0.0.0:8080/:$PORT/g" /etc/supervisor/conf.d/services/neko.conf
 
@@ -232,15 +241,31 @@ cleanup() {
 }
 trap cleanup TERM INT
 
-# Wait for Neko to serve HTTP (indicating readiness)
-echo "[entrypoint] Waiting for Neko to become ready on :$PORT..."
+# Wait for the selected stream server to serve HTTP (indicating readiness)
+READY_PORT="$PORT"
+READY_NAME="Neko"
+if [ "$POPCORN_BROWSER_STREAMING_MODE" = "vnc" ]; then
+    READY_PORT=6080
+    READY_NAME="noVNC"
+fi
+
+echo "[entrypoint] Waiting for ${READY_NAME} to become ready on :${READY_PORT}..."
+STREAM_READY=false
 for i in {1..60}; do
-    if curl -s http://localhost:$PORT >/dev/null; then
-        echo "[entrypoint] ✅ Neko is reachable!"
+    if curl -s "http://localhost:${READY_PORT}" >/dev/null; then
+        echo "[entrypoint] ✅ ${READY_NAME} is reachable!"
+        STREAM_READY=true
         break
     fi
     sleep 1
 done
+
+if [ "$STREAM_READY" != "true" ]; then
+    echo "[entrypoint] ❌ ${READY_NAME} did not become reachable on :${READY_PORT} within 60s"
+    agones_shutdown
+    kill "$NEKO_PID" 2>/dev/null || true
+    exit 1
+fi
 
 # Signal Readiness and Start Health Pings
 agones_ready
