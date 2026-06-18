@@ -20,7 +20,10 @@ LOCAL_TURN_API_TOKEN ?= $(TURN_API_TOKEN)
 LOCAL_NEKO_ICESERVERS ?= $(NEKO_ICESERVERS)
 LOCAL_BROWSER_STREAMING_MODE ?= webrtc
 LOCAL_BROWSER_STARTUP_URL ?= https://www.google.com
-LOCAL_PLATFORM_STREAMING_ARGS = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),--set 'poolManager.extraRoutePorts.novnc.routeKey=vnc' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.url=\{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000' --set-string 'poolManager.extraSessionUrls.vncUrl=\{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000' --set 'gateway.extraSessionRoutes[0].pathPrefix=vnc' --set 'gateway.extraSessionRoutes[0].routeKey=vnc',)
+LOCAL_VNC_URL = \{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000
+LOCAL_VNC_WS_URL = \{wsBase\}/vnc-ws/\{sessionId\}/\{restrictedToken\}
+LOCAL_PLATFORM_VNC_ROUTE_ARGS = --set 'poolManager.extraRoutePorts.novnc.routeKey=vnc' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.vncUrl=$(LOCAL_VNC_URL)' --set-string 'poolManager.extraSessionUrls.vncWsUrl=$(LOCAL_VNC_WS_URL)' --set 'gateway.extraSessionRoutes[0].pathPrefix=vnc' --set 'gateway.extraSessionRoutes[0].routeKey=vnc'
+LOCAL_PLATFORM_STREAMING_ARGS = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_VNC_ROUTE_ARGS) --set-string 'poolManager.extraSessionUrls.url=$(LOCAL_VNC_URL)',$(if $(filter both,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_VNC_ROUTE_ARGS),))
 LOCAL_BROWSER_STARTUP_ARGS = $(if $(LOCAL_BROWSER_STARTUP_URL),--set 'extraBrowserRuntimeEnv[0].name=POPCORN_BROWSER_STARTUP_URL' --set-string 'extraBrowserRuntimeEnv[0].value=$(LOCAL_BROWSER_STARTUP_URL)',)
 
 POOL_MANAGER_IMAGE := popcorn/pool-manager:local
@@ -169,8 +172,8 @@ load-local-images:
 	kind load docker-image $(TTL_CONTROLLER_IMAGE) --name $(CLUSTER_NAME)
 
 deploy-local: up local-secrets load-local-images
-	@if [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "webrtc" ] && [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "vnc" ]; then \
-		echo "LOCAL_BROWSER_STREAMING_MODE must be either 'webrtc' or 'vnc'."; \
+	@if [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "webrtc" ] && [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "vnc" ] && [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "both" ]; then \
+		echo "LOCAL_BROWSER_STREAMING_MODE must be one of 'webrtc', 'vnc', or 'both'."; \
 		exit 1; \
 	fi
 	kubectl apply -f examples/kubernetes/local-postgres.yaml

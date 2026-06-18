@@ -1,9 +1,11 @@
 {{- $browserTurnSecret := default "browser-turn-secret" .Values.secrets.browserTurnName }}
 {{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
 {{- $streamingMode := default "webrtc" .Values.streaming.mode }}
-{{- if not (has $streamingMode (list "webrtc" "vnc")) }}
-{{- fail "streaming.mode must be either 'webrtc' or 'vnc'" }}
+{{- if not (has $streamingMode (list "webrtc" "vnc" "both")) }}
+{{- fail "streaming.mode must be one of 'webrtc', 'vnc', or 'both'" }}
 {{- end }}
+{{- $enableWebrtc := or (eq $streamingMode "webrtc") (eq $streamingMode "both") }}
+{{- $enableVnc := or (eq $streamingMode "vnc") (eq $streamingMode "both") }}
 apiVersion: agones.dev/v1
 kind: Fleet
 metadata:
@@ -28,7 +30,7 @@ spec:
         periodSeconds: {{ .Values.fleet.health.periodSeconds }}
         failureThreshold: {{ .Values.fleet.health.failureThreshold }}
       ports:
-{{- if eq $streamingMode "webrtc" }}
+{{- if $enableWebrtc }}
         - name: webrtc-udp
           portPolicy: Passthrough
           protocol: UDP
@@ -37,7 +39,7 @@ spec:
           containerPort: 8082
           portPolicy: None
           protocol: TCP
-{{- if eq $streamingMode "vnc" }}
+{{- if $enableVnc }}
         - name: novnc
           containerPort: 6080
           portPolicy: None
@@ -100,7 +102,7 @@ spec:
                   value: neko
                 - name: NEKO_PASSWORD_ADMIN
                   value: admin
-{{- if eq $streamingMode "webrtc" }}
+{{- if $enableWebrtc }}
                 - name: TURN_KEY_ID
                   valueFrom:
                     secretKeyRef:
