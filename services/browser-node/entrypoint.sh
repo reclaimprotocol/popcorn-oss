@@ -51,6 +51,24 @@ K8S_CA_FILE="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
 export NEKO_LEGACY=true
 export NEKO_ICELITE=false
 POPCORN_BROWSER_STREAMING_MODE="${POPCORN_BROWSER_STREAMING_MODE:-webrtc}"
+ENABLE_WEBRTC_STREAM=false
+ENABLE_VNC_STREAM=false
+case "$POPCORN_BROWSER_STREAMING_MODE" in
+    webrtc)
+        ENABLE_WEBRTC_STREAM=true
+        ;;
+    vnc)
+        ENABLE_VNC_STREAM=true
+        ;;
+    both)
+        ENABLE_WEBRTC_STREAM=true
+        ENABLE_VNC_STREAM=true
+        ;;
+    *)
+        echo "[entrypoint] ❌ Invalid POPCORN_BROWSER_STREAMING_MODE: ${POPCORN_BROWSER_STREAMING_MODE}"
+        exit 1
+        ;;
+esac
 
 # Agones health is process liveness, not allocation readiness. Start pings before
 # slower browser/TURN/bootstrap work so the sidecar does not retire the pod while
@@ -167,7 +185,7 @@ configure_direct_webrtc() {
 # 2. Register with Pool Manager (Legacy / Dynamic Mode) - SKIPPED FOR AGONES
 # Fleet configuration provides NEKO_ICESERVERS via environment variables.
 
-if [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ] && [ ! -z "$TURN_KEY_ID" ] && [ ! -z "$TURN_API_TOKEN" ]; then
+if [ "$ENABLE_WEBRTC_STREAM" = "true" ] && [ ! -z "$TURN_KEY_ID" ] && [ ! -z "$TURN_API_TOKEN" ]; then
     echo "🔄 Fetching TURN credentials from Cloudflare..."
     RESPONSE=$(curl -s -X POST \
         -H "Authorization: Bearer $TURN_API_TOKEN" \
@@ -198,11 +216,11 @@ if [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ] && [ ! -z "$TURN_KEY_ID" ] &
     else
         echo "❌ Failed to fetch TURN credentials. Response: $RESPONSE"
     fi
-elif [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ]; then
+elif [ "$ENABLE_WEBRTC_STREAM" = "true" ]; then
     echo "⚠️  TURN_KEY_ID or TURN_API_TOKEN not set; skipping dynamic Cloudflare TURN configuration."
 fi
 
-if [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ]; then
+if [ "$ENABLE_WEBRTC_STREAM" = "true" ]; then
     if [ -z "${NEKO_ICESERVERS}" ]; then
         echo "⚠️  NEKO_ICESERVERS not set. WebRTC might fail if not behind a NAT."
     else
@@ -218,10 +236,15 @@ else
 fi
 
 # 4. Start wrapper (Chromium + Neko + Supervisord)
-if [ "$POPCORN_BROWSER_STREAMING_MODE" = "webrtc" ]; then
+if [ "$ENABLE_WEBRTC_STREAM" = "true" ]; then
     export ENABLE_WEBRTC=true
 else
     export ENABLE_WEBRTC=false
+fi
+if [ "$ENABLE_VNC_STREAM" = "true" ]; then
+    export ENABLE_VNC=true
+else
+    export ENABLE_VNC=false
 fi
 # Fix Neko bind address and port to avoid conflicts (Agones SDK uses 8080)
 sed -i "s/0.0.0.0:8080/:$PORT/g" /etc/supervisor/conf.d/services/neko.conf
@@ -241,30 +264,35 @@ cleanup() {
 }
 trap cleanup TERM INT
 
-# Wait for the selected stream server to serve HTTP (indicating readiness)
-READY_PORT="$PORT"
-READY_NAME="Neko"
-if [ "$POPCORN_BROWSER_STREAMING_MODE" = "vnc" ]; then
-    READY_PORT=6080
-    READY_NAME="noVNC"
+wait_for_stream() {
+    local name="$1"
+    local port="$2"
+    echo "[entrypoint] Waiting for ${name} to become ready on :${port}..."
+    for i in {1..60}; do
+        if curl -s "http://localhost:${port}" >/dev/null; then
+            echo "[entrypoint] ✅ ${name} is reachable!"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "[entrypoint] ❌ ${name} did not become reachable on :${port} within 60s"
+    return 1
+}
+
+if [ "$ENABLE_WEBRTC_STREAM" = "true" ]; then
+    wait_for_stream "Neko" "$PORT" || {
+        agones_shutdown
+        kill "$NEKO_PID" 2>/dev/null || true
+        exit 1
+    }
 fi
 
-echo "[entrypoint] Waiting for ${READY_NAME} to become ready on :${READY_PORT}..."
-STREAM_READY=false
-for i in {1..60}; do
-    if curl -s "http://localhost:${READY_PORT}" >/dev/null; then
-        echo "[entrypoint] ✅ ${READY_NAME} is reachable!"
-        STREAM_READY=true
-        break
-    fi
-    sleep 1
-done
-
-if [ "$STREAM_READY" != "true" ]; then
-    echo "[entrypoint] ❌ ${READY_NAME} did not become reachable on :${READY_PORT} within 60s"
-    agones_shutdown
-    kill "$NEKO_PID" 2>/dev/null || true
-    exit 1
+if [ "$ENABLE_VNC_STREAM" = "true" ]; then
+    wait_for_stream "noVNC" 6080 || {
+        agones_shutdown
+        kill "$NEKO_PID" 2>/dev/null || true
+        exit 1
+    }
 fi
 
 # Signal Readiness and Start Health Pings
