@@ -32,6 +32,36 @@ Request body:
 - If `sessionId` is omitted, Popcorn generates one. If `ttlSeconds` is omitted,
   GameServer cleanup uses the configured TTL controller fallback.
 
+Client integrations fetch their own browser sessions through the control plane:
+
+```http
+GET /v1/session/:id
+Authorization: Bearer <client-id>:<client-secret>
+```
+
+Response:
+
+```json
+{
+  "success": true,
+  "sessionId": "demo-session",
+  "url": "https://asia.popcorn.example/browser-fleet-abc/demo-session/<token>/",
+  "cdpUrl": "wss://asia.popcorn.example/cdp/demo-session/<token>/",
+  "apiUrl": "https://asia.popcorn.example/api/demo-session/<token>/",
+  "expiresAt": "2026-05-26T12:30:00.000Z",
+  "region": "asia-south1",
+  "clusterName": "asia-cluster"
+}
+```
+
+The response mirrors the creation response, with `region` and `clusterName`
+added by the control plane.
+
+- `404` — the session does not exist, or it belongs to another client.
+- `409` — the session exists but its region is not configured on this control
+  plane.
+- `502` — the control plane could not reach the regional pool manager.
+
 Client integrations extend their own browser sessions through the control plane:
 
 ```http

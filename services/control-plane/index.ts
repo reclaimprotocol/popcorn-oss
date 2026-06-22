@@ -269,6 +269,58 @@ async function deleteRoutedSession(sessionId: string, clientId?: string) {
   };
 }
 
+async function getRoutedSession(sessionId: string, clientId?: string) {
+  const [session] = await SessionService.getSession(sessionId);
+
+  if (!session) {
+    return {
+      status: 404,
+      body: { success: false, error: 'Session not found' },
+    };
+  }
+
+  if (clientId && session.clientId !== clientId) {
+    return {
+      status: 404,
+      body: { success: false, error: 'Session not found' },
+    };
+  }
+
+  const region = resolveSessionRegion(session);
+  if (!region) {
+    return {
+      status: 409,
+      body: { success: false, error: 'Session region is not configured' },
+    };
+  }
+
+  let remote;
+  try {
+    remote = await getRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken);
+  } catch (error) {
+    return {
+      status: 502,
+      body: {
+        success: false,
+        error: 'Failed to contact regional pool manager',
+        details: (error as Error).message,
+      },
+    };
+  }
+
+  if (!remote.response.ok) {
+    return {
+      status: remote.response.status,
+      body: remote.body || { success: false, error: 'Session not found in region' },
+    };
+  }
+
+  return {
+    status: 200,
+    body: { ...remote.body, region: region.name, clusterName: region.clusterName },
+  };
+}
+
 async function routeSession(identity: { clientId: string; clientName: string }, body: any): Promise<{ status: number; body: any }> {
   const requestedSessionId = readRequestedSessionId(body);
   if (requestedSessionId === '') {
@@ -543,6 +595,16 @@ app.post('/v1/sessions', async (c) => {
   }
   const body = await c.req.json().catch(() => ({}));
   return createRoutedSession(c, auth.identity!, body);
+});
+
+app.get('/v1/session/:id', async (c) => {
+  const auth = await authenticateClient(c);
+  if (auth.response) {
+    return auth.response;
+  }
+
+  const result = await getRoutedSession(c.req.param('id'), auth.identity!.clientId);
+  return c.json(result.body, result.status as any);
 });
 
 app.delete('/v1/session/:id', async (c) => {
