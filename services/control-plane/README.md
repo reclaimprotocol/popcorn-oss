@@ -83,6 +83,18 @@ Response:
 }
 ```
 
+Fetch a session owned by the client:
+
+```http
+GET /v1/session/:id
+Authorization: Bearer <client-id>:<client-secret>
+```
+
+Returns the regional session details (same shape as the creation response,
+including `region` and `clusterName`). Unknown sessions, and sessions owned by
+another client, return `404`. A session whose region is not configured returns
+`409`.
+
 Extend a session owned by the client:
 
 ```http
