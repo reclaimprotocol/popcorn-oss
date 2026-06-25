@@ -63,6 +63,10 @@ spec:
       template:
         spec:
           serviceAccountName: browser-sa
+{{- with .Values.podSecurityContext }}
+          securityContext:
+{{- toYaml . | nindent 12 }}
+{{- end }}
 {{- with .Values.imagePullSecrets }}
           imagePullSecrets:
 {{ toYaml . | nindent 12 }}

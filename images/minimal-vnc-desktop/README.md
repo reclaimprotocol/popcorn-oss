@@ -47,6 +47,10 @@ on `127.0.0.1:5900` inside the container, and Chromium's raw DevTools endpoint
 listens on `127.0.0.1:9223` by default. noVNC and CDP listeners bind early, but
 their HTTP and WebSocket routes return `503` until the configured app opens a
 matching X window. The default readiness pattern waits for Chromium/Chrome.
+Startup logs are written under `/var/log/app` by default, matching the fleet
+chart's mounted log directory.
+The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
+writable by the image's non-root `kernel` user.
 
 The Reclaim proof endpoint is served on the same HTTP surface:
 
@@ -77,6 +81,7 @@ internal token path or an equivalent private gateway.
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
+| `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log`, `xvnc.log`, `novnc-proxy.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
 | `REPLACE_DEFAULT_PAGE` | `false` | Replace the default DuckDuckGo managed policy with the Reclaim portal policy before Chromium starts. |

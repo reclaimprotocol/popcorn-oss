@@ -16,6 +16,7 @@ CDP_FULL_LISTEN="${CDP_FULL_LISTEN:-0.0.0.0:${CDP_FULL_PORT}}"
 APP_COMMAND="${APP_COMMAND:-/usr/local/bin/start-chromium}"
 READY_FILE="${READY_FILE:-/tmp/minimal-vnc-ready}"
 READY_TIMEOUT="${READY_TIMEOUT:-30}"
+LOG_DIR="${LOG_DIR:-/var/log/app}"
 ENABLE_AGONES="${ENABLE_AGONES:-auto}"
 AGONES_SDK_HOST="${AGONES_SDK_HOST:-127.0.0.1}"
 AGONES_SDK_HTTP_PORT="${AGONES_SDK_HTTP_PORT:-${AGONES_SDK_PORT:-9358}}"
@@ -28,13 +29,33 @@ export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 export CDP_INTERNAL_PORT
 export CHROME_REMOTE_DEBUGGING_PORT="$CDP_INTERNAL_PORT"
 
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$HOME/user-data" /tmp/.X11-unix /var/log/minimal-vnc
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$HOME/user-data" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 
 pids=()
 cleanup_done=false
 AGONES_ENABLED=false
 AGONES_HEALTH_PID=""
+
+setup_logging() {
+  local requested_log_dir="$LOG_DIR"
+
+  if ! mkdir -p "$LOG_DIR" 2>/dev/null || ! touch "$LOG_DIR/.write-test" 2>/dev/null; then
+    LOG_DIR="/tmp/minimal-vnc-logs"
+    mkdir -p "$LOG_DIR"
+    echo "[entrypoint] warning: ${requested_log_dir} is not writable; using ${LOG_DIR}" >&2
+  else
+    rm -f "$LOG_DIR/.write-test"
+  fi
+
+  export LOG_DIR
+  exec > >(tee -a "$LOG_DIR/entrypoint.log") 2>&1
+  echo "[entrypoint] Writing logs to ${LOG_DIR}"
+}
+
+log_file() {
+  printf '%s/%s.log' "$LOG_DIR" "$1"
+}
 
 configure_agones() {
   case "$ENABLE_AGONES" in
@@ -206,6 +227,7 @@ wait_for_window() {
 
 rm -f "$READY_FILE"
 READY_WINDOW_PATTERN="${READY_WINDOW_PATTERN:-$(default_ready_window_pattern)}"
+setup_logging
 configure_agones
 start_agones_health
 
@@ -218,7 +240,7 @@ Xvnc "$DISPLAY" \
   -SecurityTypes None \
   -AlwaysShared=1 \
   -Log '*:stderr:30' \
-  > /var/log/minimal-vnc/xvnc.log 2>&1 &
+  > "$(log_file xvnc)" 2>&1 &
 pids+=("$!")
 
 wait_for_tcp 127.0.0.1 "$VNC_PORT" Xvnc
@@ -232,7 +254,7 @@ novnc-proxy \
   --cdp-upstream "$CDP_UPSTREAM_ADDR" \
   --cdp-restricted-listen "$CDP_RESTRICTED_LISTEN" \
   --cdp-full-listen "$CDP_FULL_LISTEN" \
-  > /var/log/minimal-vnc/novnc-proxy.log 2>&1 &
+  > "$(log_file novnc-proxy)" 2>&1 &
 pids+=("$!")
 
 wait_for_tcp 127.0.0.1 "$NOVNC_PORT" "noVNC proxy"
@@ -244,11 +266,11 @@ if [[ "$CDP_FULL_LISTEN" != "" ]]; then
 fi
 
 echo "[entrypoint] Starting openbox"
-openbox > /var/log/minimal-vnc/openbox.log 2>&1 &
+openbox > "$(log_file openbox)" 2>&1 &
 pids+=("$!")
 
 echo "[entrypoint] Starting app: ${APP_COMMAND}"
-bash -lc "exec ${APP_COMMAND}" > /var/log/minimal-vnc/app.log 2>&1 &
+bash -lc "exec ${APP_COMMAND}" > "$(log_file app)" 2>&1 &
 app_pid="$!"
 pids+=("$app_pid")
 

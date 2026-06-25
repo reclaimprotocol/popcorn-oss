@@ -59,6 +59,7 @@ ENV APP_COMMAND=/usr/local/bin/start-chromium
 ENV APP_URL=
 ENV READY_FILE=/tmp/minimal-vnc-ready
 ENV READY_TIMEOUT=30
+ENV LOG_DIR=/var/log/app
 ENV HOME=/home/kernel
 ENV XDG_CONFIG_HOME=/home/kernel/.config
 ENV XDG_CACHE_HOME=/home/kernel/.cache
@@ -100,14 +101,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     apt-get purge -y --auto-remove curl xz-utils; \
     rm -rf /tmp/chromium-artifacts /tmp/novnc-src /tmp/novnc.tar.gz /tmp/apt-packages.txt /tmp/chromium-artifacts.tsv /tmp/novnc.lock; \
     useradd -m -s /bin/bash kernel; \
-    mkdir -p /home/kernel/user-data /home/kernel/.config/openbox /home/kernel/.cache /tmp/.X11-unix /var/log/minimal-vnc; \
+    mkdir -p /home/kernel/user-data /home/kernel/.config/openbox /home/kernel/.cache /tmp/.X11-unix /var/log/app; \
+    ln -sfn /var/log/app /var/log/minimal-vnc; \
     printf '<openbox_config xmlns="http://openbox.org/3.4/rc"><applications /></openbox_config>\n' >/home/kernel/.config/openbox/rc.xml; \
-    chown -R kernel:kernel /home/kernel /var/log/minimal-vnc; \
+    chown -R kernel:kernel /home/kernel /var/log/app; \
+    chown -h kernel:kernel /var/log/minimal-vnc; \
     chmod 1777 /tmp /tmp/.X11-unix; \
     rm -f /etc/machine-id /var/lib/dbus/machine-id /var/cache/ldconfig/aux-cache /run/systemd/resolve/stub-resolv.conf; \
     rm -rf /var/cache/debconf/* /var/cache/fontconfig/* /var/lib/apt/lists/*; \
     find /usr/local/share/fonts /usr/share/fonts -name '.uuid' -delete 2>/dev/null || true; \
-    find /var/log -mindepth 1 ! -path /var/log/minimal-vnc ! -path /var/log/minimal-vnc/\* -delete; \
+    find /var/log -mindepth 1 ! -path /var/log/app ! -path /var/log/app/\* ! -path /var/log/minimal-vnc -delete; \
     find /etc /home /run /tmp /usr /var -xdev \
         \( -path /etc/hosts -o -path /etc/hostname -o -path /etc/resolv.conf -o -path /var/cache/apt -o -path /var/cache/apt/\* -o -path /var/lib/apt -o -path /var/lib/apt/\* \) -prune -o \
         -newerct "$touch_start" \

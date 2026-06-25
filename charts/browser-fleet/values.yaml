@@ -19,6 +19,10 @@ externalSecrets:
 
 imagePullSecrets: []
 
+podSecurityContext:
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+
 secrets:
   browserTurnName: browser-turn-secret
   browserRuntimeProxyName: browser-runtime-proxy-secret
