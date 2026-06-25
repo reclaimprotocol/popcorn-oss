@@ -1,4 +1,4 @@
-.PHONY: build ensure-base build-pool-manager build-control-plane build-gateway build-base build-browser-node build-ttl-controller up patch-kind-orbstack-proxy local-keys local-secrets load-local-images deploy-local apply apply-local run-local-cluster connect clean
+.PHONY: build ensure-base build-pool-manager build-control-plane build-gateway build-base build-browser-node build-minimal-vnc-desktop build-local-browser-runtime build-ttl-controller up patch-kind-orbstack-proxy local-keys local-secrets load-local-images deploy-local apply apply-local run-local-cluster connect clean
 
 export DOCKER_BUILDKIT=1
 
@@ -20,17 +20,22 @@ LOCAL_TURN_API_TOKEN ?= $(TURN_API_TOKEN)
 LOCAL_NEKO_ICESERVERS ?= $(NEKO_ICESERVERS)
 LOCAL_BROWSER_STREAMING_MODE ?= webrtc
 LOCAL_BROWSER_STARTUP_URL ?= https://www.google.com
-LOCAL_VNC_URL = \{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000
-LOCAL_VNC_WS_URL = \{wsBase\}/vnc-ws/\{sessionId\}/\{restrictedToken\}
-LOCAL_PLATFORM_VNC_ROUTE_ARGS = --set 'poolManager.extraRoutePorts.novnc.routeKey=vnc' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.vncUrl=$(LOCAL_VNC_URL)' --set-string 'poolManager.extraSessionUrls.vncWsUrl=$(LOCAL_VNC_WS_URL)' --set 'gateway.extraSessionRoutes[0].pathPrefix=vnc' --set 'gateway.extraSessionRoutes[0].routeKey=vnc'
-LOCAL_PLATFORM_STREAMING_ARGS = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_VNC_ROUTE_ARGS) --set-string 'poolManager.extraSessionUrls.url=$(LOCAL_VNC_URL)',$(if $(filter both,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_VNC_ROUTE_ARGS),))
+LOCAL_LIVEVIEW_URL = \{baseUrl\}/liveview/\{sessionId\}/\{restrictedToken\}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000
+LOCAL_LIVEVIEW_WS_URL = \{wsBase\}/liveview-ws/\{sessionId\}/\{restrictedToken\}
+LOCAL_LEGACY_VNC_URL = \{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000
+LOCAL_LEGACY_VNC_WS_URL = \{wsBase\}/vnc-ws/\{sessionId\}/\{restrictedToken\}
+LOCAL_PLATFORM_LIVEVIEW_ROUTE_ARGS = --set 'poolManager.extraRoutePorts.novnc.routeKey=liveview' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.vncUrl=$(LOCAL_LIVEVIEW_URL)' --set-string 'poolManager.extraSessionUrls.vncWsUrl=$(LOCAL_LIVEVIEW_WS_URL)' --set 'gateway.extraSessionRoutes[0].pathPrefix=liveview' --set 'gateway.extraSessionRoutes[0].routeKey=liveview'
+LOCAL_PLATFORM_LEGACY_VNC_ROUTE_ARGS = --set 'poolManager.extraRoutePorts.novnc.routeKey=vnc' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.vncUrl=$(LOCAL_LEGACY_VNC_URL)' --set-string 'poolManager.extraSessionUrls.vncWsUrl=$(LOCAL_LEGACY_VNC_WS_URL)' --set 'gateway.extraSessionRoutes[0].pathPrefix=vnc' --set 'gateway.extraSessionRoutes[0].routeKey=vnc'
+LOCAL_PLATFORM_STREAMING_ARGS = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_LIVEVIEW_ROUTE_ARGS) --set-string 'poolManager.extraSessionUrls.url=$(LOCAL_LIVEVIEW_URL)',$(if $(filter both,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_LEGACY_VNC_ROUTE_ARGS),))
 LOCAL_BROWSER_STARTUP_ARGS = $(if $(LOCAL_BROWSER_STARTUP_URL),--set 'extraBrowserRuntimeEnv[0].name=POPCORN_BROWSER_STARTUP_URL' --set-string 'extraBrowserRuntimeEnv[0].value=$(LOCAL_BROWSER_STARTUP_URL)',)
 
 POOL_MANAGER_IMAGE := popcorn/pool-manager:local
 CONTROL_PLANE_IMAGE := popcorn/control-plane:local
 GATEWAY_IMAGE := popcorn/gateway:local
 BROWSER_NODE_IMAGE := popcorn/browser-node:local
+MINIMAL_VNC_DESKTOP_IMAGE := popcorn/minimal-vnc-desktop:local
 TTL_CONTROLLER_IMAGE := popcorn/ttl-controller:local
+LOCAL_BROWSER_RUNTIME_IMAGE = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),$(MINIMAL_VNC_DESKTOP_IMAGE),$(BROWSER_NODE_IMAGE))
 
 build-pool-manager:
 	docker build -t $(POOL_MANAGER_IMAGE) ./services/pool-manager
@@ -72,10 +77,20 @@ build-browser-node: ensure-base
 		-t $(BROWSER_NODE_IMAGE) \
 		./services/browser-node
 
+build-minimal-vnc-desktop:
+	IMAGE="$(MINIMAL_VNC_DESKTOP_IMAGE)" PLATFORM="$(PLATFORM)" images/minimal-vnc-desktop/build.sh
+
+build-local-browser-runtime:
+	@if [ "$(LOCAL_BROWSER_STREAMING_MODE)" = "vnc" ]; then \
+		$(MAKE) build-minimal-vnc-desktop; \
+	else \
+		$(MAKE) build-browser-node; \
+	fi
+
 build-ttl-controller:
 	docker build -t $(TTL_CONTROLLER_IMAGE) ./services/ttl-controller
 
-build: build-pool-manager build-control-plane build-gateway build-browser-node build-ttl-controller
+build: build-pool-manager build-control-plane build-gateway build-local-browser-runtime build-ttl-controller
 
 up:
 	@if ! kind get clusters | grep -q "^$(CLUSTER_NAME)$$"; then \
@@ -168,7 +183,7 @@ load-local-images:
 	kind load docker-image $(POOL_MANAGER_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(CONTROL_PLANE_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(GATEWAY_IMAGE) --name $(CLUSTER_NAME)
-	kind load docker-image $(BROWSER_NODE_IMAGE) --name $(CLUSTER_NAME)
+	kind load docker-image $(LOCAL_BROWSER_RUNTIME_IMAGE) --name $(CLUSTER_NAME)
 	kind load docker-image $(TTL_CONTROLLER_IMAGE) --name $(CLUSTER_NAME)
 
 deploy-local: up local-secrets load-local-images
@@ -210,7 +225,7 @@ deploy-local: up local-secrets load-local-images
 		--namespace default \
 		--set externalSecrets.enabled=false \
 		--set ccDevicePlugin.enabled=false \
-		--set browserRuntimeImage=$(BROWSER_NODE_IMAGE) \
+		--set-string browserRuntimeImage=$(LOCAL_BROWSER_RUNTIME_IMAGE) \
 		--set browserRuntimeImagePullPolicy=IfNotPresent \
 		--set browserRuntimeAttestor.enabled=false \
 		--set webrtc.advertiseHost=127.0.0.1 \
@@ -231,7 +246,7 @@ deploy-local: up local-secrets load-local-images
 
 apply: deploy-local
 apply-local: deploy-local
-run-local-cluster: build-pool-manager build-control-plane build-gateway build-browser-node build-ttl-controller deploy-local
+run-local-cluster: build-pool-manager build-control-plane build-gateway build-local-browser-runtime build-ttl-controller deploy-local
 
 connect:
 	@kubectl config use-context kind-$(CLUSTER_NAME)

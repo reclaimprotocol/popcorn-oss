@@ -83,6 +83,12 @@ Response:
 }
 ```
 
+`url` is the primary interactive browser view. Deployments can add more response
+fields through the pool manager's extra URL templates. In VNC/LiveView mode,
+`url` can be overridden to `/liveview/.../liveview.html`; `vncUrl` and
+`vncWsUrl` can also be returned as compatibility field names whose values use
+`/liveview/.../liveview.html` and `/liveview-ws/...`.
+
 Fetch a session owned by the client:
 
 ```http

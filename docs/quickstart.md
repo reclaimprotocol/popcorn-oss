@@ -97,6 +97,19 @@ curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
 Open the returned `url` for the browser view, or connect automation to
 `cdpUrl`.
 
+When the local cluster is run with `LOCAL_BROWSER_STREAMING_MODE=vnc`, the
+Makefile builds and deploys `popcorn/minimal-vnc-desktop:local`. The response
+still uses the compatibility field names `url`, `vncUrl`, and `vncWsUrl`, but
+their values point at the LiveView routes:
+
+```text
+url/vncUrl:   http://localhost:8080/liveview/<sessionId>/<token>/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000
+vncWsUrl:     ws://localhost:8080/liveview-ws/<sessionId>/<token>
+```
+
+The `vncUrl` and `vncWsUrl` names are kept for API compatibility. New UIs should
+display this as LiveView.
+
 ## Playwright Smoke Test
 
 ```js

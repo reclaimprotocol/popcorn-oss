@@ -1,0 +1,17 @@
+# Top-level apt packages for the minimal VNC runtime.
+# Versions were resolved from the Ubuntu 22.04 archive on 2026-06-24 and are
+# installed against the Dockerfile's pinned Ubuntu snapshot sources.
+bash=5.1-6ubuntu1.1
+ca-certificates=20260601~22.04.1
+coreutils=8.32-4.1ubuntu1.3
+curl=7.81.0-1ubuntu1.24
+fonts-dejavu-core=2.37-2build1
+libasound2=1.2.6.1-1ubuntu1.1
+libgbm1=23.2.1-1ubuntu3.1~22.04.4
+libgtk-3-0=3.24.33-1ubuntu2.2
+libnss3=2:3.98-0ubuntu0.22.04.3
+libxss1=1:1.2.3-1build2
+openbox=3.6.1-10
+tigervnc-standalone-server=1.12.0+dfsg-4ubuntu0.22.04.1
+xterm=372-1ubuntu1
+xz-utils=5.2.5-2ubuntu1.1

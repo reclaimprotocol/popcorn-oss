@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Live View</title>
+  <style>
+    html,
+    body,
+    #screen {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #111;
+    }
+
+    #screen > canvas {
+      outline: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="screen"></div>
+  <script type="module">
+    import RFB from './core/rfb.js';
+
+    const params = new URLSearchParams(window.location.search);
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const resize = params.get('resize') || 'scale';
+    const password = params.get('password') || '';
+    const reconnect = params.get('reconnect') !== '0';
+    const reconnectDelay = Number(params.get('reconnect_delay') || 2000);
+    const screen = document.getElementById('screen');
+
+    let rfb;
+    let intentionalDisconnect = false;
+
+    function boolParam(name, fallback) {
+      const value = params.get(name);
+      if (value === null) return fallback;
+      return value === '1' || value === 'true';
+    }
+
+    function websocketPath() {
+      const configuredPath = params.get('path');
+      if (configuredPath) {
+        return configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
+      }
+      return window.location.pathname.replace(/\/[^/]*$/, '/websockify');
+    }
+
+    function connect() {
+      intentionalDisconnect = false;
+      rfb = new RFB(screen, `${protocol}//${window.location.host}${websocketPath()}`, {
+        credentials: { password },
+      });
+      rfb.viewOnly = boolParam('view_only', false);
+      rfb.shared = boolParam('shared', true);
+      rfb.scaleViewport = resize === 'scale';
+      rfb.resizeSession = resize === 'remote';
+      rfb.showDotCursor = boolParam('show_dot', false);
+      rfb.background = '#111';
+      rfb.addEventListener('disconnect', () => {
+        if (reconnect && !intentionalDisconnect) {
+          window.setTimeout(connect, reconnectDelay);
+        }
+      });
+    }
+
+    window.addEventListener('beforeunload', () => {
+      intentionalDisconnect = true;
+      if (rfb) rfb.disconnect();
+    });
+
+    connect();
+  </script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 # Browser Networking
 
-Popcorn browser sessions use WebRTC for the interactive stream. In production,
-plan for TURN and direct UDP together:
+Popcorn browser sessions can use WebRTC or VNC/LiveView for the interactive
+stream. For WebRTC production deployments, plan for TURN and direct UDP
+together:
 
 - TURN gives browser users a reliable fallback when direct UDP cannot connect.
 - Direct UDP lets WebRTC connect without relay when the client can reach the
@@ -172,6 +173,25 @@ agonesInstaller:
 If Agones is installed separately, configure the same range in that Agones Helm
 release instead.
 
+## LiveView / VNC Mode
+
+VNC/LiveView mode uses the gateway's HTTP and WebSocket routes instead of
+WebRTC media transport. It does not need Agones UDP allocation, TURN, or
+`POPCORN_WEBRTC_ADVERTISE_HOST`; it needs a TCP route to the browser runtime's
+noVNC-compatible port, currently `6080`.
+
+The control-plane response keeps `vncUrl` and `vncWsUrl` as compatibility field
+names. Their values should use the LiveView paths:
+
+```text
+vncUrl:   https://<gateway>/liveview/<sessionId>/<token>/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000
+vncWsUrl: wss://<gateway>/liveview-ws/<sessionId>/<token>
+```
+
+The browser runtime should still report Agones `Ready` only after the app window
+is visible, so the LiveView route does not become healthy before Chrome or the
+configured GUI app has launched.
+
 ## Local Kind
 
 The local Kind setup is intentionally different from production:
@@ -179,6 +199,8 @@ The local Kind setup is intentionally different from production:
 - Kind publishes UDP `7000-7010` from the node container.
 - the local Agones install uses the same small range.
 - browser fleet sets `webrtc.advertiseHost=127.0.0.1`.
+- when `LOCAL_BROWSER_STREAMING_MODE=vnc`, the Makefile wires the LiveView
+  route to `6080` and returns `/liveview/.../liveview.html`.
 
 That is only for same-machine testing. Do not copy the local UDP range into
 production unless it is intentionally sized for your expected concurrency.

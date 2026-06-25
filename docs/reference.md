@@ -111,7 +111,8 @@ Successful response:
 }
 ```
 
-- `url`: interactive browser view.
+- `url`: interactive browser view. In VNC/LiveView mode this can be overridden
+  to a `/liveview/.../liveview.html` value.
 - `cdpUrl`: client-facing Chrome DevTools Protocol endpoint.
 - `cdpInternalUrl`: trusted internal CDP endpoint.
 - `apiUrl`: browser runtime API endpoint.
@@ -120,6 +121,17 @@ Successful response:
   with a per-session TTL.
 - `region`: control-plane region that allocated the session.
 - `clusterName`: Kubernetes cluster name configured for that region.
+
+Deployments can add fields through `poolManager.extraSessionUrls`. VNC/LiveView
+deployments commonly keep the historical field names while returning LiveView
+paths:
+
+```json
+{
+  "vncUrl": "https://gateway.example.com/liveview/demo-session/<token>/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000",
+  "vncWsUrl": "wss://gateway.example.com/liveview-ws/demo-session/<token>"
+}
+```
 
 Treat every returned URL as a bearer secret. The embedded path tokens authorize
 access until the token expires or the session is deleted.
@@ -141,11 +153,17 @@ The gateway authorizes and routes these paths:
 | Path | Purpose |
 | --- | --- |
 | `/<browserPodId>/<sessionId>/<token>/...` | Browser view and browser assets. |
+| `/liveview/<sessionId>/<token>/liveview.html?...` | LiveView HTML route for noVNC-style desktop viewing. |
+| `/liveview-ws/<sessionId>/<token>` | LiveView WebSocket route for RFB traffic. |
 | `/cdp/<sessionId>/<token>/...` | Client-facing CDP WebSocket/API route. |
 | `/cdp-internal/<sessionId>/<token>/...` | Trusted internal CDP route. |
 | `/api/<sessionId>/<token>/...` | Browser runtime API route. |
 | `/proof/<sessionId>?nonce=<hex>` | Optional attestation proof route. |
 | `/health` | Gateway health check. |
+
+The LiveView response fields intentionally retain the historic names `vncUrl`
+and `vncWsUrl` so existing clients do not need a response-shape migration. The
+route paths and user-facing name are LiveView.
 
 The gateway also falls back to the pool manager for internal UI and API routes
 when deployed in that mode. New public clients should use the control-plane

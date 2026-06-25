@@ -271,6 +271,40 @@ gateway:
 `extraSessionUrls` supports `{baseUrl}`, `{wsBase}`, `{sessionId}`,
 `{browserPodId}`, `{restrictedToken}`, and `{internalToken}`.
 
+### LiveView Route Wiring
+
+When `streaming.mode=vnc` or `streaming.mode=both`, use the LiveView route names
+for the browser desktop surface. The API response field names remain `vncUrl`
+and `vncWsUrl` for compatibility, but the URL paths should be `/liveview` and
+`/liveview-ws`:
+
+```yaml
+# browser-fleet values
+streaming:
+  mode: vnc
+
+# platform values
+poolManager:
+  extraRoutePorts:
+    novnc:
+      routeKey: liveview
+      port: 6080
+  extraSessionUrls:
+    url: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
+    vncUrl: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
+    vncWsUrl: "{wsBase}/liveview-ws/{sessionId}/{restrictedToken}"
+
+gateway:
+  extraSessionRoutes:
+    - pathPrefix: liveview
+      routeKey: liveview
+```
+
+`liveview.html` connects to `/websockify` relative to the LiveView route. The
+gateway rewrites that relative path to the browser runtime's internal
+`/websockify` endpoint. The standalone gateway also accepts `/liveview-ws` for
+clients that need the raw WebSocket URL.
+
 ## Validate Values
 
 ```bash

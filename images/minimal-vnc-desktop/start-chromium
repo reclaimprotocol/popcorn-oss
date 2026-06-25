@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+WIDTH="${WIDTH:-1920}"
+HEIGHT="${HEIGHT:-1080}"
+APP_URL="${APP_URL:-${POPCORN_BROWSER_STARTUP_URL:-${CHROMIUM_STARTUP_URL:-about:blank}}}"
+CDP_INTERNAL_PORT="${CDP_INTERNAL_PORT:-${CHROME_REMOTE_DEBUGGING_PORT:-9223}}"
+CHROME_REMOTE_DEBUGGING_ADDRESS="${CHROME_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
+PROXY_EXTENSION_DIR="${PROXY_EXTENSION_DIR:-/home/kernel/extensions/proxy}"
+ENABLE_PROXY_EXTENSION="${ENABLE_PROXY_EXTENSION:-true}"
+CHROMIUM_POLICY_DIR="${CHROMIUM_POLICY_DIR:-/etc/chromium/policies/managed}"
+CHROMIUM_POLICY_VARIANT_DIR="${CHROMIUM_POLICY_VARIANT_DIR:-/etc/chromium/policy-variants}"
+
+mkdir -p "$HOME/user-data"
+rm -f "$HOME/user-data/SingletonLock" "$HOME/user-data/SingletonSocket" "$HOME/user-data/SingletonCookie"
+
+if [[ "${REPLACE_DEFAULT_PAGE:-false}" == "true" ]]; then
+  reclaim_policy="${CHROMIUM_POLICY_VARIANT_DIR}/policy.reclaim-portal.json"
+  managed_policy="${CHROMIUM_POLICY_DIR}/policy.json"
+  if [[ -f "$reclaim_policy" ]]; then
+    mkdir -p "$CHROMIUM_POLICY_DIR"
+    cp "$reclaim_policy" "$managed_policy"
+  else
+    echo "[start-chromium] REPLACE_DEFAULT_PAGE=true but ${reclaim_policy} is missing; keeping default policy" >&2
+  fi
+fi
+
+flags=(
+  "--remote-debugging-address=${CHROME_REMOTE_DEBUGGING_ADDRESS}"
+  "--remote-debugging-port=${CDP_INTERNAL_PORT}"
+  "--remote-allow-origins=*"
+  "--user-data-dir=${HOME}/user-data"
+  "--password-store=basic"
+  "--no-sandbox"
+  "--disable-setuid-sandbox"
+  "--no-first-run"
+  "--no-default-browser-check"
+  "--disable-background-networking"
+  "--disable-dev-shm-usage"
+  "--disable-sync"
+  "--disable-features=Translate,OptimizationHints,MediaRouter"
+  "--window-size=${WIDTH},${HEIGHT}"
+  "--kiosk"
+)
+
+if [[ "$ENABLE_PROXY_EXTENSION" == "true" && -f "${PROXY_EXTENSION_DIR}/manifest.json" ]]; then
+  flags+=(
+    "--disable-extensions-except=${PROXY_EXTENSION_DIR}"
+    "--load-extension=${PROXY_EXTENSION_DIR}"
+  )
+fi
+
+if [[ "${CHROMIUM_FLAGS:-}" != "" ]]; then
+  eval "extra_flags=(${CHROMIUM_FLAGS})"
+  flags+=("${extra_flags[@]}")
+fi
+
+exec chromium "${flags[@]}" "$APP_URL"
