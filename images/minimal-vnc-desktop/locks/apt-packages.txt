@@ -13,5 +13,6 @@ libnss3=2:3.98-0ubuntu0.22.04.3
 libxss1=1:1.2.3-1build2
 openbox=3.6.1-10
 tigervnc-standalone-server=1.12.0+dfsg-4ubuntu0.22.04.1
+unclutter=8-25
 xterm=372-1ubuntu1
 xz-utils=5.2.5-2ubuntu1.1

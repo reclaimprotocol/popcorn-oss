@@ -269,6 +269,16 @@ echo "[entrypoint] Starting openbox"
 openbox > "$(log_file openbox)" 2>&1 &
 pids+=("$!")
 
+# Hide the X pointer that gets rendered into the VNC framebuffer. idle=0 hides
+# it immediately; a huge jitter keeps it hidden through mouse movement. This is
+# server-side (the cursor is baked into the stream), so CSS in the viewer can't
+# remove it.
+if [[ "${HIDE_CURSOR:-true}" == "true" ]] && command -v unclutter >/dev/null 2>&1; then
+  echo "[entrypoint] Hiding cursor with unclutter"
+  unclutter -idle 0 -jitter 9000000 > "$(log_file unclutter)" 2>&1 &
+  pids+=("$!")
+fi
+
 echo "[entrypoint] Starting app: ${APP_COMMAND}"
 bash -lc "exec ${APP_COMMAND}" > "$(log_file app)" 2>&1 &
 app_pid="$!"
