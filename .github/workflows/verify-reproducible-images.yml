@@ -14,7 +14,6 @@ on:
         type: choice
         options:
           - all
-          - browser-base
           - browser-runtime
           - browser-runtime-attestor
 
@@ -38,7 +37,6 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.commit_sha }}
-          submodules: recursive
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
