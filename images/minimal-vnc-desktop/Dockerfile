@@ -134,5 +134,5 @@ RUN set -eux; \
     find /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 USER kernel
-EXPOSE 6080 9222 9226
+EXPOSE 6080 9222 9226 10001
 ENTRYPOINT ["/usr/local/bin/minimal-vnc-entrypoint"]
