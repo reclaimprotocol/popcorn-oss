@@ -85,6 +85,8 @@ func main() {
 func noVNCMux(web, vnc string, ready readyGate) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/reclaim/prove", reclaimProveHTTPHandler)
+	mux.HandleFunc("/reclaim/validate", reclaimValidateExtractionHTTPHandler)
+	mux.HandleFunc("/reclaim/validate-extraction", reclaimValidateExtractionHTTPHandler)
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
 		serveWebsocket(w, r, vnc, ready)
 	})

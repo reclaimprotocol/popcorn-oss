@@ -73,6 +73,32 @@ against a reachable instance (defaults to `http://localhost:6080`):
 BASE_URL=http://localhost:6080 node tests/reclaim-prove.test.ts
 ```
 
+A lightweight extraction-validation endpoint is served on the same surface:
+
+```text
+POST http://localhost:6080/reclaim/validate
+POST http://localhost:6080/reclaim/validate-extraction
+```
+
+Both paths map to the same handler. It runs the reclaim-tee
+`providers.GetResponseRedactions` pipeline against a supplied response body and
+checks that the configured `xPath`/`jsonPath`/`regex` extraction yields the
+`expectedValue`, without performing a full TEE proof. The request body is:
+
+```json
+{
+  "responseBody": "<raw HTTP response body>",
+  "expectedValue": "<value the extraction should yield>",
+  "xPath": "<optional>",
+  "jsonPath": "<optional>",
+  "regex": "<optional>"
+}
+```
+
+At least one of `xPath`, `jsonPath`, or `regex` is required. The response
+reports `valid`, the extracted value, the redaction ranges, and per-step
+diagnostics in `steps`.
+
 The restricted CDP proxy allows discovery endpoints (`/json`, `/json/list`,
 `/json/version`) and filters client WebSocket commands to the same allowlist as
 the current popcorn image: input events, viewport emulation, selected DOM
