@@ -3,7 +3,15 @@ set -euo pipefail
 
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1080}"
-APP_URL="${APP_URL:-${POPCORN_BROWSER_STARTUP_URL:-${CHROMIUM_STARTUP_URL:-about:blank}}}"
+RECLAIM_LOADING_PAGE="https://reclaim-portal-loading-page.s3.ap-south-1.amazonaws.com/index.html"
+FALLBACK_PAGE="https://www.google.com"
+REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-true}"
+if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
+  DEFAULT_PAGE="$RECLAIM_LOADING_PAGE"
+else
+  DEFAULT_PAGE="$FALLBACK_PAGE"
+fi
+APP_URL="${APP_URL:-${POPCORN_BROWSER_STARTUP_URL:-${CHROMIUM_STARTUP_URL:-$DEFAULT_PAGE}}}"
 CDP_INTERNAL_PORT="${CDP_INTERNAL_PORT:-${CHROME_REMOTE_DEBUGGING_PORT:-9223}}"
 CHROME_REMOTE_DEBUGGING_ADDRESS="${CHROME_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
 PROXY_EXTENSION_DIR="${PROXY_EXTENSION_DIR:-/home/kernel/extensions/proxy}"
@@ -14,7 +22,7 @@ CHROMIUM_POLICY_VARIANT_DIR="${CHROMIUM_POLICY_VARIANT_DIR:-/etc/chromium/policy
 mkdir -p "$HOME/user-data"
 rm -f "$HOME/user-data/SingletonLock" "$HOME/user-data/SingletonSocket" "$HOME/user-data/SingletonCookie"
 
-if [[ "${REPLACE_DEFAULT_PAGE:-false}" == "true" ]]; then
+if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
   reclaim_policy="${CHROMIUM_POLICY_VARIANT_DIR}/policy.reclaim-portal.json"
   managed_policy="${CHROMIUM_POLICY_DIR}/policy.json"
   if [[ -f "$reclaim_policy" ]]; then

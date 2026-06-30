@@ -52,16 +52,26 @@ chart's mounted log directory.
 The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
 writable by the image's non-root `kernel` user.
 
-The Reclaim proof endpoint is served on the same HTTP surface:
+The Reclaim proof endpoint is served on the same HTTP surface as noVNC
+(`NOVNC_PORT`, `6080` by default):
 
 ```text
-POST /reclaim/prove
+POST http://localhost:6080/reclaim/prove
 ```
 
 This endpoint does not depend on Chromium readiness. It uses the pinned
 `github.com/reclaimprotocol/reclaim-tee` client plus embedded OPRF circuit and
 proving-key assets copied from `popcorn-images`. Those assets add about 73 MB to
 the source tree and require a cgo-enabled Go build.
+
+An integration test for this endpoint lives in `tests/reclaim-prove.test.ts`. It
+exercises both `oprf-mpc` and `oprf` hash types against a running instance and
+validates the returned claim, TEE attestation context, and signatures. Run it
+against a reachable instance (defaults to `http://localhost:6080`):
+
+```bash
+BASE_URL=http://localhost:6080 node tests/reclaim-prove.test.ts
+```
 
 The restricted CDP proxy allows discovery endpoints (`/json`, `/json/list`,
 `/json/version`) and filters client WebSocket commands to the same allowlist as
@@ -77,14 +87,14 @@ internal token path or an equivalent private gateway.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_COMMAND` | `/usr/local/bin/start-chromium` | GUI app command launched on the VNC display. |
-| `APP_URL` | `about:blank` | Default startup URL for `start-chromium`; use this for Reclaim portal or other first-page flows. |
+| `APP_URL` | depends on `REPLACE_DEFAULT_PAGE` | Default startup URL for `start-chromium`. When unset, falls back to the Reclaim loading page (`REPLACE_DEFAULT_PAGE=true`, default) or `https://www.google.com` (`REPLACE_DEFAULT_PAGE=false`). Set explicitly to override both. |
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
 | `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log`, `xvnc.log`, `novnc-proxy.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
-| `REPLACE_DEFAULT_PAGE` | `false` | Replace the default DuckDuckGo managed policy with the Reclaim portal policy before Chromium starts. |
+| `REPLACE_DEFAULT_PAGE` | `true` | When `true`, use the Reclaim portal as the default page: startup falls back to the Reclaim loading page and the Reclaim portal managed policy (new-tab page and search) is applied before Chromium starts. When `false`, fall back to `https://www.google.com` and keep the default policy. |
 | `CHROMIUM_POLICY_DIR` | `/etc/chromium/policies/managed` | Managed Chromium policy directory. |
 | `CHROMIUM_POLICY_VARIANT_DIR` | `/etc/chromium/policy-variants` | Directory containing alternate policy JSON files. |
 | `READY_WINDOW_PATTERN` | derived from `APP_COMMAND` | Case-insensitive extended regex matched against `xwininfo -root -tree` before noVNC reports ready. |
