@@ -4,10 +4,6 @@ This is a standalone, fast-booting desktop image for visual browser/app sessions
 It intentionally does not use `popcorn-images`, WebRTC, neko, supervisor,
 Chromedriver, Playwright, the kernel-images API, or audio streaming.
 
-The image is buildable from this folder and is used by local `vnc` mode, but it
-is not yet part of the repository's release-publishing workflows. Publish and
-sign it explicitly before relying on it as a production image.
-
 ## Build
 
 ```bash
