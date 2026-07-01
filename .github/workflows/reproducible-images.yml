@@ -35,7 +35,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          submodules: recursive
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -53,60 +52,45 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          eval "$(./scripts/chromium-lock-env.sh "${PLATFORM}")"
-
           commit="$(git rev-parse HEAD)"
           source_date_epoch="$(git log -1 --pretty=%ct)"
-          submodule_sha="$(git submodule status popcorn-images | awk '{print $1}' | sed 's/^+//')"
-          submodule_source_date_epoch="$(git -C popcorn-images log -1 --pretty=%ct)"
+          ubuntu_snapshot="$(awk -F '=' '$1 == "UBUNTU_SNAPSHOT" { print $2 }' images/minimal-vnc-desktop/locks/ubuntu-snapshot.lock)"
+          test -n "${ubuntu_snapshot}"
 
           {
             echo "COMMIT_SHA=${commit}"
             echo "SOURCE_DATE_EPOCH=${source_date_epoch}"
-            echo "SUBMODULE_SHA=${submodule_sha}"
-            echo "SUBMODULE_SOURCE_DATE_EPOCH=${submodule_source_date_epoch}"
-            echo "TARGET_PLATFORM=${TARGET_PLATFORM}"
-            echo "TARGET_ARCH=${TARGET_ARCH}"
-            echo "UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT}"
-            echo "ARTIFACT_MIRROR_TAG=${ARTIFACT_MIRROR_TAG}"
+            echo "BROWSER_RUNTIME_UBUNTU_SNAPSHOT=${ubuntu_snapshot}"
           } >>"${GITHUB_ENV}"
 
-      - name: Ensure mirrored Chromium release assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: ./scripts/publish-chromium-artifacts-to-github.sh "${GITHUB_ARTIFACT_MIRROR_REPO}"
-
-      - name: Prepare Chromium artifact context
+      - name: Prepare browser-runtime artifact context
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/chromium-artifacts"
-          SOURCE_DATE_EPOCH=0 ./scripts/prepare-chromium-artifacts.sh \
-            "${RUNNER_TEMP}/chromium-artifacts" \
-            "${TARGET_PLATFORM}"
+          mkdir -p "${RUNNER_TEMP}/minimal-vnc-artifacts"
+          SOURCE_DATE_EPOCH=0 ./images/minimal-vnc-desktop/prepare-artifacts.sh \
+            "${RUNNER_TEMP}/minimal-vnc-artifacts" \
+            "${PLATFORM}"
 
-      - name: Build and publish browser-base
+      - name: Build and publish browser-runtime
         shell: bash
         run: |
           set -euo pipefail
           docker buildx build \
-            --platform "${TARGET_PLATFORM}" \
-            --build-arg "SOURCE_DATE_EPOCH=${SUBMODULE_SOURCE_DATE_EPOCH}" \
-            --build-arg "UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT}" \
-            --build-arg "ARTIFACT_MIRROR_IMAGE=artifact-mirror" \
-            --build-context "artifact-mirror=${RUNNER_TEMP}/chromium-artifacts" \
-            --metadata-file "${RUNNER_TEMP}/browser-base-metadata.json" \
-            --tag "${IMAGE_PREFIX}/browser-base:${SUBMODULE_SHA}" \
+            --platform "${PLATFORM}" \
+            --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
+            --build-arg "UBUNTU_SNAPSHOT=${BROWSER_RUNTIME_UBUNTU_SNAPSHOT}" \
+            --build-context "minimal-vnc-artifacts=${RUNNER_TEMP}/minimal-vnc-artifacts" \
+            --metadata-file "${RUNNER_TEMP}/browser-runtime-metadata.json" \
+            --tag "${IMAGE_PREFIX}/browser-runtime:${COMMIT_SHA}" \
             --push \
-            -f popcorn-images/images/chromium-headful/Dockerfile \
-            popcorn-images
+            images/minimal-vnc-desktop
 
-          digest="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/browser-base-metadata.json")"
+          digest="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/browser-runtime-metadata.json")"
           test -n "${digest}" && test "${digest}" != "null"
-          echo "BROWSER_BASE_DIGEST=${digest}" >>"${GITHUB_ENV}"
+          echo "BROWSER_RUNTIME_DIGEST=${digest}" >>"${GITHUB_ENV}"
 
       - name: Build and publish browser-runtime-attestor
         shell: bash
@@ -114,7 +98,7 @@ jobs:
           set -euo pipefail
           cp -f cosign.pub services/attestor/cosign.pub
           docker buildx build \
-            --platform "${TARGET_PLATFORM}" \
+            --platform "${PLATFORM}" \
             --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
             --metadata-file "${RUNNER_TEMP}/browser-runtime-attestor-metadata.json" \
             --tag "${IMAGE_PREFIX}/browser-runtime-attestor:${COMMIT_SHA}" \
@@ -125,31 +109,12 @@ jobs:
           test -n "${digest}" && test "${digest}" != "null"
           echo "BROWSER_RUNTIME_ATTESTOR_DIGEST=${digest}" >>"${GITHUB_ENV}"
 
-      - name: Build and publish browser-runtime
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp -f cosign.pub services/browser-node/cosign.pub
-          docker buildx build \
-            --platform "${TARGET_PLATFORM}" \
-            --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
-            --build-arg "BASE_IMAGE=${IMAGE_PREFIX}/browser-base@${BROWSER_BASE_DIGEST}" \
-            --metadata-file "${RUNNER_TEMP}/browser-runtime-metadata.json" \
-            --tag "${IMAGE_PREFIX}/browser-runtime:${COMMIT_SHA}" \
-            --push \
-            services/browser-node
-
-          digest="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/browser-runtime-metadata.json")"
-          test -n "${digest}" && test "${digest}" != "null"
-          echo "BROWSER_RUNTIME_DIGEST=${digest}" >>"${GITHUB_ENV}"
-
       - name: Sign image digests with keyless cosign
         shell: bash
         run: |
           set -euo pipefail
-          cosign sign --yes "${IMAGE_PREFIX}/browser-base@${BROWSER_BASE_DIGEST}"
-          cosign sign --yes "${IMAGE_PREFIX}/browser-runtime-attestor@${BROWSER_RUNTIME_ATTESTOR_DIGEST}"
           cosign sign --yes "${IMAGE_PREFIX}/browser-runtime@${BROWSER_RUNTIME_DIGEST}"
+          cosign sign --yes "${IMAGE_PREFIX}/browser-runtime-attestor@${BROWSER_RUNTIME_ATTESTOR_DIGEST}"
 
       - name: Write reproducibility manifest
         shell: bash
@@ -163,10 +128,7 @@ jobs:
             --registry-repository "${REGISTRY_REPOSITORY}" \
             --browser-runtime-attestor-digest "${BROWSER_RUNTIME_ATTESTOR_DIGEST}" \
             --browser-runtime-digest "${BROWSER_RUNTIME_DIGEST}" \
-            --browser-base-digest "${BROWSER_BASE_DIGEST}" \
-            --browser-base-tag "${SUBMODULE_SHA}" \
-            --artifact-mirror-tag "${ARTIFACT_MIRROR_TAG}" \
-            --submodule-sha "${SUBMODULE_SHA}" \
+            --ubuntu-snapshot "${BROWSER_RUNTIME_UBUNTU_SNAPSHOT}" \
             --json-out "dist/reproducible-images-${COMMIT_SHA}.json" \
             --markdown-out "dist/reproducible-images-${COMMIT_SHA}.md"
 

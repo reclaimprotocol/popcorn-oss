@@ -142,7 +142,9 @@ download_artifact() {
       --pattern "$filename" \
       --dir "$TMP_DOWNLOAD_DIR" \
       --clobber >/dev/null; then
-      mv "$TMP_DOWNLOAD_DIR/$filename" "$out_path"
+      if [[ "$TMP_DOWNLOAD_DIR/$filename" != "$out_path" ]]; then
+        mv "$TMP_DOWNLOAD_DIR/$filename" "$out_path"
+      fi
       return
     fi
     echo "GitHub artifact mirror missing $filename; falling back" >&2
