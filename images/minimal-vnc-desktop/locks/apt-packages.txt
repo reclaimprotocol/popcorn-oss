@@ -40,8 +40,28 @@ libgbm1=23.2.1-1ubuntu3.1~22.04.4
 libgtk-3-0=3.24.33-1ubuntu2.2
 libnss3=2:3.98-0ubuntu0.22.04.3
 libxss1=1:1.2.3-1build2
+# CloakBrowser (chromium) shared-library closure. Previously supplied by the
+# xtradeb chromium debs; now that chromium comes from the CloakBrowser OCI
+# image these must be installed explicitly. Versions resolved from the pinned
+# snapshot (2026-06-24). libnss3/libgbm1/libasound2 above already cover the rest.
+libcups2=2.4.1op1-1ubuntu4.21
+libnspr4=2:4.35-0ubuntu0.22.04.1
+libatk1.0-0=2.36.0-3build1
+libatk-bridge2.0-0=2.38.0-3
+libatspi2.0-0=2.44.0-3
+libpango-1.0-0=1.50.6+ds-2ubuntu1
+libxdamage1=1:1.1.5-2build2
+libxkbcommon0=1.4.0-1
+libdrm2=2.4.113-2~ubuntu0.22.04.1
+libxcomposite1=1:0.4.5-1build2
+libxfixes3=1:6.0.0-1
+libxrandr2=2:1.5.2-1build1
 openbox=3.6.1-10
 tigervnc-standalone-server=1.12.0+dfsg-4ubuntu0.22.04.1
 unclutter=8-25
+# Provides xwininfo, which entrypoint.sh uses to detect the browser window for
+# readiness. Without it the readiness gate fails and (under set -e) the
+# container exits before marking noVNC ready.
+x11-utils=7.7+5build2
 xterm=372-1ubuntu1
 xz-utils=5.2.5-2ubuntu1.1

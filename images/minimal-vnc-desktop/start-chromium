@@ -33,6 +33,274 @@ if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
   fi
 fi
 
+# -----------------------------------------------------------------------------
+# Stealth fingerprint / persona
+# -----------------------------------------------------------------------------
+# The `chromium` command is Tilion Fortress (a stealth stock-Chromium fork); its
+# launcher applies the Windows persona itself via --uxr-* + TILION_TZ/LANG. The
+# seed/timezone/locale machinery below feeds that (TZ/locale) and the opt-in
+# BROWSER=fingerprint path (fingerprint-chromium, which consumes CLOAK_SEED). The
+# goal either way is to present as a regular *Windows Chrome* session to bot
+# classifiers (Akamai BMP, Cloudflare Bot Management, reCAPTCHA Enterprise)
+# rather than headless-Chrome-on-Linux.
+#
+# --fingerprint-platform=windows spoofs navigator.platform, userAgentData,
+# the User-Agent string, and Sec-CH-UA-Platform to Windows. That alone is a
+# trap unless timezone, locale, and Date arithmetic agree — a "Windows" UA
+# reporting Etc/UTC + lang=C is the tell that closes it. So seed, timezone,
+# and locale are all persisted in user-data and stay stable across restarts
+# (flipping any of them against the same cookie jar is itself a bot signal).
+CLOAK_PROFILE_DIR="$HOME/user-data"
+mkdir -p "$CLOAK_PROFILE_DIR"
+
+# Optional profile-seed bundle: if $CLOAK_PROFILE_SEED points at a tarball and
+# the profile is empty, extract it. This is how instances start pre-warmed /
+# pre-authenticated — cookies, localStorage, and the persisted fingerprint
+# seed survive. The bundle is a *credential*; treat it like a password.
+if [[ -n "${CLOAK_PROFILE_SEED:-}" ]] \
+   && [[ -f "$CLOAK_PROFILE_SEED" ]] \
+   && [[ ! -e "$CLOAK_PROFILE_DIR/.cloak-fingerprint-seed" ]] \
+   && [[ ! -e "$CLOAK_PROFILE_DIR/Default" ]]; then
+  echo "[start-chromium] seeding profile from $CLOAK_PROFILE_SEED"
+  tar -xzf "$CLOAK_PROFILE_SEED" -C "$CLOAK_PROFILE_DIR" \
+    && echo "[start-chromium] profile seed restored" \
+    || echo "[start-chromium] profile seed extraction failed (continuing with empty profile)" >&2
+fi
+
+# Fingerprint seed. Priority: env override -> persisted file -> fresh CSPRNG.
+# CLOAK_FINGERPRINT_SEED is the escape hatch for the WebGL-GPU mismatch: the
+# seed maps deterministically to a spoofed GPU renderer string, and some seeds
+# resolve to flagship discrete GPUs which, under this image's SwiftShader
+# rasterization, are a deterministic Akamai tell (pixel-readback never matches
+# a real NVIDIA/AMD driver). Pin a seed that resolves to an integrated GPU.
+# We use /dev/urandom (32-bit) not bash $RANDOM (15-bit, collides at fleet scale).
+CLOAK_SEED_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-seed"
+if [[ -n "${CLOAK_FINGERPRINT_SEED:-}" ]]; then
+  CLOAK_SEED="$CLOAK_FINGERPRINT_SEED"
+  echo "$CLOAK_SEED" > "$CLOAK_SEED_FILE"
+elif [[ -s "$CLOAK_SEED_FILE" ]]; then
+  CLOAK_SEED="$(cat "$CLOAK_SEED_FILE")"
+else
+  CLOAK_SEED=$(( $(od -An -N4 -tu4 < /dev/urandom | tr -d ' ') % 9000000 + 1000000 ))
+  echo "$CLOAK_SEED" > "$CLOAK_SEED_FILE"
+fi
+
+# -----------------------------------------------------------------------------
+# Proxy setup — done BEFORE the geoip lookup on purpose. When HTTPS_PROXY_URL is
+# set we start the local authenticating relay first so that (a) chromium points
+# at it with no auth, and (b) the geoip lookup below runs THROUGH it and resolves
+# the *proxy's* exit IP/region — not the container's real IP. proxy_flags is
+# appended to the chromium flags later; PROXY_CURL_ARG feeds the geoip curl.
+# {{geoLocation}}→PROXY_GEO; PROXY_SESSION pins a sticky exit IP; PROXY_SCHEME
+# overrides the upstream scheme.
+# -----------------------------------------------------------------------------
+proxy_flags=()
+PROXY_CURL_ARG=()
+if [[ -n "${HTTPS_PROXY_URL:-}" ]]; then
+  proxy_geo="${PROXY_GEO:-us}"
+  if [[ -x /usr/local/bin/proxy-relay ]]; then
+    relay_port="${PROXY_RELAY_PORT:-13128}"
+    RELAY_LISTEN="127.0.0.1:${relay_port}" \
+      nohup /usr/local/bin/proxy-relay >>"${LOG_DIR:-/var/log/app}/proxy-relay.log" 2>&1 &
+    for _ in $(seq 1 20); do
+      (echo >"/dev/tcp/127.0.0.1/${relay_port}") >/dev/null 2>&1 && break
+      sleep 0.1
+    done
+    proxy_flags+=(
+      "--proxy-server=http://127.0.0.1:${relay_port}"
+      "--proxy-bypass-list=127.0.0.1;localhost;<local>"
+    )
+    # geoip goes through the relay → resolves the proxy's exit IP.
+    PROXY_CURL_ARG=(-x "http://127.0.0.1:${relay_port}")
+    echo "[stealth] proxy: local relay 127.0.0.1:${relay_port} -> upstream (auth off-CDP; geo=${proxy_geo} session=${PROXY_SESSION:-auto})"
+  else
+    # Fallback (no relay binary): --proxy-server direct; auth via out-of-band CDP.
+    proxy_url="${HTTPS_PROXY_URL//\{\{geoLocation\}\}/$proxy_geo}"
+    proxy_scheme="${PROXY_SCHEME:-${proxy_url%%://*}}"
+    proxy_rest="${proxy_url#*://}"; proxy_rest="${proxy_rest#*@}"; proxy_hostport="${proxy_rest%%/*}"
+    proxy_flags+=("--proxy-server=${proxy_scheme}://${proxy_hostport}")
+    PROXY_CURL_ARG=(-x "$proxy_url")
+    echo "[stealth] proxy-server: ${proxy_scheme}://${proxy_hostport} (geo=${proxy_geo}); auth via CDP (no relay binary present)"
+  fi
+fi
+
+# geoip: resolve timezone + locale from the exit IP on first boot and persist.
+# With a proxy set (above), the lookup runs through it, so this reflects the
+# proxy's region; otherwise it reflects the container's real IP. Bot classifiers
+# grade higher when spoofed timezone/locale match the egress region. Default on;
+# needs curl at runtime. Fail open. NOTE: reCAPTCHA scoring is driven by IP
+# reputation, not tz/locale — geoip is coherence hygiene, not a reCAPTCHA fix.
+CLOAK_GEOIP="${CLOAK_GEOIP:-true}"
+CLOAK_TZ_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-timezone"
+CLOAK_LOCALE_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-locale"
+
+if [[ ! -s "$CLOAK_TZ_FILE" || ! -s "$CLOAK_LOCALE_FILE" ]] \
+   && [[ "$CLOAK_GEOIP" == "true" ]] \
+   && command -v curl >/dev/null 2>&1; then
+  echo "[start-chromium] geoip: resolving timezone/locale from exit IP${PROXY_CURL_ARG:+ (via proxy)}…"
+  GEOIP_JSON="$(curl -s --max-time 8 "${PROXY_CURL_ARG[@]}" https://ipapi.co/json/ 2>/dev/null || true)"
+  if [[ -n "$GEOIP_JSON" ]]; then
+    GEOIP_TZ="$(printf '%s' "$GEOIP_JSON" | awk -F'"' '/"timezone"[[:space:]]*:/ {print $4; exit}')"
+    GEOIP_LANGS="$(printf '%s' "$GEOIP_JSON" | awk -F'"' '/"languages"[[:space:]]*:/ {print $4; exit}')"
+    GEOIP_LOCALE="$(printf '%s' "$GEOIP_LANGS" | awk -F',' '{print $1}')"
+    [[ -n "$GEOIP_TZ" ]]     && CLOAK_TIMEZONE="${CLOAK_TIMEZONE:-$GEOIP_TZ}"
+    [[ -n "$GEOIP_LOCALE" ]] && CLOAK_LOCALE="${CLOAK_LOCALE:-$GEOIP_LOCALE}"
+    echo "[start-chromium] geoip: timezone=${CLOAK_TIMEZONE:-?} locale=${CLOAK_LOCALE:-?}"
+  else
+    echo "[start-chromium] geoip: lookup failed (offline/rate-limited/no curl); using env/defaults"
+  fi
+fi
+
+# Persisted-file priority: file -> env (or geoip-resolved) -> fallback.
+if [[ -s "$CLOAK_TZ_FILE" ]]; then
+  CLOAK_TIMEZONE="$(cat "$CLOAK_TZ_FILE")"
+else
+  CLOAK_TIMEZONE="${CLOAK_TIMEZONE:-${TZ:-America/Los_Angeles}}"
+  echo "$CLOAK_TIMEZONE" > "$CLOAK_TZ_FILE"
+fi
+
+if [[ -s "$CLOAK_LOCALE_FILE" ]]; then
+  CLOAK_LOCALE="$(cat "$CLOAK_LOCALE_FILE")"
+else
+  CLOAK_LOCALE="${CLOAK_LOCALE:-en-US}"
+  echo "$CLOAK_LOCALE" > "$CLOAK_LOCALE_FILE"
+fi
+
+# Align the OS-level TZ / zoneinfo so Date.getTimezoneOffset() matches the
+# spoofed Intl timezone. A mismatch here is a one-line correlation Akamai catches.
+export TZ="$CLOAK_TIMEZONE"
+if [[ -r "/usr/share/zoneinfo/$CLOAK_TIMEZONE" ]]; then
+  ln -sf "/usr/share/zoneinfo/$CLOAK_TIMEZONE" /etc/localtime 2>/dev/null || true
+  echo "$CLOAK_TIMEZONE" > /etc/timezone 2>/dev/null || true
+fi
+
+# BROWSER selects the engine. Default (and the only one baked in) is Tilion
+# Fortress — a stealth STOCK-Chromium fork at /opt/tilion/tilion (also symlinked
+# to `chromium`). Its launcher applies a coherent Windows persona via its own
+# --uxr-* defaults, so NONE of the --fingerprint-* flags apply; only TILION_TZ /
+# TILION_LANG tune it. (CloakBrowser was removed — Fortress replaced it.)
+# BROWSER=fingerprint is an OPT-IN alternative: the bundled fingerprint-chromium
+# (adryfish, ungoogled 148, amd64-only), a DIFFERENT dialect —
+# --timezone/--lang/--accept-lang + --disable-non-proxied-udp, NOT
+# --fingerprint-timezone/-locale/-webrtc-ip — only present if baked in.
+BROWSER="${BROWSER:-fortress}"
+# SwiftShader software WebGL + CPU compositor — shared by both browsers. Keeps
+# WebGL functional (needed for the renderer spoof) while skipping the GPU process.
+gpu_flags=(--disable-gpu --disable-gpu-compositing --enable-unsafe-swiftshader --use-gl=swiftshader --ignore-gpu-blocklist)
+
+# Platform coherence (reCAPTCHA v3/Enterprise + anti-bot). Canvas/WebGL are
+# driver/OS-bound; strict detectors cross-check the spoofed platform against the
+# actual render backend, and a claimed hardware GPU that renders in software
+# (SwiftShader) is a high-confidence tell. This image renders via SwiftShader on
+# Linux, so presenting platform=windows is an incoherence a strict key can catch
+# (see RECAPTCHA-RESEARCH.md §5). Default stays 'windows' for continuity; set
+# CLOAK_FINGERPRINT_PLATFORM=linux for a COHERENT Linux identity that matches the
+# real backend — recommended for strict reCAPTCHA flows.
+CLOAK_FP_PLATFORM="${CLOAK_FINGERPRINT_PLATFORM:-windows}"
+# Only the fingerprint-chromium branch consumes --fingerprint-platform; Fortress
+# manages its own persona via --uxr-* (its WebGL/GPU coherence is tuned there).
+if [[ "$BROWSER" == "fingerprint" && "$CLOAK_FP_PLATFORM" == "windows" ]]; then
+  echo "[stealth] WARN: fingerprint-platform=windows on a SwiftShader/Linux backend is a known coherence tell for strict reCAPTCHA; consider CLOAK_FINGERPRINT_PLATFORM=linux" >&2
+fi
+
+if [[ "$BROWSER" == "fingerprint" ]]; then
+  CHROME_BIN="/opt/fingerprint-chromium/chrome"
+  [[ -x "$CHROME_BIN" ]] || { echo "[start-chromium] BROWSER=fingerprint but $CHROME_BIN is missing (fingerprint-chromium is x86_64-only; build/run on amd64)" >&2; exit 1; }
+  cloak_flags=(
+    "--fingerprint=${CLOAK_SEED}"
+    "--fingerprint-platform=${CLOAK_FP_PLATFORM}"
+    "--timezone=${CLOAK_TIMEZONE}"
+    "--lang=${CLOAK_LOCALE}"
+    "--accept-lang=${CLOAK_LOCALE}"
+    "${gpu_flags[@]}"
+  )
+  # WebRTC leak control (fingerprint-chromium dialect: force UDP through the proxy).
+  if [[ -n "${CLOAK_WEBRTC_IP:-}" || "$CLOAK_GEOIP" == "true" ]]; then
+    cloak_flags+=("--disable-non-proxied-udp")
+  fi
+  echo "[stealth] browser: fingerprint-chromium 148 (ungoogled) — dialect --fingerprint/-platform/--timezone/--lang"
+elif [[ "$BROWSER" == "fortress" ]]; then
+  # Tilion Fortress: stable stealth Chromium 149 (x86_64-only), a STOCK-Chromium fork
+  # with C++ persona patches. /opt/tilion/tilion is a bash launcher that applies
+  # a coherent default Windows persona via --uxr-* flags + bundled Windows fonts,
+  # and points VK_ICD at its own SwiftShader. It has NO --fingerprint-* dialect,
+  # so we pass NONE of the CloakBrowser flags; the only coherence knobs are the
+  # TILION_* env vars, and the persona is emitted by the wrapper itself.
+  CHROME_BIN="/opt/tilion/tilion"
+  [[ -x "$CHROME_BIN" ]] || { echo "[start-chromium] BROWSER=fortress but $CHROME_BIN is missing (Tilion Fortress is x86_64-only; build/run on amd64)" >&2; exit 1; }
+  # The wrapper reads these to keep TZ/locale coherent from the first renderer tick.
+  export TILION_TZ="$CLOAK_TIMEZONE"
+  export TILION_LANG="$CLOAK_LOCALE"
+  # No --fingerprint-* / gpu_flags: Fortress supplies platform/UA/hw via --uxr
+  # defaults and bundles its own SwiftShader ICD. NOTE: this keeps the honest
+  # SwiftShader WebGL renderer (a datacenter/coherence tell for strict keys) —
+  # unchanged from the CloakBrowser path, and not the lever for Netflix/Taj (IP
+  # reputation is). Override persona with CHROMIUM_FLAGS='--uxr-... ' if needed,
+  # or TILION_NO_DEFAULTS=1 for a bare launch.
+  cloak_flags=()
+  echo "[stealth] browser: Tilion Fortress (stable stealth Chromium 149) — Windows persona via --uxr defaults; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$CLOAK_LOCALE"
+else
+  # CloakBrowser was removed; only 'fortress' (default) and 'fingerprint' remain.
+  echo "[start-chromium] unknown BROWSER='$BROWSER' (valid: fortress [default], fingerprint). CloakBrowser was removed from this image." >&2
+  exit 1
+fi
+
+# Strict reCAPTCHA v3 keys score on the 3rd-party cookie Google uses for
+# cross-site *reputation* (NID) — that, not any fingerprint leak, is what fails
+# strict v3. Fortress is stock Chromium (3p cookies allowed in normal windows by
+# default), but Chromium is phasing 3pc out (TrackingProtection3pcd) and the
+# fingerprint-chromium branch is ungoogled (blocks it outright), so we stack
+# every RUNTIME lever to keep the reputation cookie flowing: (1) managed policy
+# BlockThirdPartyCookies=false + CookiesAllowedForUrls (in policies/*.json);
+# (2) the profile cookie-controls pref forced to "allow all"; (3) disable the
+# 3pc-deprecation feature. Default on; set CLOAK_ALLOW_3P_COOKIES=false to opt out.
+if [[ "${CLOAK_ALLOW_3P_COOKIES:-true}" == "true" ]]; then
+  cloak_flags+=("--disable-features=TrackingProtection3pcd")
+  # Force the profile cookie-controls pref to "allow all" (cookie_controls_mode=0)
+  # so no blocking default stops Google's cross-site reCAPTCHA reputation cookie
+  # (NID). Verified with CDP
+  # requestWillBeSentExtraInfo: default => NID blocked (reason UserPreferences);
+  # cookie_controls_mode=0 => NID flows. This gates reCAPTCHA v3 AND reCAPTCHA
+  # Enterprise (e.g. Netflix login).
+  #
+  # MUST run on EVERY boot, not just fresh profiles. The old code only wrote this
+  # when Preferences was absent, so every WARMED/persisted profile — exactly the
+  # ones that accumulate reputation — silently kept ungoogled's blocking default
+  # and re-blocked NID. We now merge just this one key, preserving all other
+  # warmed state (cookies, history, login). No jq/python in the image, so GNU sed.
+  pref_file="$CLOAK_PROFILE_DIR/Default/Preferences"
+  mkdir -p "$CLOAK_PROFILE_DIR/Default"
+  if [[ -s "$pref_file" ]]; then
+    if grep -q '"cookie_controls_mode"' "$pref_file"; then
+      # key present -> set it to 0 (do not touch anything else)
+      sed -i 's/"cookie_controls_mode"[[:space:]]*:[[:space:]]*[0-9]\+/"cookie_controls_mode":0/g' "$pref_file"
+    else
+      # key absent -> inject at the top of the "profile" object
+      sed -i 's/"profile"[[:space:]]*:[[:space:]]*{/"profile":{"cookie_controls_mode":0,/' "$pref_file"
+    fi
+  else
+    printf '%s' '{"profile":{"cookie_controls_mode":0,"default_content_setting_values":{"cookies":1}}}' > "$pref_file"
+  fi
+  # Sanity: confirm the pref is now 0; warn loudly if the merge didn't take.
+  if ! grep -q '"cookie_controls_mode":0' "$pref_file" 2>/dev/null; then
+    echo "[stealth] WARN: cookie_controls_mode=0 not present after merge — reCAPTCHA reputation cookie may be blocked" >&2
+  fi
+  echo "[stealth] 3p-cookies: policy + prefs(cookie_controls_mode=0, enforced on warmed profiles too) + disable TrackingProtection3pcd (reCAPTCHA v3/Enterprise reputation)"
+fi
+
+# Apply the proxy flags computed earlier (the relay, if any, was started before
+# the geoip lookup so geoip could resolve the proxy's exit IP).
+if [[ ${#proxy_flags[@]} -gt 0 ]]; then
+  cloak_flags+=("${proxy_flags[@]}")
+fi
+
+if [[ "$BROWSER" == "fingerprint" ]]; then
+  echo "[stealth] fingerprint-chromium: seed=${CLOAK_SEED} platform=${CLOAK_FP_PLATFORM} tz=${CLOAK_TIMEZONE} locale=${CLOAK_LOCALE}"
+  echo "[stealth] If the WebGL renderer reports a flagship discrete GPU, pin CLOAK_FINGERPRINT_SEED to a seed that maps to an integrated GPU."
+fi
+echo "[stealth] geoip resolution: ${CLOAK_GEOIP}"
+echo "[stealth] WebRTC IP spoof: ${CLOAK_WEBRTC_IP:-${CLOAK_GEOIP:+auto}}"
+
 flags=(
   "--remote-debugging-address=${CHROME_REMOTE_DEBUGGING_ADDRESS}"
   "--remote-debugging-port=${CDP_INTERNAL_PORT}"
@@ -46,9 +314,12 @@ flags=(
   "--disable-background-networking"
   "--disable-dev-shm-usage"
   "--disable-sync"
-  "--disable-features=Translate,OptimizationHints,MediaRouter"
+  # MediaRouter is intentionally NOT disabled: doing so empties
+  # chrome.cast.isAvailable(), which is a bot tell real Chrome never exhibits.
+  "--disable-features=Translate,OptimizationHints"
   "--window-size=${WIDTH},${HEIGHT}"
   "--kiosk"
+  "${cloak_flags[@]}"
 )
 
 if [[ "$ENABLE_PROXY_EXTENSION" == "true" && -f "${PROXY_EXTENSION_DIR}/manifest.json" ]]; then
@@ -63,4 +334,4 @@ if [[ "${CHROMIUM_FLAGS:-}" != "" ]]; then
   flags+=("${extra_flags[@]}")
 fi
 
-exec chromium "${flags[@]}" "$APP_URL"
+exec "$CHROME_BIN" "${flags[@]}" "$APP_URL"

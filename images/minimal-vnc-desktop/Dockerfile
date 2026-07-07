@@ -1,6 +1,16 @@
 # syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 ARG GOLANG_IMAGE=docker.io/golang:1.26@sha256:5f3787b7f902c07c7ec4f3aa91a301a3eda8133aa32661a3b3a3a86ab3a68a36
 ARG UBUNTU_IMAGE=docker.io/ubuntu:22.04@sha256:962f6cadeae0ea6284001009daa4cc9a8c37e75d1f5191cf0eb83fe565b63dd7
+# Tilion Fortress is the browser engine: a stealth stock-Chromium fork with
+# C++ persona patches, distributed as an OCI image. It fully replaces stock
+# chromium (the xtradeb chromium debs are not installed); the chromium
+# runtime-library closure it links against is supplied by the pinned apt
+# packages in locks/apt-packages.txt. Pinned by digest to the STABLE channel —
+# tag "149" (Chromium 149.0.7827.232), which blends in with the mass of real
+# Chrome users, NOT the newer :151 "latest" build. **amd64-only** (no arm64
+# manifest), so this whole image is amd64-only: build on linux/amd64. Chromium
+# SIGTRAPs under QEMU, so it must build & run on a native amd64 host.
+ARG FORTRESS_IMAGE=docker.io/tilion/fortress@sha256:a5e31e67b53c11f5992fb74e4acc4c6c5313cc960def5c5898d198713a58b72a
 
 FROM ${GOLANG_IMAGE} AS proxy-builder
 WORKDIR /src
@@ -13,6 +23,14 @@ COPY proxy/circuits ./circuits
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /out/novnc-proxy .
+
+# Local authenticating proxy relay (stdlib-only, CGO off). Lets chromium use an
+# authenticated upstream proxy without a CDP Fetch.authRequired handler.
+COPY proxy-relay/go.mod /relay/
+COPY proxy-relay/*.go /relay/
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    cd /relay && CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /out/proxy-relay .
 
 FROM ${UBUNTU_IMAGE} AS ubuntu-snapshot
 ARG UBUNTU_SNAPSHOT=20260624T000000Z
@@ -38,6 +56,8 @@ RUN --mount=from=proxy-builder,source=/etc/ssl/certs/ca-certificates.crt,target=
         /etc/ssl \
         /etc/ssl/certs \
         /etc/ssl/certs/ca-certificates.crt
+
+FROM ${FORTRESS_IMAGE} AS fortress
 
 FROM ubuntu-snapshot AS runtime
 ARG TARGETARCH
@@ -98,7 +118,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     tar -xzf /tmp/novnc.tar.gz --strip-components=1 -C /tmp/novnc-src; \
     cp -a /tmp/novnc-src/core /tmp/novnc-src/vendor /usr/share/novnc/; \
     cp -a /tmp/novnc-src/LICENSE.txt "/usr/share/novnc/LICENSE.noVNC-${novnc_version}.txt"; \
-    apt-get purge -y --auto-remove curl xz-utils; \
+    apt-get purge -y --auto-remove xz-utils; \
     rm -rf /tmp/chromium-artifacts /tmp/novnc-src /tmp/novnc.tar.gz /tmp/apt-packages.txt /tmp/chromium-artifacts.tsv /tmp/novnc.lock; \
     useradd -m -s /bin/bash kernel; \
     mkdir -p /home/kernel/user-data /home/kernel/.config/openbox /home/kernel/.cache /tmp/.X11-unix /var/log/app; \
@@ -116,7 +136,25 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
         -newerct "$touch_start" \
         -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
+# Tilion Fortress (stable stealth Chromium 149) — the only browser in the image.
+# /opt/tilion/tilion is a bash launcher that applies a Windows persona + bundled
+# fonts + its own SwiftShader ICD around /opt/tilion/chrome (the patched Chromium
+# whose C++-level patches produce a real-Chrome TLS/JS fingerprint). The shared
+# libs it links against come from the chromium runtime-lib block in
+# locks/apt-packages.txt. `chromium`/`chromium-browser` are symlinked to the
+# launcher so anything invoking `chromium` gets the persona-wrapped browser.
+# Own layer so the ~326MB copy caches independently.
+COPY --from=fortress /opt/tilion /opt/tilion
+RUN set -eux; \
+    touch_start="$(date -u +'%Y-%m-%d %H:%M:%S')"; \
+    test -x /opt/tilion/tilion; test -x /opt/tilion/chrome; \
+    ln -sf /opt/tilion/tilion /usr/bin/chromium; \
+    ln -sf /opt/tilion/tilion /usr/bin/chromium-browser; \
+    find /opt /usr/bin -xdev -newerct "$touch_start" \
+        -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
 COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
+COPY --from=proxy-builder /out/proxy-relay /usr/local/bin/proxy-relay
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
 COPY --chmod=0755 start-chromium /usr/local/bin/start-chromium
 COPY liveview.html /usr/share/novnc/liveview.html
@@ -128,6 +166,7 @@ RUN set -eux; \
     chown -R kernel:kernel /etc/chromium/policies /etc/chromium/policy-variants; \
     touch -h -d "@${SOURCE_DATE_EPOCH}" \
         /usr/local/bin/novnc-proxy \
+        /usr/local/bin/proxy-relay \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
         /usr/share/novnc/liveview.html; \
