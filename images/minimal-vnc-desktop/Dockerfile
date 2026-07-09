@@ -24,14 +24,6 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /out/novnc-proxy .
 
-# Local authenticating proxy relay (stdlib-only, CGO off). Lets chromium use an
-# authenticated upstream proxy without a CDP Fetch.authRequired handler.
-COPY proxy-relay/go.mod /relay/
-COPY proxy-relay/*.go /relay/
-RUN --mount=type=cache,target=/root/.cache/go-build \
-    cd /relay && CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
-    go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /out/proxy-relay .
-
 FROM ${UBUNTU_IMAGE} AS ubuntu-snapshot
 ARG UBUNTU_SNAPSHOT=20260624T000000Z
 ARG SOURCE_DATE_EPOCH=0
@@ -223,7 +215,6 @@ RUN set -eux; \
         -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
-COPY --from=proxy-builder /out/proxy-relay /usr/local/bin/proxy-relay
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
 COPY --chmod=0755 start-chromium /usr/local/bin/start-chromium
 COPY liveview.html /usr/share/novnc/liveview.html
@@ -235,7 +226,6 @@ RUN set -eux; \
     chown -R kernel:kernel /etc/chromium/policies /etc/chromium/policy-variants; \
     touch -h -d "@${SOURCE_DATE_EPOCH}" \
         /usr/local/bin/novnc-proxy \
-        /usr/local/bin/proxy-relay \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
         /usr/share/novnc/liveview.html; \

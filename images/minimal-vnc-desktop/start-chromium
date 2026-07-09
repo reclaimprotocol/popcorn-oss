@@ -85,48 +85,8 @@ else
   echo "$CLOAK_SEED" > "$CLOAK_SEED_FILE"
 fi
 
-# -----------------------------------------------------------------------------
-# Proxy setup — done BEFORE the geoip lookup on purpose. When HTTPS_PROXY_URL is
-# set we start the local authenticating relay first so that (a) chromium points
-# at it with no auth, and (b) the geoip lookup below runs THROUGH it and resolves
-# the *proxy's* exit IP/region — not the container's real IP. proxy_flags is
-# appended to the chromium flags later; PROXY_CURL_ARG feeds the geoip curl.
-# {{geoLocation}}→PROXY_GEO; PROXY_SESSION pins a sticky exit IP; PROXY_SCHEME
-# overrides the upstream scheme.
-# -----------------------------------------------------------------------------
-proxy_flags=()
-PROXY_CURL_ARG=()
-if [[ -n "${HTTPS_PROXY_URL:-}" ]]; then
-  proxy_geo="${PROXY_GEO:-us}"
-  if [[ -x /usr/local/bin/proxy-relay ]]; then
-    relay_port="${PROXY_RELAY_PORT:-13128}"
-    RELAY_LISTEN="127.0.0.1:${relay_port}" \
-      nohup /usr/local/bin/proxy-relay >>"${LOG_DIR:-/var/log/app}/proxy-relay.log" 2>&1 &
-    for _ in $(seq 1 20); do
-      (echo >"/dev/tcp/127.0.0.1/${relay_port}") >/dev/null 2>&1 && break
-      sleep 0.1
-    done
-    proxy_flags+=(
-      "--proxy-server=http://127.0.0.1:${relay_port}"
-      "--proxy-bypass-list=127.0.0.1;localhost;<local>"
-    )
-    # geoip goes through the relay → resolves the proxy's exit IP.
-    PROXY_CURL_ARG=(-x "http://127.0.0.1:${relay_port}")
-    echo "[stealth] proxy: local relay 127.0.0.1:${relay_port} -> upstream (auth off-CDP; geo=${proxy_geo} session=${PROXY_SESSION:-auto})"
-  else
-    # Fallback (no relay binary): --proxy-server direct; auth via out-of-band CDP.
-    proxy_url="${HTTPS_PROXY_URL//\{\{geoLocation\}\}/$proxy_geo}"
-    proxy_scheme="${PROXY_SCHEME:-${proxy_url%%://*}}"
-    proxy_rest="${proxy_url#*://}"; proxy_rest="${proxy_rest#*@}"; proxy_hostport="${proxy_rest%%/*}"
-    proxy_flags+=("--proxy-server=${proxy_scheme}://${proxy_hostport}")
-    PROXY_CURL_ARG=(-x "$proxy_url")
-    echo "[stealth] proxy-server: ${proxy_scheme}://${proxy_hostport} (geo=${proxy_geo}); auth via CDP (no relay binary present)"
-  fi
-fi
-
 # geoip: resolve timezone + locale from the exit IP on first boot and persist.
-# With a proxy set (above), the lookup runs through it, so this reflects the
-# proxy's region; otherwise it reflects the container's real IP. Bot classifiers
+# This reflects the container's real IP. Bot classifiers
 # grade higher when spoofed timezone/locale match the egress region. Default on;
 # needs curl at runtime. Fail open. NOTE: reCAPTCHA scoring is driven by IP
 # reputation, not tz/locale — geoip is coherence hygiene, not a reCAPTCHA fix.
@@ -137,8 +97,8 @@ CLOAK_LOCALE_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-locale"
 if [[ ! -s "$CLOAK_TZ_FILE" || ! -s "$CLOAK_LOCALE_FILE" ]] \
    && [[ "$CLOAK_GEOIP" == "true" ]] \
    && command -v curl >/dev/null 2>&1; then
-  echo "[start-chromium] geoip: resolving timezone/locale from exit IP${PROXY_CURL_ARG:+ (via proxy)}…"
-  GEOIP_JSON="$(curl -s --max-time 8 "${PROXY_CURL_ARG[@]}" https://ipapi.co/json/ 2>/dev/null || true)"
+  echo "[start-chromium] geoip: resolving timezone/locale from exit IP…"
+  GEOIP_JSON="$(curl -s --max-time 8 https://ipapi.co/json/ 2>/dev/null || true)"
   if [[ -n "$GEOIP_JSON" ]]; then
     GEOIP_TZ="$(printf '%s' "$GEOIP_JSON" | awk -F'"' '/"timezone"[[:space:]]*:/ {print $4; exit}')"
     GEOIP_LANGS="$(printf '%s' "$GEOIP_JSON" | awk -F'"' '/"languages"[[:space:]]*:/ {print $4; exit}')"
@@ -293,12 +253,6 @@ if [[ "${CLOAK_ALLOW_3P_COOKIES:-true}" == "true" ]]; then
     echo "[stealth] WARN: cookie_controls_mode=0 not present after merge — reCAPTCHA reputation cookie may be blocked" >&2
   fi
   echo "[stealth] 3p-cookies: policy + prefs(cookie_controls_mode=0, enforced on warmed profiles too) + disable TrackingProtection3pcd (reCAPTCHA v3/Enterprise reputation)"
-fi
-
-# Apply the proxy flags computed earlier (the relay, if any, was started before
-# the geoip lookup so geoip could resolve the proxy's exit IP).
-if [[ ${#proxy_flags[@]} -gt 0 ]]; then
-  cloak_flags+=("${proxy_flags[@]}")
 fi
 
 if [[ "$BROWSER" == "fingerprint" ]]; then
