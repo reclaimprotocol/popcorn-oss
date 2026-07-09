@@ -127,6 +127,23 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     chown -R kernel:kernel /home/kernel /var/log/app; \
     chown -h kernel:kernel /var/log/minimal-vnc; \
     chmod 1777 /tmp /tmp/.X11-unix; \
+    # Curate the international-script faces we actually need out of Noto into a
+    # private dir (renamed to Windows font names downstream in the Fortress
+    # layer), then PURGE the bulky Noto packages. Chromium reads only the curated
+    # dir via Fortress's fontconfig, so Noto is pure build-time weight. Missing
+    # faces are tolerated (|| true) so a snapshot reshuffle can't break the build.
+    mkdir -p /usr/local/share/fonts-intl; \
+    _n=/usr/share/fonts/truetype/noto; _o=/usr/share/fonts/opentype/noto; \
+    for f in Devanagari Bengali Gujarati Gurmukhi Kannada Malayalam Oriya Tamil Telugu \
+             Arabic Hebrew Thai Lao Khmer Myanmar Georgian Armenian Ethiopic Mongolian \
+             Sinhala Cherokee Syriac Thaana Symbols Symbols2 \
+             NKo Vai AdlamUnjoined Osmanya TifinaghAzawagh CanadianAboriginal Yi \
+             Ogham Runic Math; do \
+      for w in Regular Bold; do cp "$_n/NotoSans${f}-${w}.ttf" /usr/local/share/fonts-intl/ 2>/dev/null || true; done; \
+    done; \
+    for w in Regular Bold; do cp "$_n/NotoSerifTibetan-${w}.ttf" /usr/local/share/fonts-intl/ 2>/dev/null || true; done; \
+    for w in Regular Bold; do cp "$_o/NotoSansCJK-${w}.ttc" /usr/local/share/fonts-intl/ 2>/dev/null || true; done; \
+    apt-get purge -y fonts-noto-core fonts-noto-cjk; \
     rm -f /etc/machine-id /var/lib/dbus/machine-id /var/cache/ldconfig/aux-cache /run/systemd/resolve/stub-resolv.conf; \
     rm -rf /var/cache/debconf/* /var/cache/fontconfig/* /var/lib/apt/lists/*; \
     find /usr/local/share/fonts /usr/share/fonts -name '.uuid' -delete 2>/dev/null || true; \
@@ -150,7 +167,59 @@ RUN set -eux; \
     test -x /opt/tilion/tilion; test -x /opt/tilion/chrome; \
     ln -sf /opt/tilion/tilion /usr/bin/chromium; \
     ln -sf /opt/tilion/tilion /usr/bin/chromium-browser; \
-    find /opt /usr/bin -xdev -newerct "$touch_start" \
+    # Fortress points Chromium at a fontconfig (fonts.conf.template) listing ONLY
+    # its ~11 Latin Windows fonts, so every non-Latin script renders as tofu. Add
+    # the curated /usr/local/share/fonts-intl dir (built in the runtime layer) and
+    # scan-rename each Noto face to the font a REAL Windows box uses for that
+    # script (Nirmala UI for all Indic+Sinhala, Segoe UI for Arabic/Hebrew,
+    # Microsoft YaHei/JhengHei/Yu Gothic/Malgun for CJK, Leelawadee UI, Sylfaen,
+    # Ebrima, …). Net: everything renders AND the enumerable font list is a
+    # coherent inbox-Windows set — zero Linux family names (Noto/DejaVu/Lohit)
+    # leak into the fingerprint. Patch the TEMPLATE (the launcher regenerates the
+    # live conf from it each boot). Idempotent.
+    tmpl=/opt/tilion/fonts/fonts.conf.template; \
+    if [ -f "$tmpl" ] && ! grep -q 'fonts-intl' "$tmpl"; then \
+      sed -i 's#\(<dir>@FONTDIR@</dir>\)#\1\n  <dir>/usr/local/share/fonts-intl</dir>#' "$tmpl"; \
+      sed -i 's#</fontconfig>##' "$tmpl"; \
+      add() { printf '  <match target="scan"><test name="family"><string>%s</string></test><edit name="family" mode="assign"><string>%s</string></edit></match>\n' "$1" "$2" >> "$tmpl"; }; \
+      for s in Devanagari Bengali Gujarati Gurmukhi Kannada Malayalam Oriya Tamil Telugu Sinhala; do add "Noto Sans $s" "Nirmala UI"; done; \
+      add "Noto Sans Arabic" "Segoe UI"; add "Noto Sans Hebrew" "Segoe UI"; \
+      for s in Thai Lao Khmer; do add "Noto Sans $s" "Leelawadee UI"; done; \
+      add "Noto Sans Myanmar" "Myanmar Text"; \
+      add "Noto Sans Georgian" "Sylfaen"; add "Noto Sans Armenian" "Sylfaen"; \
+      add "Noto Sans Ethiopic" "Nyala"; \
+      add "Noto Serif Tibetan" "Microsoft Himalaya"; \
+      add "Noto Sans Mongolian" "Mongolian Baiti"; \
+      add "Noto Sans Cherokee" "Gadugi"; add "Noto Sans Canadian Aboriginal" "Gadugi"; add "Noto Sans CanAborig" "Gadugi"; \
+      add "Noto Sans Syriac" "Estrangelo Edessa"; \
+      add "Noto Sans Thaana" "MV Boli"; \
+      add "Noto Sans NKo" "Ebrima"; add "Noto Sans Vai" "Ebrima"; add "Noto Sans Adlam Unjoined" "Ebrima"; add "Noto Sans Osmanya" "Ebrima"; add "Noto Sans Tifinagh Azawagh" "Ebrima"; \
+      add "Noto Sans Yi" "Microsoft Yi Baiti"; \
+      add "Noto Sans Ogham" "Segoe UI Historic"; add "Noto Sans Runic" "Segoe UI Historic"; \
+      add "Noto Sans Math" "Cambria Math"; \
+      add "Noto Sans Symbols" "Segoe UI Symbol"; add "Noto Sans Symbols2" "Segoe UI Symbol"; \
+      add "Noto Sans CJK SC" "Microsoft YaHei"; \
+      add "Noto Sans CJK TC" "Microsoft JhengHei"; add "Noto Sans CJK HK" "Microsoft JhengHei"; \
+      add "Noto Sans CJK JP" "Yu Gothic UI"; \
+      add "Noto Sans CJK KR" "Malgun Gothic"; \
+      add "Noto Sans Mono CJK SC" "SimSun"; \
+      add "Noto Sans Mono CJK TC" "MingLiU"; add "Noto Sans Mono CJK HK" "MingLiU"; \
+      add "Noto Sans Mono CJK JP" "MS Gothic"; \
+      add "Noto Sans Mono CJK KR" "Gulim"; \
+      # The four CJK faces share every Han glyph, so a bare charset match can't
+      # tell them apart. Match on page lang (as real Windows/Chrome do) so Han
+      # renders with the region-correct Windows font: zh->YaHei, zh-TW/HK->JhengHei,
+      # ja->Yu Gothic, ko->Malgun. Later prepends win, so region rules follow "zh".
+      pref() { printf '  <match target="pattern"><test name="lang" compare="contains"><string>%s</string></test><edit name="family" mode="prepend" binding="strong"><string>%s</string></edit></match>\n' "$1" "$2" >> "$tmpl"; }; \
+      pref "zh" "Microsoft YaHei"; \
+      pref "ja" "Yu Gothic UI"; \
+      pref "ko" "Malgun Gothic"; \
+      pref "zh-tw" "Microsoft JhengHei"; \
+      pref "zh-hk" "Microsoft JhengHei"; \
+      pref "zh-mo" "Microsoft JhengHei"; \
+      printf '</fontconfig>\n' >> "$tmpl"; \
+    fi; \
+    find /opt /usr/bin /usr/local/share/fonts-intl -xdev -newerct "$touch_start" \
         -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy

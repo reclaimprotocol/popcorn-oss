@@ -230,7 +230,14 @@ elif [[ "$BROWSER" == "fortress" ]]; then
   [[ -x "$CHROME_BIN" ]] || { echo "[start-chromium] BROWSER=fortress but $CHROME_BIN is missing (Tilion Fortress is x86_64-only; build/run on amd64)" >&2; exit 1; }
   # The wrapper reads these to keep TZ/locale coherent from the first renderer tick.
   export TILION_TZ="$CLOAK_TIMEZONE"
-  export TILION_LANG="$CLOAK_LOCALE"
+  # --uxr-languages expects an Accept-Language-style list. Expand a single region
+  # locale (en-IN) to "en-IN,en" so navigator.languages looks like a real browser;
+  # pass through anything that's already a list or has no region subtag.
+  if [[ "$CLOAK_LOCALE" == *,* || "$CLOAK_LOCALE" != *-* ]]; then
+    export TILION_LANG="$CLOAK_LOCALE"
+  else
+    export TILION_LANG="$CLOAK_LOCALE,${CLOAK_LOCALE%%-*}"
+  fi
   # No --fingerprint-* / gpu_flags: Fortress supplies platform/UA/hw via --uxr
   # defaults and bundles its own SwiftShader ICD. NOTE: this keeps the honest
   # SwiftShader WebGL renderer (a datacenter/coherence tell for strict keys) —
@@ -238,7 +245,7 @@ elif [[ "$BROWSER" == "fortress" ]]; then
   # reputation is). Override persona with CHROMIUM_FLAGS='--uxr-... ' if needed,
   # or TILION_NO_DEFAULTS=1 for a bare launch.
   cloak_flags=()
-  echo "[stealth] browser: Tilion Fortress (stable stealth Chromium 149) — Windows persona via --uxr defaults; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$CLOAK_LOCALE"
+  echo "[stealth] browser: Tilion Fortress (stable stealth Chromium 149) — Windows persona via --uxr defaults; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$TILION_LANG"
 else
   # CloakBrowser was removed; only 'fortress' (default) and 'fingerprint' remain.
   echo "[start-chromium] unknown BROWSER='$BROWSER' (valid: fortress [default], fingerprint). CloakBrowser was removed from this image." >&2

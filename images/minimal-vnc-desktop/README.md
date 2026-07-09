@@ -128,6 +128,40 @@ filter and should stay on a trusted internal surface. The standalone examples
 below publish only `6080`; publish or route `9226` only behind Popcorn's
 internal token path or an equivalent private gateway.
 
+## Stealth testing
+
+Two ways to verify the stealth surface against a **running container's**
+chromium over the **full CDP proxy** (`9226` — the restricted `9222` filters the
+commands the probes need):
+
+- **`stealth-tests/`** — the full Node/playwright suite (tls, sannysoft, creepjs,
+  cloudflare, turnstile, recaptcha, browserscan, akamai). Needs `npm install`.
+  See [`stealth-tests/README.md`](stealth-tests/README.md).
+
+- **`scripts/stealth-test.sh`** — a dependency-light battery (fingerprint
+  coherence, sannysoft, creepjs, reCAPTCHA v3, cloudflare) that reads verdicts
+  straight out of each test page over raw CDP. Needs only `python3` +
+  `pip3 install websockets` — no node/playwright.
+
+  ```bash
+  # start a container (full CDP on 127.0.0.1:9226) and probe it
+  ./scripts/stealth-test.sh --run
+
+  # against an already-running container, with the coherent mobile-touch profile
+  CDP_HOST=127.0.0.1:9226 ./scripts/stealth-test.sh --mobile
+
+  # a subset
+  ./scripts/stealth-test.sh fingerprint recaptcha
+  ```
+
+  Exit code `0` = all pass, `1` = a probe failed. **reCAPTCHA/Cloudflare weight
+  egress IP reputation heavily** — a low score there reflects the IP (attach a
+  residential proxy for production), not the fingerprint. `fingerprint` checks
+  identity coherence and automation tells (`navigator.webdriver`, `cdc_`
+  globals, plugin count, HeadlessChrome UA, touch/UA/platform consistency);
+  `creepjs` reports "lie" entries, of which canvas/audio/DOMRect are the
+  browser's anti-tracking noise, not identity spoofs.
+
 ## Runtime Configuration
 
 | Variable | Default | Purpose |
