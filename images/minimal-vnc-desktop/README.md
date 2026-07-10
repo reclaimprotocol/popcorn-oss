@@ -21,6 +21,31 @@ unauthenticated mirror, set `ARTIFACT_MIRROR_PREFIX` to a URL containing the deb
 files. For a different GitHub mirror, set `GITHUB_ARTIFACT_MIRROR_REPO` and
 `ARTIFACT_MIRROR_TAG`.
 
+### Tilion Fortress (stealth)
+
+The browser is **Tilion Fortress**, a stealth stock-Chromium fork pulled as an
+OCI image (pinned by digest) and symlinked over `chromium` — it fully replaces
+stock chromium. Its shared-library closure is supplied by the chromium
+runtime-lib block in `locks/apt-packages.txt`. See
+[`FORTRESS-INTEGRATION.md`](FORTRESS-INTEGRATION.md) and [`STEALTH.md`](STEALTH.md)
+for the full stealth surface and the `CLOAK_*` runtime knobs.
+
+- **amd64-only.** The pin (tag `149`, stable Chromium 149) has no arm64 manifest,
+  so the whole image is amd64-only. Build **natively** on an amd64 host — do not
+  emulate under QEMU: chromium SIGTRAPs (crashes on launch before the live view
+  is ready).
+
+- **Override the pin** at build time (e.g. a newer Fortress digest):
+
+  ```bash
+  FORTRESS_IMAGE=docker.io/tilion/fortress@sha256:<digest> ./build.sh
+  ```
+
+- **Image size.** Fortress is now the only chromium in the image (the
+  xtradeb chromium debs were dropped), so the net size is close to the original
+  stock-chromium image. Check with
+  `docker image inspect --format '{{.Size}}' popcorn/minimal-vnc-desktop:local`.
+
 ## Run
 
 ```bash
@@ -104,6 +129,40 @@ filter and should stay on a trusted internal surface. The standalone examples
 below publish only `6080`; publish or route `9226` only behind Popcorn's
 internal token path or an equivalent private gateway.
 
+## Stealth testing
+
+Two ways to verify the stealth surface against a **running container's**
+chromium over the **full CDP proxy** (`9226` — the restricted `9222` filters the
+commands the probes need):
+
+- **`stealth-tests/`** — the full Node/playwright suite (tls, sannysoft, creepjs,
+  cloudflare, turnstile, recaptcha, browserscan, akamai). Needs `npm install`.
+  See [`stealth-tests/README.md`](stealth-tests/README.md).
+
+- **`scripts/stealth-test.sh`** — a dependency-light battery (fingerprint
+  coherence, sannysoft, creepjs, reCAPTCHA v3, cloudflare) that reads verdicts
+  straight out of each test page over raw CDP. Needs only `python3` +
+  `pip3 install websockets` — no node/playwright.
+
+  ```bash
+  # start a container (full CDP on 127.0.0.1:9226) and probe it
+  ./scripts/stealth-test.sh --run
+
+  # against an already-running container, with the coherent mobile-touch profile
+  CDP_HOST=127.0.0.1:9226 ./scripts/stealth-test.sh --mobile
+
+  # a subset
+  ./scripts/stealth-test.sh fingerprint recaptcha
+  ```
+
+  Exit code `0` = all pass, `1` = a probe failed. **reCAPTCHA/Cloudflare weight
+  egress IP reputation heavily** — a low score there reflects the IP (attach a
+  residential proxy for production), not the fingerprint. `fingerprint` checks
+  identity coherence and automation tells (`navigator.webdriver`, `cdc_`
+  globals, plugin count, HeadlessChrome UA, touch/UA/platform consistency);
+  `creepjs` reports "lie" entries, of which canvas/audio/DOMRect are the
+  browser's anti-tracking noise, not identity spoofs.
+
 ## Runtime Configuration
 
 | Variable | Default | Purpose |
@@ -113,6 +172,12 @@ internal token path or an equivalent private gateway.
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
+| `CLOAK_FINGERPRINT_SEED` | random (CSPRNG, persisted) | Pin the `fingerprint-chromium` seed (opt-in `BROWSER=fingerprint` path). Pin a seed that maps to an integrated GPU if the WebGL renderer resolves to a discrete GPU (SwiftShader mismatch tell). See [`STEALTH.md`](STEALTH.md). |
+| `CLOAK_GEOIP` | `true` | Resolve timezone/locale from the exit IP on first boot (needs `curl`, retained in image) and persist them. |
+| `CLOAK_TIMEZONE` | geoip → `America/Los_Angeles` | Manual timezone when geoip is off; also realigns `TZ`/`/etc/localtime`. |
+| `CLOAK_LOCALE` | geoip → `en-US` | Manual locale when geoip is off. |
+| `CLOAK_WEBRTC_IP` | `auto` (with geoip) | Literal WebRTC public-IP override for STUN candidates. |
+| `CLOAK_PROFILE_SEED` | empty | Path to a `profile-state.tar.gz` to start pre-warmed/pre-authenticated. Treated as a credential. |
 | `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log`, `xvnc.log`, `novnc-proxy.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
@@ -182,8 +247,12 @@ gateway rewrites `/liveview/{sessionId}/{token}/...` to the browser runtime.
   digest.
 - `locks/ubuntu-snapshot.lock` pins the Ubuntu snapshot ID passed by
   `build.sh`.
-- `locks/apt-packages.txt` pins top-level apt package versions.
-- `locks/chromium-artifacts.tsv` pins Chromium package URLs and sha256s.
+- `locks/apt-packages.txt` pins top-level apt package versions, including the
+  Fortress (chromium) shared-library closure.
+- `Dockerfile`'s `FORTRESS_IMAGE` pins the stealth-Chromium OCI image by
+  digest (the browser binary itself).
+- `locks/chromium-artifacts.tsv` pins the `libxcvt0` deb URL and sha256 (the
+  only prepared deb artifact now that chromium comes from Fortress).
 - `locks/artifact-mirrors.tsv` pins the GitHub release tags used when the
   upstream package pool no longer serves those exact debs.
 - `locks/novnc.lock` pins the noVNC source tarball URL and sha256.

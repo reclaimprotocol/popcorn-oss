@@ -179,9 +179,22 @@ while IFS=$'\t' read -r arch name filename url expected_sha; do
   mv "$tmp_path" "$out_path"
 done < <(awk -F '\t' '$0 !~ /^[[:space:]]*(#|$)/ { print }' "$CHROMIUM_LOCK")
 
+# Prune debs left over from a previous lock (e.g. the chromium debs that used to
+# live here before CloakBrowser replaced them) so a stale cache dir doesn't
+# poison the count check below.
+expected_debs="$(awk -F '\t' -v arch="$TARGET_ARCH" \
+  '$0 !~ /^[[:space:]]*(#|$)/ && $1 == arch { print $3 }' "$CHROMIUM_LOCK")"
+for existing in "$DEB_DIR"/*.deb; do
+  [[ -e "$existing" ]] || continue
+  if ! printf '%s\n' "$expected_debs" | grep -qxF "$(basename "$existing")"; then
+    echo "Pruning stale artifact $(basename "$existing")"
+    rm -f "$existing"
+  fi
+done
+
 artifact_count="$(find "$DEB_DIR" -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d '[:space:]')"
-if [[ "$artifact_count" != "4" ]]; then
-  echo "Expected 4 deb artifacts for $TARGET_ARCH, found $artifact_count" >&2
+if [[ "$artifact_count" != "1" ]]; then
+  echo "Expected 1 deb artifact (libxcvt0) for $TARGET_ARCH, found $artifact_count" >&2
   exit 1
 fi
 

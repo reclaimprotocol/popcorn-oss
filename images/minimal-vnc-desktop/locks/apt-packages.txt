@@ -5,43 +5,51 @@ bash=5.1-6ubuntu1.1
 ca-certificates=20260601~22.04.1
 coreutils=8.32-4.1ubuntu1.3
 curl=7.81.0-1ubuntu1.24
-# Fonts (broad script/emoji coverage; versions from the pinned snapshot above).
-fonts-croscore=20201225-1build1
+# Fonts. Chromium runs behind Fortress's own fontconfig, which reads ONLY the
+# curated font dirs we hand it — never /usr/share/fonts — so system font packs
+# neither render in the browser nor appear in its font fingerprint. We therefore
+# ship the bare minimum:
+#   fonts-dejavu-core  satisfies fontconfig-config's font dependency (its alt-dep
+#                      list is dejavu|liberation|croscore|freefont|…; Noto is NOT
+#                      in it). ~2.5MB, never reaches Chromium.
+#   fonts-noto-core }  build-time COPY SOURCE only: the Dockerfile curates the
+#   fonts-noto-cjk  }  needed script faces into /usr/local/share/fonts-intl
+#                      (renamed to their Windows font names) and then PURGES both
+#                      packages, so they add no runtime weight.
+# Everything else (dejavu-extra, freefont, liberation, indic, khmeros, tibetan,
+# nanum, ipafont, wqy-zenhei, thai-tlwg, ubuntu, roboto, unifont, color-emoji,
+# …) was dead weight — Chromium never saw it — and is removed. Emoji is covered
+# by Fortress's own colour SegoeUIEmoji.ttf (CBDT/CBLC).
 fonts-dejavu-core=2.37-2build1
-fonts-dejavu-extra=2.37-2build1
-fonts-droid-fallback=1:6.0.1r16-1.1build1
-fonts-freefont-ttf=20120503-10build1
-fonts-hosny-amiri=0.113-1
-fonts-indic=2:1.4
-fonts-ipafont-gothic=00303-21ubuntu1
-fonts-kacst=2.01+mry-15
-fonts-khmeros-core=5.0-9ubuntu1
-fonts-lao=0.0.20060226-10ubuntu2
-fonts-liberation=1:1.07.4-11
-fonts-liberation2=2.1.5-1
-fonts-lklug-sinhala=0.6-4
-fonts-nanum=20200506-1
 fonts-noto-cjk=1:20220127+repack1-1
-fonts-noto-color-emoji=2.047-0ubuntu0.22.04.1
 fonts-noto-core=20201225-1build1
-fonts-opensymbol=2:102.12+LibO7.3.7-0ubuntu0.22.04.11
-fonts-roboto=2:0~20170802-3
-fonts-sil-abyssinica=2.100-3
-fonts-sil-padauk=5.000-3
-fonts-smc-chilanka=1.540-1
-fonts-thai-tlwg=1:0.7.3-1
-fonts-tibetan-machine=1.901b-6
-fonts-tlwg-loma-otf=1:0.7.3-1
-fonts-ubuntu=0.83-6ubuntu1
-fonts-unifont=1:14.0.01-1
-fonts-wqy-zenhei=0.9.45-8
 libasound2=1.2.6.1-1ubuntu1.1
 libgbm1=23.2.1-1ubuntu3.1~22.04.4
 libgtk-3-0=3.24.33-1ubuntu2.2
 libnss3=2:3.98-0ubuntu0.22.04.3
 libxss1=1:1.2.3-1build2
+# CloakBrowser (chromium) shared-library closure. Previously supplied by the
+# xtradeb chromium debs; now that chromium comes from the CloakBrowser OCI
+# image these must be installed explicitly. Versions resolved from the pinned
+# snapshot (2026-06-24). libnss3/libgbm1/libasound2 above already cover the rest.
+libcups2=2.4.1op1-1ubuntu4.21
+libnspr4=2:4.35-0ubuntu0.22.04.1
+libatk1.0-0=2.36.0-3build1
+libatk-bridge2.0-0=2.38.0-3
+libatspi2.0-0=2.44.0-3
+libpango-1.0-0=1.50.6+ds-2ubuntu1
+libxdamage1=1:1.1.5-2build2
+libxkbcommon0=1.4.0-1
+libdrm2=2.4.113-2~ubuntu0.22.04.1
+libxcomposite1=1:0.4.5-1build2
+libxfixes3=1:6.0.0-1
+libxrandr2=2:1.5.2-1build1
 openbox=3.6.1-10
 tigervnc-standalone-server=1.12.0+dfsg-4ubuntu0.22.04.1
 unclutter=8-25
+# Provides xwininfo, which entrypoint.sh uses to detect the browser window for
+# readiness. Without it the readiness gate fails and (under set -e) the
+# container exits before marking noVNC ready.
+x11-utils=7.7+5build2
 xterm=372-1ubuntu1
 xz-utils=5.2.5-2ubuntu1.1
