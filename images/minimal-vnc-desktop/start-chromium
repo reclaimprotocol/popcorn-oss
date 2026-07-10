@@ -85,11 +85,13 @@ else
   echo "$CLOAK_SEED" > "$CLOAK_SEED_FILE"
 fi
 
-# geoip: resolve timezone + locale from the exit IP on first boot and persist.
-# This reflects the container's real IP. Bot classifiers
-# grade higher when spoofed timezone/locale match the egress region. Default on;
-# needs curl at runtime. Fail open. NOTE: reCAPTCHA scoring is driven by IP
-# reputation, not tz/locale — geoip is coherence hygiene, not a reCAPTCHA fix.
+# geoip: resolve tz/locale from the egress at boot and persist. During pre-warm
+# there is NO proxy yet, so this reflects the cluster's own egress IP — the
+# correct baseline for that moment. When the in-browser extension proxy is later
+# assigned at runtime, the control plane re-aligns tz to the proxy exit via CDP
+# Emulation.setTimezoneOverride (before the session touches a target). Default
+# on; needs curl; fail open. NOTE: reCAPTCHA scoring is IP-driven — this is
+# coherence hygiene, not a reCAPTCHA fix.
 CLOAK_GEOIP="${CLOAK_GEOIP:-true}"
 CLOAK_TZ_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-timezone"
 CLOAK_LOCALE_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-locale"

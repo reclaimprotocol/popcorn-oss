@@ -21,26 +21,27 @@ unauthenticated mirror, set `ARTIFACT_MIRROR_PREFIX` to a URL containing the deb
 files. For a different GitHub mirror, set `GITHUB_ARTIFACT_MIRROR_REPO` and
 `ARTIFACT_MIRROR_TAG`.
 
-### CloakBrowser (stealth)
+### Tilion Fortress (stealth)
 
-The browser is **CloakBrowser**, a stealth-Chromium fork pulled as an OCI image
-(pinned by digest) and symlinked over `chromium` — it fully replaces stock
-chromium. Its shared-library closure is supplied by the chromium runtime-lib
-block in `locks/apt-packages.txt`. See [`STEALTH.md`](STEALTH.md) for the full
-stealth surface and the `CLOAK_*` runtime knobs.
+The browser is **Tilion Fortress**, a stealth stock-Chromium fork pulled as an
+OCI image (pinned by digest) and symlinked over `chromium` — it fully replaces
+stock chromium. Its shared-library closure is supplied by the chromium
+runtime-lib block in `locks/apt-packages.txt`. See
+[`FORTRESS-INTEGRATION.md`](FORTRESS-INTEGRATION.md) and [`STEALTH.md`](STEALTH.md)
+for the full stealth surface and the `CLOAK_*` runtime knobs.
 
-- **Multi-arch.** The pin (tag `0.4.5`) is a multi-arch index
-  (`linux/amd64` + `linux/arm64`), so `./build.sh` builds natively on either.
-  Build **natively** — do not force amd64 on an arm64 host: chromium SIGTRAPs
-  under QEMU emulation (crashes on launch before the live view is ready).
+- **amd64-only.** The pin (tag `149`, stable Chromium 149) has no arm64 manifest,
+  so the whole image is amd64-only. Build **natively** on an amd64 host — do not
+  emulate under QEMU: chromium SIGTRAPs (crashes on launch before the live view
+  is ready).
 
-- **Override the pin** at build time (e.g. a newer/Pro CloakBrowser digest):
+- **Override the pin** at build time (e.g. a newer Fortress digest):
 
   ```bash
-  CLOAKBROWSER_IMAGE=docker.io/cloakhq/cloakbrowser@sha256:<digest> ./build.sh
+  FORTRESS_IMAGE=docker.io/tilion/fortress@sha256:<digest> ./build.sh
   ```
 
-- **Image size.** CloakBrowser is now the only chromium in the image (the
+- **Image size.** Fortress is now the only chromium in the image (the
   xtradeb chromium debs were dropped), so the net size is close to the original
   stock-chromium image. Check with
   `docker image inspect --format '{{.Size}}' popcorn/minimal-vnc-desktop:local`.
@@ -171,7 +172,7 @@ commands the probes need):
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
-| `CLOAK_FINGERPRINT_SEED` | random (CSPRNG, persisted) | Pin CloakBrowser's fingerprint seed. Pin a seed that maps to an integrated GPU if the WebGL renderer resolves to a discrete GPU (SwiftShader mismatch tell). See [`STEALTH.md`](STEALTH.md). |
+| `CLOAK_FINGERPRINT_SEED` | random (CSPRNG, persisted) | Pin the `fingerprint-chromium` seed (opt-in `BROWSER=fingerprint` path). Pin a seed that maps to an integrated GPU if the WebGL renderer resolves to a discrete GPU (SwiftShader mismatch tell). See [`STEALTH.md`](STEALTH.md). |
 | `CLOAK_GEOIP` | `true` | Resolve timezone/locale from the exit IP on first boot (needs `curl`, retained in image) and persist them. |
 | `CLOAK_TIMEZONE` | geoip → `America/Los_Angeles` | Manual timezone when geoip is off; also realigns `TZ`/`/etc/localtime`. |
 | `CLOAK_LOCALE` | geoip → `en-US` | Manual locale when geoip is off. |
@@ -247,11 +248,11 @@ gateway rewrites `/liveview/{sessionId}/{token}/...` to the browser runtime.
 - `locks/ubuntu-snapshot.lock` pins the Ubuntu snapshot ID passed by
   `build.sh`.
 - `locks/apt-packages.txt` pins top-level apt package versions, including the
-  CloakBrowser (chromium) shared-library closure.
-- `Dockerfile`'s `CLOAKBROWSER_IMAGE` pins the stealth-Chromium OCI image by
+  Fortress (chromium) shared-library closure.
+- `Dockerfile`'s `FORTRESS_IMAGE` pins the stealth-Chromium OCI image by
   digest (the browser binary itself).
 - `locks/chromium-artifacts.tsv` pins the `libxcvt0` deb URL and sha256 (the
-  only prepared deb artifact now that chromium comes from CloakBrowser).
+  only prepared deb artifact now that chromium comes from Fortress).
 - `locks/artifact-mirrors.tsv` pins the GitHub release tags used when the
   upstream package pool no longer serves those exact debs.
 - `locks/novnc.lock` pins the noVNC source tarball URL and sha256.
