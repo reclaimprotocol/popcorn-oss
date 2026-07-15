@@ -18,6 +18,15 @@
     #screen > canvas {
       outline: none;
     }
+
+    /* The server-side pointer is hidden via unclutter, which makes noVNC blank
+       the canvas cursor (sets `cursor: none` when the server cursor is empty).
+       Force the viewer to keep showing the user's own machine cursor. noVNC
+       nests its canvas (#screen > div > canvas) and sets the cursor inline, so
+       a descendant selector with !important is required. */
+    #screen canvas {
+      cursor: default !important;
+    }
   </style>
 </head>
 <body>

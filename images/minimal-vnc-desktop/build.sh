@@ -31,6 +31,7 @@ docker buildx build \
   --build-context "minimal-vnc-artifacts=$ARTIFACT_CONTEXT" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   --build-arg "UBUNTU_SNAPSHOT=$UBUNTU_SNAPSHOT" \
+  ${FORTRESS_IMAGE:+--build-arg "FORTRESS_IMAGE=$FORTRESS_IMAGE"} \
   -t "$IMAGE" \
   --load \
   "$SCRIPT_DIR"

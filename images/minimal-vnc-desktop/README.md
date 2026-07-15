@@ -4,10 +4,6 @@ This is a standalone, fast-booting desktop image for visual browser/app sessions
 It intentionally does not use `popcorn-images`, WebRTC, neko, supervisor,
 Chromedriver, Playwright, the kernel-images API, or audio streaming.
 
-The image is buildable from this folder and is used by local `vnc` mode, but it
-is not yet part of the repository's release-publishing workflows. Publish and
-sign it explicitly before relying on it as a production image.
-
 ## Build
 
 ```bash
@@ -24,6 +20,31 @@ The default artifact mirror is locked in `locks/artifact-mirrors.tsv`. For an
 unauthenticated mirror, set `ARTIFACT_MIRROR_PREFIX` to a URL containing the deb
 files. For a different GitHub mirror, set `GITHUB_ARTIFACT_MIRROR_REPO` and
 `ARTIFACT_MIRROR_TAG`.
+
+### Tilion Fortress (stealth)
+
+The browser is **Tilion Fortress**, a stealth stock-Chromium fork pulled as an
+OCI image (pinned by digest) and symlinked over `chromium` — it fully replaces
+stock chromium. Its shared-library closure is supplied by the chromium
+runtime-lib block in `locks/apt-packages.txt`. See
+[`FORTRESS-INTEGRATION.md`](FORTRESS-INTEGRATION.md) and [`STEALTH.md`](STEALTH.md)
+for the full stealth surface and the `CLOAK_*` runtime knobs.
+
+- **amd64-only.** The pin (tag `149`, stable Chromium 149) has no arm64 manifest,
+  so the whole image is amd64-only. Build **natively** on an amd64 host — do not
+  emulate under QEMU: chromium SIGTRAPs (crashes on launch before the live view
+  is ready).
+
+- **Override the pin** at build time (e.g. a newer Fortress digest):
+
+  ```bash
+  FORTRESS_IMAGE=docker.io/tilion/fortress@sha256:<digest> ./build.sh
+  ```
+
+- **Image size.** Fortress is now the only chromium in the image (the
+  xtradeb chromium debs were dropped), so the net size is close to the original
+  stock-chromium image. Check with
+  `docker image inspect --format '{{.Size}}' popcorn/minimal-vnc-desktop:local`.
 
 ## Run
 
@@ -56,16 +77,52 @@ levels, messages, and fields without filtering, including debug records.
 The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
 writable by the image's non-root `kernel` user.
 
-The Reclaim proof endpoint is served on the same HTTP surface:
+The Reclaim proof endpoint is served on the same HTTP surface as noVNC
+(`NOVNC_PORT`, `6080` by default):
 
 ```text
-POST /reclaim/prove
+POST http://localhost:6080/reclaim/prove
 ```
 
 This endpoint does not depend on Chromium readiness. It uses the pinned
 `github.com/reclaimprotocol/reclaim-tee` client plus embedded OPRF circuit and
 proving-key assets copied from `popcorn-images`. Those assets add about 73 MB to
 the source tree and require a cgo-enabled Go build.
+
+An integration test for this endpoint lives in `tests/reclaim-prove.test.ts`. It
+exercises both `oprf-mpc` and `oprf` hash types against a running instance and
+validates the returned claim, TEE attestation context, and signatures. Run it
+against a reachable instance (defaults to `http://localhost:6080`):
+
+```bash
+BASE_URL=http://localhost:6080 node tests/reclaim-prove.test.ts
+```
+
+A lightweight extraction-validation endpoint is served on the same surface:
+
+```text
+POST http://localhost:6080/reclaim/validate
+POST http://localhost:6080/reclaim/validate-extraction
+```
+
+Both paths map to the same handler. It runs the reclaim-tee
+`providers.GetResponseRedactions` pipeline against a supplied response body and
+checks that the configured `xPath`/`jsonPath`/`regex` extraction yields the
+`expectedValue`, without performing a full TEE proof. The request body is:
+
+```json
+{
+  "responseBody": "<raw HTTP response body>",
+  "expectedValue": "<value the extraction should yield>",
+  "xPath": "<optional>",
+  "jsonPath": "<optional>",
+  "regex": "<optional>"
+}
+```
+
+At least one of `xPath`, `jsonPath`, or `regex` is required. The response
+reports `valid`, the extracted value, the redaction ranges, and per-step
+diagnostics in `steps`.
 
 The restricted CDP proxy allows discovery endpoints (`/json`, `/json/list`,
 `/json/version`) and filters client WebSocket commands to the same allowlist as
@@ -76,19 +133,53 @@ filter and should stay on a trusted internal surface. The standalone examples
 below publish only `6080`; publish or route `9226` only behind Popcorn's
 internal token path or an equivalent private gateway.
 
+## Stealth testing
+
+Two ways to verify the stealth surface against a **running container's**
+chromium over the **full CDP proxy** (`9226` — the restricted `9222` filters the
+commands the probes need):
+
+- **`stealth-tests/`** — the full Node/playwright suite (tls, sannysoft, creepjs,
+  cloudflare, turnstile, recaptcha, browserscan, akamai). Needs `npm install`.
+  See [`stealth-tests/README.md`](stealth-tests/README.md).
+
+- **`scripts/stealth-test.sh`** — a dependency-light battery (fingerprint
+  coherence, sannysoft, creepjs, reCAPTCHA v3, cloudflare) that reads verdicts
+  straight out of each test page over raw CDP. Needs only `python3` +
+  `pip3 install websockets` — no node/playwright.
+
+  ```bash
+  # start a container (full CDP on 127.0.0.1:9226) and probe it
+  ./scripts/stealth-test.sh --run
+
+  # against an already-running container, with the coherent mobile-touch profile
+  CDP_HOST=127.0.0.1:9226 ./scripts/stealth-test.sh --mobile
+
+  # a subset
+  ./scripts/stealth-test.sh fingerprint recaptcha
+  ```
+
+  Exit code `0` = all pass, `1` = a probe failed. **reCAPTCHA/Cloudflare weight
+  egress IP reputation heavily** — a low score there reflects the IP (attach a
+  residential proxy for production), not the fingerprint. `fingerprint` checks
+  identity coherence and automation tells (`navigator.webdriver`, `cdc_`
+  globals, plugin count, HeadlessChrome UA, touch/UA/platform consistency);
+  `creepjs` reports "lie" entries, of which canvas/audio/DOMRect are the
+  browser's anti-tracking noise, not identity spoofs.
+
 ## Runtime Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_COMMAND` | `/usr/local/bin/start-chromium` | GUI app command launched on the VNC display. |
-| `APP_URL` | `about:blank` | Default startup URL for `start-chromium`; use this for Reclaim portal or other first-page flows. |
+| `APP_URL` | depends on `REPLACE_DEFAULT_PAGE` | Default startup URL for `start-chromium`. When unset, falls back to the Reclaim loading page (`REPLACE_DEFAULT_PAGE=true`, default) or `https://www.google.com` (`REPLACE_DEFAULT_PAGE=false`). Set explicitly to override both. |
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
 | `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log` (including proxy/TEE events), `xvnc.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
-| `REPLACE_DEFAULT_PAGE` | `false` | Replace the default DuckDuckGo managed policy with the Reclaim portal policy before Chromium starts. |
+| `REPLACE_DEFAULT_PAGE` | `true` | When `true`, use the Reclaim portal as the default page: startup falls back to the Reclaim loading page and the Reclaim portal managed policy (new-tab page and search) is applied before Chromium starts. When `false`, fall back to `https://www.google.com` and keep the default policy. |
 | `CHROMIUM_POLICY_DIR` | `/etc/chromium/policies/managed` | Managed Chromium policy directory. |
 | `CHROMIUM_POLICY_VARIANT_DIR` | `/etc/chromium/policy-variants` | Directory containing alternate policy JSON files. |
 | `READY_WINDOW_PATTERN` | derived from `APP_COMMAND` | Case-insensitive extended regex matched against `xwininfo -root -tree` before noVNC reports ready. |
@@ -154,8 +245,12 @@ gateway rewrites `/liveview/{sessionId}/{token}/...` to the browser runtime.
   digest.
 - `locks/ubuntu-snapshot.lock` pins the Ubuntu snapshot ID passed by
   `build.sh`.
-- `locks/apt-packages.txt` pins top-level apt package versions.
-- `locks/chromium-artifacts.tsv` pins Chromium package URLs and sha256s.
+- `locks/apt-packages.txt` pins top-level apt package versions, including the
+  Fortress (chromium) shared-library closure.
+- `Dockerfile`'s `FORTRESS_IMAGE` pins the stealth-Chromium OCI image by
+  digest (the browser binary itself).
+- `locks/chromium-artifacts.tsv` pins the `libxcvt0` deb URL and sha256 (the
+  only prepared deb artifact now that chromium comes from Fortress).
 - `locks/artifact-mirrors.tsv` pins the GitHub release tags used when the
   upstream package pool no longer serves those exact debs.
 - `locks/novnc.lock` pins the noVNC source tarball URL and sha256.

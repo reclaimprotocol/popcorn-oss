@@ -7,7 +7,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/ci/check-reproducible-images.sh --commit-sha <sha> [--service all|browser-runtime-attestor|browser-runtime|browser-base]
+  scripts/ci/check-reproducible-images.sh --commit-sha <sha> [--service all|browser-runtime-attestor|browser-runtime]
 
 Pulls the published immutable image tag for the selected reproducible image set,
 rebuilds that image locally from the same commit, and compares the resulting
@@ -47,7 +47,7 @@ if [[ -z "$commit_sha" ]]; then
 fi
 
 case "$selector" in
-  all|browser-runtime-attestor|browser-runtime|browser-base) ;;
+  all|browser-runtime-attestor|browser-runtime) ;;
   attestor)
     selector="browser-runtime-attestor"
     ;;
@@ -83,14 +83,7 @@ if [[ "$requested_commit" != "$current_commit" ]]; then
   exit 1
 fi
 
-if [[ ! -f popcorn-images/images/chromium-headful/chromium-lock.json ]]; then
-  echo "Missing popcorn-images submodule. Run: git submodule update --init --recursive" >&2
-  exit 1
-fi
-
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --pretty=%ct)}"
-SUBMODULE_SHA="$(git submodule status popcorn-images | awk '{print $1}' | sed 's/^+//')"
-SUBMODULE_SOURCE_DATE_EPOCH="$(git -C popcorn-images log -1 --pretty=%ct)"
 
 declare -a CLEANUP_TARGETS=()
 declare -a CLEANUP_DIRS=()
@@ -226,62 +219,32 @@ build_attestor_once() {
   rm -f "$metadata_file"
 }
 
-build_browser_base_once() {
-  local artifact_layout_dir base_layout_dir
-  local base_metadata_file
-
-  eval "$("$SCRIPT_DIR/../chromium-lock-env.sh" linux/amd64)"
-
-  artifact_layout_dir="$(mktemp -d)"
-  base_layout_dir="$(mktemp -d)"
-  base_metadata_file="$(mktemp)"
-  CLEANUP_DIRS+=("$artifact_layout_dir" "$base_layout_dir")
-  browser_base_local_layout_dir="$base_layout_dir"
-
-  GITHUB_ARTIFACT_MIRROR_REPO="${GITHUB_ARTIFACT_MIRROR_REPO:-reclaimprotocol/popcorn-oss}" \
-    SOURCE_DATE_EPOCH=0 "$SCRIPT_DIR/../prepare-chromium-artifacts.sh" "$artifact_layout_dir" linux/amd64
-
-  docker buildx build \
-    --platform linux/amd64 \
-    --build-arg "SOURCE_DATE_EPOCH=${SUBMODULE_SOURCE_DATE_EPOCH}" \
-    --build-arg "UBUNTU_SNAPSHOT=${UBUNTU_SNAPSHOT}" \
-    --build-arg "ARTIFACT_MIRROR_IMAGE=artifact-mirror" \
-    --build-context "artifact-mirror=${artifact_layout_dir}" \
-    --metadata-file "$base_metadata_file" \
-    --output "type=oci,dest=${base_layout_dir},tar=false,name=local/popcorn/browser-base:${SUBMODULE_SHA}-${requested_commit}" \
-    -f popcorn-images/images/chromium-headful/Dockerfile \
-    popcorn-images
-
-  browser_base_local="$(config_digest_from_metadata "$base_metadata_file")"
-  rm -f "$base_metadata_file"
-}
-
-resolve_published_browser_base_digest() {
-  pull_published_repo_digest browser-base "$SUBMODULE_SHA"
-}
-
 build_browser_node_once() {
-  local metadata_file out_dir browser_base_digest browser_base_ref
+  local metadata_file out_dir artifact_dir ubuntu_snapshot
 
   metadata_file="$(mktemp)"
   out_dir="$(mktemp -d)"
-  CLEANUP_DIRS+=("$out_dir")
+  artifact_dir="$(mktemp -d)"
+  CLEANUP_DIRS+=("$out_dir" "$artifact_dir")
   browser_node_local_layout_dir="$out_dir"
 
-  browser_base_digest="$(resolve_published_browser_base_digest)"
-  if [[ -z "$browser_base_digest" ]]; then
-    echo "Failed to resolve published browser-base digest for ${SUBMODULE_SHA}" >&2
+  ubuntu_snapshot="$(awk -F '=' '$1 == "UBUNTU_SNAPSHOT" { print $2 }' images/minimal-vnc-desktop/locks/ubuntu-snapshot.lock)"
+  if [[ -z "$ubuntu_snapshot" ]]; then
+    echo "Failed to resolve UBUNTU_SNAPSHOT from images/minimal-vnc-desktop/locks/ubuntu-snapshot.lock" >&2
     exit 1
   fi
-  browser_base_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-base@${browser_base_digest}"
+
+  GITHUB_ARTIFACT_MIRROR_REPO="${GITHUB_ARTIFACT_MIRROR_REPO:-reclaimprotocol/popcorn-oss}" \
+    SOURCE_DATE_EPOCH=0 ./images/minimal-vnc-desktop/prepare-artifacts.sh "$artifact_dir" linux/amd64
 
   docker buildx build \
     --platform linux/amd64 \
     --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
-    --build-arg "BASE_IMAGE=${browser_base_ref}" \
+    --build-arg "UBUNTU_SNAPSHOT=${ubuntu_snapshot}" \
+    --build-context "minimal-vnc-artifacts=${artifact_dir}" \
     --metadata-file "$metadata_file" \
     --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime:${requested_commit}" \
-    services/browser-node
+    images/minimal-vnc-desktop
 
   browser_node_local="$(config_digest_from_metadata "$metadata_file")"
   rm -f "$metadata_file"
@@ -289,7 +252,7 @@ build_browser_node_once() {
 
 services=()
 if [[ "$selector" == "all" ]]; then
-  services=(browser-runtime-attestor browser-base browser-runtime)
+  services=(browser-runtime-attestor browser-runtime)
 else
   services=("$selector")
 fi
@@ -298,15 +261,10 @@ attestor_published=""
 attestor_local=""
 attestor_published_ref=""
 attestor_local_layout_dir=""
-browser_base_published=""
-browser_base_local=""
-browser_base_published_ref=""
-browser_base_local_layout_dir=""
 browser_node_published=""
 browser_node_local=""
 browser_node_published_ref=""
 browser_node_local_layout_dir=""
-artifact_mirror_tag=""
 
 for service in "${services[@]}"; do
   case "$service" in
@@ -316,18 +274,8 @@ for service in "${services[@]}"; do
       attestor_published="$(pull_published_image browser-runtime-attestor)"
       build_attestor_once
       ;;
-    browser-base)
-      echo "Comparing published and local browser-base digests..."
-      eval "$("$SCRIPT_DIR/../chromium-lock-env.sh" linux/amd64)"
-      artifact_mirror_tag="$ARTIFACT_MIRROR_TAG"
-      browser_base_published_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-base:${SUBMODULE_SHA}"
-      browser_base_published="$(pull_published_image browser-base "$SUBMODULE_SHA")"
-      build_browser_base_once
-      ;;
     browser-runtime)
       echo "Comparing published and local browser-runtime digests..."
-      eval "$("$SCRIPT_DIR/../chromium-lock-env.sh" linux/amd64)"
-      artifact_mirror_tag="$ARTIFACT_MIRROR_TAG"
       browser_node_published_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-runtime:${requested_commit}"
       browser_node_published="$(pull_published_image browser-runtime)"
       build_browser_node_once
@@ -335,8 +283,8 @@ for service in "${services[@]}"; do
   esac
 done
 
-python3 - "$selector" "$SOURCE_DATE_EPOCH" "$SUBMODULE_SHA" "$artifact_mirror_tag" \
-  "$requested_commit" "$attestor_published" "$attestor_local" "$browser_base_published" "$browser_base_local" \
+python3 - "$selector" "$SOURCE_DATE_EPOCH" \
+  "$requested_commit" "$attestor_published" "$attestor_local" \
   "$browser_node_published" "$browser_node_local" <<'PY'
 from __future__ import annotations
 
@@ -344,7 +292,7 @@ import json
 import pathlib
 import sys
 
-selector, source_date_epoch, submodule_sha, artifact_mirror_tag, commit_sha, att_published, att_local, base_published, base_local, browser_published, browser_local = sys.argv[1:]
+selector, source_date_epoch, commit_sha, att_published, att_local, browser_published, browser_local = sys.argv[1:]
 source_date_epoch = int(source_date_epoch)
 
 results = {}
@@ -356,22 +304,11 @@ if selector in {"all", "browser-runtime-attestor"}:
         "match": bool(att_published) and att_published == att_local,
     }
 
-if selector in {"all", "browser-base"}:
-    results["browser-base"] = {
-        "published_config_digest": base_published,
-        "local_config_digest": base_local,
-        "match": bool(base_published) and base_published == base_local,
-        "submodule_sha": submodule_sha,
-        "artifact_mirror_tag": artifact_mirror_tag,
-    }
-
 if selector in {"all", "browser-runtime"}:
     results["browser-runtime"] = {
         "published_config_digest": browser_published,
         "local_config_digest": browser_local,
         "match": bool(browser_published) and browser_published == browser_local,
-        "submodule_sha": submodule_sha,
-        "artifact_mirror_tag": artifact_mirror_tag,
     }
 
 payload = {
@@ -404,24 +341,6 @@ for image_name, result in results.items():
         f"| `{image_name}` | `{result['published_config_digest']}` | `{result['local_config_digest']}` | `{match}` |"
     )
 
-if "browser-base" in results:
-    lines.extend(
-        [
-            "",
-            f"Browser-base submodule SHA: `{results['browser-base']['submodule_sha']}`",
-            f"Chromium artifact mirror tag: `{results['browser-base']['artifact_mirror_tag']}`",
-        ]
-    )
-
-if "browser-runtime" in results:
-    lines.extend(
-        [
-            "",
-            f"Browser runtime submodule SHA: `{results['browser-runtime']['submodule_sha']}`",
-            f"Chromium artifact mirror tag: `{results['browser-runtime']['artifact_mirror_tag']}`",
-        ]
-    )
-
 markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 print("\n".join(lines))
 PY
@@ -437,18 +356,6 @@ if [[ -n "$attestor_published" && "$attestor_published" != "$attestor_local" ]];
       --local-oci-layout "$attestor_local_layout_dir" \
       --output-json "dist/reproducible-image-layer-diff-browser-runtime-attestor.json" \
       --output-md "dist/reproducible-image-layer-diff-browser-runtime-attestor.md"
-  fi
-fi
-
-if [[ -n "$browser_base_published" && "$browser_base_published" != "$browser_base_local" ]]; then
-  check_failed=1
-  if [[ -n "$browser_base_published_ref" && -n "$browser_base_local_layout_dir" ]]; then
-    python3 "$SCRIPT_DIR/diff-image-layers.py" \
-      --service browser-base \
-      --published-image-ref "$browser_base_published_ref" \
-      --local-oci-layout "$browser_base_local_layout_dir" \
-      --output-json "dist/reproducible-image-layer-diff-browser-base.json" \
-      --output-md "dist/reproducible-image-layer-diff-browser-base.md"
   fi
 fi
 
@@ -469,9 +376,6 @@ if (( check_failed )); then
   echo "Reproducibility check failed for:" >&2
   if [[ -n "$attestor_published" && "$attestor_published" != "$attestor_local" ]]; then
     echo "  - browser-runtime-attestor: published=${attestor_published} local=${attestor_local}" >&2
-  fi
-  if [[ -n "$browser_base_published" && "$browser_base_published" != "$browser_base_local" ]]; then
-    echo "  - browser-base: published=${browser_base_published} local=${browser_base_local}" >&2
   fi
   if [[ -n "$browser_node_published" && "$browser_node_published" != "$browser_node_local" ]]; then
     echo "  - browser-runtime: published=${browser_node_published} local=${browser_node_local}" >&2

@@ -5,13 +5,51 @@ bash=5.1-6ubuntu1.1
 ca-certificates=20260601~22.04.1
 coreutils=8.32-4.1ubuntu1.3
 curl=7.81.0-1ubuntu1.24
+# Fonts. Chromium runs behind Fortress's own fontconfig, which reads ONLY the
+# curated font dirs we hand it — never /usr/share/fonts — so system font packs
+# neither render in the browser nor appear in its font fingerprint. We therefore
+# ship the bare minimum:
+#   fonts-dejavu-core  satisfies fontconfig-config's font dependency (its alt-dep
+#                      list is dejavu|liberation|croscore|freefont|…; Noto is NOT
+#                      in it). ~2.5MB, never reaches Chromium.
+#   fonts-noto-core }  build-time COPY SOURCE only: the Dockerfile curates the
+#   fonts-noto-cjk  }  needed script faces into /usr/local/share/fonts-intl
+#                      (renamed to their Windows font names) and then PURGES both
+#                      packages, so they add no runtime weight.
+# Everything else (dejavu-extra, freefont, liberation, indic, khmeros, tibetan,
+# nanum, ipafont, wqy-zenhei, thai-tlwg, ubuntu, roboto, unifont, color-emoji,
+# …) was dead weight — Chromium never saw it — and is removed. Emoji is covered
+# by Fortress's own colour SegoeUIEmoji.ttf (CBDT/CBLC).
 fonts-dejavu-core=2.37-2build1
+fonts-noto-cjk=1:20220127+repack1-1
+fonts-noto-core=20201225-1build1
 libasound2=1.2.6.1-1ubuntu1.1
 libgbm1=23.2.1-1ubuntu3.1~22.04.4
 libgtk-3-0=3.24.33-1ubuntu2.2
 libnss3=2:3.98-0ubuntu0.22.04.3
 libxss1=1:1.2.3-1build2
+# CloakBrowser (chromium) shared-library closure. Previously supplied by the
+# xtradeb chromium debs; now that chromium comes from the CloakBrowser OCI
+# image these must be installed explicitly. Versions resolved from the pinned
+# snapshot (2026-06-24). libnss3/libgbm1/libasound2 above already cover the rest.
+libcups2=2.4.1op1-1ubuntu4.21
+libnspr4=2:4.35-0ubuntu0.22.04.1
+libatk1.0-0=2.36.0-3build1
+libatk-bridge2.0-0=2.38.0-3
+libatspi2.0-0=2.44.0-3
+libpango-1.0-0=1.50.6+ds-2ubuntu1
+libxdamage1=1:1.1.5-2build2
+libxkbcommon0=1.4.0-1
+libdrm2=2.4.113-2~ubuntu0.22.04.1
+libxcomposite1=1:0.4.5-1build2
+libxfixes3=1:6.0.0-1
+libxrandr2=2:1.5.2-1build1
 openbox=3.6.1-10
 tigervnc-standalone-server=1.12.0+dfsg-4ubuntu0.22.04.1
+unclutter=8-25
+# Provides xwininfo, which entrypoint.sh uses to detect the browser window for
+# readiness. Without it the readiness gate fails and (under set -e) the
+# container exits before marking noVNC ready.
+x11-utils=7.7+5build2
 xterm=372-1ubuntu1
 xz-utils=5.2.5-2ubuntu1.1
