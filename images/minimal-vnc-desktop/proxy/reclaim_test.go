@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,10 +117,12 @@ func TestReclaimProveSuccess(t *testing.T) {
 	if result.Signature.ResultSignature == nil || *result.Signature.ResultSignature != "BAUG" {
 		t.Fatalf("unexpected result signature: %+v", result.Signature.ResultSignature)
 	}
-	if !strings.Contains(logs.String(), `reclaim prove started request_id="req-1"`) {
+	if !strings.Contains(logs.String(), `"msg":"reclaim prove started"`) ||
+		!strings.Contains(logs.String(), `"request_id":"req-1"`) {
 		t.Fatalf("missing proof start log: %s", logs.String())
 	}
-	if !strings.Contains(logs.String(), `reclaim prove completed request_id="req-1" identifier="0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`) {
+	if !strings.Contains(logs.String(), `"msg":"reclaim prove completed"`) ||
+		!strings.Contains(logs.String(), `"identifier":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`) {
 		t.Fatalf("missing proof completion log: %s", logs.String())
 	}
 }
@@ -169,7 +169,9 @@ func TestReclaimProveLogsCancellation(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("client was not closed promptly after cancellation")
 	}
-	if !strings.Contains(logs.String(), `reclaim prove failed request_id="req-cancelled" outcome="canceled"`) {
+	if !strings.Contains(logs.String(), `"msg":"reclaim prove failed"`) ||
+		!strings.Contains(logs.String(), `"request_id":"req-cancelled"`) ||
+		!strings.Contains(logs.String(), `"outcome":"canceled"`) {
 		t.Fatalf("missing immediate proof cancellation log: %s", logs.String())
 	}
 	select {
@@ -269,11 +271,11 @@ func TestReclaimProveClientErrors(t *testing.T) {
 	}
 }
 
-func captureReclaimLifecycleLogs(dst io.Writer) func() {
-	originalLogger := reclaimLifecycleLogger
-	reclaimLifecycleLogger = log.New(dst, "", 0)
+func captureReclaimLifecycleLogs(dst *synchronizedBuffer) func() {
+	originalLogger := reclaimLogger
+	reclaimLogger = newReclaimLogger(dst)
 	return func() {
-		reclaimLifecycleLogger = originalLogger
+		reclaimLogger = originalLogger
 	}
 }
 

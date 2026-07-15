@@ -9,15 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/reclaimprotocol/popcorn-oss/images/minimal-vnc-desktop/proxy/circuits"
 	"github.com/reclaimprotocol/reclaim-tee/client"
+	"go.uber.org/zap"
 )
 
 const reclaimMaxRequestBytes = 10 * 1024 * 1024
@@ -27,8 +25,6 @@ var (
 	errProofExecutionCanceled = errors.New("proof execution canceled")
 	errProofExecutionFailed   = errors.New("proof execution failed")
 	errProofMissingClaim      = errors.New("proof execution returned no claim")
-
-	reclaimLifecycleLogger = newReclaimLifecycleLogger()
 )
 
 type reclaimProveRequest struct {
@@ -113,16 +109,6 @@ func durationEnvDefault(name string, fallback time.Duration) time.Duration {
 	return parsed
 }
 
-func newReclaimLifecycleLogger() *log.Logger {
-	output := io.Writer(os.Stderr)
-	if rawFD := strings.TrimSpace(os.Getenv("RECLAIM_LIFECYCLE_LOG_FD")); rawFD != "" {
-		if fd, err := strconv.ParseUint(rawFD, 10, 32); err == nil && fd >= 3 {
-			output = os.NewFile(uintptr(fd), "reclaim-lifecycle-log")
-		}
-	}
-	return log.New(output, "", log.LstdFlags)
-}
-
 func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRuntimeConfig) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == http.MethodOptions {
@@ -188,7 +174,7 @@ func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRunti
 		return
 	}
 	startedAt := time.Now()
-	reclaimLifecycleLogger.Printf("reclaim prove started request_id=%q", requestID)
+	reclaimLogger.Info("reclaim prove started", zap.String("request_id", requestID))
 
 	var providerData client.ProviderRequestData
 	if err := json.Unmarshal([]byte(req.ProviderParamsJSON), &providerData); err != nil {
@@ -237,11 +223,11 @@ func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRunti
 	if result.Claim != nil {
 		identifier = result.Claim.GetIdentifier()
 	}
-	reclaimLifecycleLogger.Printf(
-		"reclaim prove completed request_id=%q identifier=%q duration_ms=%d",
-		requestID,
-		identifier,
-		time.Since(startedAt).Milliseconds(),
+	reclaimLogger.Info(
+		"reclaim prove completed",
+		zap.String("request_id", requestID),
+		zap.String("identifier", identifier),
+		zap.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
 	)
 
 	_ = json.NewEncoder(w).Encode(reclaimProveResult{
@@ -252,11 +238,11 @@ func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRunti
 }
 
 func logReclaimProveFailure(requestID string, startedAt time.Time, outcome string) {
-	reclaimLifecycleLogger.Printf(
-		"reclaim prove failed request_id=%q outcome=%q duration_ms=%d",
-		requestID,
-		outcome,
-		time.Since(startedAt).Milliseconds(),
+	reclaimLogger.Warn(
+		"reclaim prove failed",
+		zap.String("request_id", requestID),
+		zap.String("outcome", outcome),
+		zap.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
 	)
 }
 

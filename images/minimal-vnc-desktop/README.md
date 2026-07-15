@@ -48,12 +48,12 @@ listens on `127.0.0.1:9223` by default. noVNC and CDP listeners bind early, but
 their HTTP and WebSocket routes return `503` until the configured app opens a
 matching X window. The default readiness pattern waits for Chromium/Chrome.
 Startup logs are written under `/var/log/app` by default, matching the fleet
-chart's mounted log directory. Sanitized `/reclaim/prove` lifecycle records are
-also written to container stdout for Kubernetes/OpenTelemetry collection; the
-rest of the `novnc-proxy` stream remains in its local file because dependency
-debug output can contain request or response data. Lifecycle records include
-the request ID, duration, stable outcome, and successful claim identifier
-without exporting provider parameters, dependency errors, or secrets.
+chart's mounted log directory. `novnc-proxy` inherits container stdout, so its
+server records, `/reclaim/prove` lifecycle records, and TEE library events are
+available to Kubernetes/OpenTelemetry and are also retained in `entrypoint.log`.
+The proxy injects a structured logger into `reclaim-tee`; it preserves event
+messages, phases, progress, counts, durations, and correlation IDs while
+dropping request/response payloads, URLs, raw errors, and cryptographic fields.
 The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
 writable by the image's non-root `kernel` user.
 
@@ -86,7 +86,7 @@ internal token path or an equivalent private gateway.
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
-| `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log`, `xvnc.log`, `novnc-proxy.log`, `openbox.log`, and `app.log`. |
+| `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log` (including proxy/TEE events), `xvnc.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
 | `REPLACE_DEFAULT_PAGE` | `false` | Replace the default DuckDuckGo managed policy with the Reclaim portal policy before Chromium starts. |

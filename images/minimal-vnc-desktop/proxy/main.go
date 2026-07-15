@@ -27,6 +27,9 @@ import (
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 func main() {
+	installReclaimLibraryLogger()
+	defer func() { _ = reclaimLogger.Sync() }()
+
 	listen := flag.String("listen", envDefault("NOVNC_LISTEN", ":6080"), "HTTP listen address")
 	vnc := flag.String("vnc", envDefault("VNC_ADDR", "127.0.0.1:5900"), "upstream VNC address")
 	web := flag.String("web", envDefault("NOVNC_WEB_ROOT", "/usr/share/novnc"), "noVNC static web root")
