@@ -69,7 +69,11 @@ listens on `127.0.0.1:9223` by default. noVNC and CDP listeners bind early, but
 their HTTP and WebSocket routes return `503` until the configured app opens a
 matching X window. The default readiness pattern waits for Chromium/Chrome.
 Startup logs are written under `/var/log/app` by default, matching the fleet
-chart's mounted log directory.
+chart's mounted log directory. `novnc-proxy` inherits container stdout, so its
+server records, `/reclaim/prove` lifecycle records, and TEE library events are
+available to Kubernetes/OpenTelemetry and are also retained in `entrypoint.log`.
+The proxy injects a structured logger into `reclaim-tee` and forwards library
+levels, messages, and fields without filtering, including debug records.
 The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
 writable by the image's non-root `kernel` user.
 
@@ -172,13 +176,7 @@ commands the probes need):
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
-| `CLOAK_FINGERPRINT_SEED` | random (CSPRNG, persisted) | Pin the `fingerprint-chromium` seed (opt-in `BROWSER=fingerprint` path). Pin a seed that maps to an integrated GPU if the WebGL renderer resolves to a discrete GPU (SwiftShader mismatch tell). See [`STEALTH.md`](STEALTH.md). |
-| `CLOAK_GEOIP` | `true` | Resolve timezone/locale from the exit IP on first boot (needs `curl`, retained in image) and persist them. |
-| `CLOAK_TIMEZONE` | geoip → `America/Los_Angeles` | Manual timezone when geoip is off; also realigns `TZ`/`/etc/localtime`. |
-| `CLOAK_LOCALE` | geoip → `en-US` | Manual locale when geoip is off. |
-| `CLOAK_WEBRTC_IP` | `auto` (with geoip) | Literal WebRTC public-IP override for STUN candidates. |
-| `CLOAK_PROFILE_SEED` | empty | Path to a `profile-state.tar.gz` to start pre-warmed/pre-authenticated. Treated as a credential. |
-| `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log`, `xvnc.log`, `novnc-proxy.log`, `openbox.log`, and `app.log`. |
+| `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log` (including proxy/TEE events), `xvnc.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
 | `REPLACE_DEFAULT_PAGE` | `true` | When `true`, use the Reclaim portal as the default page: startup falls back to the Reclaim loading page and the Reclaim portal managed policy (new-tab page and search) is applied before Chromium starts. When `false`, fall back to `https://www.google.com` and keep the default policy. |
@@ -209,7 +207,7 @@ commands the probes need):
 | `TEE_K_URL` | `wss://tk.reclaimprotocol.org/ws` | Legacy config field preserved for request/config compatibility; the pinned client resolves TEE pairs through the router. |
 | `TEE_T_URL` | `wss://tt.reclaimprotocol.org/ws` | Legacy config field preserved for request/config compatibility; the pinned client resolves TEE pairs through the router. |
 | `RECLAIM_PROVE_TIMEOUT` | `5m` | Outer timeout for `/reclaim/prove`. |
-| `RECLAIM_PROVE_CLEANUP_GRACE` | `10s` | Grace period before closing the Reclaim client after timeout/cancel. |
+| `RECLAIM_PROVE_CLEANUP_GRACE` | `10s` | Grace period to wait for protocol cleanup after closing the Reclaim client on timeout/cancel. |
 
 Example app override:
 

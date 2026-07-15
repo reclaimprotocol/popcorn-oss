@@ -15,9 +15,17 @@ import (
 
 	"github.com/reclaimprotocol/popcorn-oss/images/minimal-vnc-desktop/proxy/circuits"
 	"github.com/reclaimprotocol/reclaim-tee/client"
+	"go.uber.org/zap"
 )
 
 const reclaimMaxRequestBytes = 10 * 1024 * 1024
+
+var (
+	errProofExecutionTimedOut = errors.New("proof execution timed out")
+	errProofExecutionCanceled = errors.New("proof execution canceled")
+	errProofExecutionFailed   = errors.New("proof execution failed")
+	errProofMissingClaim      = errors.New("proof execution returned no claim")
+)
 
 type reclaimProveRequest struct {
 	ProviderParamsJSON string  `json:"provider_params_json"`
@@ -165,9 +173,12 @@ func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRunti
 		writeJSONError(w, http.StatusBadRequest, "requestId exceeds maximum length of 100 characters")
 		return
 	}
+	startedAt := time.Now()
+	reclaimLogger.Info("reclaim prove started", zap.String("request_id", requestID))
 
 	var providerData client.ProviderRequestData
 	if err := json.Unmarshal([]byte(req.ProviderParamsJSON), &providerData); err != nil {
+		logReclaimProveFailure(requestID, startedAt, "invalid_provider_json")
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid provider parameters JSON: %v", err))
 		return
 	}
@@ -180,28 +191,70 @@ func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRunti
 		RequestID:   requestID,
 	})
 	if err != nil {
+		logReclaimProveFailure(requestID, startedAt, "client_config")
 		writeJSONError(w, http.StatusInternalServerError, "failed to prepare client configuration")
 		return
 	}
 
 	protocolClient, err := newReclaimProtocolClient(req.ProviderParamsJSON, string(clientConfigJSON))
 	if err != nil {
+		logReclaimProveFailure(requestID, startedAt, "client_initialization")
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid provider parameters: %v", err))
 		return
 	}
 
 	circuits.SetupZKCallback()
-	result, err := executeReclaimProtocol(r.Context(), protocolClient, &providerData, cfg.ProofTimeout, cfg.CleanupGrace)
+	result, err := executeReclaimProtocol(
+		r.Context(),
+		protocolClient,
+		&providerData,
+		cfg.ProofTimeout,
+		cfg.CleanupGrace,
+		func(outcome string) { logReclaimProveFailure(requestID, startedAt, outcome) },
+	)
 	if err != nil {
+		if !errors.Is(err, errProofExecutionTimedOut) && !errors.Is(err, errProofExecutionCanceled) {
+			logReclaimProveFailure(requestID, startedAt, reclaimFailureOutcome(err))
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	identifier := ""
+	if result.Claim != nil {
+		identifier = result.Claim.GetIdentifier()
+	}
+	reclaimLogger.Info(
+		"reclaim prove completed",
+		zap.String("request_id", requestID),
+		zap.String("identifier", identifier),
+		zap.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+	)
 
 	_ = json.NewEncoder(w).Encode(reclaimProveResult{
 		SessionID: requestID,
 		Claim:     mapReclaimClaim(result.Claim),
 		Signature: mapReclaimSignature(result.Signature),
 	})
+}
+
+func logReclaimProveFailure(requestID string, startedAt time.Time, outcome string) {
+	reclaimLogger.Warn(
+		"reclaim prove failed",
+		zap.String("request_id", requestID),
+		zap.String("outcome", outcome),
+		zap.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+	)
+}
+
+func reclaimFailureOutcome(err error) string {
+	switch {
+	case errors.Is(err, errProofExecutionFailed):
+		return "protocol_failed"
+	case errors.Is(err, errProofMissingClaim):
+		return "missing_claim"
+	default:
+		return "internal_error"
+	}
 }
 
 func ensureEOF(decoder *json.Decoder) error {
@@ -214,7 +267,7 @@ func ensureEOF(decoder *json.Decoder) error {
 	return nil
 }
 
-func executeReclaimProtocol(ctx context.Context, c reclaimProtocolClient, providerData *client.ProviderRequestData, timeout, cleanupGrace time.Duration) (*client.ClaimWithSignatures, error) {
+func executeReclaimProtocol(ctx context.Context, c reclaimProtocolClient, providerData *client.ProviderRequestData, timeout, cleanupGrace time.Duration, onContextDone func(outcome string)) (*client.ClaimWithSignatures, error) {
 	proofCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -235,22 +288,28 @@ func executeReclaimProtocol(ctx context.Context, c reclaimProtocolClient, provid
 
 	select {
 	case <-proofCtx.Done():
+		outcome := "canceled"
+		resultErr := errProofExecutionCanceled
+		if errors.Is(proofCtx.Err(), context.DeadlineExceeded) {
+			outcome = "timed_out"
+			resultErr = errProofExecutionTimedOut
+		}
+		if onContextDone != nil {
+			onContextDone(outcome)
+		}
+		_ = c.Close()
 		select {
 		case <-resultCh:
 		case <-time.After(cleanupGrace):
 		}
-		_ = c.Close()
-		if errors.Is(proofCtx.Err(), context.DeadlineExceeded) {
-			return nil, fmt.Errorf("proof execution timed out")
-		}
-		return nil, fmt.Errorf("proof execution canceled")
+		return nil, resultErr
 	case res := <-resultCh:
 		_ = c.Close()
 		if res.err != nil {
-			return nil, fmt.Errorf("proof execution failed: %v", res.err)
+			return nil, fmt.Errorf("%w: %v", errProofExecutionFailed, res.err)
 		}
 		if res.claim == nil {
-			return nil, fmt.Errorf("proof execution returned no claim")
+			return nil, errProofMissingClaim
 		}
 		return res.claim, nil
 	}
