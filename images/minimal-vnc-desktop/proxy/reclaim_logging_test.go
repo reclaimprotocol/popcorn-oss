@@ -10,7 +10,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func TestReclaimLibraryLoggerExportsSafeEvents(t *testing.T) {
+func TestReclaimLibraryLoggerForwardsRecordsUnchanged(t *testing.T) {
 	var logs bytes.Buffer
 	logger := newReclaimLogger(&logs)
 	client.SetSharedLogger(logger)
@@ -33,6 +33,10 @@ func TestReclaimLibraryLoggerExportsSafeEvents(t *testing.T) {
 		"Decrypted HTTP preview",
 		zap.ByteString("http_start", []byte("Set-Cookie: another-secret-cookie")),
 	)
+	libraryLogger.Debug(
+		"Complete HTTP request before redaction",
+		zap.String("request", "Cookie: debug-secret-cookie"),
+	)
 	libraryLogger.Error(
 		"Failed to start HTTP request",
 		zap.Error(errors.New("request contained another-secret-token")),
@@ -45,27 +49,19 @@ func TestReclaimLibraryLoggerExportsSafeEvents(t *testing.T) {
 		`"requestId":"req-1"`,
 		`"progress_percentage":20`,
 		`"progress_description":"Sending HTTP request and collecting responses"`,
+		`"request":"Authorization: secret-token"`,
+		`"http_start":"Set-Cookie: secret-cookie"`,
+		`"url":"https://private.example/account"`,
+		`"error":"remote response contained secret-body"`,
 		`"msg":"Decrypted HTTP preview"`,
+		`"http_start":"Set-Cookie: another-secret-cookie"`,
+		`"msg":"Complete HTTP request before redaction"`,
+		`"request":"Cookie: debug-secret-cookie"`,
 		`"msg":"Failed to start HTTP request"`,
+		`"error":"request contained another-secret-token"`,
 	} {
 		if !strings.Contains(output, expected) {
-			t.Fatalf("missing safe library log field %s: %s", expected, output)
-		}
-	}
-	for _, secret := range []string{
-		"secret-token",
-		"secret-cookie",
-		"private.example",
-		"secret-body",
-		"another-secret-cookie",
-		"another-secret-token",
-		`"request"`,
-		`"http_start"`,
-		`"url"`,
-		`"error":`,
-	} {
-		if strings.Contains(output, secret) {
-			t.Fatalf("exported sensitive library log field %q: %s", secret, output)
+			t.Fatalf("missing library log field %s: %s", expected, output)
 		}
 	}
 }

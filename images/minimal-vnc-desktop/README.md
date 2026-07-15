@@ -51,9 +51,8 @@ Startup logs are written under `/var/log/app` by default, matching the fleet
 chart's mounted log directory. `novnc-proxy` inherits container stdout, so its
 server records, `/reclaim/prove` lifecycle records, and TEE library events are
 available to Kubernetes/OpenTelemetry and are also retained in `entrypoint.log`.
-The proxy injects a structured logger into `reclaim-tee`; it preserves event
-messages, phases, progress, counts, durations, and correlation IDs while
-dropping request/response payloads, URLs, raw errors, and cryptographic fields.
+The proxy injects a structured logger into `reclaim-tee` and forwards library
+levels, messages, and fields without filtering, including debug records.
 The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
 writable by the image's non-root `kernel` user.
 

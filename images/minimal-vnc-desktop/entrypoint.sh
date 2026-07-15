@@ -246,9 +246,9 @@ pids+=("$!")
 wait_for_tcp 127.0.0.1 "$VNC_PORT" Xvnc
 
 echo "[entrypoint] Starting noVNC/CDP proxy on :${NOVNC_PORT}, ${CDP_RESTRICTED_LISTEN}, ${CDP_FULL_LISTEN}"
-# The proxy injects a payload-safe logger into reclaim-tee. Inheriting stdout
-# sends proxy, proof lifecycle, and TEE library events through the existing
-# entrypoint tee to both entrypoint.log and Kubernetes/OpenTelemetry.
+# The proxy injects its stdout logger into reclaim-tee. Proxy, proof lifecycle,
+# and unfiltered TEE library records flow through the existing entrypoint tee to
+# both entrypoint.log and Kubernetes/OpenTelemetry.
 novnc-proxy \
   --listen "0.0.0.0:${NOVNC_PORT}" \
   --vnc "127.0.0.1:${VNC_PORT}" \
