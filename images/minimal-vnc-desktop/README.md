@@ -48,7 +48,12 @@ listens on `127.0.0.1:9223` by default. noVNC and CDP listeners bind early, but
 their HTTP and WebSocket routes return `503` until the configured app opens a
 matching X window. The default readiness pattern waits for Chromium/Chrome.
 Startup logs are written under `/var/log/app` by default, matching the fleet
-chart's mounted log directory.
+chart's mounted log directory. Sanitized `/reclaim/prove` lifecycle records are
+also written to container stdout for Kubernetes/OpenTelemetry collection; the
+rest of the `novnc-proxy` stream remains in its local file because dependency
+debug output can contain request or response data. Lifecycle records include
+the request ID, duration, stable outcome, and successful claim identifier
+without exporting provider parameters, dependency errors, or secrets.
 The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
 writable by the image's non-root `kernel` user.
 
@@ -112,7 +117,7 @@ internal token path or an equivalent private gateway.
 | `TEE_K_URL` | `wss://tk.reclaimprotocol.org/ws` | Legacy config field preserved for request/config compatibility; the pinned client resolves TEE pairs through the router. |
 | `TEE_T_URL` | `wss://tt.reclaimprotocol.org/ws` | Legacy config field preserved for request/config compatibility; the pinned client resolves TEE pairs through the router. |
 | `RECLAIM_PROVE_TIMEOUT` | `5m` | Outer timeout for `/reclaim/prove`. |
-| `RECLAIM_PROVE_CLEANUP_GRACE` | `10s` | Grace period before closing the Reclaim client after timeout/cancel. |
+| `RECLAIM_PROVE_CLEANUP_GRACE` | `10s` | Grace period to wait for protocol cleanup after closing the Reclaim client on timeout/cancel. |
 
 Example app override:
 

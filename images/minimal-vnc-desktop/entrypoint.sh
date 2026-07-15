@@ -246,7 +246,10 @@ pids+=("$!")
 wait_for_tcp 127.0.0.1 "$VNC_PORT" Xvnc
 
 echo "[entrypoint] Starting noVNC/CDP proxy on :${NOVNC_PORT}, ${CDP_RESTRICTED_LISTEN}, ${CDP_FULL_LISTEN}"
-novnc-proxy \
+# Keep dependency/debug output in the dedicated file. Only the sanitized
+# Reclaim lifecycle logger uses fd 3, which is routed to container stdout for
+# the node-level OpenTelemetry filelog receiver.
+RECLAIM_LIFECYCLE_LOG_FD=3 novnc-proxy \
   --listen "0.0.0.0:${NOVNC_PORT}" \
   --vnc "127.0.0.1:${VNC_PORT}" \
   --web /usr/share/novnc \
@@ -254,7 +257,7 @@ novnc-proxy \
   --cdp-upstream "$CDP_UPSTREAM_ADDR" \
   --cdp-restricted-listen "$CDP_RESTRICTED_LISTEN" \
   --cdp-full-listen "$CDP_FULL_LISTEN" \
-  > "$(log_file novnc-proxy)" 2>&1 &
+  3>&1 > "$(log_file novnc-proxy)" 2>&1 &
 pids+=("$!")
 
 wait_for_tcp 127.0.0.1 "$NOVNC_PORT" "noVNC proxy"
