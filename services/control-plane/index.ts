@@ -545,6 +545,16 @@ function normalizeWindowHours(raw: string | number | undefined): number {
   return Number.isFinite(value) && value > 0 ? Math.min(720, value) : 1;
 }
 
+// Pick a trend-chart bucket count so longer ranges keep useful granularity
+// without over-crowding the x-axis (getSessionTimeSeries caps at 48).
+function bucketsForWindow(windowHours: number): number {
+  if (windowHours <= 24) return 12;   // 1h→5m, 6h→30m, 24h→2h
+  if (windowHours <= 72) return 12;   // 2d→4h, 3d→6h
+  if (windowHours <= 168) return 14;  // 7d→12h
+  if (windowHours <= 336) return 14;  // 14d→1d
+  return 15;                          // 30d→2d
+}
+
 // Combines live Agones gauges (via pool managers) with cumulative Postgres
 // session stats into a single payload shared by the API and the admin UI.
 async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
@@ -552,7 +562,7 @@ async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
     loadAdminRegions(),
     getSessionWindowStats(windowHours),
     getActiveSessionCount(),
-    getSessionTimeSeries(windowHours),
+    getSessionTimeSeries(windowHours, bucketsForWindow(windowHours)),
     getSessionsByRegion(windowHours),
     getTopClients(windowHours),
   ]);

@@ -716,25 +716,32 @@ function windowLabel(windowHours: number) {
   return `last ${windowHours} hours`;
 }
 
-const ANALYTICS_WINDOWS = [
-  { label: '1h', hours: 1 },
-  { label: '6h', hours: 6 },
-  { label: '24h', hours: 24 },
-  { label: '7d', hours: 168 },
+// Full range list for the dropdown (capped at 30 days to match the endpoint).
+const ANALYTICS_RANGES = [
+  { label: 'Last 1 hour', hours: 1 },
+  { label: 'Last 3 hours', hours: 3 },
+  { label: 'Last 6 hours', hours: 6 },
+  { label: 'Last 12 hours', hours: 12 },
+  { label: 'Last 24 hours', hours: 24 },
+  { label: 'Last 2 days', hours: 48 },
+  { label: 'Last 3 days', hours: 72 },
+  { label: 'Last 7 days', hours: 168 },
+  { label: 'Last 14 days', hours: 336 },
+  { label: 'Last 30 days', hours: 720 },
 ];
 
 // Validated dark-surface palette (admin UI renders data-theme="dark").
 const VIZ = {
-  deleted: '#d03b3b',   // status: critical
-  expired: '#fab219',   // status: warning
-  created: '#9085e9',   // categorical violet
-  allocated: '#3987e5', // categorical blue
-  ready: '#199e70',     // categorical aqua
-  free: '#3a3a37',      // headroom (muted)
-  line: '#3987e5',
-  grid: '#2c2c2a',
-  axis: '#898781',
-  ink: '#e8e8e3',
+  deleted: '#f6685e',   // status: critical (softened for dark surface)
+  expired: '#f5a623',   // status: warning
+  created: '#a394f0',   // categorical violet
+  allocated: '#4a90e2', // categorical blue
+  ready: '#2bb673',     // categorical aqua
+  free: '#33363d',      // headroom (muted)
+  line: '#4a90e2',
+  grid: 'rgba(255,255,255,0.06)',
+  axis: '#787d85',
+  ink: '#e8eaed',
 };
 
 function niceMax(value: number) {
@@ -769,6 +776,50 @@ function xmlEscape(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Smooth monotone-cubic (Fritsch–Carlson) path — curved but never overshoots the
+// data, so a spike stays a spike and the line can't dip below zero.
+function smoothPath(pts: Array<{ x: number; y: number }>): string {
+  const np = pts.length;
+  if (np === 0) return '';
+  if (np < 3) return 'M ' + pts.map((p) => `${p.x.toFixed(2)} ${p.y.toFixed(2)}`).join(' L ');
+
+  const dx: number[] = [];
+  const slope: number[] = [];
+  for (let i = 0; i < np - 1; i += 1) {
+    dx[i] = pts[i + 1].x - pts[i].x;
+    slope[i] = (pts[i + 1].y - pts[i].y) / dx[i];
+  }
+
+  const m: number[] = new Array(np);
+  m[0] = slope[0];
+  m[np - 1] = slope[np - 2];
+  for (let i = 1; i < np - 1; i += 1) {
+    m[i] = slope[i - 1] * slope[i] <= 0 ? 0 : (slope[i - 1] + slope[i]) / 2;
+  }
+  // Enforce monotonicity (prevents overshoot).
+  for (let i = 0; i < np - 1; i += 1) {
+    if (slope[i] === 0) { m[i] = 0; m[i + 1] = 0; continue; }
+    const a = m[i] / slope[i];
+    const b = m[i + 1] / slope[i];
+    const s = a * a + b * b;
+    if (s > 9) {
+      const tau = 3 / Math.sqrt(s);
+      m[i] = tau * a * slope[i];
+      m[i + 1] = tau * b * slope[i];
+    }
+  }
+
+  let d = `M ${pts[0].x.toFixed(2)} ${pts[0].y.toFixed(2)}`;
+  for (let i = 0; i < np - 1; i += 1) {
+    const c1x = pts[i].x + dx[i] / 3;
+    const c1y = pts[i].y + (m[i] * dx[i]) / 3;
+    const c2x = pts[i + 1].x - dx[i] / 3;
+    const c2y = pts[i + 1].y - (m[i + 1] * dx[i]) / 3;
+    d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)}, ${pts[i + 1].x.toFixed(2)} ${pts[i + 1].y.toFixed(2)}`;
+  }
+  return d;
+}
+
 // Horizontal stacked capacity bar: allocated / ready / free headroom.
 function capacityBarSvg(live: AnalyticsData['live']) {
   const W = 760;
@@ -780,28 +831,47 @@ function capacityBarSvg(live: AnalyticsData['live']) {
     { label: 'Free', value: Math.max(0, live.capacity - live.allocated - live.ready), color: VIZ.free },
   ].filter((seg) => seg.value > 0);
 
+  const grads = segments.map((seg, i) =>
+    `<linearGradient id="anCap${i}" x1="0" y1="0" x2="0" y2="1">`
+    + `<stop offset="0%" stop-color="${seg.color}" stop-opacity="1"/>`
+    + `<stop offset="100%" stop-color="${seg.color}" stop-opacity="0.82"/></linearGradient>`,
+  ).join('');
+
   let x = 0;
-  const gap = 2;
-  const rects = segments.map((seg) => {
+  const gap = 3;
+  const rects = segments.map((seg, i) => {
     const raw = (seg.value / total) * W;
     const w = Math.max(0, raw - gap);
-    const rect = `<rect x="${x.toFixed(2)}" y="0" width="${w.toFixed(2)}" height="${H}" rx="6" fill="${seg.color}"><title>${xmlEscape(seg.label)}: ${seg.value}</title></rect>`;
+    const rect = `<rect x="${x.toFixed(2)}" y="0" width="${w.toFixed(2)}" height="${H}" rx="7" fill="url(#anCap${i})"><title>${xmlEscape(seg.label)}: ${seg.value}</title></rect>`;
     x += raw;
     return rect;
   }).join('');
 
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" role="img" aria-label="Fleet capacity breakdown">${rects}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" role="img" aria-label="Fleet capacity breakdown"><defs>${grads}</defs>${rects}</svg>`;
+}
+
+// Path for a bar with only its top two corners rounded (anchored to baseline).
+function topRoundedRect(x: number, y: number, w: number, h: number, r: number): string {
+  const rad = Math.max(0, Math.min(r, w / 2, h));
+  const right = x + w;
+  const bottom = y + h;
+  return `M ${x.toFixed(2)} ${bottom.toFixed(2)}`
+    + ` L ${x.toFixed(2)} ${(y + rad).toFixed(2)}`
+    + ` Q ${x.toFixed(2)} ${y.toFixed(2)} ${(x + rad).toFixed(2)} ${y.toFixed(2)}`
+    + ` L ${(right - rad).toFixed(2)} ${y.toFixed(2)}`
+    + ` Q ${right.toFixed(2)} ${y.toFixed(2)} ${right.toFixed(2)} ${(y + rad).toFixed(2)}`
+    + ` L ${right.toFixed(2)} ${bottom.toFixed(2)} Z`;
 }
 
 // Stacked column chart of session outcomes (deleted + expired) per time bucket,
-// with a `created` (inflow) line overlaid on the same axis — created vs ended.
+// with a smooth `created` (inflow) line overlaid on the same axis — created vs ended.
 function outcomesChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
   const W = 760;
-  const H = 260;
-  const padL = 40;
-  const padR = 14;
-  const padT = 14;
-  const padB = 32;
+  const H = 250;
+  const padL = 34;
+  const padR = 12;
+  const padT = 16;
+  const padB = 30;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const baseY = padT + plotH;
@@ -813,95 +883,106 @@ function outcomesChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
     Math.max(1, ...series.map((p) => Math.max(p.deleted + p.expired, p.created))),
   );
   const step = plotW / n;
-  const barW = Math.min(step * 0.62, 38);
+  const barW = Math.min(step * 0.5, 26);
   const cxOf = (i: number) => padL + (i + 0.5) * step;
   const cyOf = (v: number) => baseY - (plotH * v) / maxStack;
 
   const grid = yTicks.map((v) => {
-    const y = baseY - (plotH * v) / maxStack;
+    const y = cyOf(v);
     return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + plotW}" y2="${y.toFixed(1)}" stroke="${VIZ.grid}" stroke-width="1"/>`
-      + `<text x="${padL - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${v}</text>`;
+      + `<text x="${(padL - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${v}</text>`;
   }).join('');
 
   const labelEvery = Math.max(1, Math.ceil(n / 6));
   const bars = series.map((p, i) => {
-    const cx = padL + (i + 0.5) * step;
+    const cx = cxOf(i);
     const hd = (plotH * p.deleted) / maxStack;
     const he = (plotH * p.expired) / maxStack;
     const bx = cx - barW / 2;
     const parts: string[] = [];
-    const tip = `${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · deleted ${p.deleted} · expired ${p.expired}`;
+    const tip = `${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · killed ${p.deleted} · expired ${p.expired} · created ${p.created}`;
+    const topRounded = he <= 0 && hd > 0; // deleted is the top segment only if no expired above
     if (hd > 0) {
-      parts.push(`<rect x="${bx.toFixed(2)}" y="${(baseY - hd).toFixed(2)}" width="${barW.toFixed(2)}" height="${hd.toFixed(2)}" rx="2" fill="${VIZ.deleted}"><title>${tip}</title></rect>`);
+      parts.push(topRounded
+        ? `<path d="${topRoundedRect(bx, baseY - hd, barW, hd, 3)}" fill="${VIZ.deleted}"><title>${tip}</title></path>`
+        : `<rect x="${bx.toFixed(2)}" y="${(baseY - hd).toFixed(2)}" width="${barW.toFixed(2)}" height="${hd.toFixed(2)}" fill="${VIZ.deleted}"><title>${tip}</title></rect>`);
     }
     if (he > 0) {
-      const ey = baseY - hd - 2 - he;
-      parts.push(`<rect x="${bx.toFixed(2)}" y="${ey.toFixed(2)}" width="${barW.toFixed(2)}" height="${he.toFixed(2)}" rx="2" fill="${VIZ.expired}"><title>${tip}</title></rect>`);
+      const eh = he - (hd > 0 ? 2 : 0); // 2px surface gap above deleted
+      const ey = baseY - hd - (hd > 0 ? 2 : 0) - eh;
+      parts.push(`<path d="${topRoundedRect(bx, ey, barW, eh, 3)}" fill="${VIZ.expired}"><title>${tip}</title></path>`);
     }
     const label = i % labelEvery === 0
       ? `<text x="${cx.toFixed(1)}" y="${(baseY + 16).toFixed(1)}" text-anchor="middle" font-size="10" fill="${VIZ.axis}">${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))}</text>`
       : '';
-    return parts.join('') + label;
+    return `<g class="an-bar">${parts.join('')}</g>${label}`;
   }).join('');
 
-  // Created (inflow) line on the same axis.
-  const linePts = series.map((p, i) => `${cxOf(i).toFixed(2)},${cyOf(p.created).toFixed(2)}`);
-  const createdLine = `<path d="M ${linePts.join(' L ')}" fill="none" stroke="${VIZ.created}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  // Smooth created (inflow) line on the same axis, with a soft halo for contrast over bars.
+  const pts = series.map((p, i) => ({ x: cxOf(i), y: cyOf(p.created) }));
+  const path = smoothPath(pts);
+  const createdHalo = `<path d="${path}" fill="none" stroke="${VIZ.created}" stroke-width="6" stroke-opacity="0.18" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const createdLine = `<path d="${path}" fill="none" stroke="${VIZ.created}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`;
   const createdDots = series.map((p, i) =>
-    `<circle cx="${cxOf(i).toFixed(2)}" cy="${cyOf(p.created).toFixed(2)}" r="2.5" fill="${VIZ.created}"><title>${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · created ${p.created}</title></circle>`,
+    `<circle class="an-dot" cx="${cxOf(i).toFixed(2)}" cy="${cyOf(p.created).toFixed(2)}" r="2.5" fill="${VIZ.created}" stroke="#16181d" stroke-width="1.5"><title>${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · created ${p.created}</title></circle>`,
   ).join('');
 
-  const axis = `<line x1="${padL}" y1="${baseY}" x2="${padL + plotW}" y2="${baseY}" stroke="${VIZ.axis}" stroke-width="1"/>`;
-  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" role="img" aria-label="Sessions created vs ended per interval by outcome">${grid}${bars}${createdLine}${createdDots}${axis}</svg>`;
+  const axis = `<line x1="${padL}" y1="${baseY}" x2="${padL + plotW}" y2="${baseY}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" role="img" aria-label="Sessions created vs ended per interval by outcome">`
+    + `${grid}${bars}${createdHalo}${createdLine}${createdDots}${axis}</svg>`;
 }
 
-// Two-slice donut: deleted vs expired outcome split. Center shows total ended.
+// Two-slice donut: deleted vs expired outcome split. Elegant thin ring with a
+// faint track, rounded segment caps, and a large centered total.
 function outcomeDonutSvg(deleted: number, expired: number) {
   const total = deleted + expired;
-  const size = 180;
+  const size = 190;
   const cx = size / 2;
   const cy = size / 2;
-  const r = 66;
-  const strokeW = 26;
+  const r = 72;
+  const strokeW = 18;
   const circ = 2 * Math.PI * r;
+  const track = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="${strokeW}"/>`;
 
   if (total <= 0) {
     return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img" aria-label="Outcome split">`
-      + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${VIZ.grid}" stroke-width="${strokeW}"/>`
-      + `<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" fill="${VIZ.axis}">no data</text></svg>`;
+      + `${track}<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-size="12" fill="${VIZ.axis}">no data</text></svg>`;
   }
 
   const segs = [
-    { value: deleted, color: VIZ.deleted, label: 'deleted' },
+    { value: deleted, color: VIZ.deleted, label: 'killed' },
     { value: expired, color: VIZ.expired, label: 'expired' },
   ].filter((s) => s.value > 0);
+  const rounded = segs.length > 1;
 
   let offset = 0;
   const arcs = segs.map((s) => {
     const frac = s.value / total;
     const dash = frac * circ;
-    // 2px surface gap between segments
+    // Rounded caps extend ~strokeW/2 past each end; trim so segments read separated.
+    const visible = rounded ? Math.max(1, dash - strokeW) : dash;
     const seg = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${s.color}" stroke-width="${strokeW}"`
-      + ` stroke-dasharray="${Math.max(0, dash - 2).toFixed(2)} ${(circ - Math.max(0, dash - 2)).toFixed(2)}"`
+      + `${rounded ? ' stroke-linecap="round"' : ''}`
+      + ` stroke-dasharray="${visible.toFixed(2)} ${(circ - visible).toFixed(2)}"`
       + ` stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 ${cx} ${cy})"><title>${s.label}: ${s.value} (${Math.round(frac * 100)}%)</title></circle>`;
     offset += dash;
     return seg;
   }).join('');
 
-  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img" aria-label="Outcome split deleted vs expired">`
-    + `${arcs}`
-    + `<text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="26" font-weight="600" fill="${VIZ.ink}">${total}</text>`
-    + `<text x="${cx}" y="${cy + 16}" text-anchor="middle" font-size="11" fill="${VIZ.axis}">ended</text></svg>`;
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" role="img" aria-label="Outcome split killed vs expired">`
+    + `${track}${arcs}`
+    + `<text x="${cx}" y="${cy - 1}" text-anchor="middle" font-size="30" font-weight="650" letter-spacing="-0.02em" fill="${VIZ.ink}">${total}</text>`
+    + `<text x="${cx}" y="${(cy + 17).toFixed(0)}" text-anchor="middle" font-size="10.5" letter-spacing="0.06em" fill="${VIZ.axis}">ENDED</text></svg>`;
 }
 
-// Area + line chart of average session duration per time bucket.
+// Smooth area + line chart of average session duration per time bucket.
 function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
   const W = 760;
-  const H = 260;
-  const padL = 48;
-  const padR = 14;
-  const padT = 14;
-  const padB = 32;
+  const H = 250;
+  const padL = 44;
+  const padR = 12;
+  const padT = 16;
+  const padB = 30;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
   const baseY = padT + plotH;
@@ -913,34 +994,41 @@ function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
   const px = (i: number) => padL + (i + 0.5) * step;
   const py = (v: number) => baseY - (plotH * v) / maxY;
 
-  const ticks = [0, 1, 2, 3, 4];
-  const grid = ticks.map((t) => {
+  const grid = [0, 1, 2, 3, 4].map((t) => {
     const v = (maxY * t) / 4;
     const y = baseY - (plotH * t) / 4;
     return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + plotW}" y2="${y.toFixed(1)}" stroke="${VIZ.grid}" stroke-width="1"/>`
-      + `<text x="${padL - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${xmlEscape(formatDuration(v))}</text>`;
+      + `<text x="${(padL - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${xmlEscape(formatDuration(v))}</text>`;
   }).join('');
 
-  const linePts = series.map((p, i) => `${px(i).toFixed(2)},${py(p.avgDurationSeconds).toFixed(2)}`);
-  const linePath = `M ${linePts.join(' L ')}`;
-  const areaPath = `M ${px(0).toFixed(2)},${baseY} L ${linePts.join(' L ')} L ${px(n - 1).toFixed(2)},${baseY} Z`;
+  const pts = series.map((p, i) => ({ x: px(i), y: py(p.avgDurationSeconds) }));
+  const linePath = smoothPath(pts);
+  // Area = smooth top + down to baseline; clipped so the curve never bleeds below.
+  const areaPath = `${linePath} L ${pts[n - 1].x.toFixed(2)} ${baseY} L ${pts[0].x.toFixed(2)} ${baseY} Z`;
 
   const labelEvery = Math.max(1, Math.ceil(n / 6));
-  const dots = series.map((p, i) => {
+  const marks = series.map((p, i) => {
     const label = i % labelEvery === 0
       ? `<text x="${px(i).toFixed(1)}" y="${(baseY + 16).toFixed(1)}" text-anchor="middle" font-size="10" fill="${VIZ.axis}">${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))}</text>`
       : '';
     const dot = p.ended > 0
-      ? `<circle cx="${px(i).toFixed(2)}" cy="${py(p.avgDurationSeconds).toFixed(2)}" r="3" fill="${VIZ.line}"><title>${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · avg ${xmlEscape(formatDuration(p.avgDurationSeconds))} · ${p.ended} ended</title></circle>`
+      ? `<circle class="an-dot" cx="${px(i).toFixed(2)}" cy="${py(p.avgDurationSeconds).toFixed(2)}" r="2.5" fill="${VIZ.line}" stroke="#16181d" stroke-width="1.5"><title>${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · avg ${xmlEscape(formatDuration(p.avgDurationSeconds))} · ${p.ended} ended</title></circle>`
       : '';
     return dot + label;
   }).join('');
 
-  const axis = `<line x1="${padL}" y1="${baseY}" x2="${padL + plotW}" y2="${baseY}" stroke="${VIZ.axis}" stroke-width="1"/>`;
+  const axis = `<line x1="${padL}" y1="${baseY}" x2="${padL + plotW}" y2="${baseY}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>`;
+  const defs = `<defs>`
+    + `<linearGradient id="anDurGrad" x1="0" y1="0" x2="0" y2="1">`
+    + `<stop offset="0%" stop-color="${VIZ.line}" stop-opacity="0.30"/>`
+    + `<stop offset="100%" stop-color="${VIZ.line}" stop-opacity="0"/></linearGradient>`
+    + `<clipPath id="anDurClip"><rect x="${padL}" y="${padT}" width="${plotW}" height="${plotH}"/></clipPath>`
+    + `</defs>`;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" role="img" aria-label="Average session duration per interval">`
-    + `${grid}<path d="${areaPath}" fill="${VIZ.line}" fill-opacity="0.14"/>`
-    + `<path d="${linePath}" fill="none" stroke="${VIZ.line}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`
-    + `${dots}${axis}</svg>`;
+    + `${defs}${grid}`
+    + `<g clip-path="url(#anDurClip)"><path d="${areaPath}" fill="url(#anDurGrad)"/>`
+    + `<path d="${linePath}" fill="none" stroke="${VIZ.line}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></g>`
+    + `${marks}${axis}</svg>`;
 }
 
 function LegendItem({ color, label }: { color: string; label: string }) {
@@ -949,6 +1037,16 @@ function LegendItem({ color, label }: { color: string; label: string }) {
       <span class="viz-swatch" style={`background:${color}`}></span>
       {label}
     </span>
+  );
+}
+
+function AnKpi({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: 'accent' | 'danger' | 'warning' | 'success' }) {
+  return (
+    <div class={`an-kpi${tone ? ` ${tone}` : ''}`}>
+      <span class="an-kpi-label">{label}</span>
+      <strong class="an-kpi-value">{value}</strong>
+      {hint ? <span class="an-kpi-hint">{hint}</span> : null}
+    </div>
   );
 }
 
@@ -965,7 +1063,7 @@ function RegionBreakdown({ regions }: { regions: AnalyticsRegionStat[] }) {
               <span class="bar-row-label">{r.region}</span>
               <span class="bar-row-value">{r.allocated}/{r.capacity} · {r.sessions} sessions</span>
             </div>
-            <div class="bar-track"><div class="bar-fill" style={`width:${pct}%;background:${VIZ.allocated}`}></div></div>
+            <div class="bar-track"><div class="bar-fill blue" style={`width:${pct}%`}></div></div>
           </div>
         );
       })}
@@ -979,13 +1077,13 @@ function TopClients({ clients }: { clients: AnalyticsClientStat[] }) {
   const max = Math.max(1, ...clients.map((c) => c.sessions));
   return (
     <div class="bar-list">
-      {clients.map((c) => (
+      {clients.map((c, i) => (
         <div class="bar-row">
           <div class="bar-row-head">
-            <span class="bar-row-label">{c.clientName}</span>
+            <span class="bar-row-label"><span class="bar-rank">{i + 1}</span>{c.clientName}</span>
             <span class="bar-row-value">{c.sessions}</span>
           </div>
-          <div class="bar-track"><div class="bar-fill" style={`width:${percent(c.sessions, max)}%;background:${VIZ.ready}`}></div></div>
+          <div class="bar-track"><div class="bar-fill green" style={`width:${percent(c.sessions, max)}%`}></div></div>
         </div>
       ))}
     </div>
@@ -993,49 +1091,97 @@ function TopClients({ clients }: { clients: AnalyticsClientStat[] }) {
 }
 
 const ANALYTICS_STYLE = `
-/* Analytics is a tall vertical report — scroll the whole workspace as one block
-   instead of the shell's viewport-locked, internally-scrolling panel layout. */
-.analytics-workspace { display: block; height: 100%; min-height: 0; overflow-y: auto; overflow-x: hidden; padding-right: 4px; }
-.analytics-workspace > section { display: block; overflow: visible; min-height: 0; margin-bottom: 1rem; }
-.analytics-workspace > section:last-child { margin-bottom: 0; }
-.analytics-workspace .panel-body { display: block; flex: none; overflow: visible; min-height: 0; }
-.analytics-workspace .panel-body.stack { display: flex; flex-direction: column; gap: 0.75rem; }
-.analytics-workspace .section-heading { flex: 0 0 auto; }
-/* Compact metric grid — pack tiles into as many columns as fit instead of the
-   shell's default single-column stack. */
-.analytics-workspace .stat-strip { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 0.55rem; }
-.analytics-workspace .metric { padding: 0.55rem 0.7rem; }
-.analytics-workspace .metric span { font-size: 0.72rem; }
-.analytics-workspace .metric strong { font-size: 1.15rem; margin-top: 0.1rem; }
-.analytics-workspace .command-panel .section-heading { padding-bottom: 0.5rem; }
-.analytics-workspace .panel-body.stack { gap: 0.6rem; }
-.analytics-controls { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-.window-picker { display: inline-flex; gap: 0.25rem; }
-.window-picker button { margin: 0; padding: 0.3rem 0.7rem; }
-.window-picker button.active { background: var(--pico-primary, #3987e5); color: #fff; border-color: var(--pico-primary, #3987e5); }
-.viz-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1rem; }
+/* Scoped analytics design system — a clean, spacious dashboard that overrides the
+   shell's admin-panel chrome. Everything is namespaced under .analytics-workspace. */
+.analytics-workspace {
+  --an-bg: transparent;
+  --an-card: #16181d;
+  --an-card-hover: #1a1d23;
+  --an-border: rgba(255,255,255,0.08);
+  --an-border-strong: rgba(255,255,255,0.14);
+  --an-ink: #e8eaed;
+  --an-muted: #9aa0a6;
+  --an-faint: #6b7075;
+  --an-accent: #4a90e2;
+  --an-radius: 12px;
+  display: block; height: 100%; min-height: 0; overflow-y: auto; overflow-x: hidden;
+  padding: 0.25rem 0.5rem 1.5rem 0.25rem;
+  color: var(--an-ink);
+  font-feature-settings: "tnum" 0;
+}
+.analytics-workspace * { box-sizing: border-box; }
+
+/* Topbar: page title + segmented window control */
+.an-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.an-title h2 { margin: 0; font-size: 1.25rem; font-weight: 650; letter-spacing: -0.01em; color: var(--an-ink); }
+.an-title p { margin: 0.2rem 0 0; font-size: 0.82rem; color: var(--an-muted); }
+.an-controls { display: flex; align-items: center; gap: 0.5rem; }
+.an-range { margin: 0; width: auto; height: auto; min-width: 9.5rem; appearance: none; -webkit-appearance: none; border: 1px solid var(--an-border); background-color: rgba(255,255,255,0.04); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23787d85' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 0.7rem center; color: var(--an-ink); font-size: 0.82rem; font-weight: 550; padding: 0.42rem 2rem 0.42rem 0.85rem; border-radius: 8px; cursor: pointer; transition: border-color 0.12s; line-height: 1.2; }
+.an-range:hover { border-color: var(--an-border-strong); }
+.an-range:focus { outline: none; border-color: var(--an-accent); box-shadow: 0 0 0 3px rgba(74,144,226,0.18); }
+.an-refresh { margin: 0; border: 1px solid var(--an-border); background: rgba(255,255,255,0.03); color: var(--an-muted); font-size: 0.8rem; padding: 0.42rem 0.8rem; border-radius: 8px; cursor: pointer; transition: color 0.12s, border-color 0.12s; }
+.an-refresh:hover { color: var(--an-ink); border-color: var(--an-border-strong); }
+
+/* Section labels */
+.an-sublabel { font-size: 0.68rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--an-faint); margin: 1.4rem 0 0.65rem; }
+.an-sublabel:first-of-type { margin-top: 0.25rem; }
+
+/* KPI cards */
+.an-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(148px, 1fr)); gap: 0.7rem; }
+.an-kpi { background: var(--an-card); border: 1px solid var(--an-border); border-radius: var(--an-radius); padding: 0.85rem 0.95rem; display: flex; flex-direction: column; gap: 0.15rem; transition: border-color 0.12s, background 0.12s; }
+.an-kpi:hover { border-color: var(--an-border-strong); background: var(--an-card-hover); }
+.an-kpi-label { font-size: 0.7rem; font-weight: 550; letter-spacing: 0.03em; text-transform: uppercase; color: var(--an-faint); }
+.an-kpi-value { font-size: 1.7rem; font-weight: 650; line-height: 1.1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--an-ink); }
+.an-kpi-hint { font-size: 0.72rem; color: var(--an-muted); font-variant-numeric: tabular-nums; }
+.an-kpi.accent .an-kpi-value { color: var(--an-accent); }
+.an-kpi.danger .an-kpi-value { color: ${VIZ.deleted}; }
+.an-kpi.warning .an-kpi-value { color: ${VIZ.expired}; }
+.an-kpi.success .an-kpi-value { color: ${VIZ.ready}; }
+
+/* Cards (utilization + charts) */
+.an-card { background: var(--an-card); border: 1px solid var(--an-border); border-radius: var(--an-radius); padding: 1.1rem 1.15rem; }
+.an-card + .an-card { margin-top: 0.7rem; }
+.an-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.9rem; }
+.an-card-head h3 { margin: 0; font-size: 0.9rem; font-weight: 600; color: var(--an-ink); }
+.an-card-head .an-card-sub { font-size: 0.75rem; color: var(--an-muted); }
+.an-util-value { font-size: 0.85rem; font-weight: 600; color: var(--an-ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.an-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 0.8rem; margin-top: 0.7rem; }
+.an-charts .an-card { display: flex; flex-direction: column; }
+
+/* Quiet secondary-stats line (durations, throughput) — text, not boxes */
+.an-summary { display: flex; flex-wrap: wrap; gap: 0.35rem 1.4rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--an-muted); }
+.an-summary span { white-space: nowrap; }
+.an-summary b { color: var(--an-ink); font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 0.3rem; }
+
+/* Chart figure internals */
 .viz-figure { display: flex; flex-direction: column; gap: 0.5rem; }
-.viz-figure h3 { margin: 0; font-size: 0.95rem; }
-.viz-figure .viz-sub { margin: 0; font-size: 0.75rem; color: #898781; }
 .viz-figure svg { display: block; max-width: 100%; overflow: visible; }
-.viz-legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.75rem; color: #c3c2b7; }
+.an-card svg text { font-family: inherit; }
+.an-card svg .an-bar { transition: opacity 0.12s; cursor: default; }
+.an-card svg:hover .an-bar { opacity: 0.55; }
+.an-card svg .an-bar:hover { opacity: 1; }
+.an-card svg .an-dot { transition: r 0.12s; }
+.an-card svg .an-dot:hover { r: 4; }
+.viz-legend { display: flex; gap: 0.9rem; flex-wrap: wrap; font-size: 0.72rem; color: var(--an-muted); margin-top: 0.35rem; }
 .viz-legend-item { display: inline-flex; align-items: center; gap: 0.35rem; }
-.viz-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
-.fleet-capacity { margin-top: 0.25rem; }
-.fleet-capacity svg { border-radius: 6px; }
-.viz-figure .gauge-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; font-size: 0.85rem; color: #c3c2b7; }
-.viz-figure .gauge-heading strong { color: #e8e8e3; font-variant-numeric: tabular-nums; }
-.viz-empty { color: #898781; font-size: 0.8rem; padding: 1.5rem 0; text-align: center; }
-.metric-hint { display: block; margin-top: 0.2rem; font-size: 0.68rem; color: #898781; }
-.donut-figure { align-items: center; }
-.donut-row { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; }
-.bar-list { display: flex; flex-direction: column; gap: 0.6rem; }
-.bar-row { display: flex; flex-direction: column; gap: 0.25rem; }
-.bar-row-head { display: flex; justify-content: space-between; gap: 0.75rem; font-size: 0.78rem; }
-.bar-row-label { color: #e8e8e3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-row-value { color: #898781; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
-.bar-track { height: 8px; background: #2c2c2a; border-radius: 999px; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 999px; min-width: 2px; }
+.viz-swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.fleet-capacity svg { border-radius: 7px; display: block; }
+.viz-empty { color: var(--an-faint); font-size: 0.8rem; padding: 1.75rem 0; text-align: center; }
+
+/* Donut + breakdown bars */
+.donut-row { display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; justify-content: center; }
+.bar-list { display: flex; flex-direction: column; gap: 0.85rem; }
+.bar-row { display: flex; flex-direction: column; gap: 0.35rem; }
+.bar-row-head { display: flex; justify-content: space-between; gap: 0.75rem; font-size: 0.8rem; align-items: baseline; }
+.bar-row-label { color: var(--an-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: baseline; gap: 0.5rem; }
+.bar-rank { display: inline-flex; align-items: center; justify-content: center; width: 1.15rem; height: 1.15rem; border-radius: 5px; background: rgba(255,255,255,0.06); color: var(--an-faint); font-size: 0.66rem; font-weight: 600; flex: 0 0 auto; align-self: center; }
+.bar-row-value { color: var(--an-ink); font-weight: 600; font-variant-numeric: tabular-nums; flex: 0 0 auto; }
+.bar-track { height: 8px; background: rgba(255,255,255,0.05); border-radius: 999px; overflow: hidden; }
+.bar-fill { height: 100%; border-radius: 999px; min-width: 4px; transition: filter 0.12s; }
+.bar-row:hover .bar-fill { filter: brightness(1.14); }
+.bar-fill.blue { background: linear-gradient(90deg, #2f6fbf, #58a2f0); }
+.bar-fill.green { background: linear-gradient(90deg, #17915a, #35c680); }
 `;
 
 export function AnalyticsView({ data }: { data: AnalyticsData }) {
@@ -1047,128 +1193,125 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
   return (
     <div class="workspace analytics-workspace">
       {raw(`<style>${ANALYTICS_STYLE}</style>`)}
-      <section class="panel command-panel">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Operations Analytics</span>
-            <h2>Session Stats</h2>
-            <p>Live fleet allocation from Agones plus session lifecycle stats for the selected window.</p>
+
+      <div class="an-topbar">
+        <div class="an-title">
+          <h2>Session Analytics</h2>
+          <p>Live fleet allocation and session lifecycle for the {windowLabel(data.windowHours)}.</p>
+        </div>
+        <div class="an-controls">
+          <select
+            class="an-range"
+            name="windowHours"
+            aria-label="Time range"
+            hx-get="/admin/ui/analytics"
+            hx-target="#admin-content"
+            hx-swap="innerHTML"
+            hx-trigger="change"
+          >
+            {ANALYTICS_RANGES.map((r) => (
+              <option value={String(r.hours)} selected={r.hours === data.windowHours}>{r.label}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            class="an-refresh"
+            hx-get={`/admin/ui/analytics?windowHours=${data.windowHours}`}
+            hx-target="#admin-content"
+            hx-swap="innerHTML"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      <div class="an-sublabel">Live fleet</div>
+      <div class="an-kpis">
+        <AnKpi label="Allocated" value={String(live.allocated)} hint={`of ${live.capacity} · ${utilization}%`} tone="accent" />
+        <AnKpi label="Ready" value={String(live.ready)} tone={live.ready > 0 ? 'success' : undefined} />
+        <AnKpi label="Active sessions" value={String(live.activeSessions)} />
+      </div>
+
+      <div class="an-card" style="margin-top:0.7rem">
+        <div class="an-card-head">
+          <h3>Fleet utilization</h3>
+          <span class="an-util-value">{utilization}% · {live.allocated}/{live.capacity} allocated</span>
+        </div>
+        <div class="viz-figure fleet-capacity">
+          {raw(capacityBarSvg(live))}
+          <div class="viz-legend">
+            <LegendItem color={VIZ.allocated} label={`Allocated (${live.allocated})`} />
+            <LegendItem color={VIZ.ready} label={`Ready (${live.ready})`} />
+            <LegendItem color={VIZ.free} label={`Free (${free})`} />
           </div>
-          <div class="analytics-controls">
-            <div class="window-picker" role="group" aria-label="Time window">
-              {ANALYTICS_WINDOWS.map((win) => (
-                <button
-                  type="button"
-                  class={`secondary${win.hours === data.windowHours ? ' active' : ''}`}
-                  hx-get={`/admin/ui/analytics?windowHours=${win.hours}`}
-                  hx-target="#admin-content"
-                  hx-swap="innerHTML"
-                >
-                  {win.label}
-                </button>
-              ))}
+        </div>
+      </div>
+
+      <div class="an-sublabel">Session lifecycle · {windowLabel(data.windowHours)} · TTL {formatDuration(data.configuredTtlSeconds)}</div>
+      <div class="an-kpis">
+        <AnKpi label="Created" value={String(window.created)} hint={`${window.ended} ended`} />
+        <AnKpi label="Avg duration" value={formatDuration(window.avgDurationSeconds)} tone="accent" />
+        <AnKpi label="p50 duration" value={formatDuration(window.p50DurationSeconds)} />
+        <AnKpi label="p95 duration" value={formatDuration(window.p95DurationSeconds)} />
+        <AnKpi label="Throughput" value={`${data.throughput.sessionsPerMinute}`} hint="sessions / min" />
+        <AnKpi label="Total session time" value={formatDuration(window.totalDurationSeconds)} />
+      </div>
+
+      <div class="an-charts">
+        <div class="an-card">
+          <div class="an-card-head">
+            <h3>Sessions created vs ended</h3>
+            <span class="an-card-sub">per interval</span>
+          </div>
+          {hasActivity ? raw(outcomesChartSvg(series, data.windowHours)) : <div class="viz-empty">No session activity in this window.</div>}
+          <div class="viz-legend">
+            <LegendItem color={VIZ.deleted} label="Killed" />
+            <LegendItem color={VIZ.expired} label="Expired" />
+            <LegendItem color={VIZ.created} label="Created" />
+          </div>
+        </div>
+
+        <div class="an-card">
+          <div class="an-card-head">
+            <h3>Average session duration</h3>
+            <span class="an-card-sub">per interval</span>
+          </div>
+          {hasActivity ? raw(durationChartSvg(series, data.windowHours)) : <div class="viz-empty">No sessions ended in this window.</div>}
+          <div class="viz-legend">
+            <LegendItem color={VIZ.line} label="Avg duration" />
+          </div>
+        </div>
+
+        <div class="an-card">
+          <div class="an-card-head">
+            <h3>Outcome split</h3>
+            <span class="an-card-sub">deleted vs expired</span>
+          </div>
+          <div class="donut-row">
+            {raw(outcomeDonutSvg(window.deleted, window.expired))}
+            <div class="viz-legend" style="flex-direction:column;gap:0.5rem">
+              <LegendItem color={VIZ.deleted} label={`Killed · ${window.deleted}`} />
+              <LegendItem color={VIZ.expired} label={`Expired · ${window.expired}`} />
             </div>
-            <button
-              type="button"
-              class="secondary"
-              hx-get={`/admin/ui/analytics?windowHours=${data.windowHours}`}
-              hx-target="#admin-content"
-              hx-swap="innerHTML"
-            >
-              Refresh
-            </button>
           </div>
         </div>
-        <div class="panel-body stack">
-          <div class="stat-strip">
-            <Metric label="Allocated instances" value={String(live.allocated)} tone={live.allocated > 0 ? 'warning' : 'neutral'} />
-            <Metric label="Capacity" value={String(live.capacity)} tone="neutral" />
-            <Metric label="Ready" value={String(live.ready)} tone={live.ready > 0 ? 'success' : 'warning'} />
-            <Metric label="Active sessions" value={String(live.activeSessions)} tone="neutral" />
+
+        <div class="an-card">
+          <div class="an-card-head">
+            <h3>Allocation by region</h3>
+            <span class="an-card-sub">allocated / capacity</span>
           </div>
-          <div class="viz-figure fleet-capacity">
-            <div class="gauge-heading">
-              <span>Fleet utilization</span>
-              <strong>{utilization}% · {live.allocated}/{live.capacity} allocated</strong>
-            </div>
-            {raw(capacityBarSvg(live))}
-            <div class="viz-legend">
-              <LegendItem color={VIZ.allocated} label={`Allocated (${live.allocated})`} />
-              <LegendItem color={VIZ.ready} label={`Ready (${live.ready})`} />
-              <LegendItem color={VIZ.free} label={`Free (${free})`} />
-            </div>
-          </div>
+          <RegionBreakdown regions={data.byRegion} />
         </div>
-      </section>
 
-      <section class="panel">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Session Lifecycle</span>
-            <h2>Window ({windowLabel(data.windowHours)})</h2>
-            <p>Sessions that ended within the window, keyed off their end time.</p>
+        <div class="an-card">
+          <div class="an-card-head">
+            <h3>Top clients</h3>
+            <span class="an-card-sub">by sessions created</span>
           </div>
+          <TopClients clients={data.topClients} />
         </div>
-        <div class="panel-body stack">
-          <div class="stat-strip">
-            <Metric label="Created" value={String(window.created)} tone="neutral" />
-            <Metric label="Killed (deleted)" value={String(window.deleted)} tone={window.deleted > 0 ? 'danger' : 'neutral'} />
-            <Metric label="Expired (TTL)" value={String(window.expired)} tone={window.expired > 0 ? 'warning' : 'neutral'} hint={`TTL ${formatDuration(data.configuredTtlSeconds)}`} />
-            <Metric label="Total ended" value={String(window.ended)} tone="neutral" />
-            <Metric label="Throughput" value={`${data.throughput.sessionsPerMinute}/min`} tone="neutral" />
-            <Metric label="Avg duration" value={formatDuration(window.avgDurationSeconds)} tone="neutral" />
-            <Metric label="p50 duration" value={formatDuration(window.p50DurationSeconds)} tone="neutral" />
-            <Metric label="p95 duration" value={formatDuration(window.p95DurationSeconds)} tone="neutral" />
-            <Metric label="Total session time" value={formatDuration(window.totalDurationSeconds)} tone="neutral" />
-          </div>
-
-          <div class="viz-grid">
-            <figure class="viz-figure">
-              <h3>Sessions created vs ended</h3>
-              <p class="viz-sub">Inflow (line) vs sessions ended by outcome (bars), per interval</p>
-              {hasActivity ? raw(outcomesChartSvg(series, data.windowHours)) : <div class="viz-empty">No session activity in this window.</div>}
-              <figcaption class="viz-legend">
-                <LegendItem color={VIZ.deleted} label="Deleted (killed)" />
-                <LegendItem color={VIZ.expired} label="Expired (TTL)" />
-                <LegendItem color={VIZ.created} label="Created" />
-              </figcaption>
-            </figure>
-
-            <figure class="viz-figure">
-              <h3>Average session duration</h3>
-              <p class="viz-sub">Mean lifetime of sessions ending in each interval</p>
-              {hasActivity ? raw(durationChartSvg(series, data.windowHours)) : <div class="viz-empty">No sessions ended in this window.</div>}
-              <figcaption class="viz-legend">
-                <LegendItem color={VIZ.line} label="Avg duration" />
-              </figcaption>
-            </figure>
-
-            <figure class="viz-figure donut-figure">
-              <h3>Outcome split</h3>
-              <p class="viz-sub">Deleted vs expired of sessions ended</p>
-              <div class="donut-row">
-                {raw(outcomeDonutSvg(window.deleted, window.expired))}
-                <div class="viz-legend" style="flex-direction:column;gap:0.4rem">
-                  <LegendItem color={VIZ.deleted} label={`Deleted ${window.deleted}`} />
-                  <LegendItem color={VIZ.expired} label={`Expired ${window.expired}`} />
-                </div>
-              </div>
-            </figure>
-
-            <figure class="viz-figure">
-              <h3>Live allocation by region</h3>
-              <p class="viz-sub">Allocated / capacity and sessions created this window</p>
-              <RegionBreakdown regions={data.byRegion} />
-            </figure>
-
-            <figure class="viz-figure">
-              <h3>Top clients</h3>
-              <p class="viz-sub">By sessions created in the {windowLabel(data.windowHours)}</p>
-              <TopClients clients={data.topClients} />
-            </figure>
-          </div>
-        </div>
-      </section>
+      </div>
     </div>
   );
 }
