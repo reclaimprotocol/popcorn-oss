@@ -26,15 +26,18 @@ import { ControlPlaneConfig } from './src/config';
 import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession } from './src/pool-manager';
 import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
+import { getActiveSessionCount, getSessionsByRegion, getSessionTimeSeries, getSessionWindowStats, getTopClients } from './src/stats';
 import { expiresAtFromTtlSeconds, extendExpiresAt, readOptionalSeconds, validateTtlSeconds } from './src/ttl';
 import {
   renderClientSessionsPanelHtml,
+  renderAnalyticsViewHtml,
   renderClientsViewHtml,
   renderClustersViewHtml,
   renderShellHtml,
   toAdminRegion,
   type ActionNotice,
   type AdminRegion,
+  type AnalyticsData,
 } from './src/admin-ui';
 
 const app = new Hono();
@@ -537,6 +540,66 @@ async function loadAdminRegions(): Promise<AdminRegion[]> {
   }));
 }
 
+function normalizeWindowHours(raw: string | number | undefined): number {
+  const value = Number(raw ?? 1);
+  return Number.isFinite(value) && value > 0 ? Math.min(720, value) : 1;
+}
+
+// Combines live Agones gauges (via pool managers) with cumulative Postgres
+// session stats into a single payload shared by the API and the admin UI.
+async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
+  const [regions, windowStats, activeSessions, series, regionSessions, topClients] = await Promise.all([
+    loadAdminRegions(),
+    getSessionWindowStats(windowHours),
+    getActiveSessionCount(),
+    getSessionTimeSeries(windowHours),
+    getSessionsByRegion(windowHours),
+    getTopClients(windowHours),
+  ]);
+
+  const enabledRegions = regions.filter((region) => region.enabled);
+  const servers = enabledRegions.flatMap((region) => region.servers || []);
+  const allocated = servers.filter((server) => server.status === 'Allocated').length;
+  const ready = servers.filter((server) => server.status === 'Ready').length;
+  const capacity = servers.length;
+
+  const sessionsByRegion = new Map(regionSessions.map((row) => [row.key, row.sessions]));
+  const byRegion = enabledRegions.map((region) => {
+    const regionServers = region.servers || [];
+    return {
+      region: region.name,
+      allocated: regionServers.filter((server) => server.status === 'Allocated').length,
+      capacity: regionServers.length,
+      sessions: sessionsByRegion.get(region.name) ?? 0,
+    };
+  });
+
+  const windowMinutes = windowHours * 60;
+  const sessionsPerMinute = windowMinutes > 0
+    ? Math.round((windowStats.created / windowMinutes) * 100) / 100
+    : 0;
+
+  return {
+    windowHours,
+    configuredTtlSeconds: ControlPlaneConfig.sessionMaxTtlSeconds,
+    live: { allocated, ready, capacity, activeSessions },
+    throughput: { sessionsPerMinute },
+    window: {
+      created: windowStats.created,
+      deleted: windowStats.deleted,
+      expired: windowStats.expired,
+      ended: windowStats.ended,
+      avgDurationSeconds: windowStats.avgDurationSeconds,
+      p50DurationSeconds: windowStats.p50DurationSeconds,
+      p95DurationSeconds: windowStats.p95DurationSeconds,
+      totalDurationSeconds: windowStats.totalDurationSeconds,
+    },
+    byRegion,
+    topClients: topClients.map((row) => ({ clientName: row.key, sessions: row.sessions })),
+    series,
+  };
+}
+
 async function renderClientsPage(c: any, options: {
   selectedClientId?: string | null;
   secretNotice?: { clientId: string; clientSecret: string } | null;
@@ -801,6 +864,12 @@ app.get('/admin/ui/clusters', async (c) => {
   return renderClustersPage(c);
 });
 
+app.get('/admin/ui/analytics', async (c) => {
+  const windowHours = normalizeWindowHours(c.req.query('windowHours') ?? undefined);
+  const data = await buildStatsPayload(windowHours);
+  return c.html(await renderAnalyticsViewHtml({ data }));
+});
+
 app.post('/admin/ui/sessions', async (c) => {
   const form = await c.req.formData();
   const region = String(form.get('region') || '').trim();
@@ -964,6 +1033,23 @@ app.post('/sessions/:id/end', async (c) => {
     return c.json({ success: true });
   } catch (error) {
     console.error('❌ Error ending session:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.get('/internal/stats', async (c) => {
+  const unauthorized = requireService(c);
+  if (unauthorized) {
+    console.warn('⚠️ Unauthorized stats request');
+    return unauthorized;
+  }
+
+  try {
+    const windowHours = normalizeWindowHours(c.req.query('windowHours') ?? undefined);
+    const payload = await buildStatsPayload(windowHours);
+    return c.json(payload);
+  } catch (error) {
+    console.error('❌ Error building stats:', error);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });
