@@ -140,7 +140,10 @@ Also verify:
 - database storage and backups are healthy;
 - Secret expiry dates and rotation windows are tracked;
 - image pull credentials still work;
-- autoscaler limits match expected peak load.
+- autoscaler limits match expected peak load;
+- fleet allocation and session stats look sane in the control-plane admin
+  **Analytics** tab, or via `GET /internal/stats?windowHours=1` (service-auth:
+  `Authorization: Bearer <CONTROL_PLANE_SERVICE_AUTH_TOKEN>`).
 
 ## Advanced Notes
 
