@@ -142,8 +142,7 @@ Also verify:
 - image pull credentials still work;
 - autoscaler limits match expected peak load;
 - fleet allocation and session stats look sane in the control-plane admin
-  **Analytics** tab, or via `GET /internal/stats?windowHours=1` (service-auth:
-  `Authorization: Bearer <CONTROL_PLANE_SERVICE_AUTH_TOKEN>`).
+  **Analytics** tab.
 
 ## Advanced Notes
 

@@ -1047,23 +1047,6 @@ app.post('/sessions/:id/end', async (c) => {
   }
 });
 
-app.get('/internal/stats', async (c) => {
-  const unauthorized = requireService(c);
-  if (unauthorized) {
-    console.warn('⚠️ Unauthorized stats request');
-    return unauthorized;
-  }
-
-  try {
-    const windowHours = normalizeWindowHours(c.req.query('windowHours') ?? undefined);
-    const payload = await buildStatsPayload(windowHours);
-    return c.json(payload);
-  } catch (error) {
-    console.error('❌ Error building stats:', error);
-    return c.json({ error: 'Internal server error' }, 500);
-  }
-});
-
 app.get('/admin/clients', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;

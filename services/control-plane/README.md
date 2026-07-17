@@ -11,8 +11,8 @@ analytics storage. Pool managers remain the regional allocators.
 - TTL callback support for expired regional sessions
 - PostgreSQL-backed client and session records
 - Admin API and UI for clients, sessions, and regional pool state
-- Operations analytics: live fleet allocation plus session-lifecycle stats
-  (`GET /internal/stats` and the admin **Analytics** tab)
+- Operations analytics: live fleet allocation plus session-lifecycle stats in
+  the admin **Analytics** tab
 
 ## Configuration
 
@@ -125,48 +125,6 @@ Authorization: Bearer <client-id>:<client-secret>
 The TTL controller reports expired sessions with `POST /sessions/:id/end`.
 Pool managers do not call compatibility validation or session-ingest APIs.
 
-### Operations stats
-
-```http
-GET /internal/stats?windowHours=1
-Authorization: Bearer <CONTROL_PLANE_SERVICE_AUTH_TOKEN>
-```
-
-Returns live fleet allocation (read from the pool managers / Agones) combined
-with cumulative session stats over the window. `windowHours` is optional
-(default `1`, capped at `720`). Duration and outcome counts are keyed off
-`ended_at`; `created` is keyed off `created_at`.
-
-```json
-{
-  "windowHours": 1,
-  "configuredTtlSeconds": 900,
-  "live": { "allocated": 18, "ready": 12, "capacity": 30, "activeSessions": 5 },
-  "throughput": { "sessionsPerMinute": 0.25 },
-  "window": {
-    "created": 15,
-    "deleted": 3,
-    "expired": 6,
-    "ended": 9,
-    "avgDurationSeconds": 142,
-    "p50DurationSeconds": 120,
-    "p95DurationSeconds": 300,
-    "totalDurationSeconds": 1278
-  },
-  "byRegion": [
-    { "region": "asia-south1", "allocated": 18, "capacity": 30, "sessions": 15 }
-  ],
-  "topClients": [ { "clientName": "Acme Corp", "sessions": 9 } ],
-  "series": [
-    { "bucketStart": "2026-07-17T14:00:00.000Z", "created": 2, "deleted": 1, "expired": 1, "ended": 2, "avgDurationSeconds": 130 }
-  ]
-}
-```
-
-`series` is a 12-bucket time series over the window for the trend charts. The
-same payload backs the admin **Analytics** tab (`GET /admin/ui/analytics`).
-`configuredTtlSeconds` reflects `SESSION_MAX_TTL_SECONDS`.
-
 ## Admin APIs
 
 Admin routes accept password/file/OAuth browser sessions. `Authorization:
@@ -183,10 +141,10 @@ automation.
 - `DELETE /admin/clients/:id`
 
 The admin UI has three tabs — **Clients**, **Clusters**, and **Analytics**.
-The Analytics tab (`GET /admin/ui/analytics?windowHours=1`) renders the
-`/internal/stats` data: live allocation, session-lifecycle metrics, and trend
-charts (created vs ended, average duration, outcome split, per-region
-allocation, top clients).
+The Analytics tab (`GET /admin/ui/analytics?windowHours=1`) shows live fleet
+allocation, session-lifecycle metrics, and trend charts (created vs ended,
+average duration, outcome split, per-region allocation, top clients) over a
+selectable time range (up to 30 days).
 
 Run migrations with:
 
