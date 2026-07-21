@@ -14,7 +14,7 @@ deployment small, then enable optional pieces one at a time.
 | Browser fleet | `gatewayDomain`, `fleet.replicas`, `autoscaler.*` | Controls browser capacity and returned URLs. |
 | Agones | `agones.install`, `agonesInstaller.*` | Optionally installs Agones from the browser-fleet chart for fresh clusters. Keep `agones.install=false` after installing Agones as cluster infrastructure. |
 | Control plane | `controlPlane.enabled`, `controlPlane.regions`, `controlPlane.sessionMaxTtlSeconds` | Client credential API, regional session routing, and maximum client-requested TTL. |
-| Secrets | `secrets.*`, `browser-fleet.secrets.browserTurnName` | Names of required Kubernetes Secrets. |
+| Secrets | `secrets.*`, `browser-fleet.secrets.browserRuntimeProxyName` | Names of required Kubernetes Secrets. |
 
 ## Optional Configuration
 
@@ -22,7 +22,7 @@ deployment small, then enable optional pieces one at a time.
 | --- | --- | --- |
 | Bundled Redis | `redis.enabled` | You want the chart to run Redis for route state. |
 | TTL cleanup | `ttlController.enabled`, `ttlController.ttlDuration` | You want old sessions cleaned up automatically. Recommended. |
-| Browser TURN | `browser-turn-secret`, `webrtc.*` | Browser users are outside the same machine or direct UDP is unreliable. |
+| Browser runtime env | `extraBrowserRuntimeEnv`, `secrets.browserRuntimeProxyName` | You need to tune the browser image (persona, startup URL, CDP ports) or route egress through an HTTPS proxy. |
 | Admin auth | `controlPlane.adminAuth.*` | You need password, htpasswd, or Google OAuth admin login. |
 | Observability | `otel.*` | You want backend-neutral OTLP export for browser logs and session lifecycle events. |
 | GKE node prescaler | `gkeNodePrescaler.*` | You want browser node pools scaled ahead of demand on GKE. |
@@ -75,6 +75,9 @@ region: us-central1
 gatewayDomain: gateway.example.com
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 
+streaming:
+  mode: vnc
+
 agones:
   install: false
 
@@ -92,6 +95,78 @@ autoscaler:
   minReplicas: 2
   maxReplicas: 20
 ```
+
+## Streaming (Live View)
+
+Popcorn streams the browser desktop over VNC / live view. The shipped browser
+image is the minimal-vnc "Popcorn Browser" running Tilion Fortress and serves the
+desktop through noVNC on port `6080`. Set `streaming.mode=vnc` in the
+browser-fleet values.
+
+Use the LiveView route names for the browser desktop surface. The API response
+field names remain `vncUrl` and `vncWsUrl` for compatibility, but the URL paths
+are `/liveview` and `/liveview-ws`:
+
+```yaml
+# browser-fleet values
+streaming:
+  mode: vnc
+
+# platform values
+poolManager:
+  extraRoutePorts:
+    novnc:
+      routeKey: liveview
+      port: 6080
+  extraSessionUrls:
+    url: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
+    vncUrl: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
+    vncWsUrl: "{wsBase}/liveview-ws/{sessionId}/{restrictedToken}"
+
+gateway:
+  extraSessionRoutes:
+    - pathPrefix: liveview
+      routeKey: liveview
+```
+
+`liveview.html` connects to `/websockify` relative to the LiveView route. The
+gateway rewrites that relative path to the browser runtime's internal
+`/websockify` endpoint. The standalone gateway also accepts `/liveview-ws` for
+clients that need the raw WebSocket URL.
+
+## Browser Runtime Environment
+
+Use `extraBrowserRuntimeEnv` in the browser-fleet values to pass additional
+environment variables into the `browser-runtime` container. Entries are standard
+Kubernetes env entries and are templated, so `value` and `valueFrom` both work:
+
+```yaml
+# browser-fleet values
+extraBrowserRuntimeEnv:
+  - name: APP_URL
+    value: "https://example.com/start"
+  - name: CHROMIUM_FLAGS
+    value: "--window-size=1920,1080"
+  - name: CLOAK_FINGERPRINT_PLATFORM
+    value: "linux"
+```
+
+The shipped image reads two groups of knobs:
+
+- Persona / stealth (`start-chromium`): `CLOAK_*` (for example
+  `CLOAK_FINGERPRINT_SEED`, `CLOAK_TIMEZONE`, `CLOAK_LOCALE`,
+  `CLOAK_FINGERPRINT_PLATFORM`, `CLOAK_ALLOW_3P_COOKIES`, `CLOAK_PROFILE_SEED`)
+  and `TILION_*` (`TILION_TZ`, `TILION_LANG`) tune the default Tilion Fortress
+  Windows persona and timezone/locale coherence.
+- Runtime config: `APP_URL`, `CHROMIUM_FLAGS`, `REPLACE_DEFAULT_PAGE`,
+  `READY_WINDOW_PATTERN`, `NOVNC_PORT`, the CDP port knobs (`CDP_INTERNAL_PORT`,
+  `CDP_RESTRICTED_PORT`, `CDP_FULL_PORT`, listen/upstream addresses),
+  `RECLAIM_ROUTER_URL`, and related settings.
+
+See the full table in
+[`images/minimal-vnc-desktop/README.md`](../images/minimal-vnc-desktop/README.md)
+under "Runtime Configuration" for every supported variable, defaults, and
+behavior.
 
 ## Advanced: Existing Postgres
 
@@ -270,40 +345,6 @@ gateway:
 
 `extraSessionUrls` supports `{baseUrl}`, `{wsBase}`, `{sessionId}`,
 `{browserPodId}`, `{restrictedToken}`, and `{internalToken}`.
-
-### LiveView Route Wiring
-
-When `streaming.mode=vnc` or `streaming.mode=both`, use the LiveView route names
-for the browser desktop surface. The API response field names remain `vncUrl`
-and `vncWsUrl` for compatibility, but the URL paths should be `/liveview` and
-`/liveview-ws`:
-
-```yaml
-# browser-fleet values
-streaming:
-  mode: vnc
-
-# platform values
-poolManager:
-  extraRoutePorts:
-    novnc:
-      routeKey: liveview
-      port: 6080
-  extraSessionUrls:
-    url: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
-    vncUrl: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
-    vncWsUrl: "{wsBase}/liveview-ws/{sessionId}/{restrictedToken}"
-
-gateway:
-  extraSessionRoutes:
-    - pathPrefix: liveview
-      routeKey: liveview
-```
-
-`liveview.html` connects to `/websockify` relative to the LiveView route. The
-gateway rewrites that relative path to the browser runtime's internal
-`/websockify` endpoint. The standalone gateway also accepts `/liveview-ws` for
-clients that need the raw WebSocket URL.
 
 ## Validate Values
 

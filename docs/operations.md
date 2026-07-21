@@ -21,7 +21,7 @@ helm template browser-fleet charts/browser-fleet \
 Check that required Secrets exist and contain the expected keys:
 
 ```bash
-kubectl -n popcorn get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret analytics-db-secret browser-turn-secret
+kubectl -n popcorn get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret analytics-db-secret
 ```
 
 For production, confirm these choices before applying:
@@ -29,7 +29,6 @@ For production, confirm these choices before applying:
 - images are digest-pinned or come from a controlled registry mirror;
 - gateway and control-plane domains have TLS ready;
 - Redis, Postgres, pool manager, and internal control-plane routes are private;
-- TURN credentials are present for browser traffic outside a same-machine test;
 - `controlPlane.regions` points at the correct pool-manager URL and token Secret.
 
 ## Install Order
@@ -136,7 +135,6 @@ Also verify:
 
 - new sessions can be created through `/v1/sessions`;
 - browser view, CDP, and runtime API URLs all work with their own tokens;
-- TURN relay is used when direct WebRTC cannot connect;
 - database storage and backups are healthy;
 - Secret expiry dates and rotation windows are tracked;
 - image pull credentials still work;
@@ -148,5 +146,6 @@ For multi-region installs, keep one pool-manager service token per region and
 reference each token from `controlPlane.regions[].poolManagerAuth.secretName`.
 
 For local Kind, `make run-local-cluster` publishes the gateway on
-`http://localhost:8080` and maps a small Agones UDP range for same-machine
-WebRTC testing. Do not treat that path as a production networking model.
+`http://localhost:8080`. The browser streams over live view (VNC), served through
+the gateway's `liveview` route over TCP. Do not treat the local Kind path
+as a production networking model.

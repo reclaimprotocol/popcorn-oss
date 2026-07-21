@@ -9,7 +9,7 @@ matches the failure.
 ```bash
 kubectl -n popcorn get pods
 kubectl -n popcorn get fleet,fleetautoscaler,gameservers
-kubectl -n popcorn get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret analytics-db-secret browser-turn-secret
+kubectl -n popcorn get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret analytics-db-secret
 kubectl -n popcorn logs deployment/control-plane --tail=100
 kubectl -n popcorn logs deployment/pool-manager --tail=100
 kubectl -n popcorn logs deployment/popcorn-gateway --tail=100
@@ -93,7 +93,6 @@ kubectl -n popcorn get secret gateway-jwt-keys
 kubectl -n popcorn get secret pool-manager-service-auth
 kubectl -n popcorn get secret control-plane-secret
 kubectl -n popcorn get secret analytics-db-secret
-kubectl -n popcorn get secret browser-turn-secret
 ```
 
 Create the missing Secret with the keys listed in `docs/secrets.md`, then
@@ -203,32 +202,46 @@ Common causes:
 - browser runtime image cannot be pulled;
 - private registry credentials are missing;
 - CPU or memory requests cannot fit on browser nodes;
-- TURN credentials are missing or invalid;
 - confidential-computing or sandbox settings do not match the node pool.
 
-## Browser Opens But WebRTC Does Not Connect
+## Live View (VNC) Does Not Connect
 
-Check TURN first for production or remote users:
+The browser streams over the noVNC HTTP/WebSocket port (`6080`) on the pod,
+routed through the gateway as the `liveview` route. This path is TCP only.
+
+Typical symptoms:
+
+- the live-view page loads but the canvas stays blank or reconnects in a loop;
+- the WebSocket connection to `/liveview-ws/<sessionId>/<token>` fails to
+  upgrade;
+- the browser runtime returns `503` on the noVNC HTTP and WebSocket routes.
+
+Check the live-view route and the pod's noVNC port:
 
 ```bash
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200 | grep -i cloudflare
-kubectl -n popcorn get secret browser-turn-secret -o jsonpath='{.data.TURN_KEY_ID}' | grep -q . && echo TURN_KEY_ID=set
-kubectl -n popcorn get secret browser-turn-secret -o jsonpath='{.data.TURN_API_TOKEN}' | grep -q . && echo TURN_API_TOKEN=set
+kubectl -n popcorn get gameservers -o wide
+kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
+kubectl -n popcorn logs deployment/popcorn-gateway --tail=200
 ```
 
 Common causes:
 
-- `TURN_KEY_ID` or `TURN_API_TOKEN` is empty;
-- the TURN key was deleted, expired, or copied incorrectly;
-- browser GameServers were not recycled after updating `browser-turn-secret`;
-- a firewall blocks direct UDP and no TURN relay is configured;
-- a custom `NEKO_ICESERVERS` value is malformed.
-- direct UDP tests used the wrong client CIDR in the GCP firewall rule.
+- the gateway route or `proxy_pass` does not reach the pod's `6080` (noVNC) port;
+- the `/liveview-ws/<sessionId>/<token>` WebSocket upgrade is blocked by a proxy
+  or load balancer that does not forward `Upgrade`/`Connection` headers;
+- the returned `vncUrl`/`vncWsUrl` point at the wrong base or a stale token;
+- Chromium is not ready yet. noVNC and CDP listeners bind early, but their HTTP
+  and WebSocket routes return `503` until Chromium's X window matches the
+  readiness pattern (`READY_WINDOW_PATTERN`, default Chromium/Chrome). See
+  `images/minimal-vnc-desktop/README.md` for the readiness behavior. A `503`
+  that clears on its own once the window opens is expected; a persistent `503`
+  means the app window never matched the pattern or the app failed to start.
 
-After changing TURN credentials, recycle browser GameServers:
+If the `503` persists, check the browser-runtime startup logs for the app window
+and readiness state:
 
 ```bash
-kubectl -n popcorn delete gameserver --all
+kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
 ```
 
 ## Optional Component Fails
@@ -276,17 +289,18 @@ make clean
 make run-local-cluster
 ```
 
-For same-machine Kind without TURN, verify the Agones UDP range is published
-and the browser runtime advertises localhost:
+For same-machine Kind, live view (VNC) is served over TCP through the gateway.
+Verify the GameServer is Ready and the browser runtime's noVNC port is serving:
 
 ```bash
-docker port popcorn-control-plane | grep udp
 kubectl -n popcorn get gameservers -o wide
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200 | grep -E 'advertise host|Direct WebRTC'
+kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
 ```
 
-You should see UDP `7000-7010` mapped on the Kind node, a GameServer port in
-that range, and `external=127.0.0.1` in browser-runtime logs.
+Once Chromium is ready, the noVNC HTTP and WebSocket routes on port `6080` stop
+returning `503` (see "Live View (VNC) Does Not Connect" above). If the live-view
+page will not load, confirm the gateway is reachable at
+`http://localhost:8080` and re-check the `liveview` route.
 
 ## Advanced: Public Repo Checks
 

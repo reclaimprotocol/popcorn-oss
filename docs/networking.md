@@ -1,224 +1,110 @@
 # Browser Networking
 
-Popcorn browser sessions can use WebRTC or VNC/LiveView for the interactive
-stream. For WebRTC production deployments, plan for TURN and direct UDP
-together:
+Popcorn streams interactive browser sessions over **VNC / live view**. Chromium
+runs headed on a virtual X display inside each browser pod, and its framebuffer
+is streamed to the client as VNC-over-WebSocket through the gateway.
 
-- TURN gives browser users a reliable fallback when direct UDP cannot connect.
-- Direct UDP lets WebRTC connect without relay when the client can reach the
-  Agones GameServer port.
+Everything is TCP and WebSocket through the gateway; the browser node and
+GameServer are never exposed directly to clients.
 
-For most public deployments, configure TURN first. Treat direct UDP as a
-performance path that depends on your cloud firewall and user network.
+## How Streaming Works
 
-## Cloudflare TURN
+Inside the browser pod (the minimal-vnc "Popcorn Browser" image running Tilion
+Fortress Chromium):
 
-Popcorn supports Cloudflare TURN through `browser-turn-secret`.
+1. Chromium renders to a virtual X display.
+2. `Xvnc` binds the RFB server on `127.0.0.1:5900` (localhost only).
+3. `novnc-proxy` bridges VNC to an HTTP/WebSocket surface on port `6080`,
+   serving the WebSocket at `/websockify` and the noVNC client at
+   `liveview.html`.
+4. The gateway proxies `/liveview-ws/<sessionId>/<token>` to the pod's `6080`
+   port (rewriting to `/websockify`), and proxies `/liveview/<sessionId>/<token>/...`
+   to the pod's HTTP surface for static assets.
+5. The client's browser loads the noVNC client (`liveview.html`) and connects
+   the WebSocket back through the gateway.
 
-Create a Cloudflare Calls TURN key, then store the key ID and API token in the
-browser workload namespace:
+The RFB port `5900` and Chromium's DevTools upstream never leave the pod. Only
+the gateway is public, and only `6080` is routed for streaming.
 
-```bash
-kubectl -n popcorn create secret generic browser-turn-secret \
-  --from-literal=TURN_KEY_ID="$TURN_KEY_ID" \
-  --from-literal=TURN_API_TOKEN="$TURN_API_TOKEN" \
-  --from-literal=NEKO_ICESERVERS=""
-```
+## Session URL Fields
 
-Leave `NEKO_ICESERVERS` empty for the Cloudflare path. On browser pod startup,
-the runtime exchanges `TURN_KEY_ID` and `TURN_API_TOKEN` for short-lived ICE
-server credentials and exports them to Neko.
-
-If you use External Secrets Operator, sync the same keys into
-`browser-turn-secret` instead of creating the Kubernetes Secret directly. The
-browser-fleet chart can render that ExternalSecret when
-`externalSecrets.enabled=true`.
-
-## Verify TURN
-
-After a browser GameServer starts, check the browser runtime logs:
-
-```bash
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200 | grep -i cloudflare
-```
-
-You should see that Cloudflare ICE servers were generated. If not, check:
-
-- `TURN_KEY_ID` is set.
-- `TURN_API_TOKEN` is set.
-- the Cloudflare key is still valid.
-- the browser GameServer was created after the Secret was updated.
-
-After rotating TURN credentials, recycle existing browser GameServers so new
-pods read the new Secret:
-
-```bash
-kubectl -n popcorn delete gameserver --all
-```
-
-## Static ICE Servers
-
-If you do not use Cloudflare TURN, set `NEKO_ICESERVERS` to a static ICE server
-JSON value in `browser-turn-secret`.
-
-Example shape:
-
-```json
-[
-  {
-    "urls": ["turn:turn.example.com:3478"],
-    "username": "user",
-    "credential": "password"
-  }
-]
-```
-
-When `NEKO_ICESERVERS` is set, make sure it is valid JSON and that the browser
-runtime can reach the TURN server.
-
-## STUN-Only Direct UDP
-
-Internal GKE deployments have also worked with STUN-only ICE servers when the
-browser nodes are reachable on their Agones UDP ports. This avoids TURN relay
-traffic, but it only works when the user's network can make a direct UDP path
-to the node or GameServer address.
-
-The setup is:
-
-1. Configure Agones with a production-sized UDP port range.
-2. Open that same UDP range on the GKE node firewall.
-3. Leave `webrtc.advertiseHost` empty in GKE so the browser runtime discovers
-   the node external address or GameServer address.
-4. Set `NEKO_ICESERVERS` to STUN servers and leave `TURN_KEY_ID` /
-   `TURN_API_TOKEN` empty.
-
-Example Secret:
-
-```bash
-kubectl -n popcorn create secret generic browser-turn-secret \
-  --from-literal=TURN_KEY_ID="" \
-  --from-literal=TURN_API_TOKEN="" \
-  --from-literal='NEKO_ICESERVERS=[{"urls":["stun:stun.l.google.com:19302"]}]'
-```
-
-Example Agones range:
-
-```yaml
-agones:
-  install: true
-
-agonesInstaller:
-  gameservers:
-    namespaces:
-      - popcorn
-    minPort: 59000
-    maxPort: 61000
-```
-
-On GKE, add an ingress firewall rule for that UDP range to the browser node
-network tags. The internal setup used a rule equivalent to:
-
-```bash
-gcloud compute firewall-rules create popcorn-browser-webrtc-udp \
-  --network <vpc-name> \
-  --direction INGRESS \
-  --action ALLOW \
-  --rules udp:59000-61000 \
-  --source-ranges <client-cidr-ranges> \
-  --target-tags <browser-node-network-tag>
-```
-
-Use a narrower source range than `0.0.0.0/0` when you know where users connect
-from. Keep Cloudflare TURN or another TURN service configured if users may be
-behind symmetric NAT, corporate firewalls, mobile networks, or UDP-blocking
-networks.
-
-For a one-person IP-only smoke test, use the operator's public IP as a `/32`
-source range and a small Agones range such as `59000-59100`. If the browser URL
-loads but the stream does not connect, update the firewall source range to the
-actual client network or add TURN.
-
-## Direct Agones UDP
-
-The browser fleet exposes a `webrtc-udp` Agones port with `portPolicy:
-Passthrough`. Agones assigns a UDP host port from its configured GameServer
-port range.
-
-For production direct UDP:
-
-1. Pick an Agones GameServer port range large enough for expected browser
-   concurrency.
-2. Configure Agones with that range.
-3. Open that UDP range from user networks to the browser nodes or load-balancer
-   path your cluster uses.
-4. Keep `webrtc.advertiseHost` empty in GKE so the runtime discovers the node
-   or GameServer address.
-5. Keep TURN configured as fallback.
-
-When using the bundled Agones dependency, configure the range in browser-fleet
-values:
-
-```yaml
-agones:
-  install: true
-
-agonesInstaller:
-  gameservers:
-    namespaces:
-      - popcorn
-    minPort: 59000
-    maxPort: 61000
-```
-
-If Agones is installed separately, configure the same range in that Agones Helm
-release instead.
-
-## LiveView / VNC Mode
-
-VNC/LiveView mode uses the gateway's HTTP and WebSocket routes instead of
-WebRTC media transport. It does not need Agones UDP allocation, TURN, or
-`POPCORN_WEBRTC_ADVERTISE_HOST`; it needs a TCP route to the browser runtime's
-noVNC-compatible port, currently `6080`.
-
-The control-plane response keeps `vncUrl` and `vncWsUrl` as compatibility field
-names. Their values should use the LiveView paths:
+The control-plane response keeps the compatibility field names `vncUrl` and
+`vncWsUrl`. Their values point at the live-view routes:
 
 ```text
-vncUrl:   https://<gateway>/liveview/<sessionId>/<token>/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000
-vncWsUrl: wss://<gateway>/liveview-ws/<sessionId>/<token>
+vncUrl:   {baseUrl}/liveview/{sessionId}/{token}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000
+vncWsUrl: {wsBase}/liveview-ws/{sessionId}/{token}
 ```
 
-The browser runtime should still report Agones `Ready` only after the app window
-is visible, so the LiveView route does not become healthy before Chrome or the
-configured GUI app has launched.
+The route shapes are:
+
+```text
+GET  /liveview/<sessionId>/<token>/liveview.html   -> noVNC client + static assets
+WS   /liveview-ws/<sessionId>/<token>              -> proxied to pod :6080/websockify
+```
+
+The gateway also accepts the legacy `/vnc-ws/<sessionId>/<token>` prefix and
+maps it to the same route. See
+[`images/minimal-vnc-desktop/README.md`](../images/minimal-vnc-desktop/README.md)
+for the full HTML/route contract.
+
+## Container Port And Route Key
+
+The browser image serves noVNC HTTP/WebSocket on container port `6080`
+(`NOVNC_PORT`). The browser fleet exposes it as a `None`-policy TCP port when
+VNC streaming is enabled:
+
+```yaml
+ports:
+  - name: novnc
+    containerPort: 6080
+    portPolicy: None
+    protocol: TCP
+```
+
+The platform route key for this image is `liveview`, mapped to `6080`. The
+gateway resolves `/liveview-ws/<sessionId>/<token>` by looking up the
+`liveview` route (falling back to the legacy `vnc` route key) in Redis, then
+proxies to `<pod-ip>:6080/websockify`.
+
+Set the fleet streaming mode to `vnc` with `streaming.mode` in the browser-fleet
+chart.
 
 ## Local Kind
 
-The local Kind setup is intentionally different from production:
+The local Kind setup needs no special network plumbing for live view — streaming
+is plain TCP/WebSocket, so nothing beyond the gateway route is required.
 
-- Kind publishes UDP `7000-7010` from the node container.
-- the local Agones install uses the same small range.
-- browser fleet sets `webrtc.advertiseHost=127.0.0.1`.
-- when `LOCAL_BROWSER_STREAMING_MODE=vnc`, the Makefile wires the LiveView
-  route to `6080` and returns `/liveview/.../liveview.html`.
-
-That is only for same-machine testing. Do not copy the local UDP range into
-production unless it is intentionally sized for your expected concurrency.
+- Set `LOCAL_BROWSER_STREAMING_MODE=vnc`. The Makefile wires the `liveview`
+  route to `6080` and returns `/liveview/.../liveview.html` in the session URL.
 
 ## Troubleshooting
 
-If the browser page loads but the stream does not connect:
+If the live-view page loads but the stream does not connect, the failure is
+almost always one of two things.
+
+**1. The TCP route to `6080` is missing or wrong.**
+
+Check that the session has a `liveview` (or legacy `vnc`) route in Redis and
+that the pod is exposing `6080`:
 
 ```bash
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
-kubectl -n popcorn get secret browser-turn-secret -o yaml
 kubectl -n popcorn get gameservers -o wide
+kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
 ```
 
-Common causes:
+A missing route surfaces as `404` from the gateway on
+`/liveview-ws/<sessionId>/<token>`.
 
-- TURN credentials are empty or invalid.
-- `NEKO_ICESERVERS` is malformed.
-- browser GameServers were not restarted after Secret rotation.
-- cloud firewall rules do not allow the Agones UDP range.
-- direct UDP is blocked by the user's network and no TURN relay is configured.
+**2. The app window is not ready yet.**
+
+The noVNC and CDP listeners bind early, but their HTTP and WebSocket routes
+return `503` until Chromium opens an X window matching the readiness pattern
+(`READY_WINDOW_PATTERN`, which defaults to matching Chromium/Chrome). Until the
+app window is visible, the live-view route is intentionally unhealthy so it
+never reports ready before the browser has launched.
+
+If you see `503` on the live-view route, wait for Chromium to start, or check
+`xvnc.log` / `app.log` under the pod's log directory (`/var/log/app` by
+default) for a startup failure. `READY_TIMEOUT` bounds how long startup waits
+for the app window before failing.

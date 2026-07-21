@@ -3,7 +3,10 @@
 Popcorn OSS v1 keeps image ownership explicit:
 
 - Popcorn platform services live in this repository.
-- Browser base image assets live in the separate [popcorn-images](../popcorn-images/README.md) repository.
+- The browser runtime image is built from `images/minimal-vnc-desktop` in this
+  repository.
+
+The browser streams over VNC / live view, served by the `browser-runtime` image.
 
 ## Image Set
 
@@ -11,7 +14,7 @@ The OSS v1 platform expects these runtime images:
 
 - `pool-manager`
 - `gateway`
-- `browser-node` or `browser-runtime`
+- `browser-runtime`
 - `ttl-controller`
 - optional `browser-runtime-attestor`
 
@@ -30,7 +33,6 @@ The OSS CI workflow publishes platform service images from `reclaimprotocol/popc
 The reproducible browser image workflow publishes:
 
 ```text
-ghcr.io/reclaimprotocol/popcorn-oss/browser-base:<popcorn-images-submodule-sha>
 ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:<commit-sha>
 ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:<commit-sha>
 ```
@@ -50,25 +52,19 @@ in `browserRuntimeImage`.
 
 ## Browser Images
 
-`popcorn-images` remains a separate OSS project and the source tree for browser image builds. Chromium artifact release assets are mirrored through `reclaimprotocol/popcorn-oss`. Clone Popcorn with submodules:
-
-```bash
-git clone --recursive https://github.com/reclaimprotocol/popcorn-oss.git
-```
-
-Or initialize later:
-
-```bash
-git submodule update --init --recursive
-```
-
-The browser runtime build uses image assets from:
+The `browser-runtime` image is the minimal VNC / live-view desktop built from:
 
 ```text
-popcorn-images/
+images/minimal-vnc-desktop/
 ```
 
-The OSS reproducible workflow sets `GITHUB_ARTIFACT_MIRROR_REPO=reclaimprotocol/popcorn-oss` so Chromium release assets are resolved from the OSS repository before falling back to pinned upstream URLs.
+This is a standalone, fast-booting desktop image for visual browser sessions. It
+serves noVNC live view and the browser is Tilion Fortress (a stealth
+stock-Chromium fork pulled as a pinned OCI image). It is deliberately minimal —
+just the virtual display, noVNC, Chromium, and a small Go helper. See
+`images/minimal-vnc-desktop/README.md` for build details.
+
+The OSS reproducible workflow sets `GITHUB_ARTIFACT_MIRROR_REPO=reclaimprotocol/popcorn-oss` so pinned Chromium/noVNC release assets are resolved from the OSS repository before falling back to pinned upstream URLs.
 
 ## Local Images
 
@@ -83,7 +79,7 @@ The local flow builds images such as:
 ```text
 popcorn/pool-manager:local
 popcorn/gateway:local
-popcorn/browser-node:local
+popcorn/minimal-vnc-desktop:local
 ```
 
 Use explicit service build targets when you only want the OSS v1 local image set:
@@ -91,18 +87,19 @@ Use explicit service build targets when you only want the OSS v1 local image set
 ```bash
 make build-pool-manager
 make build-gateway
-make build-browser-node
+make build-local-browser-runtime
 make build-ttl-controller
 ```
 
-Then it loads them into the Kind cluster.
+`make build-local-browser-runtime` builds `build-minimal-vnc-desktop`, producing
+`popcorn/minimal-vnc-desktop:local`. `make run-local-cluster` uses the same
+target. Then the images are loaded into the Kind cluster.
 
 ## Release Images
 
 Production deployments should use immutable image references:
 
 ```text
-ghcr.io/reclaimprotocol/popcorn-oss/browser-base@sha256:<digest>
 ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
 ```

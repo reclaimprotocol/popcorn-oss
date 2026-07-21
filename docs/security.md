@@ -42,7 +42,6 @@ Production deployments should manage and rotate:
 - one `POOL_MANAGER_SERVICE_AUTH_TOKEN` per region;
 - admin credentials, admin session secret, and optional Google OAuth secret;
 - Postgres credentials;
-- TURN credentials, if WebRTC users connect from outside the cluster network;
 - registry pull credentials, if using private images;
 - attestation signing material, if attestation is enabled.
 
@@ -96,15 +95,20 @@ Use standard cluster isolation around the browser fleet:
 
 ## Advanced: CDP Scope
 
-The gateway exposes two CDP paths:
+The gateway exposes two CDP paths with different command scopes:
 
-- `/cdp/<sessionId>/<token>/...`: client-facing CDP path.
-- `/cdp-internal/<sessionId>/<token>/...`: trusted internal CDP path.
+- `/cdp/<sessionId>/<token>/...`: client-facing CDP path. The nginx config labels
+  this "CDP Exposure (Restricted)" and enforces a command allowlist.
+- `/cdp-internal/<sessionId>/<token>/...`: full-access CDP path. The nginx config
+  labels this "CDP Internal Exposure (Full Access)" and forwards unfiltered CDP.
+  The `cdpInternalUrl` / `/cdp-internal` name is legacy naming for this
+  full-access CDP surface.
 
-The internal path uses a distinct token scope and should be used only by trusted
-automation or operations tooling. In OSS v1, do not rely on command-level CDP
-filtering as the only security boundary. Use path-token scope, network exposure,
-client ownership, and short session lifetime as the primary controls.
+The full-access path uses a distinct token scope and should be used only by
+trusted automation or operations tooling, since it is not restricted by the
+command allowlist. In OSS v1, do not rely on command-level CDP filtering as the
+only security boundary. Use path-token scope, network exposure, client
+ownership, and short session lifetime as the primary controls.
 
 ## Advanced: Gateway Keys
 

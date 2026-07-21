@@ -37,26 +37,22 @@ Helm values.
 If you do not need attestation, confidential nodes are optional. Keep
 `browserRuntimeAttestor.enabled=false` and `ccDevicePlugin.enabled=false`.
 
-For WebRTC, plan for both TURN and direct UDP:
+The browser streams over live view (VNC) through the gateway's HTTP/WebSocket
+surface — plain TCP, with no special browser networking to plan for:
 
-- Production browser access should have TURN credentials in
-  `browser-turn-secret`.
-- Direct GameServer UDP needs firewall rules and an Agones port range that fits
-  your network policy.
-- The local Kind UDP range is intentionally tiny and should not be copied into
-  production.
-
-See [Browser networking](networking.md) for Cloudflare TURN setup, static ICE
-server options, and direct Agones UDP guidance.
+- Set `streaming.mode=vnc` in the browser-fleet values.
+- Wire the live-view route so the platform serves the browser desktop over the
+  gateway. See the LiveView Route Wiring in
+  [Configuration](configuration.md#liveview-route-wiring).
 
 ## Production Shape
 
 Install two Helm releases into the same namespace:
 
-- `charts/platform`: gateway, pool manager, Redis, control plane, transitional
-  bundled Postgres, TTL controller, RBAC, and optional operations services.
-- `charts/browser-fleet`: Agones Fleet, browser runtime, WebRTC/TURN settings,
-  autoscaler, and optional attestor.
+- `charts/platform`: gateway, pool manager, Redis, control plane, TTL
+  controller, RBAC, and optional operations services.
+- `charts/browser-fleet`: Agones Fleet, browser runtime, live-view (VNC)
+  streaming settings, autoscaler, and optional attestor.
 
 Use one namespace unless you have a specific reason to split platform and
 browser workloads.
@@ -72,7 +68,6 @@ browser workloads.
   plan such as port-forward, VPN, or internal ingress.
 - Popcorn images available to the cluster.
 - Kubernetes Secrets from [Secrets](secrets.md).
-- TURN credentials for browser access from real networks.
 
 The control plane and Metabase expect `analytics-db-secret` to point at an
 existing Postgres database. Use managed Postgres or a database you operate
@@ -182,6 +177,10 @@ region: us-central1
 gatewayDomain: gateway.example.com
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 
+# Live view (VNC) is the only browser streaming mode.
+streaming:
+  mode: vnc
+
 agones:
   install: false
 
@@ -200,7 +199,11 @@ autoscaler:
   maxReplicas: 20
 ```
 
-Leave `webrtc.advertiseHost` empty in GKE. It is for same-machine Kind only.
+You must also wire the live-view route on the platform side so `streaming.mode:
+vnc` is served over the gateway. See the LiveView Route Wiring in
+[Configuration](configuration.md#liveview-route-wiring) for the
+`poolManager.extraRoutePorts`, `poolManager.extraSessionUrls`, and
+`gateway.extraSessionRoutes` values.
 
 For IP-only deployments, leave `gateway.domainName` empty, set
 `gateway.staticIpName` to the reserved global static IP name, and set

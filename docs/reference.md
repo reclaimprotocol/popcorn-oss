@@ -216,10 +216,10 @@ Core Helm values:
 | Pool manager | `poolManager.enabled`, `poolManager.gameServerNamespace`, `poolManager.extraSessionUrls`, `poolManager.extraRoutePorts` | Allocates browser sessions and writes route state. |
 | Control plane | `controlPlane.enabled`, `controlPlane.domainName`, `controlPlane.regions` | Client session API, admin UI, regional routing, and analytics records. |
 | Admin auth | `controlPlane.adminAuth.*` | Password, password file, token, and Google OAuth settings. |
-| Secrets | `secrets.*`, `*.secretName`, `*.secretKey` | JWT keys, service tokens, database credentials, admin auth, and TURN credentials. |
+| Secrets | `secrets.*`, `*.secretName`, `*.secretKey` | JWT keys, service tokens, database credentials, admin auth, and the optional browser egress proxy URL. |
 | Redis | `redis.enabled`, `poolManager.redisHost`, `gateway.redisHost` | Stores active route and session state. Keep private. |
 | Postgres | `controlPlane.database*`, `metabase.database*` | Stores clients, sessions, analytics metadata, and optional Metabase state. |
-| Browser fleet | `fleet.*`, `autoscaler.*`, `webrtc.*`, `extraBrowserRuntimeEnv` | Capacity, resource limits, streaming network settings, and runtime environment. |
+| Browser fleet | `fleet.*`, `autoscaler.*`, `streaming.mode`, `extraBrowserRuntimeEnv` | Capacity, resource limits, live-view streaming, and runtime environment. |
 | Cleanup | `ttlController.*` | Expires sessions and reports terminal state to the control plane. |
 | Operations | `otel.*`, `gkeNodePrescaler.*`, `imagePrepuller.*` | OTLP browser log/session event export, capacity, and image warmup helpers. |
 | Attestation | `browserRuntimeAttestor.*`, `ccDevicePlugin.*` | Optional confidential-computing proof support. |

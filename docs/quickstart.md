@@ -137,10 +137,10 @@ await browser.close();
 
 ## Local Networking Notes
 
-Kind is same-machine only by default. The local setup publishes a small UDP
-range and advertises `127.0.0.1` for WebRTC. Use TURN for realistic browser
-access from another device, a VPN, a cloud cluster, or a network that blocks
-direct UDP.
+Kind is same-machine only by default. The browser streams over live view (VNC)
+as a WebSocket through the gateway, so local access works over the published
+gateway port with no extra networking. To reach a local session from another
+device, expose the gateway (for example with a tunnel or a VPN).
 
 ## Reset
 

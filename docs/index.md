@@ -6,6 +6,13 @@ and lets clients create sessions through the control plane.
 
 These docs are organized for operators who want to run Popcorn themselves.
 
+## Understand How It Works
+
+- [Architecture](architecture.md): how the platform works end to end — services, the
+  session lifecycle, the token model, state, and trust boundaries.
+- [The Popcorn Browser](popcorn-browser.md): the browser runtime that runs in each session
+  pod — build, boot, ports, engine, and configuration.
+
 ## Read This First
 
 1. [Quickstart](quickstart.md): run Popcorn locally with Kind.
@@ -20,7 +27,7 @@ These docs are organized for operators who want to run Popcorn themselves.
 
 - [Operations](operations.md): validate, upgrade, scale, and run optional services.
 - [Security](security.md): practical self-hosting security model and hardening.
-- [Browser networking](networking.md): Cloudflare TURN, static ICE servers, and direct Agones UDP.
+- [Browser networking](networking.md): how the browser streams to clients over VNC / live view through the gateway.
 - [Observability](observability.md): backend-neutral OpenTelemetry log and session lifecycle export.
 - [Troubleshooting](troubleshooting.md): diagnose local, Helm, auth, and browser issues.
 
@@ -34,7 +41,7 @@ These docs are organized for operators who want to run Popcorn themselves.
 | Path | Purpose |
 | --- | --- |
 | `charts/platform` | Gateway, pool manager, Redis, control plane, transitional bundled Postgres, TTL controller, and optional operations services. |
-| `charts/browser-fleet` | Agones browser Fleet, browser runtime, WebRTC/TURN settings, autoscaler, and optional attestor. |
+| `charts/browser-fleet` | Agones browser Fleet, browser runtime, live-view (VNC) streaming, autoscaler, and optional attestor. |
 | `services/*` | Source for platform services. |
 | `popcorn-images` | Browser image assets and runtime image build inputs. |
 | `examples/helm` | Starting values for production-style GKE installs. |
