@@ -10,8 +10,8 @@ or commit generated credentials.
 | `gateway-jwt-keys` | yes | pool manager, gateway | Signs and verifies browser/CDP/API path tokens. |
 | `pool-manager-service-auth` | yes | control plane, pool manager | Authenticates internal allocation calls. Use one per region in production. |
 | `control-plane-secret` | yes when control plane is enabled | control plane, TTL controller | Admin auth and control-plane service token. |
-| `analytics-db-secret` | yes when control plane is enabled | control plane, Postgres | Postgres connection settings. |
-| `browser-turn-secret` | recommended | browser runtime | TURN credentials or static ICE server JSON. |
+| `analytics-db-secret` | yes when control plane is enabled | control plane, migrate job | Connection settings for the external Postgres database. |
+| `browser-runtime-proxy-secret` | optional | browser runtime | Outbound HTTPS proxy URL for browser egress. |
 | `otel-exporter-headers` | only when your OTLP backend requires headers | otel agent, pool manager | OTLP exporter header values such as authorization tokens. |
 | `otel-clickhouse-secret` | only when `otel.enabled=true` and `otel.clickhouse.enabled=true` | pool manager, observability setup | Legacy ClickHouse credentials for optional session bindings. |
 
@@ -83,27 +83,21 @@ Keys:
 | `username` | Database user. |
 | `password` | Database password. |
 
-The control plane stores client records and session analytics in Postgres.
+The control plane and its database migrate job connect to an external Postgres
+database using these values, where the control plane stores client records and
+session analytics.
 
-## `browser-turn-secret`
+## `browser-runtime-proxy-secret`
 
 Keys:
 
 | Key | Required | Purpose |
 | --- | --- | --- |
-| `TURN_KEY_ID` | production yes | Cloudflare TURN key ID. |
-| `TURN_API_TOKEN` | production yes | Cloudflare TURN API token or credential secret. |
-| `NEKO_ICESERVERS` | no | Static ICE server JSON override. |
+| `HTTPS_PROXY_URL` | no | Outbound HTTPS proxy URL for browser egress. |
 
-Local Kind can work without TURN for same-machine testing. Production should
-configure TURN because browser pods usually sit behind private networking, NAT,
-or firewalls.
-
-Leave `NEKO_ICESERVERS` empty when using Cloudflare TURN. The browser runtime
-requests short-lived ICE credentials on startup.
-
-See [Browser networking](networking.md) for Cloudflare TURN setup and direct
-Agones UDP guidance.
+Optional. When present, the browser runtime reads `HTTPS_PROXY_URL` (mapped from
+this Secret as an optional key reference) to route outbound HTTPS traffic through
+a proxy. Omit the Secret or leave the key empty for direct egress.
 
 ## `otel-exporter-headers`
 
@@ -155,9 +149,8 @@ the legacy table schema, and exported fields.
 
 ## Direct Kubernetes Secret Bootstrap
 
-Generate values first. Point the Postgres values at the database that will back
-the control plane and optional Metabase. Use real TURN values for production
-browser traffic:
+Generate values first. Point the Postgres values at the external database that
+will back the control plane and optional Metabase:
 
 ```bash
 export POOL_MANAGER_SERVICE_AUTH_TOKEN=$(openssl rand -hex 32)
@@ -171,8 +164,9 @@ export POSTGRES_PORT=5432
 export POSTGRES_DATABASE=analytics
 export POSTGRES_USER=analytics_admin
 export POSTGRES_PASSWORD=$(openssl rand -base64 32)
-export TURN_KEY_ID="replace-with-cloudflare-turn-key-id"
-export TURN_API_TOKEN="replace-with-cloudflare-turn-api-token"
+
+# Optional: outbound HTTPS proxy for browser egress.
+export HTTPS_PROXY_URL="replace-with-https-proxy-url"
 
 # Only needed when otel.enabled=true and otel.clickhouse.enabled=true.
 export CLICKHOUSE_ENDPOINT="replace-with-clickhouse-native-or-service-endpoint"
@@ -207,10 +201,9 @@ kubectl -n popcorn create secret generic analytics-db-secret \
   --from-literal=username="$POSTGRES_USER" \
   --from-literal=password="$POSTGRES_PASSWORD"
 
-kubectl -n popcorn create secret generic browser-turn-secret \
-  --from-literal=TURN_KEY_ID="$TURN_KEY_ID" \
-  --from-literal=TURN_API_TOKEN="$TURN_API_TOKEN" \
-  --from-literal=NEKO_ICESERVERS=""
+# Optional: only needed to route browser egress through an HTTPS proxy.
+kubectl -n popcorn create secret generic browser-runtime-proxy-secret \
+  --from-literal=HTTPS_PROXY_URL="$HTTPS_PROXY_URL"
 
 # Only needed when otel.enabled=true and otel.clickhouse.enabled=true.
 kubectl -n popcorn create secret generic otel-clickhouse-secret \
@@ -244,8 +237,8 @@ kubectl -n popcorn rollout restart deployment/pool-manager deployment/popcorn-ga
 kubectl -n popcorn rollout restart deployment/control-plane deployment/ttl-controller
 ```
 
-After rotating TURN credentials, recycle browser GameServers so new pods read
-fresh values:
+After rotating browser runtime Secrets such as `browser-runtime-proxy-secret`,
+recycle browser GameServers so new pods read fresh values:
 
 ```bash
 kubectl -n popcorn delete gameserver --all

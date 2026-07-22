@@ -23,9 +23,10 @@ are not used in this IP-only flow.
 - one global static IP for the gateway;
 - one optional global static IP for the temporary public control plane;
 - HTTP GKE Ingress resources with no host rules;
-- one direct UDP firewall rule for the Agones GameServer port range;
-- bundled Redis and Postgres for a starter install;
-- one browser Fleet with direct UDP and STUN-only ICE servers.
+- bundled Redis for route state (Postgres is external, supplied through
+  `analytics-db-secret`; the charts deploy no Postgres workload);
+- one browser Fleet in VNC / live-view mode, streamed over noVNC (port 6080)
+  through the gateway via the `/liveview` and `/liveview-ws` routes (TCP only).
 
 The gateway public URL is `http://<gateway-ip>`. The temporary control-plane
 public URL is `http://<control-plane-ip>`. Session responses should use
@@ -37,17 +38,16 @@ public URL is `http://<control-plane-ip>`. Session responses should use
 2. Reserve a global static IP for the gateway.
 3. Reserve a global static IP for the temporary public control plane.
 4. Create a GKE Standard cluster with HTTP load balancing enabled.
-5. Open the Agones UDP range to the client CIDR that will test the browser.
-6. Create Kubernetes Secrets.
-7. Install Agones as cluster infrastructure.
-8. Copy and edit the IP-only example values.
-9. Install the platform chart.
-10. Install the browser-fleet chart.
-11. Wait for gateway/control-plane Ingresses and browser GameServers.
-12. Create a client through the public control plane.
-13. Create a session.
-14. Validate gateway health, returned URL schemes, CDP, browser page load, and direct UDP logs.
-15. Clean up cloud resources when the test is complete.
+5. Create Kubernetes Secrets, including an external Postgres via `analytics-db-secret`.
+6. Install Agones as cluster infrastructure.
+7. Copy and edit the IP-only example values, adding the VNC / live-view wiring.
+8. Install the platform chart.
+9. Install the browser-fleet chart in VNC mode.
+10. Wait for gateway/control-plane Ingresses and browser GameServers.
+11. Create a client through the public control plane.
+12. Create a session.
+13. Validate gateway health, returned URL schemes, CDP, browser page load, and the live-view route over TCP.
+14. Clean up cloud resources when the test is complete.
 
 ## Environment
 
@@ -60,16 +60,13 @@ export NAMESPACE=popcorn
 export GATEWAY_IP_NAME=popcorn-oss-ip-test-gateway-ip
 export CONTROL_PLANE_IP_NAME=popcorn-oss-ip-test-control-plane-ip
 export NODE_TAG=popcorn-oss-ip-test-node
-export UDP_FIREWALL_RULE=popcorn-oss-ip-test-webrtc-udp
 export AGONES_MIN_PORT=59000
 export AGONES_MAX_PORT=59100
 ```
 
-Restrict direct UDP to the CIDR that will open the browser:
-
-```bash
-export CLIENT_CIDR="$(curl -fsS https://ifconfig.me)/32"
-```
+The browser streams over noVNC (TCP) through the gateway, so no direct UDP
+firewall rule is required. The Agones port range above is still used to
+allocate GameServer ports inside the cluster.
 
 ## Create Cloud Resources
 
@@ -120,19 +117,6 @@ gcloud container clusters get-credentials "$CLUSTER_NAME" \
   --project "$GCP_PROJECT_ID"
 ```
 
-Open direct UDP for the browser stream:
-
-```bash
-gcloud compute firewall-rules create "$UDP_FIREWALL_RULE" \
-  --project "$GCP_PROJECT_ID" \
-  --network default \
-  --direction INGRESS \
-  --action ALLOW \
-  --rules "udp:${AGONES_MIN_PORT}-${AGONES_MAX_PORT}" \
-  --source-ranges "$CLIENT_CIDR" \
-  --target-tags "$NODE_TAG"
-```
-
 ## Create Secrets
 
 Generate local files and random values:
@@ -147,9 +131,19 @@ export CONTROL_PLANE_ADMIN_USER=admin
 export CONTROL_PLANE_ADMIN_PASS="$(openssl rand -base64 32)"
 export CONTROL_PLANE_ADMIN_SESSION_SECRET="$(openssl rand -hex 32)"
 export CONTROL_PLANE_ADMIN_TOKEN="$(openssl rand -hex 32)"
+```
+
+The control plane requires an external Postgres for analytics. The charts do
+not deploy a Postgres workload, so point `analytics-db-secret` at a database
+you already run: a managed instance (for example Cloud SQL) or a Postgres you
+host yourself. Set these to real, reachable connection details:
+
+```bash
+export POSTGRES_HOST=REPLACE_WITH_POSTGRES_HOST
+export POSTGRES_PORT=5432
 export POSTGRES_DATABASE=analytics
 export POSTGRES_USER=analytics_admin
-export POSTGRES_PASSWORD="$(openssl rand -base64 32)"
+export POSTGRES_PASSWORD=REPLACE_WITH_POSTGRES_PASSWORD
 ```
 
 Create the namespace and Secrets:
@@ -172,17 +166,17 @@ kubectl -n "$NAMESPACE" create secret generic control-plane-secret \
   --from-literal=ADMIN_TOKEN="$CONTROL_PLANE_ADMIN_TOKEN"
 
 kubectl -n "$NAMESPACE" create secret generic analytics-db-secret \
-  --from-literal=host=postgres \
-  --from-literal=port=5432 \
+  --from-literal=host="$POSTGRES_HOST" \
+  --from-literal=port="$POSTGRES_PORT" \
   --from-literal=database="$POSTGRES_DATABASE" \
   --from-literal=username="$POSTGRES_USER" \
   --from-literal=password="$POSTGRES_PASSWORD"
-
-kubectl -n "$NAMESPACE" create secret generic browser-turn-secret \
-  --from-literal=TURN_KEY_ID="" \
-  --from-literal=TURN_API_TOKEN="" \
-  --from-literal='NEKO_ICESERVERS=[{"urls":["stun:stun.l.google.com:19302"]}]'
 ```
+
+`host` must resolve to a Postgres instance that is actually reachable from the
+cluster. There is no in-chart Postgres, so a Service named `postgres` does not
+exist unless you deploy one yourself. Use the managed database's address, or
+the in-cluster Service name if you run your own Postgres in the namespace.
 
 If GHCR packages are not public yet, create an image pull Secret and reference
 it from both values files:
@@ -208,6 +202,27 @@ perl -0pi -e "s#http://REPLACE_WITH_GATEWAY_IP#http://${GATEWAY_IP}#g" \
   /tmp/popcorn-platform-ip.yaml
 ```
 
+The browser streams over noVNC (port 6080) through the gateway on the
+`/liveview` and `/liveview-ws` routes. Rather than edit the copied values (whose
+`poolManager` and `gateway` blocks already exist), wire the live-view route with
+`--set` flags at platform install time. This mirrors the "LiveView Route Wiring"
+section in [Configuration](configuration.md):
+
+```bash
+LIVEVIEW_URL='{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000'
+LIVEVIEW_WS_URL='{wsBase}/liveview-ws/{sessionId}/{restrictedToken}'
+
+LIVEVIEW_ROUTE_ARGS=(
+  --set 'poolManager.extraRoutePorts.novnc.routeKey=liveview'
+  --set 'poolManager.extraRoutePorts.novnc.port=6080'
+  --set-string "poolManager.extraSessionUrls.url=${LIVEVIEW_URL}"
+  --set-string "poolManager.extraSessionUrls.vncUrl=${LIVEVIEW_URL}"
+  --set-string "poolManager.extraSessionUrls.vncWsUrl=${LIVEVIEW_WS_URL}"
+  --set 'gateway.extraSessionRoutes[0].pathPrefix=liveview'
+  --set 'gateway.extraSessionRoutes[0].routeKey=liveview'
+)
+```
+
 Set the runtime image to a published commit tag or digest. The live test used
 the current commit tag because `browser-runtime:latest` was not published:
 
@@ -228,11 +243,13 @@ Render before applying:
 ```bash
 helm template popcorn-platform charts/platform \
   --namespace "$NAMESPACE" \
-  --values /tmp/popcorn-platform-ip.yaml
+  --values /tmp/popcorn-platform-ip.yaml \
+  "${LIVEVIEW_ROUTE_ARGS[@]}"
 
 helm template browser-fleet charts/browser-fleet \
   --namespace "$NAMESPACE" \
-  --values /tmp/popcorn-browser-fleet-ip.yaml
+  --values /tmp/popcorn-browser-fleet-ip.yaml \
+  --set streaming.mode=vnc
 ```
 
 Install Agones first. On a fresh cluster, installing Agones CRDs and Agones
@@ -258,12 +275,14 @@ Install Popcorn:
 helm upgrade --install popcorn-platform charts/platform \
   --namespace "$NAMESPACE" \
   --values /tmp/popcorn-platform-ip.yaml \
+  "${LIVEVIEW_ROUTE_ARGS[@]}" \
   ${IMAGE_PULL_SECRET_SET:-}
 
 helm upgrade --install browser-fleet charts/browser-fleet \
   --namespace "$NAMESPACE" \
   --values /tmp/popcorn-browser-fleet-ip.yaml \
   --set agones.install=false \
+  --set streaming.mode=vnc \
   ${IMAGE_PULL_SECRET_SET:-}
 ```
 
@@ -316,12 +335,19 @@ printf '%s\n' "$SESSION_JSON" | jq -r '.url,.cdpUrl,.apiUrl'
 For an IP-only HTTP gateway, the browser URL should start with
 `http://<gateway-ip>` and the CDP URL should start with `ws://<gateway-ip>`.
 
-Check that the browser page itself is served:
+Check that the live-view page itself is served over the gateway (TCP). In VNC
+mode the session `url` is the `/liveview` page and `vncWsUrl` is the
+`/liveview-ws` WebSocket route:
 
 ```bash
 export BROWSER_URL="$(printf '%s\n' "$SESSION_JSON" | jq -r .url)"
-curl -sS -o /tmp/popcorn-browser.html -w '%{http_code}\n' "$BROWSER_URL"
+curl -sS -o /tmp/popcorn-liveview.html -w '%{http_code}\n' "$BROWSER_URL"
+
+printf '%s\n' "$SESSION_JSON" | jq -r '.vncUrl,.vncWsUrl'
 ```
+
+The live-view page should return `200`. `vncUrl` should start with
+`http://<gateway-ip>/liveview` and `vncWsUrl` with `ws://<gateway-ip>/liveview-ws`.
 
 Verify CDP with a WebSocket client:
 
@@ -348,18 +374,20 @@ ws.addEventListener('error', (event) => {
 NODE
 ```
 
-Check direct UDP configuration in the browser runtime logs:
+Confirm the browser pod backing the session is ready:
 
 ```bash
 BROWSER_POD="$(printf '%s\n' "$SESSION_JSON" | jq -r '.browserId // .browserPodId // .browserPodName')"
 
-kubectl -n "$NAMESPACE" logs "$BROWSER_POD" -c browser-runtime --tail=200 \
-  | grep -E 'Direct WebRTC|webrtc starting|nat1to1|udpmux|Agones: READY|neko ready'
+kubectl -n "$NAMESPACE" get pod "$BROWSER_POD" \
+  -o jsonpath='{.status.phase} {range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}'
 ```
 
-If the page loads but the stream does not connect, confirm the firewall rule,
-client CIDR, Agones port range, and whether the client network blocks direct
-UDP. For real users, prefer TURN as a fallback.
+If the live-view page loads but the desktop stream does not appear, confirm the
+`/liveview` and `/liveview-ws` routes are wired into the gateway (see the
+install step above), that the browser fleet was installed with
+`streaming.mode=vnc`, and that the browser pod is `Running` and `Ready`. Live
+view is served over TCP through the gateway.
 
 ## Cleanup
 
@@ -370,10 +398,6 @@ helm -n agones-system uninstall agones || true
 
 gcloud container clusters delete "$CLUSTER_NAME" \
   --zone "$GCP_ZONE" \
-  --project "$GCP_PROJECT_ID" \
-  --quiet
-
-gcloud compute firewall-rules delete "$UDP_FIREWALL_RULE" \
   --project "$GCP_PROJECT_ID" \
   --quiet
 
@@ -399,5 +423,7 @@ gcloud compute addresses delete "$CONTROL_PLANE_IP_NAME" \
   exact public gateway URL, including `http://` for IP-only deployments.
 - GKE HTTP load balancers can briefly return connection resets or default
   backend `404` responses while the forwarding rule finishes warming up.
-- Direct UDP requires both an Agones port range and a matching GCP firewall
-  rule. TURN is still the recommended production fallback.
+- The browser streams over VNC / live view (noVNC, port 6080) through the
+  gateway on `/liveview` and `/liveview-ws`, over TCP.
+- Postgres is external. The charts deploy no Postgres workload; point
+  `analytics-db-secret` at a reachable database you provide.
