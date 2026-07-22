@@ -7,6 +7,11 @@ interface ReclaimProveRequest {
     config_json?: string;
 }
 
+interface ReclaimConfig {
+    requestId: string;
+    disableProxy?: boolean;
+}
+
 interface ReclaimProveResponse {
     session_id: string;
     claim: {
@@ -58,10 +63,18 @@ function buildProviderParams(hashType: "oprf-mpc" | "oprf") {
     };
 }
 
-async function reclaimProve(requestId: string, hashType: "oprf-mpc" | "oprf"): Promise<ReclaimProveResponse> {
+async function reclaimProve(
+    requestId: string,
+    hashType: "oprf-mpc" | "oprf",
+    disableProxy?: boolean,
+): Promise<ReclaimProveResponse> {
+    const config: ReclaimConfig = { requestId };
+    if (disableProxy !== undefined) {
+        config.disableProxy = disableProxy;
+    }
     const request: ReclaimProveRequest = {
         provider_params_json: JSON.stringify(buildProviderParams(hashType)),
-        config_json: JSON.stringify({ requestId }),
+        config_json: JSON.stringify(config),
     };
 
     const response = await fetch(`${BASE_URL}/reclaim/prove`, {
@@ -115,6 +128,26 @@ async function main() {
     console.log(result2);
     assertValidClaim(result2, "oprf");
     console.log("✅ oprf passed\n");
+
+    // Proxy toggle: only meaningful when an HTTPS proxy is configured on the
+    // runtime. When HTTPS_PROXY_URL is set we prove the same provider twice —
+    // once through the proxy (disableProxy=false) and once forcing a direct
+    // connection (disableProxy=true) — to confirm both paths yield a valid claim.
+    if (process.env.HTTPS_PROXY_URL) {
+        console.log("--- Test 3: proxy enabled (disableProxy=false) ---");
+        const proxyOn = await reclaimProve("testproxyon", "oprf-mpc", false);
+        console.log(proxyOn);
+        assertValidClaim(proxyOn, "oprf-mpc");
+        console.log("✅ proxy-enabled passed\n");
+
+        console.log("--- Test 4: proxy disabled (disableProxy=true) ---");
+        const proxyOff = await reclaimProve("testproxyoff", "oprf-mpc", true);
+        console.log(proxyOff);
+        assertValidClaim(proxyOff, "oprf-mpc");
+        console.log("✅ proxy-disabled passed\n");
+    } else {
+        console.log("--- Skipping proxy toggle tests: HTTPS_PROXY_URL not set ---\n");
+    }
 
     console.log("✅ All tests passed");
 }

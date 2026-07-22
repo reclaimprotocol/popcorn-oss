@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -124,6 +125,76 @@ func TestReclaimProveSuccess(t *testing.T) {
 	if !strings.Contains(logs.String(), `"msg":"reclaim prove completed"`) ||
 		!strings.Contains(logs.String(), `"identifier":"0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`) {
 		t.Fatalf("missing proof completion log: %s", logs.String())
+	}
+}
+
+func TestReclaimProveDisableProxyWithholdsProxyEnv(t *testing.T) {
+	originalFactory := newReclaimProtocolClient
+	defer func() { newReclaimProtocolClient = originalFactory }()
+
+	t.Setenv(proxyEnvKey, "https://user-{{geoLocation}}:pass@proxy.example:22225")
+
+	var seenProxyEnv string
+	var seenPresent bool
+	newReclaimProtocolClient = func(providerParamsJSON, configJSON string) (reclaimProtocolClient, error) {
+		seenProxyEnv, seenPresent = os.LookupEnv(proxyEnvKey)
+		return &fakeReclaimClient{
+			claim: &client.ClaimWithSignatures{
+				Claim:     &teeproto.ProviderClaimData{Provider: "http"},
+				Signature: &teeproto.ClaimTeeBundleResponse_Signature{},
+			},
+		}, nil
+	}
+
+	body := `{"provider_params_json":"{\"name\":\"http\",\"params\":{\"url\":\"https://example.com\"}}","config_json":"{\"requestId\":\"req-1\",\"disableProxy\":true}"}`
+	req := httptest.NewRequest(http.MethodPost, "/reclaim/prove", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleReclaimProve(rec, req, reclaimRuntimeConfig{
+		ProofTimeout: time.Second,
+		CleanupGrace: time.Millisecond,
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if seenPresent {
+		t.Fatalf("HTTPS_PROXY_URL was visible to client construction (=%q), want withheld", seenProxyEnv)
+	}
+	if got, ok := os.LookupEnv(proxyEnvKey); !ok || got != "https://user-{{geoLocation}}:pass@proxy.example:22225" {
+		t.Fatalf("HTTPS_PROXY_URL not restored after request: got %q present=%v", got, ok)
+	}
+}
+
+func TestReclaimProveKeepsProxyEnvByDefault(t *testing.T) {
+	originalFactory := newReclaimProtocolClient
+	defer func() { newReclaimProtocolClient = originalFactory }()
+
+	t.Setenv(proxyEnvKey, "https://user-{{geoLocation}}:pass@proxy.example:22225")
+
+	var seenPresent bool
+	newReclaimProtocolClient = func(providerParamsJSON, configJSON string) (reclaimProtocolClient, error) {
+		_, seenPresent = os.LookupEnv(proxyEnvKey)
+		return &fakeReclaimClient{
+			claim: &client.ClaimWithSignatures{
+				Claim:     &teeproto.ProviderClaimData{Provider: "http"},
+				Signature: &teeproto.ClaimTeeBundleResponse_Signature{},
+			},
+		}, nil
+	}
+
+	body := `{"provider_params_json":"{\"name\":\"http\",\"params\":{\"url\":\"https://example.com\"}}","config_json":"{\"requestId\":\"req-1\"}"}`
+	req := httptest.NewRequest(http.MethodPost, "/reclaim/prove", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	handleReclaimProve(rec, req, reclaimRuntimeConfig{
+		ProofTimeout: time.Second,
+		CleanupGrace: time.Millisecond,
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if !seenPresent {
+		t.Fatal("HTTPS_PROXY_URL was withheld from client construction, want visible by default")
 	}
 }
 
