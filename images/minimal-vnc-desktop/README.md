@@ -90,12 +90,32 @@ proving-key assets copied from `popcorn-images`. Those assets add about 73 MB to
 the source tree and require a cgo-enabled Go build.
 
 An integration test for this endpoint lives in `tests/reclaim-prove.test.ts`. It
-exercises both `oprf-mpc` and `oprf` hash types against a running instance and
-validates the returned claim, TEE attestation context, and signatures. Run it
-against a reachable instance (defaults to `http://localhost:6080`):
+exercises both `oprf-mpc` and `oprf` hash types plus an IP-check provider
+(`api.ipify.org`) against a running instance, and validates the returned claim,
+TEE attestation context, and signatures. Run it against a reachable instance
+(defaults to `http://localhost:6080`):
 
 ```bash
 BASE_URL=http://localhost:6080 node tests/reclaim-prove.test.ts
+```
+
+**Proxy toggle tests.** The test also proves the IP provider twice — once with
+`disableProxy:false` and once with `disableProxy:true` — to show the egress IP
+change. These only run when `HTTPS_PROXY_URL` is set **on the test runner** (it
+just gates whether the block executes). More importantly, the proxy is only
+actually used when `HTTPS_PROXY_URL` is set **on the server container** and its
+value contains the `{{geoLocation}}` placeholder — that is the env the reclaim
+client reads. If the container has no `HTTPS_PROXY_URL`, every request goes
+direct (`via_proxy:false` in the logs) and proxy-on vs proxy-off return the
+**same** IP. To see the IP actually change, start the container with it:
+
+```bash
+docker run -d --name mvnc -p 6080:6080 -p 9222:9222 \
+  -e HTTPS_PROXY_URL='https://<user>-country-{{geoLocation}}:<pass>@brd.superproxy.io:22225' \
+  popcorn/minimal-vnc-desktop:local
+
+# runner env just enables the toggle tests:
+HTTPS_PROXY_URL=1 node tests/reclaim-prove.test.ts
 ```
 
 A lightweight extraction-validation endpoint is served on the same surface:
@@ -208,6 +228,8 @@ commands the probes need):
 | `TEE_T_URL` | `wss://tt.reclaimprotocol.org/ws` | Legacy config field preserved for request/config compatibility; the pinned client resolves TEE pairs through the router. |
 | `RECLAIM_PROVE_TIMEOUT` | `5m` | Outer timeout for `/reclaim/prove`. |
 | `RECLAIM_PROVE_CLEANUP_GRACE` | `10s` | Grace period to wait for protocol cleanup after closing the Reclaim client on timeout/cancel. |
+| `HTTPS_PROXY_URL` | _(unset)_ | HTTPS proxy URL template the reclaim client routes outbound traffic through. Must contain the `{{geoLocation}}` placeholder. When unset, `/reclaim/prove` connects directly (`via_proxy:false`) regardless of the request's `geoLocation`. |
+| `RECLAIM_DISABLE_PROXY` | `false` | Service-wide default for skipping the proxy. Overridden per request by `disableProxy` in `config_json` (`true` forces a direct connection even when `HTTPS_PROXY_URL` is set; `false` forces proxy use). |
 
 Example app override:
 
