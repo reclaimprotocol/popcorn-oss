@@ -30,6 +30,8 @@ interface ReclaimProveResponse {
     };
 }
 
+// buildProviderParams is the oprf/oprf-mpc example — it exercises the ZK hash
+// modes, so the redacted value is proven as a commitment rather than plaintext.
 function buildProviderParams(hashType: "oprf-mpc" | "oprf") {
     return {
         name: "http",
@@ -63,9 +65,42 @@ function buildProviderParams(hashType: "oprf-mpc" | "oprf") {
     };
 }
 
-async function reclaimProve(
+// buildIpProviderParams proves against api.ipify.org, which echoes the caller's
+// public IP as JSON. No hash — the extraction returns the plaintext egress IP,
+// so it can be shape-checked and compared across direct vs proxied connections.
+// A named capture group keeps the IP dynamic (no {{template}}/paramValues).
+function buildIpProviderParams() {
+    return {
+        name: "http",
+        params: {
+            url: "https://api.ipify.org?format=json",
+            method: "GET",
+            geoLocation: "IN",
+            responseMatches: [
+                {
+                    value: '"ip":"(?<internetProtocolAddress>[^"]+)"',
+                    type: "regex",
+                },
+            ],
+            responseRedactions: [
+                {
+                    jsonPath: "$.ip",
+                    regex: '"ip":"(?<internetProtocolAddress>[^"]+)"',
+                },
+            ],
+        },
+        secretParams: {
+            headers: {
+                accept: "application/json, text/plain, */*",
+            },
+        },
+        context: JSON.stringify({ purpose: "ip-check", source: "integration-tests" }),
+    };
+}
+
+async function proveWith(
     requestId: string,
-    hashType: "oprf-mpc" | "oprf",
+    providerParams: object,
     disableProxy?: boolean,
 ): Promise<ReclaimProveResponse> {
     const config: ReclaimConfig = { requestId };
@@ -73,7 +108,7 @@ async function reclaimProve(
         config.disableProxy = disableProxy;
     }
     const request: ReclaimProveRequest = {
-        provider_params_json: JSON.stringify(buildProviderParams(hashType)),
+        provider_params_json: JSON.stringify(providerParams),
         config_json: JSON.stringify(config),
     };
 
@@ -91,29 +126,54 @@ async function reclaimProve(
     return response.json();
 }
 
-function assertValidClaim(result: ReclaimProveResponse, expectedHash: string) {
+function reclaimProve(
+    requestId: string,
+    hashType: "oprf-mpc" | "oprf",
+    disableProxy?: boolean,
+): Promise<ReclaimProveResponse> {
+    return proveWith(requestId, buildProviderParams(hashType), disableProxy);
+}
+
+function assertAttestedClaim(result: ReclaimProveResponse) {
     assert.strictEqual(result.claim.provider, "http");
     assert.match(result.claim.identifier!, /^0x[a-f0-9]{64}$/);
     assert.match(result.claim.owner!, /^0x[a-f0-9]{40}$/);
     assert.ok(result.claim.timestamp_s! > 0, "timestamp should be positive");
     assert.ok(result.claim.epoch! >= 1, "epoch should be >= 1");
 
-    // Verify hash type in parameters
-    const parameters = JSON.parse(result.claim.parameters!);
-    const redaction = parameters.responseRedactions[0];
-    assert.strictEqual(redaction.hash, expectedHash);
-
     // Verify TEE attestation context
     const context = JSON.parse(result.claim.context!);
     assert.ok(context.pcr0_k, "missing TEE-K attestation (pcr0_k)");
     assert.ok(context.pcr0_t, "missing TEE-T attestation (pcr0_t)");
     assert.ok(context.tee_session_id, "missing tee_session_id");
-    assert.ok(context.extractedParameters.addr, "missing extracted addr value");
 
     // Verify signatures
     assert.match(result.signature.attestor_address!, /^0x[a-f0-9]{40}$/);
     assert.ok(result.signature.claim_signature!.length > 0);
     assert.ok(result.signature.result_signature!.length > 0);
+
+    return context;
+}
+
+function assertValidClaim(result: ReclaimProveResponse, expectedHash: string) {
+    const context = assertAttestedClaim(result);
+
+    // Verify hash type in parameters
+    const parameters = JSON.parse(result.claim.parameters!);
+    const redaction = parameters.responseRedactions[0];
+    assert.strictEqual(redaction.hash, expectedHash);
+
+    assert.ok(context.extractedParameters.addr, "missing extracted addr value");
+}
+
+// assertValidIpClaim validates the ipify claim and returns the plaintext egress
+// IP (no hash on that provider, so extractedParameters holds the raw value).
+function assertValidIpClaim(result: ReclaimProveResponse): string {
+    const context = assertAttestedClaim(result);
+    const ip = context.extractedParameters?.internetProtocolAddress;
+    assert.ok(typeof ip === "string" && ip.length > 0, "missing extracted internetProtocolAddress value");
+    assert.match(ip, /^[0-9a-fA-F:.]+$/, `extracted value is not IP-shaped: ${ip}`);
+    return ip;
 }
 
 async function main() {
@@ -129,22 +189,28 @@ async function main() {
     assertValidClaim(result2, "oprf");
     console.log("✅ oprf passed\n");
 
-    // Proxy toggle: only meaningful when an HTTPS proxy is configured on the
-    // runtime. When HTTPS_PROXY_URL is set we prove the same provider twice —
-    // once through the proxy (disableProxy=false) and once forcing a direct
-    // connection (disableProxy=true) — to confirm both paths yield a valid claim.
-    if (process.env.HTTPS_PROXY_URL) {
-        console.log("--- Test 3: proxy enabled (disableProxy=false) ---");
-        const proxyOn = await reclaimProve("testproxyon", "oprf-mpc", false);
-        console.log(proxyOn);
-        assertValidClaim(proxyOn, "oprf-mpc");
-        console.log("✅ proxy-enabled passed\n");
+    console.log("--- Test 3: ip check ---");
+    const ipResult = await proveWith("testipcheck", buildIpProviderParams());
+    console.log(ipResult);
+    const ip = assertValidIpClaim(ipResult);
+    console.log(`✅ ip check passed (egress IP: ${ip})\n`);
 
-        console.log("--- Test 4: proxy disabled (disableProxy=true) ---");
-        const proxyOff = await reclaimProve("testproxyoff", "oprf-mpc", true);
+    // Proxy toggle: only meaningful when an HTTPS proxy is configured on the
+    // runtime. When HTTPS_PROXY_URL is set we prove the IP provider twice — once
+    // through the proxy (disableProxy=false) and once forcing a direct connection
+    // (disableProxy=true) — to confirm both paths yield a valid claim.
+    if (process.env.HTTPS_PROXY_URL) {
+        console.log("--- Test 4: proxy enabled (disableProxy=false) ---");
+        const proxyOn = await proveWith("testproxyon", buildIpProviderParams(), false);
+        console.log(proxyOn);
+        const ipProxyOn = assertValidIpClaim(proxyOn);
+        console.log(`✅ proxy-enabled passed (egress IP: ${ipProxyOn})\n`);
+
+        console.log("--- Test 5: proxy disabled (disableProxy=true) ---");
+        const proxyOff = await proveWith("testproxyoff", buildIpProviderParams(), true);
         console.log(proxyOff);
-        assertValidClaim(proxyOff, "oprf-mpc");
-        console.log("✅ proxy-disabled passed\n");
+        const ipProxyOff = assertValidIpClaim(proxyOff);
+        console.log(`✅ proxy-disabled passed (egress IP: ${ipProxyOff})\n`);
     } else {
         console.log("--- Skipping proxy toggle tests: HTTPS_PROXY_URL not set ---\n");
     }
