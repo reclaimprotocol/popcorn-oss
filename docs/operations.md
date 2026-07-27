@@ -4,6 +4,9 @@ This page is a short runbook for self-hosted Popcorn releases. Start with the
 smallest working deployment, validate it, then add scale and optional services
 one change at a time.
 
+For production gateway and Redis topology, migration, failover, and disruption
+testing, use the dedicated [High availability](high-availability.md) runbook.
+
 ## Preflight Validation
 
 Render the charts before every install or upgrade:
