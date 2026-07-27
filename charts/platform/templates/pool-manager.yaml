@@ -46,6 +46,10 @@ spec:
           env:
             - name: REDIS_HOST
               value: {{ .Values.poolManager.redisHost | quote }}
+{{- if .Values.poolManager.redisSecondaryHost }}
+            - name: REDIS_SECONDARY_HOST
+              value: {{ .Values.poolManager.redisSecondaryHost | quote }}
+{{- end }}
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
