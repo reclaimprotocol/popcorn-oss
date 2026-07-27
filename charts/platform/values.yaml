@@ -41,6 +41,17 @@ gateway:
   enabled: true
   replicas: 1
   imagePullPolicy: Always
+  updateStrategy:
+    maxSurge: 1
+    maxUnavailable: 0
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  topologySpreadConstraints: []
+  terminationGracePeriodSeconds: 75
+  gracefulShutdown:
+    enabled: true
+    delaySeconds: 60
   domainName: ""
   staticIpName: ""
   serviceType: LoadBalancer
