@@ -109,7 +109,7 @@ redisHa:
         whenUnsatisfiable: ScheduleAnyway
         labelSelector:
           matchLabels:
-            app.kubernetes.io/name: redis
+            app.kubernetes.io/name: redisHa
             app.kubernetes.io/component: node
     persistence:
       enabled: true

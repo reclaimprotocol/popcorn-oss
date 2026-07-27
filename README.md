@@ -181,11 +181,12 @@ await browser.close();
 - [Secrets](docs/secrets.md)
 - [Reference](docs/reference.md)
 - [Operations](docs/operations.md)
+- [High availability](docs/high-availability.md)
 - [Security](docs/security.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Attestation](docs/attestation.md)
 - [Images and releases](docs/images-and-releases.md)
-- [popcorn-images](popcorn-images/README.md)
+- [popcorn-images](https://github.com/reclaimprotocol/popcorn-images)
 
 ## Limitations
 

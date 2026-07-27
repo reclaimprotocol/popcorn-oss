@@ -26,6 +26,8 @@ These docs are organized for operators who want to run Popcorn themselves.
 ## Operate It
 
 - [Operations](operations.md): validate, upgrade, scale, and run optional services.
+- [High availability](high-availability.md): run multi-zone gateway and Redis,
+  migrate from singleton Redis, and validate failover.
 - [Security](security.md): practical self-hosting security model and hardening.
 - [Browser networking](networking.md): how the browser streams to clients over VNC / live view through the gateway.
 - [Observability](observability.md): backend-neutral OpenTelemetry log and session lifecycle export.
