@@ -81,16 +81,28 @@ metadata:
     app: gateway
 spec:
   replicas: {{ .Values.gateway.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.gateway.updateStrategy.maxSurge }}
+      maxUnavailable: {{ .Values.gateway.updateStrategy.maxUnavailable }}
   selector:
     matchLabels:
       app: gateway
   template:
     metadata:
+      annotations:
+        checksum/gateway-route-config: {{ printf "%s|%s" (toJson .Values.gateway.extraSessionRoutes) $gatewayRedisHost | sha256sum }}
       labels:
         app: gateway
     spec:
       serviceAccountName: gateway
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
 {{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+{{- with .Values.gateway.topologySpreadConstraints }}
+      topologySpreadConstraints:
+{{ toYaml . | nindent 8 }}
+{{- end }}
       volumes:
         - name: jwt-keys
           secret:
@@ -130,6 +142,15 @@ spec:
               port: 80
             initialDelaySeconds: 10
             periodSeconds: 20
+{{- if .Values.gateway.gracefulShutdown.enabled }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - {{ printf "/usr/local/openresty/bin/openresty -s quit; sleep %d" (int .Values.gateway.gracefulShutdown.delaySeconds) | quote }}
+{{- end }}
           env:
             - name: GATEWAY_DOMAIN
               value: {{ .Values.gateway.domainName | quote }}
@@ -144,6 +165,18 @@ spec:
           resources:
 {{ toYaml .Values.gateway.resources | indent 12 }}
 ---
+{{- if .Values.gateway.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: popcorn-gateway
+spec:
+  minAvailable: {{ .Values.gateway.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: gateway
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:

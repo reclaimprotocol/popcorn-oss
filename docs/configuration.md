@@ -53,6 +53,25 @@ gateway:
   replicas: 2
   domainName: gateway.example.com
   staticIpName: popcorn-gateway-ip
+  updateStrategy:
+    maxSurge: 1
+    maxUnavailable: 0
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: gateway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: gateway
 
 controlPlane:
   enabled: true
@@ -68,6 +87,13 @@ redis:
 ttlController:
   enabled: true
 ```
+
+For production gateways, run at least three replicas, set the disruption
+budget to keep two available, and add both zone and hostname topology spread
+constraints. The chart uses a zero-unavailable rolling update and gracefully
+drains OpenResty before a pod exits. Set
+`gateway.gracefulShutdown.delaySeconds` to at least the backend connection
+draining timeout.
 
 ```yaml
 # browser-fleet values
