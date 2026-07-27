@@ -11,6 +11,8 @@ analytics storage. Pool managers remain the regional allocators.
 - TTL callback support for expired regional sessions
 - PostgreSQL-backed client and session records
 - Admin API and UI for clients, sessions, and regional pool state
+- Operations analytics: live fleet allocation plus session-lifecycle stats in
+  the admin **Analytics** tab
 
 ## Configuration
 
@@ -137,6 +139,12 @@ automation.
 - `GET /admin/clients`
 - `POST /admin/clients`
 - `DELETE /admin/clients/:id`
+
+The admin UI has three tabs — **Clients**, **Clusters**, and **Analytics**.
+The Analytics tab (`GET /admin/ui/analytics?windowHours=1`) shows live fleet
+allocation, session-lifecycle metrics, and trend charts (created vs ended,
+average duration, outcome split, per-region allocation, top clients) over a
+selectable time range (up to 30 days).
 
 Run migrations with:
 
