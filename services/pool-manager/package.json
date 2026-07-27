@@ -5,7 +5,9 @@
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun run --watch index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "redis:compare": "bun run scripts/redis-sync.ts",
+    "redis:sync": "bun run scripts/redis-sync.ts --copy"
   },
   "dependencies": {
     "@grpc/grpc-js": "^1.14.4",

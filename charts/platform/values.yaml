@@ -20,6 +20,7 @@ poolManager:
   replicas: 1
   imagePullPolicy: Always
   redisHost: redis
+  redisSecondaryHost: ""
   gameServerNamespace: ""
   gameServerFleet: browser-fleet
   jwtSecretName: ""
@@ -75,6 +76,72 @@ redis:
     limits:
       memory: 256Mi
       cpu: 250m
+
+redisHa:
+  enabled: false
+  fullnameOverride: redis-ha
+  architecture: replication
+  auth:
+    enabled: false
+  commonConfiguration: |-
+    appendonly yes
+    appendfsync everysec
+    min-replicas-to-write 1
+    min-replicas-max-lag 10
+  replica:
+    replicaCount: 3
+    automountServiceAccountToken: true
+    podAntiAffinityPreset: hard
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: redis
+            app.kubernetes.io/component: node
+    persistence:
+      enabled: true
+      storageClass: standard-rwo
+      size: 8Gi
+    pdb:
+      create: true
+      maxUnavailable: 1
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+  sentinel:
+    enabled: true
+    image:
+      digest: sha256:ae75dd69c192a632bdeb21baa6721080be5b12347e52add922036398b47631da
+    masterSet: reclaim-master
+    quorum: 2
+    downAfterMilliseconds: 5000
+    failoverTimeout: 30000
+    parallelSyncs: 1
+    masterService:
+      enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 150m
+        memory: 192Mi
+  rbac:
+    create: true
+  serviceAccount:
+    create: true
+    automountServiceAccountToken: true
+  image:
+    digest: sha256:08863c2c3f4e051fb6139b38fa223e9c13be5033326a59bead182860d899bf98
+  kubectl:
+    image:
+      digest: sha256:95de17e6eb92da83a58c90a9df0c4cede634f898d2e6b92ea04f4a6ee6ace08d
 
 controlPlane:
   enabled: false

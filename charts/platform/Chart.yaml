@@ -4,3 +4,9 @@ description: Popcorn platform workloads for GCP-managed clusters
 type: application
 version: 0.1.0
 appVersion: "1.0.0"
+dependencies:
+  - name: redis
+    alias: redisHa
+    version: 27.0.17
+    repository: https://charts.bitnami.com/bitnami
+    condition: redisHa.enabled
