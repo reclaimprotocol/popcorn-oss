@@ -149,7 +149,7 @@ spec:
                 command:
                   - /bin/sh
                   - -c
-                  - {{ printf "/usr/local/openresty/bin/openresty -s quit; sleep %d" (int .Values.gateway.gracefulShutdown.delaySeconds) | quote }}
+                  - {{ printf "sleep %d; /usr/local/openresty/bin/openresty -s quit || kill -QUIT 1; sleep 10" (int .Values.gateway.gracefulShutdown.delaySeconds) | quote }}
 {{- end }}
           env:
             - name: GATEWAY_DOMAIN

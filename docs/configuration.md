@@ -90,10 +90,11 @@ ttlController:
 
 For production gateways, run at least three replicas, set the disruption
 budget to keep two available, and add both zone and hostname topology spread
-constraints. The chart uses a zero-unavailable rolling update and gracefully
-drains OpenResty before a pod exits. Set
-`gateway.gracefulShutdown.delaySeconds` to at least the backend connection
-draining timeout.
+constraints. The chart uses a zero-unavailable rolling update. During
+termination it first keeps OpenResty serving while Kubernetes and the load
+balancer remove the endpoint, then gracefully stops OpenResty. Set
+`gateway.gracefulShutdown.delaySeconds` to at least the time needed for the
+external load balancer to stop routing new connections to a removed endpoint.
 
 ```yaml
 # browser-fleet values
