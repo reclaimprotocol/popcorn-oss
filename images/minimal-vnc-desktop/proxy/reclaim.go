@@ -11,6 +11,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/reclaimprotocol/popcorn-oss/images/minimal-vnc-desktop/proxy/circuits"
@@ -38,6 +41,8 @@ type reclaimConfigJSON struct {
 	AttestorURL string `json:"attestorUrl,omitempty"`
 	RouterURL   string `json:"routerUrl,omitempty"`
 	RequestID   string `json:"requestId,omitempty"`
+	// DisableProxy forces a direct connection for this request even if HTTPS_PROXY_URL is set; nil leaves the env-derived default untouched.
+	DisableProxy *bool `json:"disableProxy,omitempty"`
 }
 
 type reclaimProveResult struct {
@@ -69,6 +74,7 @@ type reclaimRuntimeConfig struct {
 	RouterURL    string
 	ProofTimeout time.Duration
 	CleanupGrace time.Duration
+	DisableProxy bool
 }
 
 type reclaimProtocolClient interface {
@@ -78,6 +84,26 @@ type reclaimProtocolClient interface {
 
 var newReclaimProtocolClient = func(providerParamsJSON, configJSON string) (reclaimProtocolClient, error) {
 	return client.NewReclaimClientFromJSON(providerParamsJSON, configJSON)
+}
+
+// proxyEnvKey is the env var the reclaim-tee client reads at construction time to decide whether outbound TCP uses the HTTPS proxy.
+const proxyEnvKey = "HTTPS_PROXY_URL"
+
+// proxyEnvMu serializes client construction so the temporary unset of HTTPS_PROXY_URL can't leak into a concurrently constructed client.
+var proxyEnvMu sync.Mutex
+
+// createReclaimProtocolClient builds the client, forcing a direct connection when disableProxy is set by withholding HTTPS_PROXY_URL during construction.
+func createReclaimProtocolClient(providerParamsJSON, configJSON string, disableProxy bool) (reclaimProtocolClient, error) {
+	proxyEnvMu.Lock()
+	defer proxyEnvMu.Unlock()
+
+	if disableProxy {
+		if original, had := os.LookupEnv(proxyEnvKey); had {
+			_ = os.Unsetenv(proxyEnvKey)
+			defer func() { _ = os.Setenv(proxyEnvKey, original) }()
+		}
+	}
+	return newReclaimProtocolClient(providerParamsJSON, configJSON)
 }
 
 func reclaimProveHTTPHandler(w http.ResponseWriter, r *http.Request) {
@@ -94,7 +120,20 @@ func reclaimConfigFromEnv() reclaimRuntimeConfig {
 		RouterURL:    envDefault("RECLAIM_ROUTER_URL", envDefault("ROUTER_URL", client.DefaultRouterURL)),
 		ProofTimeout: proofTimeout,
 		CleanupGrace: cleanupGrace,
+		DisableProxy: boolEnvDefault("RECLAIM_DISABLE_PROXY", false),
 	}
+}
+
+func boolEnvDefault(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fallback
+	}
+	return parsed
 }
 
 func durationEnvDefault(name string, fallback time.Duration) time.Duration {
@@ -159,6 +198,9 @@ func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRunti
 			if requestCfg.RequestID != "" {
 				requestID = requestCfg.RequestID
 			}
+			if requestCfg.DisableProxy != nil {
+				cfg.DisableProxy = *requestCfg.DisableProxy
+			}
 		}
 	}
 
@@ -196,7 +238,7 @@ func handleReclaimProve(w http.ResponseWriter, r *http.Request, cfg reclaimRunti
 		return
 	}
 
-	protocolClient, err := newReclaimProtocolClient(req.ProviderParamsJSON, string(clientConfigJSON))
+	protocolClient, err := createReclaimProtocolClient(req.ProviderParamsJSON, string(clientConfigJSON), cfg.DisableProxy)
 	if err != nil {
 		logReclaimProveFailure(requestID, startedAt, "client_initialization")
 		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("invalid provider parameters: %v", err))
