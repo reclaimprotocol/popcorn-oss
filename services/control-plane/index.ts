@@ -26,7 +26,16 @@ import { ControlPlaneConfig } from './src/config';
 import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession } from './src/pool-manager';
 import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
-import { getActiveSessionCount, getSessionsByRegion, getSessionTimeSeries, getSessionWindowStats, getTopClients } from './src/stats';
+import { buildSessionAllocationEvent, buildSessionAnalyticsMetadata } from './src/session-analytics';
+import {
+  getActiveSessionCount,
+  getSessionsByRegion,
+  getSessionAllocationStats,
+  getSessionTimeSeries,
+  getSessionWindowStats,
+  getStaleActiveSessionCount,
+  getTopClients,
+} from './src/stats';
 import { expiresAtFromTtlSeconds, extendExpiresAt, readOptionalSeconds, validateTtlSeconds } from './src/ttl';
 import {
   renderClientSessionsPanelHtml,
@@ -325,6 +334,7 @@ async function getRoutedSession(sessionId: string, clientId?: string) {
 }
 
 async function routeSession(identity: { clientId: string; clientName: string }, body: any): Promise<{ status: number; body: any }> {
+  const requestReceivedAt = new Date();
   const requestedSessionId = readRequestedSessionId(body);
   if (requestedSessionId === '') {
     return { status: 400, body: { error: 'Invalid session ID. Use 1-64 chars in [A-Za-z0-9_-].' } };
@@ -369,14 +379,33 @@ async function routeSession(identity: { clientId: string; clientName: string }, 
     }
 
     try {
+      const allocatedAt = new Date();
+      const analyticsMetadata = buildSessionAnalyticsMetadata({
+        requestReceivedAt,
+        allocatedAt,
+        attempts,
+        regionalSession: result.session,
+      });
       await SessionService.createSession(
         sessionId,
         identity.clientId,
         identity.clientName,
         region.clusterName,
         region.name,
-        expiresAt ? { expiresAt } : undefined,
+        {
+          ...(expiresAt ? { expiresAt } : {}),
+          ...analyticsMetadata,
+        },
       );
+      console.log(JSON.stringify(buildSessionAllocationEvent({
+        sessionId,
+        clientId: identity.clientId,
+        requestReceivedAt,
+        completedAt: allocatedAt,
+        outcome: 'success',
+        attempts,
+        region: region.name,
+      })));
       return { status: 200, body: { ...result.session, attempts } };
     } catch (error) {
       await deleteRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken).catch(() => null);
@@ -385,6 +414,14 @@ async function routeSession(identity: { clientId: string; clientName: string }, 
     }
   }
 
+  console.warn(JSON.stringify(buildSessionAllocationEvent({
+    sessionId,
+    clientId: identity.clientId,
+    requestReceivedAt,
+    completedAt: new Date(),
+    outcome: 'failed',
+    attempts,
+  })));
   return { status: 503, body: { error: 'No requested region could allocate a session', attempts } };
 }
 
@@ -558,10 +595,12 @@ function bucketsForWindow(windowHours: number): number {
 // Combines live Agones gauges (via pool managers) with cumulative Postgres
 // session stats into a single payload shared by the API and the admin UI.
 async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
-  const [regions, windowStats, activeSessions, series, regionSessions, topClients] = await Promise.all([
+  const [regions, windowStats, allocationStats, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
     loadAdminRegions(),
     getSessionWindowStats(windowHours),
+    getSessionAllocationStats(windowHours),
     getActiveSessionCount(),
+    getStaleActiveSessionCount(),
     getSessionTimeSeries(windowHours, bucketsForWindow(windowHours)),
     getSessionsByRegion(windowHours),
     getTopClients(windowHours),
@@ -592,8 +631,9 @@ async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
   return {
     windowHours,
     configuredTtlSeconds: ControlPlaneConfig.sessionMaxTtlSeconds,
-    live: { allocated, ready, capacity, activeSessions },
+    live: { allocated, ready, capacity, activeSessions, staleActiveSessions },
     throughput: { sessionsPerMinute },
+    allocation: allocationStats,
     window: {
       created: windowStats.created,
       deleted: windowStats.deleted,
@@ -1039,8 +1079,8 @@ app.post('/sessions/:id/end', async (c) => {
       return c.json({ error: 'Invalid status. Must be "deleted" or "expired"' }, 400);
     }
 
-    await SessionService.endSession(sessionId, status);
-    return c.json({ success: true });
+    const changed = await SessionService.endSession(sessionId, status);
+    return c.json({ success: true, changed });
   } catch (error) {
     console.error('❌ Error ending session:', error);
     return c.json({ error: 'Internal server error' }, 500);

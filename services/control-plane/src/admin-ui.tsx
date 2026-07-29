@@ -68,9 +68,16 @@ export interface AnalyticsData {
     ready: number;
     capacity: number;
     activeSessions: number;
+    staleActiveSessions: number;
   };
   throughput: {
     sessionsPerMinute: number;
+  };
+  allocation: {
+    measuredSessions: number;
+    avgLatencyMs: number;
+    p50LatencyMs: number;
+    p95LatencyMs: number;
   };
   window: {
     created: number;
@@ -1230,6 +1237,11 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
         <AnKpi label="Allocated" value={String(live.allocated)} hint={`of ${live.capacity} · ${utilization}%`} tone="accent" />
         <AnKpi label="Ready" value={String(live.ready)} tone={live.ready > 0 ? 'success' : undefined} />
         <AnKpi label="Active sessions" value={String(live.activeSessions)} />
+        <AnKpi
+          label="Stale active"
+          value={String(live.staleActiveSessions)}
+          tone={live.staleActiveSessions === 0 ? 'success' : 'danger'}
+        />
       </div>
 
       <div class="an-card" style="margin-top:0.7rem">
@@ -1255,6 +1267,17 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
         <AnKpi label="p95 duration" value={formatDuration(window.p95DurationSeconds)} />
         <AnKpi label="Throughput" value={`${data.throughput.sessionsPerMinute}`} hint="sessions / min" />
         <AnKpi label="Total session time" value={formatDuration(window.totalDurationSeconds)} />
+        <AnKpi
+          label="Allocation p50"
+          value={data.allocation.measuredSessions ? `${Math.round(data.allocation.p50LatencyMs)} ms` : '—'}
+          hint={`${data.allocation.measuredSessions} measured`}
+        />
+        <AnKpi
+          label="Allocation p95"
+          value={data.allocation.measuredSessions ? `${Math.round(data.allocation.p95LatencyMs)} ms` : '—'}
+          hint="request → allocated"
+          tone="accent"
+        />
       </div>
 
       <div class="an-charts">

@@ -13,6 +13,13 @@ export interface SessionWindowStats {
   totalDurationSeconds: number;
 }
 
+export interface SessionAllocationStats {
+  measuredSessions: number;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+}
+
 function toNumber(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -62,6 +69,35 @@ export async function getSessionWindowStats(windowHours = 1): Promise<SessionWin
     p50DurationSeconds: toNumber(row.p50_duration_s),
     p95DurationSeconds: toNumber(row.p95_duration_s),
     totalDurationSeconds: toNumber(row.total_duration_s),
+  };
+}
+
+// Allocation latency is stored in session metadata so this remains backwards
+// compatible with existing rows. measuredSessions makes partial rollout
+// coverage explicit instead of silently mixing measured and unmeasured data.
+export async function getSessionAllocationStats(windowHours = 1): Promise<SessionAllocationStats> {
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
+  const rows = (await db.execute(sql`
+    WITH measured AS (
+      SELECT (metadata->>'allocationLatencyMs')::double precision AS latency_ms
+      FROM sessions
+      WHERE created_at >= NOW() - make_interval(hours => ${hours})
+        AND jsonb_typeof(metadata->'allocationLatencyMs') = 'number'
+    )
+    SELECT
+      COUNT(*) AS measured_sessions,
+      COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
+      COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0) AS p50_latency_ms,
+      COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0) AS p95_latency_ms
+    FROM measured
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  const row = rows[0] ?? {};
+  return {
+    measuredSessions: toNumber(row.measured_sessions),
+    avgLatencyMs: toNumber(row.avg_latency_ms),
+    p50LatencyMs: toNumber(row.p50_latency_ms),
+    p95LatencyMs: toNumber(row.p95_latency_ms),
   };
 }
 
@@ -183,4 +219,17 @@ export async function getActiveSessionCount(): Promise<number> {
   `)) as unknown as Array<Record<string, unknown>>;
 
   return toNumber(rows[0]?.active);
+}
+
+export async function getStaleActiveSessionCount(maxAgeHours = 24): Promise<number> {
+  const hours = Number.isFinite(maxAgeHours) && maxAgeHours > 0 ? maxAgeHours : 24;
+  const rows = (await db.execute(sql`
+    SELECT COUNT(*) AS stale
+    FROM sessions
+    WHERE status = 'active'
+      AND ended_at IS NULL
+      AND created_at < NOW() - make_interval(hours => ${hours})
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  return toNumber(rows[0]?.stale);
 }

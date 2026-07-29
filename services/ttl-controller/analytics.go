@@ -13,9 +13,14 @@ import (
 )
 
 var (
-	analyticsURL    string
+	analyticsURL     string
 	serviceAuthToken string
-	clusterName     string
+	clusterName      string
+)
+
+const (
+	endSessionMaxAttempts = 3
+	endSessionRetryDelay  = 250 * time.Millisecond
 )
 
 func initAnalytics() {
@@ -59,45 +64,89 @@ func reportExpiry(ctx context.Context, gameServerName string, sessionID string) 
 
 	// Report session end with "expired" status
 	go func() {
-		if err := endSession(sessionID, "expired"); err != nil {
+		attempts, err := endSessionWithRetry(
+			http.DefaultClient,
+			analyticsURL,
+			serviceAuthToken,
+			sessionID,
+			"expired",
+			endSessionMaxAttempts,
+			endSessionRetryDelay,
+		)
+		if err != nil {
 			log.Error(err, "Failed to send expiry event", "sessionId", sessionID)
 		} else {
-			log.Info("Reported session expiry", "sessionId", sessionID, "gameServer", gameServerName)
+			log.Info("Reported session expiry", "sessionId", sessionID, "gameServer", gameServerName, "attempts", attempts)
 		}
 	}()
 }
 
-// endSession posts a session end event to the control plane
-func endSession(sessionID string, status string) error {
+// postSessionEnd posts one session-end attempt. The boolean indicates whether a
+// retry can reasonably succeed (network errors, rate limits, and server errors).
+func postSessionEnd(client *http.Client, baseURL string, authToken string, sessionID string, status string) (bool, error) {
 	reqBody := EndSessionRequest{Status: status}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	url := fmt.Sprintf("%s/sessions/%s/end", analyticsURL, sessionID)
+	url := fmt.Sprintf("%s/sessions/%s/end", baseURL, sessionID)
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	if serviceAuthToken != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", serviceAuthToken))
+	if authToken != "" {
+		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", authToken))
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return true, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("control plane returned status %d", resp.StatusCode)
+		retryable := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError
+		return retryable, fmt.Errorf("control plane returned status %d", resp.StatusCode)
 	}
 
-	return nil
+	return false, nil
+}
+
+// endSessionWithRetry makes a small bounded number of attempts so a transient
+// control-plane or network failure does not leave a session permanently active.
+func endSessionWithRetry(
+	client *http.Client,
+	baseURL string,
+	authToken string,
+	sessionID string,
+	status string,
+	maxAttempts int,
+	retryDelay time.Duration,
+) (int, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		retryable, err := postSessionEnd(client, baseURL, authToken, sessionID, status)
+		if err == nil {
+			return attempt, nil
+		}
+		lastErr = err
+		if !retryable || attempt == maxAttempts {
+			return attempt, lastErr
+		}
+		if retryDelay > 0 {
+			time.Sleep(retryDelay * time.Duration(1<<(attempt-1)))
+		}
+	}
+
+	return maxAttempts, lastErr
 }

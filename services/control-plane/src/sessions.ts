@@ -1,20 +1,29 @@
 import { db } from './db';
 import { sessions, sessionEvents } from './schema';
-import { count, desc, eq } from 'drizzle-orm';
+import { and, count, desc, eq, isNull } from 'drizzle-orm';
 
 export const SessionService = {
   // Create a new session
   async createSession(sessionId: string, clientId: string, clientName: string, clusterName: string, region?: string, metadata?: Record<string, unknown>): Promise<void> {
     try {
-      await db.insert(sessions).values({
-        sessionId,
-        clientId,
-        clientName,
-        clusterName,
-        region,
-        createdAt: new Date(),
-        status: 'active',
-        metadata,
+      const createdAt = new Date();
+      await db.transaction(async (tx) => {
+        await tx.insert(sessions).values({
+          sessionId,
+          clientId,
+          clientName,
+          clusterName,
+          region,
+          createdAt,
+          status: 'active',
+          metadata,
+        });
+        await tx.insert(sessionEvents).values({
+          sessionId,
+          eventType: 'created',
+          timestamp: createdAt,
+          metadata,
+        });
       });
 
       console.log(`📊 Created session: ${sessionId} (client: ${clientName}, cluster: ${clusterName})`);
@@ -25,15 +34,28 @@ export const SessionService = {
   },
 
   // End a session (delete or expire)
-  async endSession(sessionId: string, status: 'deleted' | 'expired'): Promise<void> {
+  async endSession(sessionId: string, status: 'deleted' | 'expired'): Promise<boolean> {
     try {
       const endedAt = new Date();
 
-      await db.update(sessions)
-        .set({ endedAt, status })
-        .where(eq(sessions.sessionId, sessionId));
+      const changed = await db.transaction(async (tx) => {
+        const updated = await tx.update(sessions)
+          .set({ endedAt, status })
+          .where(and(eq(sessions.sessionId, sessionId), isNull(sessions.endedAt)))
+          .returning({ sessionId: sessions.sessionId });
+        if (!updated.length) {
+          return false;
+        }
+        await tx.insert(sessionEvents).values({
+          sessionId,
+          eventType: status,
+          timestamp: endedAt,
+        });
+        return true;
+      });
 
-      console.log(`📊 Ended session: ${sessionId} (status: ${status})`);
+      console.log(`📊 Ended session: ${sessionId} (status: ${status}, changed: ${changed})`);
+      return changed;
     } catch (error) {
       console.error('❌ Error ending session:', error);
       throw error;

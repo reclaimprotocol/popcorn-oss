@@ -168,7 +168,11 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
         cdpUrl: `${wsBase}/cdp/${sessionId}/${token}/`,
         cdpInternalUrl: `${wsBase}/cdp-internal/${sessionId}/${internalToken}/`,
         apiUrl: `${baseUrl}/api/${sessionId}/${internalToken}/`,
-        browserPodId: session.name
+        browserPodId: session.name,
+        allocationRequestedAt: session.allocationRequestedAt,
+        gameServerAllocatedAt: session.gameServerAllocatedAt,
+        gameServerAllocationLatencyMs: session.gameServerAllocationLatencyMs,
+        boundAt: session.boundAt,
     };
 
     if (session.expiresAt) {
@@ -192,6 +196,7 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
 }
 
 async function allocateSessionLocally(identity: ClientIdentity, requestedSessionId?: string, expiresAt?: string) {
+    const allocationRequestedAt = new Date();
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
         throw new Error("INVALID_SESSION_ID");
     }
@@ -211,6 +216,7 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
 
     try {
         const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId);
+        const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
         const port = allocation.ports?.[0]?.port || 8080;
         const podUrl = `http://${allocation.address}:${port}`;
@@ -224,6 +230,9 @@ async function allocateSessionLocally(identity: ClientIdentity, requestedSession
             url: podUrl,
             ports: allocation.ports,
             podUid: podMetadata.uid || undefined,
+            allocationRequestedAt: allocationRequestedAt.toISOString(),
+            gameServerAllocatedAt: gameServerAllocatedAt.toISOString(),
+            gameServerAllocationLatencyMs: Math.max(0, gameServerAllocatedAt.getTime() - allocationRequestedAt.getTime()),
             boundAt: bound.boundAt,
             clientId: identity.clientId,
             createdAt: Date.now(),

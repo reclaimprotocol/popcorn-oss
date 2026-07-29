@@ -50,6 +50,7 @@ export async function allocateInRegion(
   request: RoutedSessionRequest,
   serviceAuthToken: string,
 ): Promise<AllocationResult> {
+  const startedAt = Date.now();
   try {
     const response = await fetch(`${region.poolManagerUrl}/internal/sessions`, {
       method: 'POST',
@@ -68,6 +69,7 @@ export async function allocateInRegion(
           clusterName: region.clusterName,
           status: 'failed',
           statusCode: response.status,
+          latencyMs: Date.now() - startedAt,
           error: summarizeAttemptError(response.status, body),
         },
       };
@@ -84,6 +86,7 @@ export async function allocateInRegion(
         clusterName: region.clusterName,
         status: 'success',
         statusCode: response.status,
+        latencyMs: Date.now() - startedAt,
       },
     };
   } catch (error) {
@@ -92,6 +95,7 @@ export async function allocateInRegion(
         region: region.name,
         clusterName: region.clusterName,
         status: 'failed',
+        latencyMs: Date.now() - startedAt,
         error: (error as Error).message,
       },
     };

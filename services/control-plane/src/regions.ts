@@ -10,6 +10,7 @@ export interface RegionAttempt {
   clusterName: string;
   status: 'success' | 'failed';
   statusCode?: number;
+  latencyMs?: number;
   error?: string;
 }
 
