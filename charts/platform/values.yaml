@@ -239,6 +239,13 @@ gkeNodePrescaler:
     safetyMarginGameServers: 0
     scaleDownDelaySeconds: 900
     decayStepGameServers: 5
+    latencyDerivedEnabled: false
+    trendWindowSeconds: 600
+    protectionSeconds: 162
+    roundingGameServers: 5
+    plannedRatePerMinute: 0
+    plannedRateBurstMultiplier: 1.1
+    decayIntervalSeconds: 60
   scaleAheadFreeSlots: 4
   maxNodesTotal: 0
   scaleUpCooldownSeconds: 30

@@ -155,6 +155,20 @@ spec:
               value: {{ .Values.gkeNodePrescaler.dynamicBuffer.scaleDownDelaySeconds | quote }}
             - name: DYNAMIC_BUFFER_DECAY_STEP_GAMESERVERS
               value: {{ .Values.gkeNodePrescaler.dynamicBuffer.decayStepGameServers | quote }}
+            - name: DYNAMIC_BUFFER_LATENCY_DERIVED_ENABLED
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.latencyDerivedEnabled | quote }}
+            - name: DYNAMIC_BUFFER_TREND_WINDOW_SECONDS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.trendWindowSeconds | quote }}
+            - name: DYNAMIC_BUFFER_PROTECTION_SECONDS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.protectionSeconds | quote }}
+            - name: DYNAMIC_BUFFER_ROUNDING_GAMESERVERS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.roundingGameServers | quote }}
+            - name: DYNAMIC_BUFFER_PLANNED_RATE_PER_MINUTE
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.plannedRatePerMinute | quote }}
+            - name: DYNAMIC_BUFFER_PLANNED_RATE_BURST_MULTIPLIER
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.plannedRateBurstMultiplier | quote }}
+            - name: DYNAMIC_BUFFER_DECAY_INTERVAL_SECONDS
+              value: {{ .Values.gkeNodePrescaler.dynamicBuffer.decayIntervalSeconds | quote }}
             - name: SCALE_AHEAD_FREE_SLOTS
               value: {{ .Values.gkeNodePrescaler.scaleAheadFreeSlots | quote }}
             - name: MAX_NODES_TOTAL
