@@ -601,10 +601,12 @@ def calculate_target(
     # Live GameServers can temporarily spike during Agones replacement churn and
     # should not be treated as user demand.
     demand_game_server_count = int(desired_replicas or 0)
-    fleet_spec_replicas = int_or_zero(fleet.get("spec", {}).get("replicas"))
     if CONFIG["dynamic_buffer_enabled"] and CONFIG["dynamic_buffer_min_ready_gameservers"] > 0:
-        baseline_gameservers = max(fleet_spec_replicas, CONFIG["dynamic_buffer_min_ready_gameservers"])
+        # Agones writes the autoscaled desired size back to Fleet.spec.replicas.
+        # Treating that live value as a floor makes the baseline grow forever.
+        baseline_gameservers = CONFIG["dynamic_buffer_min_ready_gameservers"]
     else:
+        fleet_spec_replicas = int_or_zero(fleet.get("spec", {}).get("replicas"))
         baseline_gameservers = int(buffer_spec.get("minReplicas") or fleet_spec_replicas or 0)
     current_ready_buffer = int_or_zero(buffer_spec.get("bufferSize"))
     estimated_active_sessions = max(allocated_gameservers, demand_game_server_count - current_ready_buffer)
@@ -999,16 +1001,17 @@ def reconcile(last_scale_at):
             "popcorn_prescaler_scale_requests_total",
             labels={"mode": decision["mode"], "reason": decision["reason"]},
         )
-        RESIZE_STATE.update(
-            {
-                "requestedAt": now,
-                "requestedNodesPerZone": decision["requestedNodesPerZone"],
-                "requestedNodesTotal": decision["requestedNodesTotal"],
-                "mode": decision["mode"],
-                "reason": decision["reason"],
-            }
-        )
-        last_scale_at = now
+        if not CONFIG["dry_run"]:
+            RESIZE_STATE.update(
+                {
+                    "requestedAt": now,
+                    "requestedNodesPerZone": decision["requestedNodesPerZone"],
+                    "requestedNodesTotal": decision["requestedNodesTotal"],
+                    "mode": decision["mode"],
+                    "reason": decision["reason"],
+                }
+            )
+            last_scale_at = now
 
     active_resize = active_inflight_resize(RESIZE_STATE, current_nodes_total, now)
     if not active_resize and RESIZE_STATE.get("requestedAt"):

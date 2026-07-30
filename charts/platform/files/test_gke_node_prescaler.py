@@ -554,6 +554,31 @@ class CalculateTargetTest(unittest.TestCase):
         self.assertEqual(target["currentFleetAutoscalerMinReplicas"], 40)
         self.assertEqual(target["targetFleetReplicas"], 40)
 
+    def test_dynamic_buffer_does_not_treat_autoscaled_fleet_spec_as_baseline(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_latency_derived_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 5,
+                "burst_headroom_gameservers": 0,
+            }
+        )
+
+        target = prescaler.calculate_target(
+            fleet(40),
+            fleet_autoscaler(desired=40, min_replicas=10, buffer_size=10),
+            [game_server("Allocated") for _ in range(30)]
+            + [game_server() for _ in range(10)],
+            [node("us-central1-a"), node("us-central1-b"), node("us-central1-c")],
+            NODE_POOL,
+            current_nodes_total=9,
+            buffer_state={},
+            now=100,
+        )
+
+        self.assertEqual(target["baselineGameServers"], 5)
+        self.assertEqual(target["estimatedActiveSessions"], 30)
+
     def test_browser_pod_pressure_counts_unschedulable_and_oldest_pending(self):
         pressure = prescaler.browser_pod_pressure(
             [pending_pod("2026-06-16T00:00:00Z", unschedulable=True)],
