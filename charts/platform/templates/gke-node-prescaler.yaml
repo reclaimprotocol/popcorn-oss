@@ -87,6 +87,8 @@ spec:
       app: gke-node-prescaler
   template:
     metadata:
+      annotations:
+        checksum/prescaler-script: {{ .Files.Get "files/gke-node-prescaler.py" | sha256sum }}
       labels:
         app: gke-node-prescaler
     spec:
