@@ -31,6 +31,13 @@ def env_int(name, default):
     return int(raw)
 
 
+def env_float(name, default):
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    return float(raw)
+
+
 def env_bool(name, default):
     raw = os.environ.get(name)
     if raw is None or raw == "":
@@ -72,6 +79,16 @@ CONFIG = {
     "dynamic_buffer_safety_margin_gameservers": env_int("DYNAMIC_BUFFER_SAFETY_MARGIN_GAMESERVERS", 0),
     "dynamic_buffer_scale_down_delay_seconds": env_int("DYNAMIC_BUFFER_SCALE_DOWN_DELAY_SECONDS", 900),
     "dynamic_buffer_decay_step_gameservers": env_int("DYNAMIC_BUFFER_DECAY_STEP_GAMESERVERS", 5),
+    "dynamic_buffer_latency_derived_enabled": env_bool("DYNAMIC_BUFFER_LATENCY_DERIVED_ENABLED", False),
+    "dynamic_buffer_trend_window_seconds": env_int("DYNAMIC_BUFFER_TREND_WINDOW_SECONDS", 600),
+    "dynamic_buffer_protection_seconds": env_int("DYNAMIC_BUFFER_PROTECTION_SECONDS", 162),
+    "dynamic_buffer_rounding_gameservers": env_int("DYNAMIC_BUFFER_ROUNDING_GAMESERVERS", 5),
+    "dynamic_buffer_planned_rate_per_minute": env_float("DYNAMIC_BUFFER_PLANNED_RATE_PER_MINUTE", 0.0),
+    "dynamic_buffer_planned_rate_burst_multiplier": env_float(
+        "DYNAMIC_BUFFER_PLANNED_RATE_BURST_MULTIPLIER",
+        1.1,
+    ),
+    "dynamic_buffer_decay_interval_seconds": env_int("DYNAMIC_BUFFER_DECAY_INTERVAL_SECONDS", 60),
     "scale_ahead_free_slots": env_int("SCALE_AHEAD_FREE_SLOTS", 4),
     "max_nodes_total": env_int("MAX_NODES_TOTAL", 0),
     "scale_up_cooldown_seconds": env_int("SCALE_UP_COOLDOWN_SECONDS", 60),
@@ -361,6 +378,38 @@ def int_or_zero(raw):
         return 0
 
 
+def round_up(value, step):
+    step = max(1, int(step))
+    return math.ceil(max(0, value) / step) * step
+
+
+def apply_buffer_scale_down(
+    current_buffer,
+    desired_buffer,
+    state,
+    now,
+    scale_down_delay,
+    decay_step,
+    decay_interval=None,
+):
+    if desired_buffer >= current_buffer:
+        state.pop("decreaseCandidateAt", None)
+        state.pop("lastDecayAt", None)
+        return desired_buffer
+
+    candidate_at = state.setdefault("decreaseCandidateAt", now)
+    if now - float(candidate_at) < scale_down_delay:
+        return current_buffer
+
+    if decay_interval is not None:
+        last_decay_at = state.get("lastDecayAt")
+        if last_decay_at is not None and now - float(last_decay_at) < decay_interval:
+            return current_buffer
+        state["lastDecayAt"] = now
+
+    return max(desired_buffer, current_buffer - decay_step)
+
+
 def calculate_dynamic_buffer(
     buffer_spec,
     gameservers,
@@ -374,9 +423,15 @@ def calculate_dynamic_buffer(
 
     current_buffer = int_or_zero(buffer_spec.get("bufferSize"))
     current_min_replicas = int_or_zero(buffer_spec.get("minReplicas"))
+    strategy = (
+        "latency-derived"
+        if CONFIG["dynamic_buffer_latency_derived_enabled"]
+        else "legacy"
+    )
     if not CONFIG["dynamic_buffer_enabled"]:
         return {
             "dynamicBufferEnabled": False,
+            "dynamicBufferStrategy": "disabled",
             "dynamicBufferPatchEnabled": CONFIG["dynamic_buffer_patch_fleet_autoscaler"],
             "currentReadyBufferGameServers": current_buffer,
             "desiredReadyBufferGameServers": current_buffer,
@@ -389,7 +444,14 @@ def calculate_dynamic_buffer(
             "dynamicBufferSafetyMarginGameServers": 0,
             "dynamicBufferScaleDownDelaySeconds": CONFIG["dynamic_buffer_scale_down_delay_seconds"],
             "dynamicBufferDecayStepGameServers": max(1, CONFIG["dynamic_buffer_decay_step_gameservers"]),
+            "dynamicBufferDecayIntervalSeconds": max(1, CONFIG["dynamic_buffer_decay_interval_seconds"]),
+            "dynamicBufferTrendWindowSeconds": max(1, CONFIG["dynamic_buffer_trend_window_seconds"]),
+            "dynamicBufferProtectionSeconds": max(0, CONFIG["dynamic_buffer_protection_seconds"]),
+            "dynamicBufferRoundingGameServers": max(1, CONFIG["dynamic_buffer_rounding_gameservers"]),
             "allocationRatePerMinute": 0.0,
+            "trendAllocationRatePerMinute": 0.0,
+            "plannedAllocationRatePerMinute": max(0.0, CONFIG["dynamic_buffer_planned_rate_per_minute"]),
+            "effectiveAllocationRatePerMinute": 0.0,
             "dynamicBufferLoadGameServers": 0,
             "dynamicBufferPatchRequired": False,
         }
@@ -401,9 +463,43 @@ def calculate_dynamic_buffer(
 
     allocation_window_seconds = CONFIG["dynamic_buffer_allocation_window_seconds"]
     allocation_rate = recent_allocation_rate_per_minute(gameservers, now, allocation_window_seconds)
-    load_buffer = math.ceil(allocation_rate * CONFIG["dynamic_buffer_lead_seconds"] / 60.0)
-    safety_margin = CONFIG["dynamic_buffer_safety_margin_gameservers"] if allocation_rate > 0 else 0
-    desired_buffer = max(base_buffer, base_buffer + load_buffer + safety_margin)
+    state = buffer_state if buffer_state is not None else {}
+    scale_down_delay = max(0, CONFIG["dynamic_buffer_scale_down_delay_seconds"])
+    decay_step = max(1, CONFIG["dynamic_buffer_decay_step_gameservers"])
+    trend_rate = allocation_rate
+    planned_rate = max(0.0, CONFIG["dynamic_buffer_planned_rate_per_minute"])
+    effective_rate = allocation_rate
+    safety_margin = 0
+
+    if CONFIG["dynamic_buffer_latency_derived_enabled"]:
+        trend_window = max(1, CONFIG["dynamic_buffer_trend_window_seconds"])
+        last_rate_at = state.get("lastRateAt")
+        if last_rate_at is None:
+            trend_rate = allocation_rate
+        else:
+            trend_rate = float(state.get("trendAllocationRatePerMinute", allocation_rate))
+            elapsed = max(0.0, now - float(last_rate_at))
+            alpha = 1.0 - math.exp(-elapsed / trend_window)
+            trend_rate += alpha * (allocation_rate - trend_rate)
+        state["lastRateAt"] = now
+        state["trendAllocationRatePerMinute"] = trend_rate
+
+        planned_rate_with_margin = (
+            planned_rate
+            * max(1.0, CONFIG["dynamic_buffer_planned_rate_burst_multiplier"])
+        )
+        effective_rate = max(trend_rate, planned_rate_with_margin)
+        protection_seconds = max(0, CONFIG["dynamic_buffer_protection_seconds"])
+        raw_buffer = math.ceil(effective_rate * protection_seconds / 60.0)
+        desired_buffer = max(
+            base_buffer,
+            round_up(raw_buffer, CONFIG["dynamic_buffer_rounding_gameservers"]),
+        )
+        load_buffer = max(0, desired_buffer - base_buffer)
+    else:
+        load_buffer = math.ceil(allocation_rate * CONFIG["dynamic_buffer_lead_seconds"] / 60.0)
+        safety_margin = CONFIG["dynamic_buffer_safety_margin_gameservers"] if allocation_rate > 0 else 0
+        desired_buffer = max(base_buffer, base_buffer + load_buffer + safety_margin)
 
     configured_max_buffer = CONFIG["dynamic_buffer_max_ready_gameservers"]
     if configured_max_buffer <= 0 and max_replicas > 0:
@@ -411,21 +507,27 @@ def calculate_dynamic_buffer(
     if configured_max_buffer > 0:
         desired_buffer = min(desired_buffer, configured_max_buffer)
 
-    state = buffer_state if buffer_state is not None else {}
-    if allocation_rate > 0 or demand_game_server_count > baseline_gameservers:
-        state["lastLoadAt"] = now
-
-    last_load_at = float(state.get("lastLoadAt", 0.0))
-    decay_step = max(1, CONFIG["dynamic_buffer_decay_step_gameservers"])
-    scale_down_delay = max(0, CONFIG["dynamic_buffer_scale_down_delay_seconds"])
-    applied_buffer = desired_buffer
-
-    if current_buffer > desired_buffer:
-        idle_seconds = now - last_load_at if last_load_at > 0 else float("inf")
-        if idle_seconds < scale_down_delay:
-            applied_buffer = current_buffer
-        else:
-            applied_buffer = max(desired_buffer, current_buffer - decay_step)
+    if CONFIG["dynamic_buffer_latency_derived_enabled"]:
+        applied_buffer = apply_buffer_scale_down(
+            current_buffer,
+            desired_buffer,
+            state,
+            now,
+            scale_down_delay,
+            decay_step,
+            decay_interval=max(1, CONFIG["dynamic_buffer_decay_interval_seconds"]),
+        )
+    else:
+        if allocation_rate > 0 or demand_game_server_count > baseline_gameservers:
+            state["lastLoadAt"] = now
+        last_load_at = float(state.get("lastLoadAt", 0.0))
+        applied_buffer = desired_buffer
+        if current_buffer > desired_buffer:
+            idle_seconds = now - last_load_at if last_load_at > 0 else float("inf")
+            if idle_seconds < scale_down_delay:
+                applied_buffer = current_buffer
+            else:
+                applied_buffer = max(desired_buffer, current_buffer - decay_step)
 
     if applied_buffer > current_buffer:
         state["lastIncreaseAt"] = now
@@ -437,6 +539,7 @@ def calculate_dynamic_buffer(
 
     return {
         "dynamicBufferEnabled": CONFIG["dynamic_buffer_enabled"],
+        "dynamicBufferStrategy": strategy,
         "dynamicBufferPatchEnabled": CONFIG["dynamic_buffer_patch_fleet_autoscaler"],
         "currentReadyBufferGameServers": current_buffer,
         "desiredReadyBufferGameServers": applied_buffer,
@@ -449,7 +552,14 @@ def calculate_dynamic_buffer(
         "dynamicBufferSafetyMarginGameServers": safety_margin,
         "dynamicBufferScaleDownDelaySeconds": scale_down_delay,
         "dynamicBufferDecayStepGameServers": decay_step,
+        "dynamicBufferDecayIntervalSeconds": max(1, CONFIG["dynamic_buffer_decay_interval_seconds"]),
+        "dynamicBufferTrendWindowSeconds": max(1, CONFIG["dynamic_buffer_trend_window_seconds"]),
+        "dynamicBufferProtectionSeconds": max(0, CONFIG["dynamic_buffer_protection_seconds"]),
+        "dynamicBufferRoundingGameServers": max(1, CONFIG["dynamic_buffer_rounding_gameservers"]),
         "allocationRatePerMinute": round(allocation_rate, 3),
+        "trendAllocationRatePerMinute": round(trend_rate, 3),
+        "plannedAllocationRatePerMinute": round(planned_rate, 3),
+        "effectiveAllocationRatePerMinute": round(effective_rate, 3),
         "dynamicBufferLoadGameServers": load_buffer,
         "dynamicBufferPatchRequired": (
             applied_buffer != current_buffer
@@ -737,6 +847,22 @@ def update_metrics(target, current_nodes_total, decision, reconcile_duration_sec
     set_gauge("popcorn_prescaler_free_ready_gameservers", target["freeReadyGameServers"])
     set_gauge("popcorn_prescaler_allocated_gameservers", target["allocatedGameServers"])
     set_gauge("popcorn_prescaler_allocation_rate_per_minute", target["allocationRatePerMinute"])
+    set_gauge(
+        "popcorn_prescaler_trend_allocation_rate_per_minute",
+        target["trendAllocationRatePerMinute"],
+    )
+    set_gauge(
+        "popcorn_prescaler_planned_allocation_rate_per_minute",
+        target["plannedAllocationRatePerMinute"],
+    )
+    set_gauge(
+        "popcorn_prescaler_effective_allocation_rate_per_minute",
+        target["effectiveAllocationRatePerMinute"],
+    )
+    set_gauge(
+        "popcorn_prescaler_dynamic_buffer_protection_seconds",
+        target["dynamicBufferProtectionSeconds"],
+    )
     set_gauge("popcorn_prescaler_current_ready_buffer_gameservers", target["currentReadyBufferGameServers"])
     set_gauge("popcorn_prescaler_desired_ready_buffer_gameservers", target["desiredReadyBufferGameServers"])
     set_gauge("popcorn_prescaler_current_fleetautoscaler_min_replicas", target["currentFleetAutoscalerMinReplicas"])

@@ -123,6 +123,13 @@ class CalculateTargetTest(unittest.TestCase):
                 "dynamic_buffer_safety_margin_gameservers": 0,
                 "dynamic_buffer_scale_down_delay_seconds": 900,
                 "dynamic_buffer_decay_step_gameservers": 5,
+                "dynamic_buffer_latency_derived_enabled": False,
+                "dynamic_buffer_trend_window_seconds": 600,
+                "dynamic_buffer_protection_seconds": 162,
+                "dynamic_buffer_rounding_gameservers": 5,
+                "dynamic_buffer_planned_rate_per_minute": 0.0,
+                "dynamic_buffer_planned_rate_burst_multiplier": 1.1,
+                "dynamic_buffer_decay_interval_seconds": 60,
                 "scale_ahead_free_slots": 4,
                 "max_nodes_total": 18,
                 "node_step": 1,
@@ -136,6 +143,7 @@ class CalculateTargetTest(unittest.TestCase):
         )
         prescaler.DEMAND_HISTORY.clear()
         prescaler.RESIZE_STATE.clear()
+        prescaler.BUFFER_STATE.clear()
         prescaler.METRIC_GAUGES.clear()
         prescaler.METRIC_COUNTERS.clear()
 
@@ -409,6 +417,124 @@ class CalculateTargetTest(unittest.TestCase):
         self.assertEqual(target["desiredReadyBufferGameServers"], 20)
         self.assertEqual(target["dynamicBufferMaxGameServers"], 20)
 
+    def test_latency_derived_buffer_uses_measured_protection_budget(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_latency_derived_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 10,
+                "dynamic_buffer_max_ready_gameservers": 150,
+                "dynamic_buffer_allocation_window_seconds": 120,
+                "dynamic_buffer_trend_window_seconds": 600,
+                "dynamic_buffer_protection_seconds": 162,
+                "dynamic_buffer_rounding_gameservers": 5,
+                "burst_headroom_gameservers": 0,
+            }
+        )
+        gameservers = [
+            game_server("Allocated", allocated_at="2026-06-16T00:00:30Z")
+            for _ in range(36)
+        ]
+        now = prescaler.datetime(2026, 6, 16, 0, 1, 0, tzinfo=prescaler.timezone.utc).timestamp()
+
+        target = self.calculate(
+            desired=46,
+            live=36,
+            current_nodes=9,
+            gameservers=gameservers,
+            buffer_state={},
+            now=now,
+        )
+
+        self.assertEqual(target["dynamicBufferStrategy"], "latency-derived")
+        self.assertEqual(target["allocationRatePerMinute"], 18.0)
+        self.assertEqual(target["trendAllocationRatePerMinute"], 18.0)
+        self.assertEqual(target["effectiveAllocationRatePerMinute"], 18.0)
+        self.assertEqual(target["desiredReadyBufferGameServers"], 50)
+        self.assertEqual(target["dynamicBufferProtectionSeconds"], 162)
+
+    def test_latency_derived_buffer_uses_planned_rate_with_burst_margin(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_latency_derived_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 10,
+                "dynamic_buffer_max_ready_gameservers": 150,
+                "dynamic_buffer_planned_rate_per_minute": 20.0,
+                "dynamic_buffer_planned_rate_burst_multiplier": 1.1,
+                "dynamic_buffer_protection_seconds": 162,
+                "dynamic_buffer_rounding_gameservers": 5,
+            }
+        )
+
+        result = prescaler.calculate_dynamic_buffer(
+            {"bufferSize": 10, "minReplicas": 10, "maxReplicas": 150},
+            [game_server() for _ in range(10)],
+            demand_game_server_count=10,
+            baseline_gameservers=10,
+            buffer_state={},
+            now=100,
+        )
+
+        self.assertEqual(result["plannedAllocationRatePerMinute"], 20.0)
+        self.assertEqual(result["effectiveAllocationRatePerMinute"], 22.0)
+        self.assertEqual(result["desiredReadyBufferGameServers"], 60)
+
+    def test_latency_derived_buffer_holds_and_decays_on_wall_clock_interval(self):
+        prescaler.CONFIG.update(
+            {
+                "dynamic_buffer_enabled": True,
+                "dynamic_buffer_latency_derived_enabled": True,
+                "dynamic_buffer_min_ready_gameservers": 10,
+                "dynamic_buffer_scale_down_delay_seconds": 900,
+                "dynamic_buffer_decay_step_gameservers": 5,
+                "dynamic_buffer_decay_interval_seconds": 60,
+            }
+        )
+        buffer_spec = {"bufferSize": 40, "minReplicas": 40, "maxReplicas": 150}
+        buffer_state = {
+            "lastRateAt": 0.0,
+            "trendAllocationRatePerMinute": 0.0,
+        }
+
+        held = prescaler.calculate_dynamic_buffer(
+            buffer_spec,
+            [],
+            demand_game_server_count=10,
+            baseline_gameservers=10,
+            buffer_state=buffer_state,
+            now=100,
+        )
+        first_decay = prescaler.calculate_dynamic_buffer(
+            buffer_spec,
+            [],
+            demand_game_server_count=10,
+            baseline_gameservers=10,
+            buffer_state=buffer_state,
+            now=1000,
+        )
+        reconcile_too_soon = prescaler.calculate_dynamic_buffer(
+            {"bufferSize": 35, "minReplicas": 35, "maxReplicas": 150},
+            [],
+            demand_game_server_count=10,
+            baseline_gameservers=10,
+            buffer_state=buffer_state,
+            now=1005,
+        )
+        second_decay = prescaler.calculate_dynamic_buffer(
+            {"bufferSize": 35, "minReplicas": 35, "maxReplicas": 150},
+            [],
+            demand_game_server_count=10,
+            baseline_gameservers=10,
+            buffer_state=buffer_state,
+            now=1060,
+        )
+
+        self.assertEqual(held["desiredReadyBufferGameServers"], 40)
+        self.assertEqual(first_decay["desiredReadyBufferGameServers"], 35)
+        self.assertEqual(reconcile_too_soon["desiredReadyBufferGameServers"], 35)
+        self.assertEqual(second_decay["desiredReadyBufferGameServers"], 30)
+
     def test_dynamic_buffer_uses_configured_baseline_when_live_min_replicas_is_high(self):
         prescaler.CONFIG.update(
             {
@@ -448,6 +574,8 @@ class CalculateTargetTest(unittest.TestCase):
 
         self.assertIn("popcorn_prescaler_current_nodes_total 3", rendered)
         self.assertIn('popcorn_prescaler_gameservers{state="Ready"} 8', rendered)
+        self.assertIn("popcorn_prescaler_effective_allocation_rate_per_minute 0", rendered)
+        self.assertIn("popcorn_prescaler_dynamic_buffer_protection_seconds 162", rendered)
         self.assertIn("popcorn_prescaler_reconcile_duration_seconds 0.25", rendered)
 
 
