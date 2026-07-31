@@ -603,6 +603,44 @@ class CalculateTargetTest(unittest.TestCase):
         self.assertIn("popcorn_prescaler_dynamic_buffer_protection_seconds 162", rendered)
         self.assertIn("popcorn_prescaler_reconcile_duration_seconds 0.25", rendered)
 
+    def test_node_resize_execution_mode_disables_only_node_mutation(self):
+        decision = {"action": "resize"}
+
+        self.assertEqual(
+            prescaler.node_resize_execution_mode(
+                decision,
+                node_scaling_enabled=False,
+                dry_run=False,
+            ),
+            "disabled",
+        )
+        self.assertEqual(
+            prescaler.node_resize_execution_mode(
+                decision,
+                node_scaling_enabled=True,
+                dry_run=False,
+            ),
+            "execute",
+        )
+
+    def test_node_resize_execution_mode_preserves_dry_run(self):
+        self.assertEqual(
+            prescaler.node_resize_execution_mode(
+                {"action": "resize"},
+                node_scaling_enabled=True,
+                dry_run=True,
+            ),
+            "dry_run",
+        )
+        self.assertEqual(
+            prescaler.node_resize_execution_mode(
+                {"action": "none"},
+                node_scaling_enabled=False,
+                dry_run=False,
+            ),
+            "none",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
