@@ -217,6 +217,7 @@ gkeNodePrescaler:
   cluster: ""
   location: ""
   nodePool: ""
+  nodeScalingEnabled: true
   namespace: ""
   fleetName: browser-fleet
   fleetAutoscalerName: browser-autoscaler

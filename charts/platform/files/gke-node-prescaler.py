@@ -58,6 +58,7 @@ CONFIG = {
     "cluster": os.environ["GKE_CLUSTER"],
     "location": os.environ["GKE_LOCATION"],
     "node_pool": os.environ["GKE_NODE_POOL"],
+    "node_scaling_enabled": env_bool("NODE_SCALING_ENABLED", True),
     "namespace": os.environ.get("NAMESPACE", "default"),
     "fleet": os.environ.get("FLEET_NAME", "browser-fleet"),
     "fleet_autoscaler": os.environ.get("FLEET_AUTOSCALER_NAME", "browser-autoscaler"),
@@ -807,6 +808,20 @@ def plan_scale_request(target, current_nodes_total, now, last_scale_at, resize_s
     return decision
 
 
+def node_resize_execution_mode(decision, node_scaling_enabled=None, dry_run=None):
+    if decision.get("action") != "resize":
+        return "none"
+    if node_scaling_enabled is None:
+        node_scaling_enabled = CONFIG["node_scaling_enabled"]
+    if dry_run is None:
+        dry_run = CONFIG["dry_run"]
+    if not node_scaling_enabled:
+        return "disabled"
+    if dry_run:
+        return "dry_run"
+    return "execute"
+
+
 def metric_key(name, labels=None):
     label_items = tuple(sorted((labels or {}).items()))
     return name, label_items
@@ -987,21 +1002,30 @@ def reconcile(last_scale_at):
         inc_counter("popcorn_prescaler_cooldown_skips_total")
         log("info", "scale-up skipped during cooldown", **fields)
     elif decision["action"] == "resize":
-        if decision["cooldownBypassed"]:
+        resize_mode = node_resize_execution_mode(decision)
+        if resize_mode == "disabled":
+            set_gauge("popcorn_prescaler_node_scaling_enabled", 0)
+            log(
+                "info",
+                "custom node scaling disabled; native GKE autoscaler owns node capacity",
+                **fields,
+            )
+        elif decision["cooldownBypassed"]:
             inc_counter("popcorn_prescaler_cooldown_bypasses_total")
 
-        if CONFIG["dry_run"]:
+        if resize_mode == "dry_run":
             log("info", "dry-run would resize node pool", **fields)
-        else:
+        elif resize_mode == "execute":
             operation = gcp_post(f"{nodepool_path()}:setSize", {"nodeCount": decision["requestedNodesPerZone"]})
             fields["operation"] = operation.get("name")
             log("info", "requested node pool resize", **fields)
 
-        inc_counter(
-            "popcorn_prescaler_scale_requests_total",
-            labels={"mode": decision["mode"], "reason": decision["reason"]},
-        )
-        if not CONFIG["dry_run"]:
+        if resize_mode in ("dry_run", "execute"):
+            inc_counter(
+                "popcorn_prescaler_scale_requests_total",
+                labels={"mode": decision["mode"], "reason": decision["reason"]},
+            )
+        if resize_mode == "execute":
             RESIZE_STATE.update(
                 {
                     "requestedAt": now,
@@ -1030,6 +1054,10 @@ def main():
         raise RuntimeError(f"missing required config: {', '.join(missing)}")
 
     start_metrics_server()
+    set_gauge(
+        "popcorn_prescaler_node_scaling_enabled",
+        1 if CONFIG["node_scaling_enabled"] else 0,
+    )
     log("info", "starting GKE node pre-scaler", config=CONFIG)
     last_scale_at = 0.0
     while True:
