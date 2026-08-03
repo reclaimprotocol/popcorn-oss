@@ -132,6 +132,25 @@ async function requireAdmin(c: any): Promise<Response | null> {
   return c.json({ error: 'Unauthorized' }, 401);
 }
 
+function setAdminResponseHeaders(c: any) {
+  c.header('Cache-Control', 'no-store');
+  c.header('Content-Security-Policy', [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline' https://unpkg.com",
+    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "img-src 'self' data:",
+    "font-src 'self' data:",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+    "base-uri 'none'",
+    "form-action 'self'",
+  ].join('; '));
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+}
+
 function isSecureRequest(c: any): boolean {
   return new URL(c.req.url).protocol === 'https:' || c.req.header('X-Forwarded-Proto') === 'https';
 }
@@ -801,6 +820,7 @@ app.get('/favicon.ico', async (c) => {
 });
 
 app.use('/admin/*', async (c, next) => {
+  setAdminResponseHeaders(c);
   if (isAdminAuthPath(new URL(c.req.url).pathname)) {
     return next();
   }
@@ -1036,6 +1056,7 @@ app.post('/admin/logout', (c) => {
 });
 
 app.get('/admin', async (c) => {
+  setAdminResponseHeaders(c);
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return c.redirect('/admin/login', 302);
   return c.html(await renderShellHtml('clients'));
