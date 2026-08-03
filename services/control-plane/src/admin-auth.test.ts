@@ -6,6 +6,7 @@ import {
   authorizeGoogleUser,
   createAdminSession,
   isGoogleOAuthConfigured,
+  isAdminAuthPath,
   isPasswordLoginConfigured,
   parseHtpasswd,
   readAdminAuthConfig,
@@ -14,6 +15,12 @@ import {
 } from './admin-auth';
 
 describe('control plane admin auth', () => {
+  test('allows login assets without an admin session', () => {
+    expect(isAdminAuthPath('/admin/assets/favicon-32.png')).toBe(true);
+    expect(isAdminAuthPath('/admin/assets/site.webmanifest')).toBe(true);
+    expect(isAdminAuthPath('/admin/clients')).toBe(false);
+  });
+
   test('verifies legacy password credentials', async () => {
     const config = readAdminAuthConfig({
       ADMIN_USER: 'admin',

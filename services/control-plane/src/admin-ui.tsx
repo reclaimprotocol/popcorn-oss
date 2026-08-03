@@ -106,6 +106,14 @@ export interface ActionNotice {
   href?: string;
 }
 
+export type AdminView = 'clients' | 'clusters' | 'analytics';
+
+const ADMIN_VIEWS: Record<AdminView, { pagePath: string; fragmentPath: string; label: string }> = {
+  clients: { pagePath: '/admin/clients', fragmentPath: '/admin/ui/clients', label: 'Clients' },
+  clusters: { pagePath: '/admin/clusters', fragmentPath: '/admin/ui/clusters', label: 'Clusters' },
+  analytics: { pagePath: '/admin/analytics', fragmentPath: '/admin/ui/analytics', label: 'Analytics' },
+};
+
 function formatDate(value: Date | string | null | undefined) {
   if (!value) return '-';
   return new Date(value).toLocaleString();
@@ -182,8 +190,8 @@ export async function renderFragment(node: any) {
   return await node.toString();
 }
 
-export function renderShellHtml() {
-  return renderHtml(<AdminShell />);
+export function renderShellHtml(activeView: AdminView = 'clients') {
+  return renderHtml(<AdminShell activeView={activeView} />);
 }
 
 export function renderClientsViewHtml(props: Parameters<typeof ClientsView>[0]) {
@@ -202,61 +210,54 @@ export function renderAnalyticsViewHtml(props: Parameters<typeof AnalyticsView>[
   return renderFragment(<AnalyticsView {...props} />);
 }
 
-export function AdminShell() {
+export function AdminShell({ activeView = 'clients' }: { activeView?: AdminView }) {
+  const initialView = ADMIN_VIEWS[activeView];
   return (
     <html lang="en" data-theme="dark">
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="theme-color" content="#0d141b" />
         <title>Popcorn Control Plane</title>
+        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/admin/assets/favicon-32.png" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/admin/assets/apple-touch-icon.png" />
+        <link rel="manifest" href="/admin/assets/site.webmanifest" />
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
         <link rel="stylesheet" href="/admin/assets/admin.css" />
         <script src="https://unpkg.com/htmx.org@2.0.4"></script>
       </head>
       <body>
         <header class="app-header">
-          <div class="brand-block">
-            <span class="eyebrow">Control Plane</span>
-            <h1>Popcorn Operations</h1>
-            <p>Route client sessions across configured regions.</p>
+          <div class="brand-lockup">
+            <img class="brand-mark" src="/admin/assets/favicon-32.png" alt="" width="40" height="40" />
+            <div class="brand-block">
+              <span class="eyebrow">Control Plane</span>
+              <h1>Popcorn Operations</h1>
+              <p>Route client sessions across configured regions.</p>
+            </div>
           </div>
           <form method="post" action="/admin/logout">
             <button type="submit" class="secondary">Sign out</button>
           </form>
         </header>
         <nav class="view-tabs" aria-label="Admin views">
-          <button
-            type="button"
-            class="tab-button active"
-            data-tab="clients"
-            hx-get="/admin/ui/clients"
-            hx-target="#admin-content"
-            hx-swap="innerHTML"
-          >
-            Clients
-          </button>
-          <button
-            type="button"
-            class="tab-button"
-            data-tab="clusters"
-            hx-get="/admin/ui/clusters"
-            hx-target="#admin-content"
-            hx-swap="innerHTML"
-          >
-            Clusters
-          </button>
-          <button
-            type="button"
-            class="tab-button"
-            data-tab="analytics"
-            hx-get="/admin/ui/analytics"
-            hx-target="#admin-content"
-            hx-swap="innerHTML"
-          >
-            Analytics
-          </button>
+          {(Object.entries(ADMIN_VIEWS) as [AdminView, typeof initialView][]).map(([view, config]) => (
+            <a
+              class={`tab-button${view === activeView ? ' active' : ''}`}
+              data-tab={view}
+              href={config.pagePath}
+              hx-get={config.fragmentPath}
+              hx-push-url={config.pagePath}
+              hx-target="#admin-content"
+              hx-swap="innerHTML"
+              aria-current={view === activeView ? 'page' : undefined}
+            >
+              {config.label}
+            </a>
+          ))}
         </nav>
-        <main id="admin-content" hx-get="/admin/ui/clients" hx-trigger="load" hx-swap="innerHTML">
+        <main id="admin-content" hx-get={initialView.fragmentPath} hx-trigger="load" hx-swap="innerHTML">
           <section aria-busy="true">Loading Control Plane...</section>
         </main>
         <script>

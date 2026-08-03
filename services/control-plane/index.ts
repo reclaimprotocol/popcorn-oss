@@ -684,6 +684,12 @@ async function renderClustersPage(c: any, options: {
 
 app.get('/health', (c) => c.text('OK'));
 
+app.get('/favicon.ico', async (c) => {
+  c.header('Content-Type', 'image/x-icon');
+  c.header('Cache-Control', 'public, max-age=86400');
+  return c.body(await Bun.file('./public/assets/favicon.ico').arrayBuffer());
+});
+
 app.use('/admin/*', async (c, next) => {
   if (isAdminAuthPath(new URL(c.req.url).pathname)) {
     return next();
@@ -746,6 +752,23 @@ app.get('/admin/login', async (c) => c.html(await Bun.file('./public/admin-login
 app.get('/admin/assets/admin.css', async (c) => {
   c.header('Content-Type', 'text/css; charset=utf-8');
   return c.body(await Bun.file('./public/admin.css').text());
+});
+
+const ADMIN_ASSETS = {
+  'favicon-32.png': { path: './public/assets/favicon-32.png', contentType: 'image/png' },
+  'apple-touch-icon.png': { path: './public/assets/apple-touch-icon.png', contentType: 'image/png' },
+  'site-icon-192.png': { path: './public/assets/site-icon-192.png', contentType: 'image/png' },
+  'site-icon-512.png': { path: './public/assets/site-icon-512.png', contentType: 'image/png' },
+  'site.webmanifest': { path: './public/assets/site.webmanifest', contentType: 'application/manifest+json' },
+} as const;
+
+app.get('/admin/assets/:filename', async (c) => {
+  const filename = c.req.param('filename') as keyof typeof ADMIN_ASSETS;
+  const asset = ADMIN_ASSETS[filename];
+  if (!asset) return c.notFound();
+  c.header('Content-Type', asset.contentType);
+  c.header('Cache-Control', 'public, max-age=86400');
+  return c.body(await Bun.file(asset.path).arrayBuffer());
 });
 
 app.get('/admin/auth/config', (c) => {
@@ -831,7 +854,15 @@ app.post('/admin/logout', (c) => {
 app.get('/admin', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return c.redirect('/admin/login', 302);
-  return c.html(await renderShellHtml());
+  return c.html(await renderShellHtml('clients'));
+});
+
+app.get('/admin/clusters', async (c) => {
+  return c.html(await renderShellHtml('clusters'));
+});
+
+app.get('/admin/analytics', async (c) => {
+  return c.html(await renderShellHtml('analytics'));
 });
 
 app.get('/admin/ui/clients', async (c) => {
@@ -1090,6 +1121,10 @@ app.post('/sessions/:id/end', async (c) => {
 app.get('/admin/clients', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;
+
+  if (wantsHtml(c.req.raw.headers)) {
+    return c.html(await renderShellHtml('clients'));
+  }
 
   try {
     return c.json({ clients: await ClientService.listClients() });

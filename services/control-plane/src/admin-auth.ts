@@ -72,7 +72,8 @@ export function readAdminAuthConfig(env: Record<string, string | undefined> = pr
 }
 
 export function isAdminAuthPath(path: string): boolean {
-  return path === '/admin/login'
+  return path.startsWith('/admin/assets/')
+    || path === '/admin/login'
     || path === '/admin/auth/config'
     || path === '/admin/auth/password'
     || path === '/admin/auth/google'
