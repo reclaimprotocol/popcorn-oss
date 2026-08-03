@@ -79,6 +79,9 @@ streaming:
 fleet:
   replicas: 10
   scheduling: Packed
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   health:
     initialDelaySeconds: 90
     periodSeconds: 5

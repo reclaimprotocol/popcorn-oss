@@ -71,6 +71,18 @@ spec:
 {{- with .Values.runtimeClassName }}
           runtimeClassName: {{ . | quote }}
 {{- end }}
+{{- with .Values.fleet.nodeSelector }}
+          nodeSelector:
+{{ toYaml . | nindent 12 }}
+{{- end }}
+{{- with .Values.fleet.tolerations }}
+          tolerations:
+{{ toYaml . | nindent 12 }}
+{{- end }}
+{{- with .Values.fleet.affinity }}
+          affinity:
+{{ toYaml . | nindent 12 }}
+{{- end }}
 {{- with .Values.podSecurityContext }}
           securityContext:
 {{- toYaml . | nindent 12 }}
