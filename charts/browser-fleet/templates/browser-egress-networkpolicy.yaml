@@ -24,6 +24,16 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # Browser runtimes publish their per-session route endpoints only to this
+    # cluster's Redis. Keep the exception selector-scoped so the public fleet
+    # cannot reach arbitrary private services.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
     # Public web access, excluding private, carrier-grade NAT, loopback,
     # link-local/metadata, benchmark, multicast, and reserved destinations.
     - to:
