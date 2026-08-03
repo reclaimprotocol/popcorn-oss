@@ -755,6 +755,7 @@ app.get('/admin/assets/admin.css', async (c) => {
 });
 
 const ADMIN_ASSETS = {
+  'site-icon.svg': { path: './public/assets/site-icon.svg', contentType: 'image/svg+xml' },
   'favicon-32.png': { path: './public/assets/favicon-32.png', contentType: 'image/png' },
   'apple-touch-icon.png': { path: './public/assets/apple-touch-icon.png', contentType: 'image/png' },
   'site-icon-192.png': { path: './public/assets/site-icon-192.png', contentType: 'image/png' },

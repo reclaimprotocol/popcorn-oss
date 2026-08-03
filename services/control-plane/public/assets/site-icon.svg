@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Popcorn browser runtime</title>
+  <desc id="description">A yellow popcorn kernel inside a cream browser window with a green active tab.</desc>
+
+  <rect width="512" height="512" rx="112" fill="#17170f"/>
+
+  <g transform="rotate(-3 256 256)">
+    <rect x="54" y="66" width="404" height="380" rx="62" fill="#fffdf4"/>
+    <path d="M80 178h352v204c0 22-18 40-40 40H120c-22 0-40-18-40-40V178Z" fill="#17170f"/>
+    <rect x="102" y="103" width="120" height="38" rx="19" fill="#bbdc66" stroke="#17170f" stroke-width="12"/>
+    <rect x="250" y="103" width="150" height="38" rx="19" fill="none" stroke="#17170f" stroke-width="12"/>
+
+    <g transform="rotate(-6 256 302)">
+      <ellipse cx="205" cy="282" rx="78" ry="84" transform="rotate(-32 205 282)" fill="#f7d93d" stroke="#17170f" stroke-width="18"/>
+      <ellipse cx="307" cy="274" rx="78" ry="84" transform="rotate(24 307 274)" fill="#f7d93d" stroke="#17170f" stroke-width="18"/>
+      <ellipse cx="256" cy="354" rx="78" ry="84" transform="rotate(4 256 354)" fill="#f7d93d" stroke="#17170f" stroke-width="18"/>
+    </g>
+  </g>
+</svg>

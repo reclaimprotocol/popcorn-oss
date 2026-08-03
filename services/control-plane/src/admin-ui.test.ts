@@ -27,7 +27,8 @@ describe('admin shell navigation', () => {
   test('includes favicon, app icon, and browser theme metadata', async () => {
     const html = await renderShellHtml();
 
-    expect(html).toContain('rel="icon" href="/favicon.ico"');
+    expect(html).toContain('rel="icon" type="image/svg+xml" href="/admin/assets/site-icon.svg?v=brand-kernel-1"');
+    expect(html).toContain('rel="icon" href="/favicon.ico?v=brand-kernel-1"');
     expect(html).toContain('rel="apple-touch-icon"');
     expect(html).toContain('rel="manifest"');
     expect(html).toContain('name="theme-color" content="#0d141b"');

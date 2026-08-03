@@ -219,10 +219,11 @@ export function AdminShell({ activeView = 'clients' }: { activeView?: AdminView 
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <meta name="theme-color" content="#0d141b" />
         <title>Popcorn Control Plane</title>
-        <link rel="icon" href="/favicon.ico" sizes="any" />
-        <link rel="icon" type="image/png" sizes="32x32" href="/admin/assets/favicon-32.png" />
-        <link rel="apple-touch-icon" sizes="180x180" href="/admin/assets/apple-touch-icon.png" />
-        <link rel="manifest" href="/admin/assets/site.webmanifest" />
+        <link rel="icon" type="image/svg+xml" href="/admin/assets/site-icon.svg?v=brand-kernel-1" />
+        <link rel="icon" href="/favicon.ico?v=brand-kernel-1" sizes="any" />
+        <link rel="icon" type="image/png" sizes="32x32" href="/admin/assets/favicon-32.png?v=brand-kernel-1" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/admin/assets/apple-touch-icon.png?v=brand-kernel-1" />
+        <link rel="manifest" href="/admin/assets/site.webmanifest?v=brand-kernel-1" />
         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
         <link rel="stylesheet" href="/admin/assets/admin.css" />
         <script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -230,7 +231,7 @@ export function AdminShell({ activeView = 'clients' }: { activeView?: AdminView 
       <body>
         <header class="app-header">
           <div class="brand-lockup">
-            <img class="brand-mark" src="/admin/assets/favicon-32.png" alt="" width="40" height="40" />
+            <img class="brand-mark" src="/admin/assets/site-icon.svg?v=brand-kernel-1" alt="" width="40" height="40" />
             <div class="brand-block">
               <span class="eyebrow">Control Plane</span>
               <h1>Popcorn Operations</h1>
