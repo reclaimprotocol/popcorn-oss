@@ -1,3 +1,4 @@
+{{- if .Values.serviceAccount.create }}
 {{- $nodeReaderClusterRoleName := printf "%s-browser-sa-node-reader" .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- $nodeReaderClusterRoleBindingName := printf "%s-browser-sa-node-reader" .Release.Name | trunc 63 | trimSuffix "-" }}
 apiVersion: v1
@@ -62,3 +63,4 @@ roleRef:
   kind: ClusterRole
   name: {{ $nodeReaderClusterRoleName | quote }}
   apiGroup: rbac.authorization.k8s.io
+{{- end }}

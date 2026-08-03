@@ -66,8 +66,10 @@ spec:
 {{- end }}
       template:
         spec:
+{{- if .Values.serviceAccount.create }}
           serviceAccountName: browser-sa
           automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+{{- end }}
 {{- with .Values.runtimeClassName }}
           runtimeClassName: {{ . | quote }}
 {{- end }}

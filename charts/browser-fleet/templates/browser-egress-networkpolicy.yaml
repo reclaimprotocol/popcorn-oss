@@ -34,6 +34,17 @@ spec:
       ports:
         - protocol: TCP
           port: 6379
+{{- with .Values.networkPolicy.kubernetesApiCidr }}
+    # Agones injects its own service account only into the SDK sidecar when the
+    # Fleet does not provide one. The browser container remains tokenless, but
+    # the sidecar still needs this narrow path to the Kubernetes API.
+    - to:
+        - ipBlock:
+            cidr: {{ . | quote }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
     # Public web access, excluding private, carrier-grade NAT, loopback,
     # link-local/metadata, benchmark, multicast, and reserved destinations.
     - to:

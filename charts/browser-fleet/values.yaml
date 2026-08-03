@@ -37,11 +37,13 @@ ccDevicePlugin:
   enabled: false
 
 serviceAccount:
+  create: true
   gcpServiceAccount: ""
   automountServiceAccountToken: true
 
 networkPolicy:
   enabled: false
+  kubernetesApiCidr: ""
 
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
 browserRuntimeImagePullPolicy: IfNotPresent
