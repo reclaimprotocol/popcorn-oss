@@ -6,6 +6,8 @@ export interface RoutedSessionRequest {
   clientId: string;
   clientName: string;
   expiresAt?: string;
+  restrictedTokenExpiresAt?: string;
+  automationProfile?: 'x402-agent';
 }
 
 export interface RoutedSessionResponse {
@@ -34,6 +36,10 @@ async function readJsonSafe(response: Response): Promise<any> {
   }
 }
 
+function regionalDeadline(): AbortSignal {
+  return AbortSignal.timeout(30_000);
+}
+
 function serviceHeaders(serviceAuthToken: string): HeadersInit {
   return {
     'Authorization': `Bearer ${serviceAuthToken}`,
@@ -59,6 +65,7 @@ export async function allocateInRegion(
         ...request,
         publicGatewayUrl: region.publicGatewayUrl,
       }),
+      signal: regionalDeadline(),
     });
     const body = await readJsonSafe(response);
 
@@ -105,6 +112,7 @@ export async function allocateInRegion(
 export async function getRegionalSession(region: RegionConfig, sessionId: string, serviceAuthToken: string) {
   const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}?publicGatewayUrl=${encodeURIComponent(region.publicGatewayUrl)}`, {
     headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    signal: regionalDeadline(),
   });
   return { response, body: await readJsonSafe(response) };
 }
@@ -113,6 +121,7 @@ export async function deleteRegionalSession(region: RegionConfig, sessionId: str
   const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
     headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    signal: regionalDeadline(),
   });
   return { response, body: await readJsonSafe(response) };
 }
@@ -122,6 +131,27 @@ export async function extendRegionalSessionTtl(region: RegionConfig, sessionId: 
     method: 'PATCH',
     headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
     body: JSON.stringify({ expiresAt }),
+    signal: regionalDeadline(),
+  });
+  return { response, body: await readJsonSafe(response) };
+}
+
+export async function activateRegionalSessionAccess(region: RegionConfig, sessionId: string, expiresAt: string, serviceAuthToken: string) {
+  const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/access-ttl?publicGatewayUrl=${encodeURIComponent(region.publicGatewayUrl)}`, {
+    method: 'PATCH',
+    headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    body: JSON.stringify({ expiresAt }),
+    signal: regionalDeadline(),
+  });
+  return { response, body: await readJsonSafe(response) };
+}
+
+export async function reallocateExpiredRegionalSession(region: RegionConfig, sessionId: string, expiresAt: string, serviceAuthToken: string) {
+  const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/reallocate-expired`, {
+    method: 'POST',
+    headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    body: JSON.stringify({ expiresAt, publicGatewayUrl: region.publicGatewayUrl }),
+    signal: regionalDeadline(),
   });
   return { response, body: await readJsonSafe(response) };
 }
@@ -129,6 +159,7 @@ export async function extendRegionalSessionTtl(region: RegionConfig, sessionId: 
 export async function getRegionalServers(region: RegionConfig, serviceAuthToken: string) {
   const response = await fetch(`${region.poolManagerUrl}/internal/servers`, {
     headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    signal: regionalDeadline(),
   });
   return { response, body: await readJsonSafe(response) };
 }

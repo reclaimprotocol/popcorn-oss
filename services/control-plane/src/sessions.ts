@@ -1,6 +1,6 @@
 import { db } from './db';
 import { sessions, sessionEvents } from './schema';
-import { and, count, desc, eq, isNull } from 'drizzle-orm';
+import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
 
 export const SessionService = {
   // Create a new session
@@ -62,6 +62,31 @@ export const SessionService = {
     }
   },
 
+  async endSessionIfCurrentWorkload(
+    sessionId: string,
+    status: 'deleted' | 'expired',
+    gameServerName: string,
+  ): Promise<boolean> {
+    const endedAt = new Date();
+    return await db.transaction(async (tx) => {
+      const updated = await tx.update(sessions)
+        .set({ endedAt, status })
+        .where(and(
+          eq(sessions.sessionId, sessionId),
+          isNull(sessions.endedAt),
+          sql`${sessions.metadata}->>'browserPodId' = ${gameServerName}`,
+        ))
+        .returning({ sessionId: sessions.sessionId });
+      if (!updated.length) return false;
+      await tx.insert(sessionEvents).values({
+        sessionId,
+        eventType: status,
+        timestamp: endedAt,
+      });
+      return true;
+    });
+  },
+
   // Get session info
   async getSession(sessionId: string) {
     return await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
@@ -105,5 +130,26 @@ export const SessionService = {
     await db.update(sessions)
       .set({ metadata })
       .where(eq(sessions.sessionId, sessionId));
+  },
+
+  async reactivateSession(sessionId: string, metadata: Record<string, unknown>): Promise<void> {
+    await db.transaction(async (tx) => {
+      const [existing] = await tx.select({ status: sessions.status })
+        .from(sessions)
+        .where(eq(sessions.sessionId, sessionId))
+        .limit(1);
+      if (!existing) throw new Error('Session record is missing during paid reactivation');
+      await tx.update(sessions)
+        .set({ metadata, status: 'active', endedAt: null })
+        .where(eq(sessions.sessionId, sessionId));
+      if (existing.status !== 'active') {
+        await tx.insert(sessionEvents).values({
+          sessionId,
+          eventType: 'reactivated',
+          timestamp: new Date(),
+          metadata,
+        });
+      }
+    });
   }
 };

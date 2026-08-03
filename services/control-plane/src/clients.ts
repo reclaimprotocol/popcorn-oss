@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import type { ClientCredentials, Client } from './types';
 
 export const ClientService = {
-  async createClient(name: string): Promise<ClientCredentials> {
+  async createClient(name: string, allowedClusters: string[] | null = []): Promise<ClientCredentials> {
     // Generate client ID and secret
     const clientId = `client_${crypto.randomBytes(8).toString('hex')}`;
     const clientSecret = `secret_${crypto.randomBytes(32).toString('hex')}`;
@@ -26,6 +26,7 @@ export const ClientService = {
       name,
       secretHash,
       active: true, // Explicitly set active
+      allowedClusters,
     });
 
     console.log(`✅ Created client: ${clientId} (${name})`);
@@ -81,6 +82,13 @@ export const ClientService = {
     console.log(`🚫 Revoked client: ${clientId}`);
   },
 
+  async updateAllowedClusters(clientId: string, allowedClusters: string[] | null): Promise<boolean> {
+    const rows = await db.update(clients).set({ allowedClusters })
+      .where(eq(clients.id, clientId))
+      .returning({ id: clients.id });
+    return rows.length > 0;
+  },
+
   async deleteClient(clientId: string): Promise<void> {
     await db.delete(clients).where(eq(clients.id, clientId));
     console.log(`Deleted client: ${clientId}`);
@@ -92,6 +100,7 @@ export const ClientService = {
       name: clients.name,
       createdAt: clients.createdAt,
       active: clients.active,
+      allowedClusters: clients.allowedClusters,
     }).from(clients);
 
     return result.sort((a, b) => {
@@ -109,6 +118,7 @@ export const ClientService = {
         name: clients.name,
         createdAt: clients.createdAt,
         active: clients.active,
+        allowedClusters: clients.allowedClusters,
       })
       .from(clients)
       .where(eq(clients.id, clientId))

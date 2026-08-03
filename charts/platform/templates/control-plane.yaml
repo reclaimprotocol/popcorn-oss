@@ -4,7 +4,7 @@
 {{- $regions := list }}
 {{- $hasSecretVolumes := false }}
 {{- range $index, $region := default (list) $controlPlane.regions }}
-{{- $entry := dict "name" $region.name "clusterName" $region.clusterName "poolManagerUrl" $region.poolManagerUrl "publicGatewayUrl" $region.publicGatewayUrl "enabled" (ne $region.enabled false) }}
+{{- $entry := dict "name" $region.name "clusterName" $region.clusterName "poolManagerUrl" $region.poolManagerUrl "publicGatewayUrl" $region.publicGatewayUrl "enabled" (ne $region.enabled false) "x402Only" (get $region "x402Only" | default false) }}
 {{- if $region.serviceAuthToken }}
 {{- $_ := set $entry "serviceAuthToken" $region.serviceAuthToken }}
 {{- end }}
@@ -100,6 +100,58 @@ spec:
               value: {{ toJson $regions | quote }}
             - name: SESSION_MAX_TTL_SECONDS
               value: {{ $controlPlane.sessionMaxTtlSeconds | quote }}
+            - name: X402_ENABLED
+              value: {{ $controlPlane.x402.enabled | quote }}
+            - name: X402_TESTNET
+              value: {{ $controlPlane.x402.testnet | quote }}
+            - name: X402_NETWORK
+              value: {{ $controlPlane.x402.network | quote }}
+            - name: X402_PUBLIC_BASE_URL
+              value: {{ $controlPlane.x402.publicBaseUrl | quote }}
+            - name: X402_PAY_TO
+              value: {{ $controlPlane.x402.payTo | quote }}
+            - name: X402_MAX_EXTENSION_BLOCKS
+              value: {{ $controlPlane.x402.maxExtensionBlocks | quote }}
+            - name: X402_MAX_PAID_BLOCKS
+              value: {{ $controlPlane.x402.maxPaidBlocks | quote }}
+            - name: X402_REGION_NAME
+              value: {{ $controlPlane.x402.regionName | quote }}
+            - name: X402_FACILITATOR_URL
+              value: {{ $controlPlane.x402.facilitatorUrl | quote }}
+            - name: X402_TRUSTED_PROXY_HOPS
+              value: {{ $controlPlane.x402.trustedProxyHops | quote }}
+            - name: X402_RATE_LIMIT_PER_MINUTE
+              value: {{ $controlPlane.x402.rateLimitPerMinute | quote }}
+{{- if $controlPlane.x402.enabled }}
+            - name: X402_MANAGEMENT_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.managementTokenSecretKey | quote }}
+            - name: X402_BASE_RPC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.baseRpcUrlSecretKey | quote }}
+            - name: CDP_API_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.cdpApiKeyIdKey | quote }}
+                  optional: true
+            - name: CDP_API_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.cdpApiKeySecretKey | quote }}
+                  optional: true
+            - name: X402_FACILITATOR_AUTH_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.facilitatorAuthHeadersSecretKey | quote }}
+                  optional: true
+{{- end }}
             - name: POSTGRES_HOST
               valueFrom:
                 secretKeyRef:

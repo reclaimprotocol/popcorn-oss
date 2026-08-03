@@ -166,6 +166,9 @@ controlPlane:
   domainName: ""
   staticIpName: ""
   publicServicePort: 3000
+  publicPaths:
+    - /
+  additionalIngresses: []
   sessionMaxTtlSeconds: 900
   nodePorts: {}
   secretName: ""
@@ -186,6 +189,24 @@ controlPlane:
     googleAllowedEmails: ""
     googleAllowedDomains: ""
   regions: []
+  x402:
+    enabled: false
+    testnet: false
+    network: ""
+    publicBaseUrl: ""
+    payTo: ""
+    maxExtensionBlocks: 12
+    maxPaidBlocks: 12
+    regionName: ""
+    facilitatorUrl: ""
+    trustedProxyHops: 1
+    rateLimitPerMinute: 30
+    secretName: control-plane-x402-secret
+    managementTokenSecretKey: X402_MANAGEMENT_TOKEN_SECRET
+    baseRpcUrlSecretKey: X402_BASE_RPC_URL
+    cdpApiKeyIdKey: CDP_API_KEY_ID
+    cdpApiKeySecretKey: CDP_API_KEY_SECRET
+    facilitatorAuthHeadersSecretKey: X402_FACILITATOR_AUTH_HEADERS
   resources:
     requests:
       memory: 256Mi
@@ -280,6 +301,9 @@ otel:
     database: otel
     secretName: otel-clickhouse-secret
   agent:
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
     resources:
       requests:
         memory: 128Mi

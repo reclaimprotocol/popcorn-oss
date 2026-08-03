@@ -72,6 +72,7 @@ const pod = {
     status: "ready",
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    restrictedTokenExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     ports: [
         { name: "cdp", port: 9223 },
         { name: "kernel-api", port: 3000 },
@@ -89,6 +90,65 @@ describe("session database dual writes", () => {
         expect(secondary.strings).toEqual(primary.strings);
         expect(primary.strings.get("route:session-1")?.value).toBe("10.0.0.8:9222");
         expect(primary.strings.get("route:cdp-internal:session-1")?.value).toBe("10.0.0.8:9226");
+        expect(primary.strings.get("route:session-1")?.ttlSeconds).toBeLessThanOrEqual(300);
+        expect((await database.getSession("session-1"))?.restrictedTokenExpiresAt)
+            .toBe(pod.restrictedTokenExpiresAt);
+    });
+
+    test("persists the refreshed restricted-token deadline with a TTL extension", async () => {
+        const primary = new FakeRedis();
+        const database = createSessionDatabase(asRedis(primary));
+        expect(await database.createSession("session-refresh", pod)).toBe(true);
+
+        const refreshedExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        await database.updateSession("session-refresh", {
+            ...pod,
+            expiresAt: refreshedExpiry,
+            restrictedTokenExpiresAt: refreshedExpiry,
+        });
+
+        const refreshed = await database.getSession("session-refresh");
+        expect(refreshed?.expiresAt).toBe(refreshedExpiry);
+        expect(refreshed?.restrictedTokenExpiresAt).toBe(refreshedExpiry);
+        expect(primary.strings.get("route:session-refresh")?.ttlSeconds).toBeGreaterThan(300);
+        expect(primary.strings.get("route:session-refresh")?.ttlSeconds).toBeLessThanOrEqual(900);
+    });
+
+    test("keeps x402 paid access at the old deadline until it is activated", async () => {
+        const primary = new FakeRedis();
+        const database = createSessionDatabase(asRedis(primary));
+        const initialExpiry = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+        const extendedExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+        const x402Pod = {
+            ...pod,
+            automationProfile: "x402-agent",
+            expiresAt: initialExpiry,
+            publicAccessExpiresAt: initialExpiry,
+        } as any;
+
+        expect(await database.createSession("x402-stable", x402Pod)).toBe(true);
+        expect(primary.strings.get("auth:route-bound:x402-stable")?.value)
+            .toBe(String(Date.parse(initialExpiry)));
+
+        await database.updateSession("x402-stable", {
+            ...x402Pod,
+            expiresAt: extendedExpiry,
+            publicAccessExpiresAt: initialExpiry,
+        });
+        expect(primary.strings.get("route:x402-stable")?.ttlSeconds).toBeGreaterThan(300);
+        expect(primary.strings.get("auth:route-bound:x402-stable")?.value)
+            .toBe(String(Date.parse(initialExpiry)));
+
+        await database.updateSession("x402-stable", {
+            ...x402Pod,
+            expiresAt: extendedExpiry,
+            publicAccessExpiresAt: extendedExpiry,
+        });
+        expect(primary.strings.get("auth:route-bound:x402-stable")?.value)
+            .toBe(String(Date.parse(extendedExpiry)));
+
+        await database.deleteSession("x402-stable");
+        expect(primary.strings.has("auth:route-bound:x402-stable")).toBe(false);
     });
 
     test("keeps the primary available when the secondary write fails", async () => {

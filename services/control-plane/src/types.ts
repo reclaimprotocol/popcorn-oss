@@ -18,4 +18,5 @@ export interface Client {
   name: string;
   createdAt: Date;
   active: boolean;
+  allowedClusters: string[] | null;
 }

@@ -99,6 +99,12 @@ export interface ClientSecretNotice {
   clientSecret: string;
 }
 
+export interface ClientClusterOption {
+  clusterName: string;
+  regionName: string;
+  enabled: boolean;
+}
+
 export interface ActionNotice {
   tone: 'success' | 'error';
   title: string;
@@ -300,6 +306,7 @@ export function AdminShell({ activeView = 'clients' }: { activeView?: AdminView 
 
 export function ClientsView(props: {
   clients: Client[];
+  clusters: ClientClusterOption[];
   selectedClientId?: string | null;
   sessions: SessionRow[];
   pagination: SessionPagination;
@@ -334,21 +341,21 @@ export function ClientsView(props: {
             <Metric label="Active" value={String(counts.active)} tone="success" />
             <Metric label="Revoked" value={String(counts.revoked)} tone="danger" />
           </div>
-          <CreateClientForm />
+          <CreateClientForm clusters={props.clusters} />
           {props.secretNotice ? <SecretNotice notice={props.secretNotice} /> : null}
           {props.notice ? <Notice notice={props.notice} /> : null}
           <ClientList clients={props.clients} selectedClientId={selectedClient?.id} />
         </div>
       </section>
       <div class="client-detail-stack">
-        <SelectedClientCard client={selectedClient} activeSessions={selectedActiveSessions} />
+        <SelectedClientCard client={selectedClient} activeSessions={selectedActiveSessions} clusters={props.clusters} />
         <ClientSessionsPanel client={selectedClient} sessions={props.sessions} pagination={props.pagination} />
       </div>
     </div>
   );
 }
 
-function CreateClientForm() {
+function CreateClientForm({ clusters }: { clusters: ClientClusterOption[] }) {
   return (
     <form
       class="create-client-form"
@@ -361,12 +368,17 @@ function CreateClientForm() {
         New client name
         <input name="name" autocomplete="off" required placeholder="Production app, staging worker..." />
       </label>
+      <ClusterAccessFields clusters={clusters} allowedClusters={[]} prefix="create" />
       <button type="submit">Create client</button>
     </form>
   );
 }
 
-function SelectedClientCard({ client, activeSessions }: { client: Client | null; activeSessions: number }) {
+function SelectedClientCard({ client, activeSessions, clusters }: {
+  client: Client | null;
+  activeSessions: number;
+  clusters: ClientClusterOption[];
+}) {
   if (!client) {
     return (
       <section class="panel selected-entity">
@@ -394,8 +406,83 @@ function SelectedClientCard({ client, activeSessions }: { client: Client | null;
           <dt>Active sessions on this page</dt>
           <dd>{activeSessions}</dd>
         </div>
+        <div>
+          <dt>Cluster access</dt>
+          <dd>{client.allowedClusters === null
+            ? <span class="status-pill warning">all normal clusters · legacy</span>
+            : client.allowedClusters.length
+              ? `${client.allowedClusters.length} selected`
+              : <span class="status-pill neutral">no cluster access</span>}</dd>
+        </div>
       </dl>
+      <ClientClusterAccessForm client={client} clusters={clusters} />
     </section>
+  );
+}
+
+function ClientClusterAccessForm({ client, clusters }: { client: Client; clusters: ClientClusterOption[] }) {
+  const reserved = client.id === 'admin' || client.id === 'x402-public';
+  return (
+    <form
+      class="client-access-form"
+      hx-patch={`/admin/ui/clients/${encodeURIComponent(client.id)}/access`}
+      hx-target="#admin-content"
+      hx-swap="innerHTML"
+    >
+      <div class="access-form-heading">
+        <div>
+          <strong>Allowed clusters</strong>
+          <small>{reserved
+            ? 'Built-in system client access cannot be changed here.'
+            : 'Changes apply to new session placement. Existing sessions are not moved.'}</small>
+        </div>
+        <button type="submit" class="secondary" disabled={reserved}>Save access</button>
+      </div>
+      <fieldset disabled={reserved}>
+        <ClusterAccessFields clusters={clusters} allowedClusters={client.allowedClusters} prefix={`edit-${client.id}`} />
+      </fieldset>
+    </form>
+  );
+}
+
+function ClusterAccessFields({ clusters, allowedClusters, prefix }: {
+  clusters: ClientClusterOption[];
+  allowedClusters: string[] | null;
+  prefix: string;
+}) {
+  const unrestricted = allowedClusters === null;
+  const selected = new Set(allowedClusters || []);
+  return (
+    <div class="cluster-access-fields">
+      <label class="access-mode-option" for={`${prefix}-selected`}>
+        <input id={`${prefix}-selected`} type="radio" name="clusterAccessMode" value="selected" checked={!unrestricted} />
+        <span><strong>Selected clusters</strong><small>Safe default. Leaving every cluster unchecked denies new sessions.</small></span>
+      </label>
+      <div class="cluster-check-grid">
+        {clusters.length ? clusters.map((cluster) => (
+          <label class="cluster-check-option">
+            <input
+              type="checkbox"
+              name="allowedClusters"
+              value={cluster.clusterName}
+              checked={selected.has(cluster.clusterName)}
+            />
+            <span>
+              <strong>{cluster.regionName}</strong>
+              <small>{cluster.clusterName}{cluster.enabled ? '' : ' · currently disabled'}</small>
+            </span>
+          </label>
+        )) : <div class="empty">No normal client clusters are configured.</div>}
+      </div>
+      <label class="access-mode-option legacy-access" for={`${prefix}-all`}>
+        <input id={`${prefix}-all`} type="radio" name="clusterAccessMode" value="all" checked={unrestricted} />
+        <span><strong>All normal clusters (legacy)</strong><small>Also grants future normal clusters automatically. x402-only clusters remain reserved.</small></span>
+      </label>
+      <label class="all-clusters-confirmation">
+        <input type="checkbox" name="confirmAllClusters" value="yes" />
+        I understand this grants this client every current and future normal cluster.
+      </label>
+    </div>
   );
 }
 
@@ -469,6 +556,7 @@ export function ClientSessionsPanel({ client, sessions, pagination }: {
   sessions: SessionRow[];
   pagination: SessionPagination;
 }) {
+  const reserved = client?.id === 'admin' || client?.id === 'x402-public';
   return (
     <section class="panel" id="client-sessions-panel">
       <div class="section-heading">
@@ -482,7 +570,7 @@ export function ClientSessionsPanel({ client, sessions, pagination }: {
             <button
               type="button"
               class="contrast"
-              disabled={!client.active}
+              disabled={!client.active || reserved}
               hx-delete={`/admin/ui/clients/${encodeURIComponent(client.id)}`}
               hx-target="#admin-content"
               hx-swap="innerHTML"
@@ -493,7 +581,7 @@ export function ClientSessionsPanel({ client, sessions, pagination }: {
             <button
               type="button"
               class="secondary destructive"
-              disabled={client.id === 'admin'}
+              disabled={client.id === 'admin' || client.id === 'x402-public'}
               hx-delete={`/admin/ui/clients/${encodeURIComponent(client.id)}/delete`}
               hx-target="#admin-content"
               hx-swap="innerHTML"

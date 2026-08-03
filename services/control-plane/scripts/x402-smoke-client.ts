@@ -1,0 +1,162 @@
+import { x402Client, x402HTTPClient } from '@x402/core/client';
+import { registerExactEvmScheme } from '@x402/evm/exact/client';
+import type { PaymentRequired } from '@x402/core/types';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
+
+const baseUrl = (process.env.X402_SMOKE_BASE_URL || 'http://127.0.0.1:4021').replace(/\/$/, '');
+const serviceToken = process.env.X402_SMOKE_SERVICE_TOKEN;
+const account = privateKeyToAccount(generatePrivateKey());
+const paymentClient = new x402Client();
+registerExactEvmScheme(paymentClient, { signer: account });
+const httpClient = new x402HTTPClient(paymentClient);
+
+function assert(condition: unknown, message: string): asserts condition {
+  if (!condition) throw new Error(message);
+}
+
+async function jsonBody(response: Response): Promise<any> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`Expected JSON from ${response.url || 'x402 API'}, got: ${text.slice(0, 200)}`);
+  }
+}
+
+async function paidRequest(input: {
+  path: string;
+  idempotencyKey: string;
+  body: Record<string, unknown>;
+  managementToken?: string;
+  expectedAmount: string;
+}): Promise<{ body: any; paymentRequired: PaymentRequired }> {
+  const headers = new Headers({
+    'Content-Type': 'application/json',
+    'Idempotency-Key': input.idempotencyKey,
+  });
+  if (input.managementToken) headers.set('Authorization', `Bearer ${input.managementToken}`);
+
+  const challenge = await fetch(`${baseUrl}${input.path}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(input.body),
+  });
+  const challengeBody = await jsonBody(challenge.clone());
+  assert(challenge.status === 402, `Expected 402 challenge, received ${challenge.status}: ${JSON.stringify(challengeBody)}`);
+  const paymentRequired = httpClient.getPaymentRequiredResponse(
+    (name) => challenge.headers.get(name),
+    challengeBody,
+  );
+  assert(paymentRequired.x402Version === 2, 'Expected x402 v2 challenge');
+  assert(paymentRequired.accepts.length === 1, 'Expected exactly one payment option');
+  assert(paymentRequired.accepts[0]?.amount === input.expectedAmount,
+    `Expected ${input.expectedAmount} atomic USDC, got ${paymentRequired.accepts[0]?.amount}`);
+  assert(paymentRequired.accepts[0]?.network === 'eip155:84532', 'Expected Base Sepolia challenge');
+
+  const payload = await httpClient.createPaymentPayload(paymentRequired);
+  const paidHeaders = new Headers(headers);
+  for (const [name, value] of Object.entries(httpClient.encodePaymentSignatureHeader(payload))) {
+    paidHeaders.set(name, value);
+  }
+  const paid = await fetch(`${baseUrl}${input.path}`, {
+    method: 'POST',
+    headers: paidHeaders,
+    body: JSON.stringify(input.body),
+  });
+  const body = await jsonBody(paid.clone());
+  assert(paid.status === 200, `Paid request failed with ${paid.status}: ${JSON.stringify(body)}`);
+  assert(paid.headers.has('PAYMENT-RESPONSE'), 'Paid response is missing PAYMENT-RESPONSE');
+  return { body, paymentRequired };
+}
+
+const createKey = `smoke-create-${crypto.randomUUID()}`;
+const created = await paidRequest({
+  path: '/v1/x402/sessions',
+  idempotencyKey: createKey,
+  body: {},
+  expectedAmount: '10000',
+});
+assert(created.body.paidMinutes === 5, 'Create did not purchase five minutes');
+assert(typeof created.body.managementToken === 'string', 'Create did not return a management token');
+assert(typeof created.body.connectUrl === 'string' && typeof created.body.liveViewUrl === 'string',
+  'Create did not return both public connection URLs');
+const createdExpiry = Date.parse(created.body.expiresAt);
+
+const replay = await fetch(`${baseUrl}/v1/x402/sessions`, {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', 'Idempotency-Key': createKey },
+  body: '{}',
+});
+const replayBody = await jsonBody(replay.clone());
+assert(replay.status === 200 && replayBody.sessionId === created.body.sessionId,
+  'Settled create idempotency replay did not return the original session');
+assert(!replay.headers.has('PAYMENT-REQUIRED'), 'Settled replay unexpectedly requested payment again');
+
+const extended = await paidRequest({
+  path: `/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}/extend`,
+  idempotencyKey: `smoke-extend-${crypto.randomUUID()}`,
+  managementToken: created.body.managementToken,
+  body: { blocks: 2 },
+  expectedAmount: '20000',
+});
+const extendedExpiry = Date.parse(extended.body.expiresAt);
+assert(extended.body.additionalMinutes === 10 && extended.body.paidMinutesTotal === 15,
+  'Extension did not add two five-minute blocks');
+assert(extendedExpiry - createdExpiry === 10 * 60 * 1000, 'Extension deadline did not advance by ten minutes');
+assert(extended.body.liveViewUrl === created.body.liveViewUrl && extended.body.connectUrl === created.body.connectUrl,
+  'Extension replaced the stable connection URLs');
+
+const status = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`, {
+  headers: { Authorization: `Bearer ${created.body.managementToken}` },
+});
+const statusBody = await jsonBody(status.clone());
+assert(status.status === 200 && statusBody.paidMinutes === 15, 'Status did not show the paid extension');
+assert(statusBody.expiresAt === extended.body.expiresAt, 'Status did not show the extended deadline');
+assert(statusBody.liveViewUrl === extended.body.liveViewUrl && statusBody.connectUrl === extended.body.connectUrl,
+  'Status did not preserve the original connection URLs');
+
+let staleExpiryRejected = false;
+if (serviceToken) {
+  const staleExpiry = await fetch(`${baseUrl}/sessions/${encodeURIComponent(created.body.sessionId)}/end`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${serviceToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status: 'expired', gameServerName: 'stale-browser-generation' }),
+  });
+  const staleExpiryBody = await jsonBody(staleExpiry.clone());
+  assert(staleExpiry.status === 200 && staleExpiryBody.changed === false && staleExpiryBody.staleWorkload === true,
+    'A stale GameServer callback was not rejected atomically');
+  const afterStaleExpiry = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`, {
+    headers: { Authorization: `Bearer ${created.body.managementToken}` },
+  });
+  const afterStaleExpiryBody = await jsonBody(afterStaleExpiry.clone());
+  assert(afterStaleExpiry.status === 200 && afterStaleExpiryBody.status === 'active',
+    'A stale GameServer callback ended the current paid workload');
+  staleExpiryRejected = true;
+}
+
+const terminated = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`, {
+  method: 'DELETE',
+  headers: { Authorization: `Bearer ${created.body.managementToken}` },
+});
+const terminatedBody = await jsonBody(terminated.clone());
+assert(terminated.status === 200 && terminatedBody.success === true && terminatedBody.refund === false,
+  'Session termination failed or incorrectly offered a refund');
+
+console.log(JSON.stringify({
+  ok: true,
+  network: 'eip155:84532',
+  payer: account.address,
+  sessionId: created.body.sessionId,
+  createAmountAtomic: created.paymentRequired.accepts[0]?.amount,
+  extensionAmountAtomic: extended.paymentRequired.accepts[0]?.amount,
+  initialPaidMinutes: created.body.paidMinutes,
+  finalPaidMinutes: extended.body.paidMinutesTotal,
+  stableLiveViewUrl: extended.body.liveViewUrl === created.body.liveViewUrl,
+  stableConnectUrl: extended.body.connectUrl === created.body.connectUrl,
+  staleExpiryRejected,
+  idempotencyReplay: true,
+  terminated: true,
+}, null, 2));

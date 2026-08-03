@@ -4,6 +4,10 @@
 {{- if not (has $streamingMode (list "webrtc" "vnc" "both")) }}
 {{- fail "streaming.mode must be one of 'webrtc', 'vnc', or 'both'" }}
 {{- end }}
+{{- $securityProfile := default "legacy" .Values.browserRuntimeSecurityProfile }}
+{{- if not (has $securityProfile (list "legacy" "hardened")) }}
+{{- fail "browserRuntimeSecurityProfile must be one of 'legacy' or 'hardened'" }}
+{{- end }}
 {{- $enableWebrtc := or (eq $streamingMode "webrtc") (eq $streamingMode "both") }}
 {{- $enableVnc := or (eq $streamingMode "vnc") (eq $streamingMode "both") }}
 apiVersion: agones.dev/v1
@@ -63,6 +67,10 @@ spec:
       template:
         spec:
           serviceAccountName: browser-sa
+          automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+{{- with .Values.runtimeClassName }}
+          runtimeClassName: {{ . | quote }}
+{{- end }}
 {{- with .Values.podSecurityContext }}
           securityContext:
 {{- toYaml . | nindent 12 }}
@@ -83,8 +91,17 @@ spec:
                   memory: {{ .Values.fleet.browserRuntimeMemoryLimit }}
                   cpu: {{ .Values.fleet.browserRuntimeCpuLimit | quote }}
               securityContext:
+{{- if eq $securityProfile "hardened" }}
+                allowPrivilegeEscalation: false
+                privileged: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+{{- else }}
                 capabilities:
                   add: ["SYS_ADMIN"]
+{{- end }}
               env:
                 - name: POD_NAME
                   valueFrom:

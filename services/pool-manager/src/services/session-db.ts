@@ -38,6 +38,7 @@ function readExtraRoutePorts(raw: string | undefined): Record<string, string> {
 
 function sessionRouteKeys(id: string, extraRoutePorts: Record<string, string>): string[] {
     return [
+        `auth:route-bound:${id}`,
         `route:${id}`,
         `route:cdp:${id}`,
         `route:api:${id}`,
@@ -59,6 +60,14 @@ function buildSessionRoutes(
         value: `${host}:${url.port}`,
         ttlSeconds,
     }];
+
+    if (pod.automationProfile === "x402-agent" && pod.publicAccessExpiresAt) {
+        routes.push({
+            key: `auth:route-bound:${id}`,
+            value: String(Date.parse(pod.publicAccessExpiresAt)),
+            ttlSeconds: routeTtlSeconds(pod.publicAccessExpiresAt),
+        });
+    }
 
     for (const port of pod.ports ?? []) {
         if (port.name === "cdp") {

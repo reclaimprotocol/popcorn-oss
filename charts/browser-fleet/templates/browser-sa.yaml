@@ -9,6 +9,7 @@ metadata:
   annotations:
     iam.gke.io/gcp-service-account: {{ .Values.serviceAccount.gcpServiceAccount | quote }}
 {{- end }}
+automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

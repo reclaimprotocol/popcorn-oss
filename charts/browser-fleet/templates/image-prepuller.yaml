@@ -17,6 +17,9 @@ spec:
         app.kubernetes.io/name: browser-image-prepuller
         app.kubernetes.io/part-of: browser-fleet
     spec:
+{{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+{{- end }}
 {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
 {{ toYaml . | nindent 8 }}
@@ -30,6 +33,15 @@ spec:
           image: {{ .Values.browserRuntimeImage | quote }}
           imagePullPolicy: {{ .Values.imagePrepuller.imagePullPolicy }}
           command: ["/bin/sh", "-c", "sleep 365d"]
+{{- if eq (default "legacy" .Values.browserRuntimeSecurityProfile) "hardened" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+{{- end }}
           resources:
 {{ toYaml .Values.imagePrepuller.resources | indent 12 }}
 {{- with .Values.imagePrepuller.extraContainers }}

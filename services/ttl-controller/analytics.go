@@ -50,7 +50,8 @@ func initAnalytics() {
 }
 
 type EndSessionRequest struct {
-	Status string `json:"status"`
+	Status         string `json:"status"`
+	GameServerName string `json:"gameServerName,omitempty"`
 }
 
 // reportExpiry reports an expiry event using session ID from GameServer annotations
@@ -68,6 +69,7 @@ func reportExpiry(ctx context.Context, gameServerName string, sessionID string) 
 			http.DefaultClient,
 			analyticsURL,
 			serviceAuthToken,
+			gameServerName,
 			sessionID,
 			"expired",
 			endSessionMaxAttempts,
@@ -83,8 +85,8 @@ func reportExpiry(ctx context.Context, gameServerName string, sessionID string) 
 
 // postSessionEnd posts one session-end attempt. The boolean indicates whether a
 // retry can reasonably succeed (network errors, rate limits, and server errors).
-func postSessionEnd(client *http.Client, baseURL string, authToken string, sessionID string, status string) (bool, error) {
-	reqBody := EndSessionRequest{Status: status}
+func postSessionEnd(client *http.Client, baseURL string, authToken string, gameServerName string, sessionID string, status string) (bool, error) {
+	reqBody := EndSessionRequest{Status: status, GameServerName: gameServerName}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
 		return false, err
@@ -124,6 +126,7 @@ func endSessionWithRetry(
 	client *http.Client,
 	baseURL string,
 	authToken string,
+	gameServerName string,
 	sessionID string,
 	status string,
 	maxAttempts int,
@@ -135,7 +138,7 @@ func endSessionWithRetry(
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		retryable, err := postSessionEnd(client, baseURL, authToken, sessionID, status)
+		retryable, err := postSessionEnd(client, baseURL, authToken, gameServerName, sessionID, status)
 		if err == nil {
 			return attempt, nil
 		}

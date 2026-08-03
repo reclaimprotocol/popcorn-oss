@@ -23,6 +23,12 @@ podSecurityContext:
   fsGroup: 1000
   fsGroupChangePolicy: OnRootMismatch
 
+# `legacy` preserves the existing customer fleet capability set. `hardened`
+# is intended for untrusted public workloads and must be runtime-tested with
+# the exact pinned browser image before launch.
+browserRuntimeSecurityProfile: legacy
+runtimeClassName: ""
+
 secrets:
   browserTurnName: browser-turn-secret
   browserRuntimeProxyName: browser-runtime-proxy-secret
@@ -32,6 +38,10 @@ ccDevicePlugin:
 
 serviceAccount:
   gcpServiceAccount: ""
+  automountServiceAccountToken: true
+
+networkPolicy:
+  enabled: false
 
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
 browserRuntimeImagePullPolicy: IfNotPresent

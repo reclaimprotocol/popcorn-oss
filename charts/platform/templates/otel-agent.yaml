@@ -18,7 +18,26 @@ spec:
         app: otel-agent
     spec:
       serviceAccountName: otel-agent
+{{- if or .Values.otel.agent.nodeSelector .Values.otel.agent.tolerations .Values.otel.agent.affinity }}
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.otel.agent.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.otel.agent.tolerations }}
+      tolerations:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.otel.agent.affinity }}
+      affinity:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- else }}
 {{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+{{- end }}
       containers:
         - name: otel-agent
           image: {{ .Values.otel.image | quote }}

@@ -25,7 +25,48 @@ local function load_public_key()
     return public_key
 end
 
-load_public_key()
+local function is_supported_algorithm(jwt_obj)
+    return jwt_obj ~= nil
+        and jwt_obj.valid == true
+        and jwt_obj.header ~= nil
+        and jwt_obj.header.alg == "RS256"
+end
+
+local function check_route_bound_deadline(jwt_obj, expected_session_id)
+    if jwt_obj.payload.routeBound ~= true then
+        return true
+    end
+    if not expected_session_id then
+        ngx.log(ngx.WARN, "Auth: Route-bound token used without a session")
+        return false
+    end
+
+    local redis = require "resty.redis"
+    local red = redis:new()
+    red:set_timeout(1000)
+    local ok, err = red:connect(ngx.var.gateway_redis_host, 6379)
+    if not ok then
+        ngx.log(ngx.ERR, "Auth: Failed to connect to route-bound access store: ", err)
+        return nil
+    end
+    local deadline, read_err = red:get("auth:route-bound:" .. expected_session_id)
+    red:set_keepalive(10000, 100)
+    if read_err then
+        ngx.log(ngx.ERR, "Auth: Failed to read route-bound deadline: ", read_err)
+        return nil
+    end
+    if not deadline or deadline == ngx.null or tonumber(deadline) == nil then
+        ngx.log(ngx.WARN, "Auth: Missing route-bound deadline")
+        return false
+    end
+    return _M.is_route_bound_deadline_active(deadline, ngx.now() * 1000)
+end
+
+function _M.is_route_bound_deadline_active(deadline, now_ms)
+    return tonumber(deadline) ~= nil and tonumber(deadline) > now_ms
+end
+
+_M.is_supported_algorithm = is_supported_algorithm
 
 function _M.check(bypass_assets, token_arg, required_scope, expected_session_id)
     -- bypass_assets: boolean
@@ -49,7 +90,16 @@ function _M.check(bypass_assets, token_arg, required_scope, expected_session_id)
         return ngx.exit(503)
     end
 
-    local jwt_obj = jwt:verify(key, token)
+    -- Parse first and pin the asymmetric algorithm before the library sees the
+    -- RSA public key. Without this check an HS256 token could treat that public
+    -- key text as an HMAC secret (RS256 -> HS256 algorithm confusion).
+    local jwt_obj = jwt:load_jwt(token)
+    if not is_supported_algorithm(jwt_obj) then
+        ngx.log(ngx.WARN, "Auth: Unsupported JWT algorithm")
+        return ngx.exit(403)
+    end
+
+    jwt_obj = jwt:verify_jwt_obj(key, jwt_obj)
     if not jwt_obj.verified then
         ngx.log(ngx.WARN, "Auth: Invalid token: " .. (jwt_obj.reason or "unknown"))
         return ngx.exit(403)
@@ -70,6 +120,15 @@ function _M.check(bypass_assets, token_arg, required_scope, expected_session_id)
             ngx.log(ngx.WARN, "Auth: Session mismatch - token sub: " .. (payload_sub or "none") .. ", expected: " .. expected_session_id)
             return ngx.exit(403)
         end
+    end
+
+    local route_bound_active = check_route_bound_deadline(jwt_obj, expected_session_id)
+    if route_bound_active == nil then
+        return ngx.exit(503)
+    end
+    if not route_bound_active then
+        ngx.log(ngx.WARN, "Auth: Route-bound access expired")
+        return ngx.exit(403)
     end
 
     if bypass_assets then

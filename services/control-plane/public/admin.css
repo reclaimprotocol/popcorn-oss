@@ -288,13 +288,88 @@ main {
   border-radius: var(--pico-border-radius);
   display: grid;
   gap: 0.7rem;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 1fr;
   margin: 0;
   padding: 0.7rem;
 }
 
 .create-client-form label {
   margin: 0;
+}
+
+.client-access-form {
+  border-top: 1px solid var(--line);
+  margin: 1rem 0 0;
+  padding-top: 1rem;
+}
+
+.client-access-form fieldset,
+.cluster-access-fields {
+  margin: 0;
+}
+
+.access-form-heading,
+.access-mode-option,
+.cluster-check-option,
+.all-clusters-confirmation {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.65rem;
+}
+
+.access-form-heading {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.8rem;
+}
+
+.access-form-heading small,
+.access-mode-option small,
+.cluster-check-option small {
+  color: var(--text-soft);
+  display: block;
+}
+
+.access-form-heading button {
+  margin: 0;
+  white-space: nowrap;
+}
+
+.access-mode-option,
+.cluster-check-option,
+.all-clusters-confirmation {
+  margin: 0;
+}
+
+.access-mode-option {
+  background: #101720;
+  border: 1px solid var(--line);
+  border-radius: var(--pico-border-radius);
+  padding: 0.65rem;
+}
+
+.cluster-check-grid {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0.55rem 0;
+  padding-left: 1rem;
+}
+
+.cluster-check-option {
+  border: 1px solid var(--line);
+  border-radius: var(--pico-border-radius);
+  padding: 0.55rem;
+}
+
+.legacy-access {
+  border-color: rgba(232, 178, 72, 0.45);
+}
+
+.all-clusters-confirmation {
+  color: var(--warning);
+  font-size: 0.78rem;
+  margin: 0.55rem 0 0 1rem;
 }
 
 .cluster-create {
@@ -729,7 +804,8 @@ code {
   .create-client-form,
   .cluster-create,
   .entity-meta,
-  .secret-grid {
+  .secret-grid,
+  .cluster-check-grid {
     grid-template-columns: 1fr;
   }
 

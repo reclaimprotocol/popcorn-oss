@@ -37,6 +37,12 @@ import {
   getTopClients,
 } from './src/stats';
 import { expiresAtFromTtlSeconds, extendExpiresAt, readOptionalSeconds, validateTtlSeconds } from './src/ttl';
+import { X402PaymentGateway } from './src/x402-payment';
+import { createX402SessionController, type X402HttpResult } from './src/x402-sessions';
+import { getX402Analytics } from './src/x402-analytics';
+import { X402Store } from './src/x402-store';
+import { selectTrustedClientAddress } from './src/x402-utils';
+import { readBoundedJsonBody } from './src/http-body';
 import {
   renderClientSessionsPanelHtml,
   renderAnalyticsViewHtml,
@@ -52,8 +58,28 @@ import {
 const app = new Hono();
 const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const ADMIN_CLIENT_ID = 'admin';
+const X402_PUBLIC_CLIENT_ID = 'x402-public';
 const ADMIN_CLIENT_NAME = 'Admin UI';
 const ADMIN_AUTH_CONFIG = readAdminAuthConfig();
+const X402_CONTROLLER = ControlPlaneConfig.x402.enabled
+  ? createX402SessionController({
+    config: ControlPlaneConfig.x402,
+    regions: ControlPlaneConfig.regions,
+    serviceAuthToken: ControlPlaneConfig.serviceAuthToken,
+    gateway: new X402PaymentGateway(ControlPlaneConfig.x402),
+  })
+  : null;
+let lastX402StaleCleanupAt = 0;
+let lastX402ReconciliationAt = 0;
+
+if (X402_CONTROLLER) {
+  const reconciliationTimer = setInterval(() => {
+    void X402_CONTROLLER.reconcilePendingSettlements().catch((error) => {
+      console.error('Failed to reconcile pending x402 settlements:', error);
+    });
+  }, 5_000);
+  reconciliationTimer.unref();
+}
 
 console.log(`🚀 Starting Control Plane on port ${ControlPlaneConfig.port}...`);
 console.log(`🌎 Configured regions: ${ControlPlaneConfig.regions.map((region) => region.name).join(', ') || 'none'}`);
@@ -125,7 +151,27 @@ function clearAdminCookies(c: any) {
   deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/admin/auth/google' });
 }
 
-async function authenticateClient(c: any): Promise<{ identity?: { clientId: string; clientName: string }; response?: Response }> {
+function sendX402Result(c: any, result: X402HttpResult): Response {
+  for (const [name, value] of Object.entries(result.headers || {})) {
+    c.header(name, value);
+  }
+  c.header('Cache-Control', result.status >= 200 && result.status < 300 ? 'private, no-store' : 'no-store');
+  return c.json(result.body, result.status as any);
+}
+
+async function readX402JsonBody(c: any, maxBytes: number): Promise<{ body?: unknown; error?: Response }> {
+  const parsed = await readBoundedJsonBody(c.req.raw, maxBytes);
+  if (!parsed.error) return { body: parsed.body };
+  c.header('Cache-Control', 'no-store');
+  return parsed.error === 'too_large'
+    ? { error: c.json({ error: 'Request body is too large' }, 413) }
+    : { error: c.json({ error: 'Malformed JSON request body' }, 400) };
+}
+
+async function authenticateClient(c: any): Promise<{
+  identity?: { clientId: string; clientName: string; allowedClusters: string[] | null };
+  response?: Response;
+}> {
   const credential = getBearerCredential(c);
 
   if (!credential) {
@@ -146,10 +192,16 @@ async function authenticateClient(c: any): Promise<{ identity?: { clientId: stri
   }
 
   const client = await ClientService.getClient(clientId);
+  if (!client || !client.active || (client.allowedClusters !== null
+    && (!Array.isArray(client.allowedClusters)
+      || client.allowedClusters.some((cluster) => typeof cluster !== 'string')))) {
+    return { response: c.json({ error: 'Invalid credentials' }, 401) };
+  }
   return {
     identity: {
       clientId,
-      clientName: client?.name || 'Unknown',
+      clientName: client.name,
+      allowedClusters: client.allowedClusters,
     },
   };
 }
@@ -162,6 +214,51 @@ function readRequestedSessionId(body: any): string | undefined {
     return '';
   }
   return body.sessionId.trim();
+}
+
+function validateAllowedClusters(value: unknown): { value?: string[] | null; error?: string } {
+  if (value === undefined || value === null) return { value: null };
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || !entry.trim())) {
+    return { error: 'allowedClusters must be null or an array of cluster names' };
+  }
+  const clusters = [...new Set(value.map((entry) => entry.trim()))];
+  const routable = new Set(ControlPlaneConfig.regions
+    .filter((region) => !region.x402Only)
+    .map((region) => region.clusterName));
+  const unknown = clusters.find((cluster) => !routable.has(cluster));
+  if (unknown) return { error: `Unknown or reserved cluster: ${unknown}` };
+  return { value: clusters };
+}
+
+function isReservedClient(clientId: string): boolean {
+  return clientId === ADMIN_CLIENT_ID || clientId === X402_PUBLIC_CLIENT_ID;
+}
+
+function readClusterAccessForm(form: FormData): { value?: string[] | null; error?: string } {
+  const mode = String(form.get('clusterAccessMode') || 'selected');
+  if (mode === 'selected') {
+    return validateAllowedClusters(form.getAll('allowedClusters').map((value) => String(value)));
+  }
+  if (mode === 'all') {
+    if (form.get('confirmAllClusters') !== 'yes') {
+      return { error: 'Confirm unrestricted access before granting all normal clusters.' };
+    }
+    return { value: null };
+  }
+  return { error: 'Choose selected clusters or explicitly choose all normal clusters.' };
+}
+
+function clientClusterOptions() {
+  const options = new Map<string, { clusterName: string; regionName: string; enabled: boolean }>();
+  for (const region of ControlPlaneConfig.regions) {
+    if (region.x402Only || options.has(region.clusterName)) continue;
+    options.set(region.clusterName, {
+      clusterName: region.clusterName,
+      regionName: region.name,
+      enabled: region.enabled,
+    });
+  }
+  return [...options.values()];
 }
 
 function readSessionExpiresAt(session: { metadata?: unknown } | null | undefined): string | undefined {
@@ -333,7 +430,10 @@ async function getRoutedSession(sessionId: string, clientId?: string) {
   };
 }
 
-async function routeSession(identity: { clientId: string; clientName: string }, body: any): Promise<{ status: number; body: any }> {
+async function routeSession(
+  identity: { clientId: string; clientName: string; allowedClusters: string[] | null },
+  body: any,
+): Promise<{ status: number; body: any }> {
   const requestReceivedAt = new Date();
   const requestedSessionId = readRequestedSessionId(body);
   if (requestedSessionId === '') {
@@ -350,12 +450,17 @@ async function routeSession(identity: { clientId: string; clientName: string }, 
   }
   const expiresAt = ttlSeconds ? expiresAtFromTtlSeconds(ttlSeconds) : undefined;
 
-  const selection = selectRegions(ControlPlaneConfig.regions, body?.regions);
+  const selection = selectRegions(ControlPlaneConfig.regions, body?.regions, identity.allowedClusters);
   if (selection.error) {
-    return { status: 400, body: { error: selection.error } };
+    return {
+      status: selection.error.startsWith('Client is not allowed') ? 403 : 400,
+      body: { error: selection.error },
+    };
   }
   if (!selection.regions.length) {
-    return { status: 503, body: { error: 'No enabled regions are configured' } };
+    return identity.allowedClusters === null
+      ? { status: 503, body: { error: 'No enabled regions are configured' } }
+      : { status: 403, body: { error: 'This client has no accessible clusters' } };
   }
 
   const sessionId = requestedSessionId || await generateSessionId();
@@ -534,7 +639,11 @@ async function extendRoutedSessionTtl(sessionId: string, body: any, clientId?: s
   };
 }
 
-async function createRoutedSession(c: any, identity: { clientId: string; clientName: string }, body: any) {
+async function createRoutedSession(
+  c: any,
+  identity: { clientId: string; clientName: string; allowedClusters: string[] | null },
+  body: any,
+) {
   const result = await routeSession(identity, body);
   return c.json(result.body, result.status as any);
 }
@@ -662,6 +771,7 @@ async function renderClientsPage(c: any, options: {
     : await listSessionPage(c, undefined);
   return c.html(await renderClientsViewHtml({
     clients,
+    clusters: clientClusterOptions(),
     selectedClientId,
     sessions: selectedClientId ? sessions : [],
     pagination,
@@ -705,6 +815,79 @@ app.use('/admin/*', async (c, next) => {
   }
   c.header('WWW-Authenticate', 'Basic realm="Popcorn Control Plane"');
   return unauthorized;
+});
+
+app.use('/v1/x402/*', async (c, next) => {
+  if (!ControlPlaneConfig.x402.enabled) return next();
+  const address = selectTrustedClientAddress(
+    c.req.header('X-Forwarded-For'),
+    c.req.header('X-Real-IP'),
+    ControlPlaneConfig.x402.trustedProxyHops,
+  );
+  const key = `ip:${crypto.createHash('sha256').update(address).digest('hex')}`;
+  let limit;
+  try {
+    limit = await X402Store.consumeRateLimit(key, ControlPlaneConfig.x402.rateLimitPerMinute);
+  } catch (error) {
+    console.error('x402 shared rate limiter unavailable:', error);
+    c.header('Cache-Control', 'no-store');
+    return c.json({ error: 'x402 request admission is temporarily unavailable' }, 503);
+  }
+  c.header('X-RateLimit-Limit', String(ControlPlaneConfig.x402.rateLimitPerMinute));
+  c.header('X-RateLimit-Remaining', String(limit.remaining));
+  if (!limit.allowed) {
+    c.header('Retry-After', String(limit.retryAfterSeconds));
+    c.header('Cache-Control', 'no-store');
+    return c.json({ error: 'x402 request rate limit exceeded' }, 429);
+  }
+  const now = Date.now();
+  if (now - lastX402StaleCleanupAt >= 15 * 60 * 1000) {
+    lastX402StaleCleanupAt = now;
+    void X402Store.cleanupStaleState().catch((error) => {
+      console.error('Failed to clean stale x402 state:', error);
+    });
+  }
+  if (X402_CONTROLLER && now - lastX402ReconciliationAt >= 5 * 1000) {
+    lastX402ReconciliationAt = now;
+    void X402_CONTROLLER.reconcilePendingSettlements().catch((error) => {
+      console.error('Failed to reconcile pending x402 settlements:', error);
+    });
+  }
+  return next();
+});
+
+app.post('/v1/x402/sessions', async (c) => {
+  if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
+  const parsed = await readX402JsonBody(c, 64);
+  if (parsed.error) return parsed.error;
+  const result = await X402_CONTROLLER.create({
+    idempotencyKey: c.req.header('Idempotency-Key'),
+    paymentSignature: c.req.header('PAYMENT-SIGNATURE'),
+    resourceUrl: c.req.url,
+  }, parsed.body);
+  return sendX402Result(c, result);
+});
+
+app.post('/v1/x402/sessions/:id/extend', async (c) => {
+  if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
+  const parsed = await readX402JsonBody(c, 128);
+  if (parsed.error) return parsed.error;
+  const result = await X402_CONTROLLER.extend(c.req.param('id'), getBearerCredential(c) || undefined, {
+    idempotencyKey: c.req.header('Idempotency-Key'),
+    paymentSignature: c.req.header('PAYMENT-SIGNATURE'),
+    resourceUrl: c.req.url,
+  }, parsed.body);
+  return sendX402Result(c, result);
+});
+
+app.get('/v1/x402/sessions/:id', async (c) => {
+  if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
+  return sendX402Result(c, await X402_CONTROLLER.status(c.req.param('id'), getBearerCredential(c) || undefined));
+});
+
+app.delete('/v1/x402/sessions/:id', async (c) => {
+  if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
+  return sendX402Result(c, await X402_CONTROLLER.terminate(c.req.param('id'), getBearerCredential(c) || undefined));
 });
 
 app.post('/v1/sessions', async (c) => {
@@ -880,7 +1063,14 @@ app.post('/admin/ui/clients', async (c) => {
       });
     }
 
-    const credentials = await ClientService.createClient(name);
+    const acl = readClusterAccessForm(form);
+    if (acl.error) {
+      return renderClientsPage(c, {
+        notice: { tone: 'error', title: 'Client not created', message: acl.error },
+      });
+    }
+
+    const credentials = await ClientService.createClient(name, acl.value!);
     return renderClientsPage(c, {
       selectedClientId: credentials.clientId,
       secretNotice: credentials,
@@ -893,8 +1083,55 @@ app.post('/admin/ui/clients', async (c) => {
   }
 });
 
+app.patch('/admin/ui/clients/:id/access', async (c) => {
+  const clientId = c.req.param('id');
+  if (isReservedClient(clientId)) {
+    return renderClientsPage(c, {
+      selectedClientId: clientId,
+      notice: { tone: 'error', title: 'Access not changed', message: 'Built-in system client access cannot be modified.' },
+    });
+  }
+
+  try {
+    const acl = readClusterAccessForm(await c.req.formData());
+    if (acl.error) {
+      return renderClientsPage(c, {
+        selectedClientId: clientId,
+        notice: { tone: 'error', title: 'Access not changed', message: acl.error },
+      });
+    }
+    const updated = await ClientService.updateAllowedClusters(clientId, acl.value!);
+    if (!updated) {
+      return renderClientsPage(c, {
+        notice: { tone: 'error', title: 'Access not changed', message: `Client ${clientId} was not found.` },
+      });
+    }
+    const access = acl.value === null
+      ? 'all current and future normal clusters'
+      : acl.value!.length
+        ? `${acl.value!.length} selected cluster${acl.value!.length === 1 ? '' : 's'}`
+        : 'no clusters';
+    return renderClientsPage(c, {
+      selectedClientId: clientId,
+      notice: { tone: 'success', title: 'Cluster access updated', message: `Client ${clientId} now has access to ${access}.` },
+    });
+  } catch (error) {
+    console.error('Error updating client cluster access from UI:', error);
+    return renderClientsPage(c, {
+      selectedClientId: clientId,
+      notice: { tone: 'error', title: 'Access not changed', message: 'Internal server error.' },
+    });
+  }
+});
+
 app.delete('/admin/ui/clients/:id', async (c) => {
   const clientId = c.req.param('id');
+  if (isReservedClient(clientId)) {
+    return renderClientsPage(c, {
+      selectedClientId: clientId,
+      notice: { tone: 'error', title: 'Client not revoked', message: 'Built-in system clients cannot be revoked.' },
+    });
+  }
   await ClientService.revokeClient(clientId);
   return renderClientsPage(c, {
     selectedClientId: clientId,
@@ -904,10 +1141,10 @@ app.delete('/admin/ui/clients/:id', async (c) => {
 
 app.delete('/admin/ui/clients/:id/delete', async (c) => {
   const clientId = c.req.param('id');
-  if (clientId === ADMIN_CLIENT_ID) {
+  if (clientId === ADMIN_CLIENT_ID || clientId === X402_PUBLIC_CLIENT_ID) {
     return renderClientsPage(c, {
       selectedClientId: clientId,
-      notice: { tone: 'error', title: 'Client not deleted', message: 'The built-in admin client cannot be deleted.' },
+      notice: { tone: 'error', title: 'Client not deleted', message: 'Built-in system clients cannot be deleted.' },
     });
   }
 
@@ -956,7 +1193,7 @@ app.post('/admin/ui/sessions', async (c) => {
   const form = await c.req.formData();
   const region = String(form.get('region') || '').trim();
   const sessionId = String(form.get('sessionId') || '').trim();
-  const result = await routeSession({ clientId: ADMIN_CLIENT_ID, clientName: ADMIN_CLIENT_NAME }, {
+  const result = await routeSession({ clientId: ADMIN_CLIENT_ID, clientName: ADMIN_CLIENT_NAME, allowedClusters: null }, {
     regions: region ? [region] : undefined,
     sessionId: sessionId || undefined,
   });
@@ -1027,6 +1264,12 @@ app.get('/admin/regions', async (c) => {
   return c.json({ regions });
 });
 
+app.get('/admin/x402/analytics', async (c) => {
+  const unauthorized = await requireAdmin(c);
+  if (unauthorized) return unauthorized;
+  return c.json(await getX402Analytics(normalizeWindowHours(c.req.query('windowHours') ?? 24)));
+});
+
 app.get('/admin/sessions', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;
@@ -1053,7 +1296,7 @@ app.post('/admin/sessions', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;
   const body = await c.req.json().catch(() => ({}));
-  return createRoutedSession(c, { clientId: ADMIN_CLIENT_ID, clientName: ADMIN_CLIENT_NAME }, body);
+  return createRoutedSession(c, { clientId: ADMIN_CLIENT_ID, clientName: ADMIN_CLIENT_NAME, allowedClusters: null }, body);
 });
 
 app.get('/admin/session/:id', async (c) => {
@@ -1105,14 +1348,30 @@ app.post('/sessions/:id/end', async (c) => {
 
   try {
     const sessionId = c.req.param('id');
-    const { status } = await c.req.json();
+    const { status, gameServerName } = await c.req.json();
 
     if (!status || (status !== 'deleted' && status !== 'expired')) {
       return c.json({ error: 'Invalid status. Must be "deleted" or "expired"' }, 400);
     }
 
-    const changed = await SessionService.endSession(sessionId, status);
-    return c.json({ success: true, changed });
+    const [session] = await SessionService.getSession(sessionId);
+    const changed = session?.clientId === X402_PUBLIC_CLIENT_ID
+      ? typeof gameServerName === 'string' && gameServerName.length > 0
+        ? await SessionService.endSessionIfCurrentWorkload(sessionId, status, gameServerName)
+        : false
+      : await SessionService.endSession(sessionId, status);
+    if (changed && session?.clientId === 'x402-public') {
+      await X402Store.addEvent({
+        sessionId,
+        eventType: status === 'expired' ? 'x402.session_expired' : 'x402.session_terminated',
+        metadata: { source: 'regional_ttl_callback' },
+      }).catch((error) => console.error('Failed to record x402 lifecycle analytics:', error));
+    }
+    return c.json({
+      success: true,
+      changed,
+      ...(session?.clientId === X402_PUBLIC_CLIENT_ID && !changed ? { staleWorkload: true } : {}),
+    });
   } catch (error) {
     console.error('❌ Error ending session:', error);
     return c.json({ error: 'Internal server error' }, 500);
@@ -1140,13 +1399,15 @@ app.post('/admin/clients', async (c) => {
   if (unauthorized) return unauthorized;
 
   try {
-    const { name } = await c.req.json();
+    const { name, allowedClusters } = await c.req.json();
 
     if (!name) {
       return c.json({ error: 'Missing client name' }, 400);
     }
 
-    const credentials = await ClientService.createClient(name);
+    const acl = validateAllowedClusters(allowedClusters === undefined ? [] : allowedClusters);
+    if (acl.error) return c.json({ error: acl.error }, 400);
+    const credentials = await ClientService.createClient(name, acl.value!);
     return c.json({
       success: true,
       clientId: credentials.clientId,
@@ -1159,12 +1420,37 @@ app.post('/admin/clients', async (c) => {
   }
 });
 
+app.patch('/admin/clients/:id', async (c) => {
+  const unauthorized = await requireAdmin(c);
+  if (unauthorized) return unauthorized;
+  try {
+    if (isReservedClient(c.req.param('id'))) {
+      return c.json({ error: 'Built-in system client access cannot be modified' }, 400);
+    }
+    const body = await c.req.json();
+    if (!Object.prototype.hasOwnProperty.call(body, 'allowedClusters')) {
+      return c.json({ error: 'allowedClusters is required' }, 400);
+    }
+    const acl = validateAllowedClusters(body.allowedClusters);
+    if (acl.error) return c.json({ error: acl.error }, 400);
+    const updated = await ClientService.updateAllowedClusters(c.req.param('id'), acl.value!);
+    if (!updated) return c.json({ error: 'Client not found' }, 404);
+    return c.json({ success: true, clientId: c.req.param('id'), allowedClusters: acl.value });
+  } catch (error) {
+    console.error('Error updating client cluster access:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
 app.delete('/admin/clients/:id', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;
 
   try {
     const clientId = c.req.param('id');
+    if (isReservedClient(clientId)) {
+      return c.json({ error: 'Built-in system clients cannot be revoked' }, 400);
+    }
     await ClientService.revokeClient(clientId);
     return c.json({ success: true, message: `Client ${clientId} has been revoked` });
   } catch (error) {
@@ -1179,8 +1465,8 @@ app.delete('/admin/clients/:id/delete', async (c) => {
 
   try {
     const clientId = c.req.param('id');
-    if (clientId === ADMIN_CLIENT_ID) {
-      return c.json({ error: 'The built-in admin client cannot be deleted' }, 400);
+    if (clientId === ADMIN_CLIENT_ID || clientId === X402_PUBLIC_CLIENT_ID) {
+      return c.json({ error: 'Built-in system clients cannot be deleted' }, 400);
     }
 
     const sessionCount = await SessionService.countSessionsForClient(clientId);

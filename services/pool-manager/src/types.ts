@@ -8,6 +8,9 @@ export interface Pod {
     clientId?: string;
     createdAt?: number;
     expiresAt?: string;
+    restrictedTokenExpiresAt?: string;
+    publicAccessExpiresAt?: string;
+    automationProfile?: "x402-agent";
 }
 
 export interface AllocationResponse {

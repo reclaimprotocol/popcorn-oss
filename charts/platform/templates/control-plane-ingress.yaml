@@ -35,22 +35,104 @@ spec:
     - host: {{ $controlPlane.domainName | quote }}
       http:
         paths:
-          - path: /
+{{- range $path := $controlPlane.publicPaths }}
+          - path: {{ $path | quote }}
             pathType: Prefix
             backend:
               service:
                 name: control-plane
                 port:
                   number: {{ $controlPlane.publicServicePort }}
+{{- end }}
 {{- else }}
     - http:
         paths:
-          - path: /
+{{- range $path := $controlPlane.publicPaths }}
+          - path: {{ $path | quote }}
             pathType: Prefix
             backend:
               service:
                 name: control-plane
                 port:
                   number: {{ $controlPlane.publicServicePort }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $controlPlane.enabled }}
+{{- range $ingress := $controlPlane.additionalIngresses }}
+{{- $name := required "controlPlane.additionalIngresses[].name is required" $ingress.name }}
+{{- $domain := required "controlPlane.additionalIngresses[].domainName is required" $ingress.domainName }}
+{{- $staticIp := required "controlPlane.additionalIngresses[].staticIpName is required" $ingress.staticIpName }}
+{{- $paths := required "controlPlane.additionalIngresses[].publicPaths is required" $ingress.publicPaths }}
+{{- $securityPolicy := required "controlPlane.additionalIngresses[].securityPolicyName is required" $ingress.securityPolicyName }}
+---
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: control-plane-{{ $name }}
+spec:
+  redirectToHttps:
+    enabled: true
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: control-plane-{{ $name }}
+spec:
+  domains:
+    - {{ $domain | quote }}
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: control-plane-{{ $name }}
+spec:
+  timeoutSec: 60
+  securityPolicy:
+    name: {{ $securityPolicy | quote }}
+  healthCheck:
+    type: HTTP
+    requestPath: /health
+    port: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane-{{ $name }}
+  annotations:
+    cloud.google.com/backend-config: '{"ports":{"http":"control-plane-{{ $name }}"}}'
+spec:
+  type: ClusterIP
+  selector:
+    app: control-plane
+  ports:
+    - name: http
+      port: {{ $controlPlane.publicServicePort }}
+      targetPort: 3000
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: control-plane-{{ $name }}
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: {{ $staticIp | quote }}
+    networking.gke.io/managed-certificates: control-plane-{{ $name }}
+    networking.gke.io/v1beta1.FrontendConfig: control-plane-{{ $name }}
+spec:
+  rules:
+    - host: {{ $domain | quote }}
+      http:
+        paths:
+{{- range $path := $paths }}
+          - path: {{ $path | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: control-plane-{{ $name }}
+                port:
+                  number: {{ $controlPlane.publicServicePort }}
+{{- end }}
 {{- end }}
 {{- end }}

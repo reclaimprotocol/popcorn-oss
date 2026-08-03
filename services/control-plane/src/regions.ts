@@ -14,8 +14,15 @@ export interface RegionAttempt {
   error?: string;
 }
 
-export function selectRegions(configuredRegions: RegionConfig[], requestedRegions?: unknown): RegionSelection {
-  const enabledRegions = configuredRegions.filter((region) => region.enabled);
+export function selectRegions(
+  configuredRegions: RegionConfig[],
+  requestedRegions?: unknown,
+  allowedClusters?: readonly string[] | null,
+): RegionSelection {
+  const allowed = allowedClusters == null ? null : new Set(allowedClusters);
+  const enabledRegions = configuredRegions.filter((region) => region.enabled
+    && !region.x402Only
+    && (!allowed || allowed.has(region.clusterName)));
 
   if (requestedRegions === undefined) {
     return { regions: enabledRegions };
@@ -36,6 +43,12 @@ export function selectRegions(configuredRegions: RegionConfig[], requestedRegion
     }
     if (!region.enabled) {
       return { regions: [], error: `Region is disabled: ${name}` };
+    }
+    if (region.x402Only) {
+      return { regions: [], error: `Region is reserved for x402 sessions: ${name}` };
+    }
+    if (allowed && !allowed.has(region.clusterName)) {
+      return { regions: [], error: `Client is not allowed to use region: ${name}` };
     }
     if (!selected.some((candidate) => candidate.name === name)) {
       selected.push(region);
