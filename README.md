@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="services/control-plane/public/assets/site-icon.svg" alt="Popcorn browser logo" width="160">
+</p>
+
 # Popcorn
 
 Popcorn is a self-hostable browser platform for running isolated, on-demand Chromium sessions in Kubernetes. It gives each session its own ephemeral browser pod, then exposes browser view, Chrome DevTools Protocol, and session APIs through a gateway.
