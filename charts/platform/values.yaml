@@ -202,7 +202,7 @@ controlPlane:
     trustedProxyHops: 1
     rateLimitPerMinute: 30
     secretName: control-plane-x402-secret
-    managementTokenSecretKey: X402_MANAGEMENT_TOKEN_SECRET
+    serverSecretKey: X402_SERVER_SECRET
     baseRpcUrlSecretKey: X402_BASE_RPC_URL
     cdpApiKeyIdKey: CDP_API_KEY_ID
     cdpApiKeySecretKey: CDP_API_KEY_SECRET

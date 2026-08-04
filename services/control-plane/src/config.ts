@@ -74,7 +74,7 @@ export interface X402Config {
   facilitatorAuthHeaders?: Record<string, string>;
   cdpApiKeyId?: string;
   cdpApiKeySecret?: string;
-  managementTokenSecret?: string;
+  serverSecret?: string;
   blockSeconds: number;
   pricePerBlockAtomic: number;
   maxExtensionBlocks: number;
@@ -106,7 +106,10 @@ export function readX402Config(): X402Config {
     facilitatorAuthHeaders: readJsonHeaders('X402_FACILITATOR_AUTH_HEADERS'),
     cdpApiKeyId: readOptionalEnv('CDP_API_KEY_ID'),
     cdpApiKeySecret: readOptionalEnv('CDP_API_KEY_SECRET'),
-    managementTokenSecret: readOptionalEnv('X402_MANAGEMENT_TOKEN_SECRET'),
+    // The old environment name remains a temporary deployment fallback. This
+    // secret is server-side only and is never sent to an x402 client.
+    serverSecret: readOptionalEnv('X402_SERVER_SECRET')
+      || readOptionalEnv('X402_MANAGEMENT_TOKEN_SECRET'),
     blockSeconds: 300,
     pricePerBlockAtomic: 10_000,
     maxExtensionBlocks: readPositiveIntegerEnv('X402_MAX_EXTENSION_BLOCKS', 12),
@@ -144,8 +147,8 @@ export function readX402Config(): X402Config {
       && (!config.cdpApiKeyId || !config.cdpApiKeySecret)) {
       throw new Error('CDP_API_KEY_ID and CDP_API_KEY_SECRET are required for the CDP facilitator');
     }
-    if (!config.managementTokenSecret || config.managementTokenSecret.length < 32) {
-      throw new Error('X402_MANAGEMENT_TOKEN_SECRET must contain at least 32 characters');
+    if (!config.serverSecret || config.serverSecret.length < 32) {
+      throw new Error('X402_SERVER_SECRET must contain at least 32 characters');
     }
   }
   return config;

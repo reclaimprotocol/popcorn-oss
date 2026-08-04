@@ -27,15 +27,12 @@ async function paidRequest(input: {
   path: string;
   idempotencyKey: string;
   body: Record<string, unknown>;
-  managementToken?: string;
   expectedAmount: string;
-}): Promise<{ body: any; paymentRequired: PaymentRequired }> {
+}): Promise<{ body: any; paymentRequired: PaymentRequired; paymentSignature: string }> {
   const headers = new Headers({
     'Content-Type': 'application/json',
     'Idempotency-Key': input.idempotencyKey,
   });
-  if (input.managementToken) headers.set('Authorization', `Bearer ${input.managementToken}`);
-
   const challenge = await fetch(`${baseUrl}${input.path}`, {
     method: 'POST',
     headers,
@@ -58,6 +55,8 @@ async function paidRequest(input: {
   for (const [name, value] of Object.entries(httpClient.encodePaymentSignatureHeader(payload))) {
     paidHeaders.set(name, value);
   }
+  const paymentSignature = paidHeaders.get('PAYMENT-SIGNATURE');
+  assert(paymentSignature, 'Payment client did not produce PAYMENT-SIGNATURE');
   const paid = await fetch(`${baseUrl}${input.path}`, {
     method: 'POST',
     headers: paidHeaders,
@@ -66,7 +65,7 @@ async function paidRequest(input: {
   const body = await jsonBody(paid.clone());
   assert(paid.status === 200, `Paid request failed with ${paid.status}: ${JSON.stringify(body)}`);
   assert(paid.headers.has('PAYMENT-RESPONSE'), 'Paid response is missing PAYMENT-RESPONSE');
-  return { body, paymentRequired };
+  return { body, paymentRequired, paymentSignature };
 }
 
 const createKey = `smoke-create-${crypto.randomUUID()}`;
@@ -77,14 +76,29 @@ const created = await paidRequest({
   expectedAmount: '10000',
 });
 assert(created.body.paidMinutes === 5, 'Create did not purchase five minutes');
-assert(typeof created.body.managementToken === 'string', 'Create did not return a management token');
+assert(typeof created.body.sessionId === 'string' && /^x402s_[A-Za-z0-9_-]{43}$/.test(created.body.sessionId),
+  'Create did not return an opaque session capability');
+assert(created.body.sessionUrl === `${baseUrl}/v1/x402/sessions/${created.body.sessionId}`,
+  'Create did not return the canonical anonymous session URL');
 assert(typeof created.body.connectUrl === 'string' && typeof created.body.liveViewUrl === 'string',
   'Create did not return both public connection URLs');
 const createdExpiry = Date.parse(created.body.expiresAt);
 
-const replay = await fetch(`${baseUrl}/v1/x402/sessions`, {
+const unauthenticatedReplay = await fetch(`${baseUrl}/v1/x402/sessions`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json', 'Idempotency-Key': createKey },
+  body: '{}',
+});
+assert(unauthenticatedReplay.status === 409,
+  'A bare idempotency key was able to replay a settled session capability');
+
+const replay = await fetch(`${baseUrl}/v1/x402/sessions`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Idempotency-Key': createKey,
+    'PAYMENT-SIGNATURE': created.paymentSignature,
+  },
   body: '{}',
 });
 const replayBody = await jsonBody(replay.clone());
@@ -95,7 +109,6 @@ assert(!replay.headers.has('PAYMENT-REQUIRED'), 'Settled replay unexpectedly req
 const extended = await paidRequest({
   path: `/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}/extend`,
   idempotencyKey: `smoke-extend-${crypto.randomUUID()}`,
-  managementToken: created.body.managementToken,
   body: { blocks: 2 },
   expectedAmount: '20000',
 });
@@ -106,9 +119,7 @@ assert(extendedExpiry - createdExpiry === 10 * 60 * 1000, 'Extension deadline di
 assert(extended.body.liveViewUrl === created.body.liveViewUrl && extended.body.connectUrl === created.body.connectUrl,
   'Extension replaced the stable connection URLs');
 
-const status = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`, {
-  headers: { Authorization: `Bearer ${created.body.managementToken}` },
-});
+const status = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`);
 const statusBody = await jsonBody(status.clone());
 assert(status.status === 200 && statusBody.paidMinutes === 15, 'Status did not show the paid extension');
 assert(statusBody.expiresAt === extended.body.expiresAt, 'Status did not show the extended deadline');
@@ -128,9 +139,7 @@ if (serviceToken) {
   const staleExpiryBody = await jsonBody(staleExpiry.clone());
   assert(staleExpiry.status === 200 && staleExpiryBody.changed === false && staleExpiryBody.staleWorkload === true,
     'A stale GameServer callback was not rejected atomically');
-  const afterStaleExpiry = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`, {
-    headers: { Authorization: `Bearer ${created.body.managementToken}` },
-  });
+  const afterStaleExpiry = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`);
   const afterStaleExpiryBody = await jsonBody(afterStaleExpiry.clone());
   assert(afterStaleExpiry.status === 200 && afterStaleExpiryBody.status === 'active',
     'A stale GameServer callback ended the current paid workload');
@@ -139,7 +148,6 @@ if (serviceToken) {
 
 const terminated = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`, {
   method: 'DELETE',
-  headers: { Authorization: `Bearer ${created.body.managementToken}` },
 });
 const terminatedBody = await jsonBody(terminated.clone());
 assert(terminated.status === 200 && terminatedBody.success === true && terminatedBody.refund === false,

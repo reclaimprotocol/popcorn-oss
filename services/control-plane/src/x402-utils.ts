@@ -10,8 +10,34 @@ export function hasX402ExtensionActivationWindow(expiresAt: Date, now = Date.now
   return expiresAt.getTime() > now + X402_EXTENSION_ACTIVATION_SAFETY_MS;
 }
 
-export function deriveManagementToken(secret: string, sessionId: string): string {
-  return `x402_${crypto.createHmac('sha256', secret).update(`popcorn:${sessionId}`).digest('base64url')}`;
+export function deriveSessionCapability(secret: string, sessionId: string): string {
+  return `x402s_${crypto.createHmac('sha256', secret)
+    .update(`popcorn:x402:session-capability:${sessionId}`)
+    .digest('base64url')}`;
+}
+
+export function publicX402SessionUrl(publicBaseUrl: string, capability: string): string {
+  return new URL(
+    `/v1/x402/sessions/${encodeURIComponent(capability)}`,
+    `${publicBaseUrl}/`,
+  ).toString();
+}
+
+export function isOwnedPublicX402Session(
+  session: {
+    sessionId: string;
+    clientId: string;
+    region: string | null;
+    clusterName: string;
+  } | undefined,
+  access: { sessionId: string } | undefined,
+  expected: { clientId: string; region: string; clusterName: string },
+): boolean {
+  return !!session && !!access
+    && access.sessionId === session.sessionId
+    && session.clientId === expected.clientId
+    && session.region === expected.region
+    && session.clusterName === expected.clusterName;
 }
 
 export function encryptX402SettlementRequest(secret: string, value: unknown): string {

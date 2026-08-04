@@ -892,7 +892,7 @@ app.post('/v1/x402/sessions/:id/extend', async (c) => {
   if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
   const parsed = await readX402JsonBody(c, 128);
   if (parsed.error) return parsed.error;
-  const result = await X402_CONTROLLER.extend(c.req.param('id'), getBearerCredential(c) || undefined, {
+  const result = await X402_CONTROLLER.extend(c.req.param('id'), {
     idempotencyKey: c.req.header('Idempotency-Key'),
     paymentSignature: c.req.header('PAYMENT-SIGNATURE'),
     resourceUrl: c.req.url,
@@ -902,12 +902,12 @@ app.post('/v1/x402/sessions/:id/extend', async (c) => {
 
 app.get('/v1/x402/sessions/:id', async (c) => {
   if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
-  return sendX402Result(c, await X402_CONTROLLER.status(c.req.param('id'), getBearerCredential(c) || undefined));
+  return sendX402Result(c, await X402_CONTROLLER.status(c.req.param('id')));
 });
 
 app.delete('/v1/x402/sessions/:id', async (c) => {
   if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
-  return sendX402Result(c, await X402_CONTROLLER.terminate(c.req.param('id'), getBearerCredential(c) || undefined));
+  return sendX402Result(c, await X402_CONTROLLER.terminate(c.req.param('id')));
 });
 
 app.post('/v1/sessions', async (c) => {

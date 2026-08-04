@@ -123,11 +123,11 @@ spec:
             - name: X402_RATE_LIMIT_PER_MINUTE
               value: {{ $controlPlane.x402.rateLimitPerMinute | quote }}
 {{- if $controlPlane.x402.enabled }}
-            - name: X402_MANAGEMENT_TOKEN_SECRET
+            - name: X402_SERVER_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ $controlPlane.x402.secretName | quote }}
-                  key: {{ $controlPlane.x402.managementTokenSecretKey | quote }}
+                  key: {{ $controlPlane.x402.serverSecretKey | quote }}
             - name: X402_BASE_RPC_URL
               valueFrom:
                 secretKeyRef:

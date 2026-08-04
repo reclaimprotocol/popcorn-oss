@@ -62,6 +62,7 @@ export const x402Payments = pgTable('x402_payments', {
   idempotencyKey: text('idempotency_key').notNull(),
   requestHash: text('request_hash').notNull(),
   paymentPayloadHash: text('payment_payload_hash'),
+  paymentSignatureHash: text('payment_signature_hash'),
   operation: text('operation').notNull(), // 'create' | 'extend'
   sessionId: text('session_id').references(() => sessions.sessionId),
   payerWallet: text('payer_wallet'),
@@ -91,16 +92,17 @@ export const x402Payments = pgTable('x402_payments', {
   amountAtomicCheck: check('x402_payments_amount_atomic_check', sql`${table.amountAtomic} ~ '^[1-9][0-9]*$'`),
 }));
 
-// Stores access state separately from the general session record. Only a hash
-// of the high-entropy management token is persisted.
+// Stores public x402 access state separately from normal client sessions. The
+// URL capability is derived on demand; only its hash is persisted.
 export const x402Sessions = pgTable('x402_sessions', {
   sessionId: text('session_id').primaryKey().references(() => sessions.sessionId),
-  managementTokenHash: text('management_token_hash').notNull(),
+  capabilityHash: text('capability_hash').notNull(),
   paidBlocks: integer('paid_blocks').notNull().default(1),
   expiresAt: timestamp('expires_at', { mode: 'date' }).notNull(),
   createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),
 }, (table) => ({
+  capabilityHashIdx: uniqueIndex('x402_sessions_capability_hash_idx').on(table.capabilityHash),
   paidBlocksCheck: check('x402_sessions_paid_blocks_check', sql`${table.paidBlocks} > 0`),
 }));
 

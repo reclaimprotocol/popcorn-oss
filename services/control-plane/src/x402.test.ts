@@ -2,9 +2,11 @@ import { describe, expect, test } from 'bun:test';
 import { createAuthenticatedCdpFacilitator, hashCanonicalPaymentPayload } from './x402-payment';
 import {
   decryptX402SettlementRequest,
-  deriveManagementToken,
+  deriveSessionCapability,
   encryptX402SettlementRequest,
   hasX402ExtensionActivationWindow,
+  isOwnedPublicX402Session,
+  publicX402SessionUrl,
   publicX402Endpoints,
   selectTrustedClientAddress,
 } from './x402-utils';
@@ -89,14 +91,34 @@ describe('x402 safety helpers', () => {
     }
   });
 
-  test('rejects foreign hosts and derives replayable tokens without persistence', () => {
+  test('rejects foreign hosts and derives stable session capabilities without persistence', () => {
     expect(publicX402Endpoints({
       url: 'https://evil.example/liveview',
       cdpUrl: 'ws://popcorn-gateway.example/cdp/session',
     }, 'https://popcorn-gateway.example', 'session')).toEqual({});
-    const token = deriveManagementToken('a'.repeat(32), 'x402_session');
-    expect(token).toBe(deriveManagementToken('a'.repeat(32), 'x402_session'));
-    expect(token).not.toBe(deriveManagementToken('a'.repeat(32), 'x402_other'));
+    const capability = deriveSessionCapability('a'.repeat(32), 'internal-session');
+    expect(capability).toBe(deriveSessionCapability('a'.repeat(32), 'internal-session'));
+    expect(capability).not.toBe(deriveSessionCapability('a'.repeat(32), 'other-session'));
+    expect(capability).toMatch(/^x402s_[A-Za-z0-9_-]{43}$/);
+    expect(publicX402SessionUrl('https://app.popcorn.reclaimprotocol.org', capability))
+      .toBe(`https://app.popcorn.reclaimprotocol.org/v1/x402/sessions/${capability}`);
+  });
+
+  test('never treats normal-client or foreign-cluster sessions as x402-owned', () => {
+    const access = { sessionId: 'internal-x402-session' };
+    const expected = {
+      clientId: 'x402-public',
+      region: 'x402-us-central1',
+      clusterName: 'gcp-us-central1-x402-popcorn',
+    };
+    const owned = { sessionId: access.sessionId, ...expected };
+
+    expect(isOwnedPublicX402Session(owned, access, expected)).toBe(true);
+    expect(isOwnedPublicX402Session({ ...owned, clientId: 'existing-client' }, access, expected)).toBe(false);
+    expect(isOwnedPublicX402Session({ ...owned, region: 'asia-south1' }, access, expected)).toBe(false);
+    expect(isOwnedPublicX402Session({ ...owned, clusterName: 'mumbai-production' }, access, expected)).toBe(false);
+    expect(isOwnedPublicX402Session(owned, { sessionId: 'different-session' }, expected)).toBe(false);
+    expect(isOwnedPublicX402Session(owned, undefined, expected)).toBe(false);
   });
 
   test('selects the client address from the trusted right side of X-Forwarded-For', () => {
@@ -400,7 +422,7 @@ describe('control-plane import smoke', () => {
         X402_PUBLIC_BASE_URL: 'https://app.popcorn.reclaimprotocol.org',
         X402_BASE_RPC_URL: 'https://base-rpc.example.com',
         X402_PAY_TO: '0x1111111111111111111111111111111111111111',
-        X402_MANAGEMENT_TOKEN_SECRET: 'test-management-token-secret-32-bytes',
+        X402_SERVER_SECRET: 'test-x402-server-secret-at-least-32-bytes',
         CDP_API_KEY_ID: 'test-key-id',
         CDP_API_KEY_SECRET: 'test-key-secret',
       },
@@ -449,7 +471,7 @@ describe('control-plane import smoke', () => {
         X402_PUBLIC_BASE_URL: 'https://app.popcorn.reclaimprotocol.org',
         X402_BASE_RPC_URL: 'https://base-rpc.example.com',
         X402_PAY_TO: '0x1111111111111111111111111111111111111111',
-        X402_MANAGEMENT_TOKEN_SECRET: 'test-management-token-secret-32-bytes',
+        X402_SERVER_SECRET: 'test-x402-server-secret-at-least-32-bytes',
         CDP_API_KEY_ID: 'test-key-id',
         CDP_API_KEY_SECRET: 'test-key-secret',
       },
@@ -485,7 +507,7 @@ describe('control-plane import smoke', () => {
         X402_PUBLIC_BASE_URL: 'https://app.popcorn.reclaimprotocol.org',
         X402_BASE_RPC_URL: 'https://base-rpc.example.com',
         X402_PAY_TO: '0x1111111111111111111111111111111111111111',
-        X402_MANAGEMENT_TOKEN_SECRET: 'test-management-token-secret-32-bytes',
+        X402_SERVER_SECRET: 'test-x402-server-secret-at-least-32-bytes',
         CDP_API_KEY_ID: 'test-key-id', CDP_API_KEY_SECRET: 'test-key-secret',
       },
       stdout: 'pipe', stderr: 'pipe',

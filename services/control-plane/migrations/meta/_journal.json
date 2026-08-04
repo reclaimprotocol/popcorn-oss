@@ -43,6 +43,13 @@
       "when": 1785756600000,
       "tag": "0005_add_client_cluster_acl",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785843000000,
+      "tag": "0006_replace_x402_management_token",
+      "breakpoints": true
     }
   ]
 }

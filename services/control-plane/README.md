@@ -66,7 +66,7 @@ export X402_ENABLED=true
 export X402_REGION_NAME=x402-us-central1
 export X402_PUBLIC_BASE_URL=https://app.popcorn.reclaimprotocol.org
 export X402_PAY_TO=0xYourReceivingAddress
-export X402_MANAGEMENT_TOKEN_SECRET=<at-least-32-random-characters>
+export X402_SERVER_SECRET=<at-least-32-random-characters>
 export X402_BASE_RPC_URL=<https-base-mainnet-rpc-url>
 export CDP_API_KEY_ID=<cdp-api-key-id>
 export CDP_API_KEY_SECRET=<cdp-api-key-secret>
@@ -197,13 +197,12 @@ Idempotency-Key: <unique-key>
 The first request returns `402` and a v2 `PAYMENT-REQUIRED` header for 10,000
 atomic USDC on Base. Retry the same request with `PAYMENT-SIGNATURE`. Success
 returns an automation-scoped `connectUrl`, restricted `liveViewUrl`, five-minute
-expiry, payment transaction, and a high-entropy `managementToken`. The
+expiry, payment transaction, and an unguessable `sessionUrl`. The
 automation token works only on the dedicated agent CDP route; it cannot be
 replayed against internal CDP or runtime API routes, which are never returned.
 
 ```http
 POST /v1/x402/sessions/:id/extend
-Authorization: Bearer <management-token>
 Idempotency-Key: <unique-key>
 PAYMENT-SIGNATURE: <x402-v2-payload>
 Content-Type: application/json
@@ -226,10 +225,12 @@ from recovery time. Early termination has no refund:
 ```http
 GET /v1/x402/sessions/:id
 DELETE /v1/x402/sessions/:id
-Authorization: Bearer <management-token>
 ```
 
-The management token is derived with an HMAC and only its hash is stored. The
+The opaque ID in `sessionUrl` is a possession-based capability derived with an
+HMAC; only its hash is stored in the x402 access table. It is not an account,
+API key, or identity token. Normal-client sessions have no matching capability
+record and therefore return `404` before regional lookup or deletion. The
 x402 connection JWT is stable and route-bound rather than carrying the paid
 deadline. A server-side authorization record enforces the current paid TTL.
 Existing credential-based clients retain their existing expiring JWT behavior.
