@@ -40,7 +40,7 @@ export const Auth = {
             throw new Error("Private key missing when trying to sign token");
         }
         if (routeBound) {
-            // Public x402 URLs must remain byte-for-byte stable when paid time is
+            // Route-bound URLs must remain byte-for-byte stable when access is
             // extended. The gateway authorizes these tokens against a separate
             // Redis deadline on every request, so an embedded JWT expiry would
             // both be redundant and force the URL to change.

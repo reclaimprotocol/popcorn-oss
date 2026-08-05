@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import { db } from './db';
 
-export async function getX402Analytics(windowHours = 24) {
+export async function getX402Analytics(windowHours = 24, blockSeconds = 300) {
   const safeWindowHours = Math.max(1, Math.min(720, Math.floor(windowHours)));
   const [totals, operations, events] = await Promise.all([
     db.execute(sql`
@@ -39,12 +39,12 @@ export async function getX402Analytics(windowHours = 24) {
     revenueAtomic: String(row?.revenue_atomic || '0'),
     settledPayments: Number(row?.settled_payments || 0),
     uniquePayers: Number(row?.unique_payers || 0),
-    paidMinutes: Number(row?.paid_blocks || 0) * 5,
+    paidSeconds: Number(row?.paid_blocks || 0) * blockSeconds,
     operations: operations.map((entry) => ({
       operation: String((entry as any).operation),
       payments: Number((entry as any).payments),
       revenueAtomic: String((entry as any).revenue_atomic),
-      paidMinutes: Number((entry as any).paid_blocks) * 5,
+      paidSeconds: Number((entry as any).paid_blocks) * blockSeconds,
     })),
     events: Object.fromEntries(events.map((entry) => [String((entry as any).event_type), Number((entry as any).count)])),
   };

@@ -14,31 +14,29 @@ agonesInstaller:
   gameservers:
     namespaces:
       - popcorn
-    minPort: 59000
-    maxPort: 61000
 
 externalSecrets:
   enabled: false
 
 imagePullSecrets: []
 
-secrets:
-  browserTurnName: browser-turn-secret
-
 ccDevicePlugin:
   enabled: false
 
 serviceAccount:
-  gcpServiceAccount: browser-runtime@example-project.iam.gserviceaccount.com
+  gcpServiceAccount: ""
 
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:REPLACE_WITH_COMMIT_SHA
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:REPLACE_WITH_DIGEST
 browserRuntimeImagePullPolicy: IfNotPresent
+
+browserPolicy:
+  variant: neutral
 
 browserRuntimeAttestor:
   enabled: false
   imagePullPolicy: IfNotPresent
 
-browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:REPLACE_WITH_COMMIT_SHA
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:REPLACE_WITH_DIGEST
 
 imagePrepuller:
   enabled: false
@@ -55,7 +53,7 @@ imagePrepuller:
       memory: 128Mi
 
 fleet:
-  replicas: 1
+  replicas: 3
   scheduling: Packed
   health:
     initialDelaySeconds: 90
@@ -71,7 +69,7 @@ fleet:
   browserRuntimeAttestorMemoryLimit: 256Mi
 
 autoscaler:
-  bufferSize: 1
-  minReplicas: 1
-  maxReplicas: 3
+  bufferSize: 3
+  minReplicas: 3
+  maxReplicas: 30
   syncSeconds: 30

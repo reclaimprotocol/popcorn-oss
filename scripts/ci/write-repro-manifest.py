@@ -86,7 +86,6 @@ Tag policy: immutable commit tags for runtime images
 | --- | --- | --- |
 | `browser-runtime-attestor` | `{tag_prefix}/browser-runtime-attestor:{args.commit}` | `{payload["reproducible_images"]["browser-runtime-attestor"]["image"]}` |
 | `browser-runtime` | `{tag_prefix}/browser-runtime:{args.commit}` | `{payload["reproducible_images"]["browser-runtime"]["image"]}` |
-
 Source repository: `https://github.com/reclaimprotocol/popcorn-oss`
 Browser runtime Ubuntu snapshot: `{args.ubuntu_snapshot}`
 Cosign OIDC issuer: `https://token.actions.githubusercontent.com`

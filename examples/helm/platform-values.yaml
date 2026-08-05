@@ -5,7 +5,7 @@ clusterName: example-gke-cluster
 provider: gcp
 region: us-central1
 registry: ghcr.io/reclaimprotocol/popcorn-oss
-imageTag: latest
+imageTag: REPLACE_WITH_IMMUTABLE_RELEASE
 
 imagePullSecrets: []
 nodeSelector: {}
@@ -22,7 +22,7 @@ poolManager:
   enabled: true
   replicas: 1
   imagePullPolicy: IfNotPresent
-  redisHost: redis
+  redisHost: redis-ha-master
   gameServerNamespace: ""
   gameServerFleet: browser-fleet
   serviceAuth:
@@ -38,15 +38,32 @@ poolManager:
 
 gateway:
   enabled: true
-  replicas: 2
+  replicas: 3
   imagePullPolicy: IfNotPresent
   domainName: gateway.example.com
   staticIpName: popcorn-gateway-ip
   serviceType: ClusterIP
   nodePorts: {}
   serviceAnnotations: {}
+  redisHost: redis-ha-master
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: gateway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: gateway
   backendConfig:
-    enabled: false
+    enabled: true
     timeoutSec: 3600
     connectionDrainingTimeoutSec: 60
   jwtPrivateKeySecretId: ""
@@ -60,7 +77,7 @@ gateway:
       cpu: 500m
 
 redis:
-  enabled: true
+  enabled: false
   replicas: 1
   image: redis:7-alpine
   imagePullPolicy: IfNotPresent
@@ -72,9 +89,12 @@ redis:
       memory: 256Mi
       cpu: 250m
 
+redisHa:
+  enabled: true
+
 controlPlane:
   enabled: true
-  replicas: 1
+  replicas: 2
   imagePullPolicy: IfNotPresent
   nodeEnv: production
   databaseSsl: false
@@ -102,7 +122,7 @@ controlPlane:
 
 ttlController:
   enabled: true
-  replicas: 1
+  replicas: 2
   imagePullPolicy: IfNotPresent
   controlPlaneUrl: ""
   ttlDuration: 15m
@@ -113,36 +133,6 @@ ttlController:
     limits:
       memory: 128Mi
       cpu: 500m
-
-gkeNodePrescaler:
-  enabled: false
-  image: python:3.12-slim
-  imagePullPolicy: IfNotPresent
-  gcpServiceAccount: prescaler@example-project.iam.gserviceaccount.com
-  project: example-project
-  cluster: example-cluster
-  location: us-central1
-  nodePool: browser-pool
-  namespace: ""
-  fleetName: browser-fleet
-  fleetAutoscalerName: browser-autoscaler
-  intervalSeconds: 15
-  podsPerNode: 4
-  targetSessionsPerMinute: 5
-  desiredCoverageMinutes: 2
-  burstHeadroomGameServers: 0
-  applyHeadroomOnlyWhenDemandAboveBaseline: true
-  scaleAheadFreeSlots: 4
-  maxNodesTotal: 0
-  scaleUpCooldownSeconds: 30
-  dryRun: true
-  resources:
-    requests:
-      memory: 64Mi
-      cpu: 50m
-    limits:
-      memory: 128Mi
-      cpu: 200m
 
 otel:
   enabled: false

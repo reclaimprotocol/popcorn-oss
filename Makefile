@@ -1,4 +1,4 @@
-.PHONY: build ensure-base build-pool-manager build-control-plane build-gateway build-base build-browser-node build-minimal-vnc-desktop build-local-browser-runtime build-ttl-controller up patch-kind-orbstack-proxy local-keys local-secrets load-local-images deploy-local apply apply-local run-local-cluster connect clean
+.PHONY: build build-pool-manager build-control-plane build-gateway build-minimal-vnc-desktop build-local-browser-runtime build-ttl-controller up patch-kind-orbstack-proxy local-keys local-secrets load-local-images deploy-local apply apply-local run-local-cluster connect clean
 
 export DOCKER_BUILDKIT=1
 
@@ -15,27 +15,15 @@ LOCAL_CONTROL_PLANE_ADMIN_PASS ?= admin
 LOCAL_CONTROL_PLANE_ADMIN_SESSION_SECRET ?= local_control_plane_admin_session_secret_for_dev
 LOCAL_CONTROL_PLANE_ADMIN_TOKEN ?= local_admin_token_for_dev
 LOCAL_ANALYTICS_DB_PASSWORD ?= local_analytics_password
-LOCAL_TURN_KEY_ID ?= $(TURN_KEY_ID)
-LOCAL_TURN_API_TOKEN ?= $(TURN_API_TOKEN)
-LOCAL_NEKO_ICESERVERS ?= $(NEKO_ICESERVERS)
-LOCAL_BROWSER_STREAMING_MODE ?= webrtc
 LOCAL_BROWSER_STARTUP_URL ?= https://www.google.com
-LOCAL_LIVEVIEW_URL = \{baseUrl\}/liveview/\{sessionId\}/\{restrictedToken\}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000
-LOCAL_LIVEVIEW_WS_URL = \{wsBase\}/liveview-ws/\{sessionId\}/\{restrictedToken\}
-LOCAL_LEGACY_VNC_URL = \{baseUrl\}/vnc/\{sessionId\}/\{restrictedToken\}/vnc_lite.html?resize=scale&reconnect=1&reconnect_delay=2000
-LOCAL_LEGACY_VNC_WS_URL = \{wsBase\}/vnc-ws/\{sessionId\}/\{restrictedToken\}
-LOCAL_PLATFORM_LIVEVIEW_ROUTE_ARGS = --set 'poolManager.extraRoutePorts.novnc.routeKey=liveview' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.vncUrl=$(LOCAL_LIVEVIEW_URL)' --set-string 'poolManager.extraSessionUrls.vncWsUrl=$(LOCAL_LIVEVIEW_WS_URL)' --set 'gateway.extraSessionRoutes[0].pathPrefix=liveview' --set 'gateway.extraSessionRoutes[0].routeKey=liveview'
-LOCAL_PLATFORM_LEGACY_VNC_ROUTE_ARGS = --set 'poolManager.extraRoutePorts.novnc.routeKey=vnc' --set 'poolManager.extraRoutePorts.novnc.port=6080' --set-string 'poolManager.extraSessionUrls.vncUrl=$(LOCAL_LEGACY_VNC_URL)' --set-string 'poolManager.extraSessionUrls.vncWsUrl=$(LOCAL_LEGACY_VNC_WS_URL)' --set 'gateway.extraSessionRoutes[0].pathPrefix=vnc' --set 'gateway.extraSessionRoutes[0].routeKey=vnc'
-LOCAL_PLATFORM_STREAMING_ARGS = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_LIVEVIEW_ROUTE_ARGS) --set-string 'poolManager.extraSessionUrls.url=$(LOCAL_LIVEVIEW_URL)',$(if $(filter both,$(LOCAL_BROWSER_STREAMING_MODE)),$(LOCAL_PLATFORM_LEGACY_VNC_ROUTE_ARGS),))
 LOCAL_BROWSER_STARTUP_ARGS = $(if $(LOCAL_BROWSER_STARTUP_URL),--set 'extraBrowserRuntimeEnv[0].name=POPCORN_BROWSER_STARTUP_URL' --set-string 'extraBrowserRuntimeEnv[0].value=$(LOCAL_BROWSER_STARTUP_URL)',)
 
 POOL_MANAGER_IMAGE := popcorn/pool-manager:local
 CONTROL_PLANE_IMAGE := popcorn/control-plane:local
 GATEWAY_IMAGE := popcorn/gateway:local
-BROWSER_NODE_IMAGE := popcorn/browser-node:local
 MINIMAL_VNC_DESKTOP_IMAGE := popcorn/minimal-vnc-desktop:local
 TTL_CONTROLLER_IMAGE := popcorn/ttl-controller:local
-LOCAL_BROWSER_RUNTIME_IMAGE = $(if $(filter vnc,$(LOCAL_BROWSER_STREAMING_MODE)),$(MINIMAL_VNC_DESKTOP_IMAGE),$(BROWSER_NODE_IMAGE))
+LOCAL_BROWSER_RUNTIME_IMAGE := $(MINIMAL_VNC_DESKTOP_IMAGE)
 
 build-pool-manager:
 	docker build -t $(POOL_MANAGER_IMAGE) ./services/pool-manager
@@ -46,46 +34,10 @@ build-control-plane:
 build-gateway:
 	docker build -t $(GATEWAY_IMAGE) ./services/gateway
 
-build-base:
-	@set -e; \
-		eval "$$(./scripts/chromium-lock-env.sh "$(PLATFORM)")"; \
-		artifact_layout_dir="$$(mktemp -d)"; \
-		trap 'rm -rf "$$artifact_layout_dir"' EXIT; \
-		./scripts/prepare-chromium-artifacts.sh "$$artifact_layout_dir" "$$TARGET_PLATFORM"; \
-		docker buildx build \
-			--platform "$$TARGET_PLATFORM" \
-			--build-arg SOURCE_DATE_EPOCH=$$(git log -1 --pretty=%ct) \
-			--build-arg UBUNTU_SNAPSHOT=$$UBUNTU_SNAPSHOT \
-			--build-arg ARTIFACT_MIRROR_IMAGE=artifact-mirror \
-			--build-context "artifact-mirror=$$artifact_layout_dir" \
-			-f ./popcorn-images/images/chromium-headful/Dockerfile \
-			-t popcorn-base:local \
-			--load \
-			./popcorn-images
-
-ensure-base:
-	@if ! docker image inspect popcorn-base:local >/dev/null 2>&1; then \
-		$(MAKE) build-base; \
-	fi
-
-build-browser-node: ensure-base
-	cp -f cosign.pub services/browser-node/cosign.pub
-	docker build \
-		--platform "$(PLATFORM)" \
-		--build-arg SOURCE_DATE_EPOCH=$$(git log -1 --pretty=%ct) \
-		--build-arg BASE_IMAGE=popcorn-base:local \
-		-t $(BROWSER_NODE_IMAGE) \
-		./services/browser-node
-
 build-minimal-vnc-desktop:
 	IMAGE="$(MINIMAL_VNC_DESKTOP_IMAGE)" PLATFORM="$(PLATFORM)" images/minimal-vnc-desktop/build.sh
 
-build-local-browser-runtime:
-	@if [ "$(LOCAL_BROWSER_STREAMING_MODE)" = "vnc" ]; then \
-		$(MAKE) build-minimal-vnc-desktop; \
-	else \
-		$(MAKE) build-browser-node; \
-	fi
+build-local-browser-runtime: build-minimal-vnc-desktop
 
 build-ttl-controller:
 	docker build -t $(TTL_CONTROLLER_IMAGE) ./services/ttl-controller
@@ -105,9 +57,7 @@ up:
 	helm repo add agones https://agones.dev/chart/stable || true
 	helm repo update
 	helm upgrade --install agones --namespace agones-system agones/agones \
-		--set "agones.controller.generateTLS=false" \
-		--set gameservers.minPort=7000 \
-		--set gameservers.maxPort=7010 || true
+		--set "agones.controller.generateTLS=false" || true
 	kubectl -n agones-system rollout status deployment/agones-controller --timeout=180s
 	kubectl -n agones-system rollout status deployment/agones-extensions --timeout=180s
 
@@ -155,28 +105,6 @@ local-secrets: local-keys
 		--from-literal=username=analytics_admin \
 		--from-literal=password="$(LOCAL_ANALYTICS_DB_PASSWORD)" \
 		--dry-run=client -o yaml | kubectl apply -f -
-	@if { [ -n "$(LOCAL_TURN_KEY_ID)" ] && [ -z "$(LOCAL_TURN_API_TOKEN)" ]; } || { [ -z "$(LOCAL_TURN_KEY_ID)" ] && [ -n "$(LOCAL_TURN_API_TOKEN)" ]; }; then \
-		echo "Set both TURN_KEY_ID and TURN_API_TOKEN, or neither to keep the existing local secret."; \
-		exit 1; \
-	fi
-	@if [ -n "$(LOCAL_TURN_KEY_ID)" ] && [ -n "$(LOCAL_TURN_API_TOKEN)" ]; then \
-		kubectl create secret generic browser-turn-secret \
-			--from-literal=TURN_KEY_ID="$(LOCAL_TURN_KEY_ID)" \
-			--from-literal=TURN_API_TOKEN="$(LOCAL_TURN_API_TOKEN)" \
-			--from-literal=NEKO_ICESERVERS='$(LOCAL_NEKO_ICESERVERS)' \
-			--dry-run=client -o yaml | kubectl apply -f -; \
-	elif kubectl get secret browser-turn-secret >/dev/null 2>&1 && \
-		[ -n "$$(kubectl get secret browser-turn-secret -o jsonpath='{.data.TURN_KEY_ID}')" ] && \
-		[ -n "$$(kubectl get secret browser-turn-secret -o jsonpath='{.data.TURN_API_TOKEN}')" ]; then \
-		echo "Reusing browser-turn-secret already stored in the local cluster."; \
-	else \
-		echo "Info: Local TURN credentials are empty; creating an empty browser-turn-secret for Kind."; \
-		kubectl create secret generic browser-turn-secret \
-			--from-literal=TURN_KEY_ID= \
-			--from-literal=TURN_API_TOKEN= \
-			--from-literal=NEKO_ICESERVERS= \
-			--dry-run=client -o yaml | kubectl apply -f -; \
-	fi
 
 load-local-images:
 	@kubectl config use-context kind-$(CLUSTER_NAME)
@@ -187,10 +115,6 @@ load-local-images:
 	kind load docker-image $(TTL_CONTROLLER_IMAGE) --name $(CLUSTER_NAME)
 
 deploy-local: up local-secrets load-local-images
-	@if [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "webrtc" ] && [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "vnc" ] && [ "$(LOCAL_BROWSER_STREAMING_MODE)" != "both" ]; then \
-		echo "LOCAL_BROWSER_STREAMING_MODE must be one of 'webrtc', 'vnc', or 'both'."; \
-		exit 1; \
-	fi
 	kubectl apply -f examples/kubernetes/local-postgres.yaml
 	kubectl rollout status statefulset/local-postgres --namespace default --timeout=180s
 	helm upgrade --install popcorn-platform charts/platform \
@@ -219,8 +143,7 @@ deploy-local: up local-secrets load-local-images
 		--set gateway.backendConfig.enabled=false \
 		--set redis.enabled=true \
 		--set ttlController.enabled=true \
-		--set ttlController.imagePullPolicy=IfNotPresent \
-		$(LOCAL_PLATFORM_STREAMING_ARGS)
+		--set ttlController.imagePullPolicy=IfNotPresent
 	helm upgrade --install --force-conflicts browser-fleet charts/browser-fleet \
 		--namespace default \
 		--set externalSecrets.enabled=false \
@@ -228,8 +151,6 @@ deploy-local: up local-secrets load-local-images
 		--set-string browserRuntimeImage=$(LOCAL_BROWSER_RUNTIME_IMAGE) \
 		--set browserRuntimeImagePullPolicy=IfNotPresent \
 		--set browserRuntimeAttestor.enabled=false \
-		--set webrtc.advertiseHost=127.0.0.1 \
-		--set streaming.mode=$(LOCAL_BROWSER_STREAMING_MODE) \
 		$(LOCAL_BROWSER_STARTUP_ARGS) \
 		--set fleet.replicas=1 \
 		--set fleet.browserRuntimeCpuRequest=500m \

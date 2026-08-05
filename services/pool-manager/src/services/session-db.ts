@@ -1,6 +1,7 @@
 import type { Redis } from "ioredis";
 import type { Pod } from "../types";
 import { routeTtlSeconds } from "../session-ttl";
+import { storedSessionAccess } from "../session-access";
 
 type SessionPod = Pod & { ports?: { name: string, port: number }[] };
 
@@ -12,7 +13,7 @@ function readExtraRoutePorts(raw: string | undefined): Record<string, string> {
     try {
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is not a JSON object");
+            console.warn("Ignoring POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS because it is not a JSON object");
             return {};
         }
 
@@ -31,20 +32,20 @@ function readExtraRoutePorts(raw: string | undefined): Record<string, string> {
             })
         );
     } catch (error) {
-        console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is invalid JSON:", error);
+        console.warn("Ignoring POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS because it is invalid JSON:", error);
         return {};
     }
 }
 
 function sessionRouteKeys(id: string, extraRoutePorts: Record<string, string>): string[] {
-    return [
+    return Array.from(new Set([
         `auth:route-bound:${id}`,
         `route:${id}`,
+        `route:liveview:${id}`,
         `route:cdp:${id}`,
-        `route:api:${id}`,
         `route:cdp-internal:${id}`,
         ...Object.values(extraRoutePorts).map((routeKey) => `route:${routeKey}:${id}`),
-    ];
+    ]));
 }
 
 function buildSessionRoutes(
@@ -61,24 +62,28 @@ function buildSessionRoutes(
         ttlSeconds,
     }];
 
-    if (pod.automationProfile === "x402-agent" && pod.publicAccessExpiresAt) {
+    const accessPolicy = storedSessionAccess(pod);
+    if (accessPolicy.tokenMode === "route-bound" && accessPolicy.accessExpiresAt) {
         routes.push({
             key: `auth:route-bound:${id}`,
-            value: String(Date.parse(pod.publicAccessExpiresAt)),
-            ttlSeconds: routeTtlSeconds(pod.publicAccessExpiresAt),
+            value: String(Date.parse(accessPolicy.accessExpiresAt)),
+            ttlSeconds: routeTtlSeconds(accessPolicy.accessExpiresAt),
         });
     }
 
     for (const port of pod.ports ?? []) {
-        if (port.name === "cdp") {
+        if (port.name === "novnc") {
+            routes.push({ key: `route:liveview:${id}`, value: `${host}:${port.port}`, ttlSeconds });
+        } else if (port.name === "cdp") {
             routes.push({ key: `route:cdp:${id}`, value: `${host}:${port.port}`, ttlSeconds });
         } else if (port.name === "cdp-internal") {
             routes.push({ key: `route:cdp-internal:${id}`, value: `${host}:${port.port}`, ttlSeconds });
-        } else if (port.name === "kernel-api") {
-            routes.push({ key: `route:api:${id}`, value: `${host}:${port.port}`, ttlSeconds });
-        } else if (extraRoutePorts[port.name]) {
+        }
+
+        const extraRouteKey = extraRoutePorts[port.name];
+        if (extraRouteKey && !routes.some((route) => route.key === `route:${extraRouteKey}:${id}`)) {
             routes.push({
-                key: `route:${extraRoutePorts[port.name]}:${id}`,
+                key: `route:${extraRouteKey}:${id}`,
                 value: `${host}:${port.port}`,
                 ttlSeconds,
             });

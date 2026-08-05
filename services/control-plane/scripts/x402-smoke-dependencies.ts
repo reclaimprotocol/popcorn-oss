@@ -1,12 +1,12 @@
 const port = Number(process.env.X402_SMOKE_DEPENDENCIES_PORT || '4402');
 const gateway = process.env.X402_SMOKE_GATEWAY
-  || 'https://popcorn-gateway-gcp-us-central1-x402.reclaimprotocol.org';
+  || 'https://gateway.example.com';
 const serviceToken = process.env.X402_SMOKE_SERVICE_TOKEN || 'x402-smoke-service-token';
 
 type RegionalSession = {
   sessionId: string;
   expiresAt: string;
-  publicAccessExpiresAt: string;
+  accessExpiresAt: string;
   nextExtensionSettlement: number;
 };
 
@@ -24,10 +24,11 @@ function sessionResponse(session: RegionalSession) {
     success: true,
     sessionId: session.sessionId,
     expiresAt: session.expiresAt,
-    publicAccessExpiresAt: session.publicAccessExpiresAt,
-    url: `${gateway}/vnc/${session.sessionId}/${restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000`,
+    url: `${gateway}/liveview/${session.sessionId}/${restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000`,
     cdpUrl: `${gateway.replace(/^https:/, 'wss:')}/cdp-agent/${session.sessionId}/${automationToken}/`,
     apiUrl: `${gateway}/api/${session.sessionId}/not-public/`,
+    vncUrl: `${gateway}/liveview/${session.sessionId}/${restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000`,
+    vncWsUrl: `${gateway.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:')}/liveview-ws/${session.sessionId}/${restrictedToken}`,
     browserPodId: `smoke-browser-${session.sessionId}`,
   };
 }
@@ -77,13 +78,18 @@ Bun.serve({
       const body = await request.json() as Record<string, unknown>;
       const sessionId = String(body.sessionId || '');
       const expiresAt = String(body.expiresAt || '');
-      if (!sessionId || !Number.isFinite(Date.parse(expiresAt))) {
+      const accessPolicy = body.accessPolicy as Record<string, unknown> | undefined;
+      if (!sessionId || !Number.isFinite(Date.parse(expiresAt))
+        || body.tokenExpiresAt !== expiresAt
+        || accessPolicy?.tokenMode !== 'route-bound'
+        || accessPolicy?.cdpScope !== 'automation'
+        || accessPolicy?.accessExpiresAt !== expiresAt) {
         return json({ error: 'Invalid session allocation' }, 400);
       }
       const session = {
         sessionId,
         expiresAt,
-        publicAccessExpiresAt: expiresAt,
+        accessExpiresAt: expiresAt,
         // Creation settles after allocation; the first TTL extension must not
         // occur until the following facilitator settlement.
         nextExtensionSettlement: settlementNumber + 2,
@@ -121,7 +127,7 @@ Bun.serve({
       if (expiresAt !== session.expiresAt) {
         return json({ error: 'Access deadline must match active session deadline' }, 409);
       }
-      session.publicAccessExpiresAt = expiresAt;
+      session.accessExpiresAt = expiresAt;
       return json(sessionResponse(session));
     }
 
@@ -130,7 +136,12 @@ Bun.serve({
       const sessionId = decodeURIComponent(reallocateMatch[1]!);
       const body = await request.json() as Record<string, unknown>;
       const expiresAt = String(body.expiresAt || '');
-      if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
+      const accessPolicy = body.accessPolicy as Record<string, unknown> | undefined;
+      if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()
+        || body.tokenExpiresAt !== expiresAt
+        || accessPolicy?.tokenMode !== 'route-bound'
+        || accessPolicy?.cdpScope !== 'automation'
+        || accessPolicy?.accessExpiresAt !== expiresAt) {
         return json({ error: 'Invalid recovery expiry' }, 400);
       }
       const existing = sessions.get(sessionId);
@@ -140,7 +151,7 @@ Bun.serve({
       const session = {
         sessionId,
         expiresAt,
-        publicAccessExpiresAt: expiresAt,
+        accessExpiresAt: expiresAt,
         nextExtensionSettlement: settlementNumber + 1,
       };
       sessions.set(sessionId, session);

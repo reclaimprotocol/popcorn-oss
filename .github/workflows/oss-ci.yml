@@ -17,6 +17,50 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  documentation:
+    name: Service documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Require a README for every service
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in services/*; do
+            [[ -d "$service" ]] || continue
+            test -s "$service/README.md" || {
+              echo "Missing $service/README.md" >&2
+              exit 1
+            }
+          done
+
+  third-party-notices:
+    name: Third-party notices
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify browser redistribution notices
+        shell: bash
+        run: |
+          set -euo pipefail
+          notice_dir=images/minimal-vnc-desktop/third-party/fortress
+          required=(LICENSE NOTICE CHROMIUM-LICENSE OFL-1.1.txt)
+
+          test -s THIRD_PARTY_NOTICES.md
+          for file in "${required[@]}"; do
+            test -s "${notice_dir}/${file}"
+          done
+
+          grep -Fq 'COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress' \
+            images/minimal-vnc-desktop/Dockerfile
+          grep -Fq 'Copyright (c) 2026, arham766' "${notice_dir}/LICENSE"
+          grep -Fq 'Copyright 2015 The Chromium Authors' "${notice_dir}/CHROMIUM-LICENSE"
+          grep -Fq 'SIL OPEN FONT LICENSE Version 1.1' "${notice_dir}/OFL-1.1.txt"
+
   go:
     name: Go tests
     runs-on: ubuntu-latest
@@ -29,6 +73,7 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: |
+            images/minimal-vnc-desktop/proxy/go.mod
             services/attestor/go.sum
             services/ttl-controller/go.sum
 
@@ -37,6 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           modules=(
+            images/minimal-vnc-desktop/proxy
             services/attestor
             services/ttl-controller
           )
@@ -87,6 +133,12 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Verify authenticated LiveView gateway routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash services/gateway/tests/route-bound-access.sh
+
   helm:
     name: Helm templates
     runs-on: ubuntu-latest
@@ -103,20 +155,69 @@ jobs:
           set -euo pipefail
           test -f examples/helm/platform-values.yaml
           test -f examples/helm/browser-fleet-values.yaml
-          test -f examples/helm/platform-ip-values.yaml
-          test -f examples/helm/browser-fleet-ip-values.yaml
-
-          helm template popcorn-platform charts/platform \
+          helm lint charts/platform \
             --values examples/helm/platform-values.yaml
-
-          helm template browser-fleet charts/browser-fleet \
+          helm lint charts/browser-fleet \
             --values examples/helm/browser-fleet-values.yaml
 
-          helm template popcorn-platform-ip charts/platform \
-            --values examples/helm/platform-ip-values.yaml
+          helm template popcorn-platform charts/platform \
+            --values examples/helm/platform-values.yaml \
+            > /tmp/popcorn-platform.yaml
 
-          helm template browser-fleet-ip charts/browser-fleet \
-            --values examples/helm/browser-fleet-ip-values.yaml
+          helm template browser-fleet charts/browser-fleet \
+            --values examples/helm/browser-fleet-values.yaml \
+            > /tmp/browser-fleet.yaml
+
+          for manifest in /tmp/browser-fleet.yaml; do
+            grep -q 'name: novnc' "$manifest"
+            grep -q 'containerPort: 6080' "$manifest"
+            grep -q 'name: POPCORN_BROWSER_STREAMING_MODE' "$manifest"
+            grep -A1 'name: REPLACE_DEFAULT_PAGE' "$manifest" | grep -q 'value: "false"'
+            if grep -Eq 'webrtc-udp|TURN_KEY_ID|TURN_API_TOKEN|POPCORN_WEBRTC|browser-turn-secret' "$manifest"; then
+              echo "Unexpected WebRTC or TURN configuration in $manifest" >&2
+              exit 1
+            fi
+          done
+
+          helm template browser-fleet-reclaim charts/browser-fleet \
+            --set browserPolicy.variant=reclaim-portal \
+            > /tmp/browser-fleet-reclaim.yaml
+          grep -A1 'name: REPLACE_DEFAULT_PAGE' /tmp/browser-fleet-reclaim.yaml \
+            | grep -q 'value: "true"'
+          grep -Fq 'REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-false}"' \
+            images/minimal-vnc-desktop/start-chromium
+
+          for manifest in /tmp/popcorn-platform.yaml; do
+            grep -q 'name: POOL_MANAGER_EXTRA_SESSION_URLS' "$manifest"
+            grep -q '/liveview/' "$manifest"
+            if grep -A1 'POOL_MANAGER_EXTRA_SESSION_URLS' "$manifest" | grep -Eq 'vncUrl|vncWsUrl'; then
+              echo "LiveView fields unexpectedly depend on extraSessionUrls in $manifest" >&2
+              exit 1
+            fi
+          done
+          grep -Fq 'location ~ ^/liveview/' services/gateway/nginx.conf
+          grep -Fq 'route:liveview:' services/pool-manager/src/services/session-db.ts
+          grep -Fq 'name: "novnc", port: 6080' services/pool-manager/src/services/agones.ts
+
+          for unsupported_mode in webrtc both; do
+            if helm template browser-fleet charts/browser-fleet \
+              --set "streaming.mode=$unsupported_mode" \
+              >"/tmp/browser-fleet-$unsupported_mode.yaml" \
+              2>"/tmp/browser-fleet-$unsupported_mode.err"; then
+              echo "streaming.mode=$unsupported_mode unexpectedly rendered" >&2
+              exit 1
+            fi
+            grep -Eq "streaming.mode only supports 'vnc'|/streaming/mode.*must be 'vnc'" \
+              "/tmp/browser-fleet-$unsupported_mode.err"
+          done
+
+          helm template browser-fleet charts/browser-fleet \
+            --set externalSecrets.enabled=true \
+            > /tmp/browser-fleet-external-secrets.yaml
+          if grep -Eq 'TURN_KEY_ID|TURN_API_TOKEN|browser-turn-secret' /tmp/browser-fleet-external-secrets.yaml; then
+            echo "VNC-only external secret render contains TURN configuration" >&2
+            exit 1
+          fi
 
   docker:
     name: Docker build smoke
@@ -171,27 +272,10 @@ jobs:
             "${tag_args[@]}" \
             "${{ matrix.context }}"
 
+          # Runtime images are published, aliased, and signed by the dedicated
+          # reproducible-images workflow.
           if [[ "${GITHUB_EVENT_NAME}" != "pull_request" && "${GITHUB_REPOSITORY}" == "reclaimprotocol/popcorn-oss" ]]; then
             for ref in "${refs[@]}"; do
               docker push "$ref"
             done
           fi
-
-  browser-node:
-    name: Browser node build smoke
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Build browser node image
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp -f cosign.pub services/browser-node/cosign.pub
-          docker build \
-            --platform linux/amd64 \
-            --build-arg SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)" \
-            --build-arg BASE_IMAGE=ubuntu:22.04 \
-            --tag popcorn/browser-node:ci \
-            ./services/browser-node

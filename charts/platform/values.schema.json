@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "clusterName": { "type": "string", "minLength": 1 },
+    "provider": { "type": "string", "enum": ["gcp", "kind"] },
+    "region": { "type": "string", "minLength": 1 },
+    "registry": { "type": "string", "minLength": 1 },
+    "imageTag": { "type": "string", "minLength": 1 },
+    "sessionExtensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "browser": { "type": "object" },
+          "routing": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["portName", "port", "routeKey"],
+            "properties": {
+              "portName": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+              "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+              "routeKey": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+              "sessionUrls": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "gatewayRoutes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["pathPrefix", "routeKey"],
+                  "additionalProperties": true,
+                  "properties": {
+                    "pathPrefix": { "type": "string", "minLength": 1 },
+                    "routeKey": { "type": "string", "minLength": 1 },
+                    "tokenScope": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "poolManager": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "redisHost": { "type": "string" },
+        "redisSecondaryHost": { "type": "string" },
+        "gameServerNamespace": { "type": "string" },
+        "gameServerFleet": { "type": "string", "minLength": 1 },
+        "jwtSecretName": { "type": "string" },
+        "serviceAuth": { "type": "object" },
+        "resources": { "type": "object" },
+        "controlPlaneUrl": { "type": "string" },
+        "analyticsServiceUrl": { "type": "string" },
+        "adminAuth": { "type": "object" }
+      }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "updateStrategy": { "type": "object" },
+        "podDisruptionBudget": { "type": "object" },
+        "topologySpreadConstraints": { "type": "array" },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
+        "gracefulShutdown": { "type": "object" },
+        "domainName": { "type": "string" },
+        "staticIpName": { "type": "string" },
+        "serviceType": {
+          "type": "string",
+          "enum": ["ClusterIP", "LoadBalancer", "NodePort"]
+        },
+        "redisHost": { "type": "string" },
+        "poolManagerHost": { "type": "string" },
+        "nodePorts": { "type": "object" },
+        "serviceAnnotations": { "type": "object" },
+        "backendConfig": { "type": "object" },
+        "jwtSecretName": { "type": "string" },
+        "jwtPrivateKeySecretId": { "type": "string" },
+        "jwtPublicKeySecretId": { "type": "string" },
+        "resources": { "type": "object" }
+      }
+    },
+    "controlPlane": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "replicas": { "type": "integer", "minimum": 1 },
+        "regions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "clusterName", "poolManagerUrl", "publicGatewayUrl"],
+            "additionalProperties": true,
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "clusterName": { "type": "string", "minLength": 1 },
+              "poolManagerUrl": { "type": "string", "pattern": "^https?://" },
+              "publicGatewayUrl": { "type": "string", "pattern": "^https?://" },
+              "enabled": { "type": "boolean" },
+              "x402Only": { "type": "boolean" }
+            }
+          }
+        },
+        "x402": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "testnet": { "type": "boolean" },
+            "network": { "type": "string" },
+            "publicBaseUrl": { "type": "string" },
+            "payTo": { "type": "string" },
+            "blockSeconds": { "type": "integer", "minimum": 1 },
+            "pricePerBlockAtomic": { "type": "integer", "minimum": 1 },
+            "paymentAssetAddress": { "type": "string" },
+            "paymentAssetName": { "type": "string" },
+            "paymentAssetVersion": { "type": "string", "minLength": 1 },
+            "maxExtensionBlocks": { "type": "integer", "minimum": 1 },
+            "maxPaidBlocks": { "type": "integer", "minimum": 1 },
+            "regionName": { "type": "string" },
+            "facilitatorUrl": { "type": "string" },
+            "facilitatorAuthMode": {
+              "type": "string",
+              "enum": ["auto", "none", "headers", "coinbase-cdp"]
+            },
+            "trustedProxyHops": { "type": "integer", "minimum": 0 },
+            "rateLimitPerMinute": { "type": "integer", "minimum": 1 },
+            "secretName": { "type": "string", "minLength": 1 },
+            "serverSecretKey": { "type": "string", "minLength": 1 },
+            "baseRpcUrlSecretKey": { "type": "string", "minLength": 1 },
+            "cdpApiKeyIdKey": { "type": "string", "minLength": 1 },
+            "cdpApiKeySecretKey": { "type": "string", "minLength": 1 },
+            "facilitatorAuthHeadersSecretKey": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "redisHa": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "ttlController": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": { "enabled": { "type": "boolean" } }
+    }
+  }
+}

@@ -42,5 +42,5 @@ if (secondaryRedis) {
 export const DB = createSessionDatabase(
     redis,
     secondaryRedis,
-    process.env.POOL_MANAGER_EXTRA_ROUTE_PORTS,
+    process.env.POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS,
 );

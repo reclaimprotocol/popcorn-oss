@@ -134,7 +134,7 @@ func TestCDPDiscoveryURLsIncludeGatewayPrefix(t *testing.T) {
 	}
 }
 
-func TestNoVNCMuxReclaimBypassesReadyGate(t *testing.T) {
+func TestNoVNCMuxRequiresReadyFile(t *testing.T) {
 	readyFile := filepath.Join(t.TempDir(), "ready")
 	handler := noVNCMux(t.TempDir(), "127.0.0.1:5900", readyGate{file: readyFile})
 
@@ -145,16 +145,6 @@ func TestNoVNCMuxReclaimBypassesReadyGate(t *testing.T) {
 		t.Fatalf("noVNC before readiness status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "http://proxy.example/reclaim/prove", strings.NewReader(`{}`))
-	req.Header.Set("Content-Type", "application/json")
-	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("reclaim before readiness status = %d, want %d: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "provider_params_json is required") {
-		t.Fatalf("unexpected reclaim response before readiness: %s", rec.Body.String())
-	}
 }
 
 func TestRestrictedCDPFilter(t *testing.T) {

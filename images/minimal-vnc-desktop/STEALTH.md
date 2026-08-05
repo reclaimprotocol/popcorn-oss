@@ -7,10 +7,8 @@ Bot Management, reCAPTCHA v3/Enterprise, DataDome) rather than
 headless-Chrome-on-Linux. Real users drive it over VNC, so the behavioral layer
 (mouse/keyboard timing) is genuinely human.
 
-Build/engine specifics — pinned digest, the `--uxr-*` persona, amd64-only, the
-GPU-coherence caveat — live in **`FORTRESS-INTEGRATION.md`**. This doc is the
-threat-model + verification view: what the persona claims, how fonts are made
-coherent, and the current probe scoreboard.
+Build and runtime details live in the image [README](README.md). This page
+documents the browser persona, its limits, and how to verify it.
 
 ## The persona (what Fortress claims)
 
@@ -79,24 +77,21 @@ coherent ~34-family inbox-Windows set, and **zero** Linux family names leak.
 Emoji is covered by Fortress's own colour font, so `fonts-noto-color-emoji` and
 25 other packs were dropped (image −430 MB, from 2.24 GB → 1.81 GB).
 
-## Probe scoreboard (verified 2026-07-10, `fonttest` build)
+## Verification Expectations
 
-Run over the full CDP proxy against the live image; **desktop** and the
-**mobile-touch** profile (narrow viewport + touch, `mobile:false` — the coherent
-Windows touch device used with magnify):
+Run the probes against the full CDP proxy. Treat these as invariants rather than
+preserving a dated score snapshot in documentation:
 
-| Probe | Desktop | Mobile-touch | Notes |
-|---|---|---|---|
-| fingerprint | ✅ PASS | ✅ PASS | Win32, `webdriver=false`, no `cdc_`/automation globals, plugins present; mobile shows `maxTouch=5, ontouchstart, pointer:coarse, inner=390×780` |
-| bot.sannysoft.com | ✅ PASS | ✅ PASS | no failed rows |
-| CreepJS | ℹ️ 6 lies | ℹ️ 6 lies | all Canvas/Audio/DOMRect anti-tracking noise — **no identity lies**; identical with/without mobile |
-| reCAPTCHA v3 (antcpt) | ✅ 0.9 | ✅ 0.9 | |
-| Cloudflare (nowsecure.nl) | ✅ PASS | ✅ PASS | no challenge |
+- the browser reports a coherent Windows platform, user agent, client hints,
+  touch profile, locale, timezone, and font set;
+- `navigator.webdriver` and known automation globals are absent;
+- CreepJS noise is limited to the intentional Canvas, AudioContext, and DOMRect
+  anti-tracking surfaces; and
+- the desktop and mobile-touch profiles remain internally consistent.
 
-The font overhaul is **stealth-neutral** — scores are identical to the
-pre-font-work baseline. reCAPTCHA/Cloudflare weight **egress IP reputation**
-heavily; a low score there reflects the IP (attach a clean sticky
-residential/mobile proxy), not the fingerprint.
+Bot-challenge and reCAPTCHA results also depend heavily on egress IP reputation,
+so they are canaries rather than deterministic build assertions. Record dated
+results in CI artifacts or release notes, not in this maintained reference.
 
 ## Running the probes
 
@@ -113,9 +108,8 @@ proxy (9222) filters the Runtime/Page commands the probes need. See
 
 ## Caveats
 
-- **IP reputation dominates.** Empirically (see `FORTRESS-INTEGRATION.md`), the
-  browser is not what blocks Netflix/Taj-class reCAPTCHA Enterprise flows — the
-  exit IP is. Fortress fixes coherence, not IP.
+- **IP reputation matters.** Fortress improves browser coherence but cannot
+  compensate for an exit address with poor reputation.
 - **Incoherent GPU persona (stable-149).** The default persona claims an RTX 3060
   (`--uxr-webgl-renderer="ANGLE (NVIDIA … RTX 3060 …, D3D11)"`) while rendering
   through SwiftShader — the hardware-GPU-on-software-renderer tell strict

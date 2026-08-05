@@ -1,4 +1,4 @@
-module github.com/reclaimprotocol/popcorn/services/ttl-controller
+module github.com/reclaimprotocol/popcorn-oss/services/ttl-controller
 
 go 1.23.0
 

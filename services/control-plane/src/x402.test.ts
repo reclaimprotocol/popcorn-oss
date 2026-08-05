@@ -1,10 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { createAuthenticatedCdpFacilitator, hashCanonicalPaymentPayload } from './x402-payment';
+import { createAuthenticatedCdpFacilitator, hashCanonicalPaymentPayload, X402PaymentGateway } from './x402-payment';
 import {
   decryptX402SettlementRequest,
-  deriveManagementToken,
+  deriveSessionCapability,
   encryptX402SettlementRequest,
   hasX402ExtensionActivationWindow,
+  isOwnedPublicX402Session,
+  publicX402SessionUrl,
   publicX402Endpoints,
   selectTrustedClientAddress,
 } from './x402-utils';
@@ -55,6 +57,8 @@ describe('x402 safety helpers', () => {
     expect(endpoints).toEqual({
       liveViewUrl: 'https://popcorn-gateway-gcp-us-central1-x402.reclaimprotocol.org/browser-agent-1/session/token/',
       connectUrl: 'wss://popcorn-gateway-gcp-us-central1-x402.reclaimprotocol.org/cdp-agent/session/token/',
+      vncUrl: 'https://popcorn-gateway-gcp-us-central1-x402.reclaimprotocol.org/liveview/session/token/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
+      vncWsUrl: 'wss://popcorn-gateway-gcp-us-central1-x402.reclaimprotocol.org/liveview-ws/session/token',
     });
     expect(JSON.stringify(endpoints)).not.toContain('internal');
     expect(JSON.stringify(endpoints)).not.toContain('secret');
@@ -76,6 +80,8 @@ describe('x402 safety helpers', () => {
     }, gateway, 'session')).toEqual({
       liveViewUrl: canonical,
       connectUrl: 'wss://popcorn-gateway.example/cdp-agent/session/automation.jwt/',
+      vncUrl: 'https://popcorn-gateway.example/liveview/session/restricted.jwt/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
+      vncWsUrl: 'wss://popcorn-gateway.example/liveview-ws/session/restricted.jwt',
     });
 
     for (const rejected of [
@@ -89,14 +95,51 @@ describe('x402 safety helpers', () => {
     }
   });
 
-  test('rejects foreign hosts and derives replayable tokens without persistence', () => {
+  test('preserves canonical LiveView and RFB WebSocket fields from the regional response', () => {
+    const gateway = 'https://popcorn-gateway.example';
+    const vncUrl = `${gateway}/liveview/session/restricted.jwt/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000`;
+    const vncWsUrl = 'wss://popcorn-gateway.example/liveview-ws/session/restricted.jwt';
+    expect(publicX402Endpoints({
+      url: vncUrl,
+      cdpUrl: 'wss://popcorn-gateway.example/cdp-agent/session/automation.jwt/',
+      vncUrl,
+      vncWsUrl,
+    }, gateway, 'session')).toEqual({
+      liveViewUrl: vncUrl,
+      connectUrl: 'wss://popcorn-gateway.example/cdp-agent/session/automation.jwt/',
+      vncUrl,
+      vncWsUrl,
+    });
+  });
+
+  test('rejects foreign hosts and derives stable session capabilities without persistence', () => {
     expect(publicX402Endpoints({
       url: 'https://evil.example/liveview',
       cdpUrl: 'ws://popcorn-gateway.example/cdp/session',
     }, 'https://popcorn-gateway.example', 'session')).toEqual({});
-    const token = deriveManagementToken('a'.repeat(32), 'x402_session');
-    expect(token).toBe(deriveManagementToken('a'.repeat(32), 'x402_session'));
-    expect(token).not.toBe(deriveManagementToken('a'.repeat(32), 'x402_other'));
+    const capability = deriveSessionCapability('a'.repeat(32), 'internal-session');
+    expect(capability).toBe(deriveSessionCapability('a'.repeat(32), 'internal-session'));
+    expect(capability).not.toBe(deriveSessionCapability('a'.repeat(32), 'other-session'));
+    expect(capability).toMatch(/^x402s_[A-Za-z0-9_-]{43}$/);
+    expect(publicX402SessionUrl('https://app.popcorn.reclaimprotocol.org', capability))
+      .toBe(`https://app.popcorn.reclaimprotocol.org/v1/x402/sessions/${capability}`);
+  });
+
+  test('never treats normal-client or foreign-cluster sessions as x402-owned', () => {
+    const access = { sessionId: 'internal-x402-session' };
+    const expected = {
+      clientId: 'x402-public',
+      region: 'x402-us-central1',
+      clusterName: 'gcp-us-central1-x402-popcorn',
+    };
+    const owned = { sessionId: access.sessionId, ...expected };
+
+    expect(isOwnedPublicX402Session(owned, access, expected)).toBe(true);
+    expect(isOwnedPublicX402Session({ ...owned, clientId: 'existing-client' }, access, expected)).toBe(false);
+    expect(isOwnedPublicX402Session({ ...owned, region: 'asia-south1' }, access, expected)).toBe(false);
+    expect(isOwnedPublicX402Session({ ...owned, clusterName: 'mumbai-production' }, access, expected)).toBe(false);
+    expect(isOwnedPublicX402Session(owned, { sessionId: 'different-session' }, expected)).toBe(false);
+    expect(isOwnedPublicX402Session(owned, undefined, expected)).toBe(false);
   });
 
   test('selects the client address from the trusted right side of X-Forwarded-For', () => {
@@ -159,6 +202,90 @@ describe('CDP facilitator authentication', () => {
       '/platform/v2/x402/verify',
       '/platform/v2/x402/settle',
     ]);
+  });
+});
+
+describe('configurable x402 payment contract', () => {
+  test('uses configured price, asset metadata, and static facilitator headers', async () => {
+    const originalFetch = globalThis.fetch;
+    let authorization: string | null = null;
+    globalThis.fetch = (async (_request: RequestInfo | URL, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get('X-Facilitator-Key');
+      return Response.json({
+        kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:84532' }],
+        extensions: [],
+        signers: {},
+      });
+    }) as typeof fetch;
+    try {
+      const gateway = new X402PaymentGateway({
+        network: 'eip155:84532',
+        facilitatorUrl: 'https://facilitator.example/x402',
+        facilitatorAuthMode: 'headers',
+        facilitatorAuthHeaders: { 'X-Facilitator-Key': 'secret' },
+        payTo: '0x1111111111111111111111111111111111111111',
+        pricePerBlockAtomic: 37,
+        paymentAssetAddress: '0x2222222222222222222222222222222222222222',
+        paymentAssetName: 'Example Token',
+        paymentAssetVersion: '7',
+      } as any);
+      const offer = await gateway.createOffer({
+        blocks: 3,
+        resourceUrl: 'https://control-plane.example/v1/x402/sessions',
+        description: 'Test session',
+      });
+      expect(authorization).toBe('secret');
+      expect(offer.requirements).toMatchObject({
+        network: 'eip155:84532',
+        asset: '0x2222222222222222222222222222222222222222',
+        amount: '111',
+        extra: { name: 'Example Token', version: '7' },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('reads custom payment and facilitator settings from the environment', async () => {
+    const child = Bun.spawn([
+      'bun',
+      '-e',
+      `const {ControlPlaneConfig}=await import('./src/config.ts'); console.log(JSON.stringify(ControlPlaneConfig.x402));`,
+    ], {
+      cwd: import.meta.dir + '/..',
+      env: {
+        ...process.env,
+        CONTROL_PLANE_SERVICE_AUTH_TOKEN: 'test-service-token',
+        CONTROL_PLANE_REGIONS: '[]',
+        X402_ENABLED: 'false',
+        X402_BLOCK_SECONDS: '90',
+        X402_PRICE_PER_BLOCK_ATOMIC: '321',
+        X402_PAYMENT_ASSET_ADDRESS: '0x2222222222222222222222222222222222222222',
+        X402_PAYMENT_ASSET_NAME: 'Example Token',
+        X402_PAYMENT_ASSET_VERSION: '7',
+        X402_FACILITATOR_URL: 'https://facilitator.example/x402',
+        X402_FACILITATOR_AUTH_MODE: 'headers',
+        X402_FACILITATOR_AUTH_HEADERS: '{"X-API-Key":"secret"}',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout.trim())).toMatchObject({
+      blockSeconds: 90,
+      pricePerBlockAtomic: 321,
+      paymentAssetAddress: '0x2222222222222222222222222222222222222222',
+      paymentAssetName: 'Example Token',
+      paymentAssetVersion: '7',
+      facilitatorUrl: 'https://facilitator.example/x402',
+      facilitatorAuthMode: 'headers',
+      facilitatorAuthHeaders: { 'X-API-Key': 'secret' },
+    });
   });
 });
 
@@ -400,7 +527,7 @@ describe('control-plane import smoke', () => {
         X402_PUBLIC_BASE_URL: 'https://app.popcorn.reclaimprotocol.org',
         X402_BASE_RPC_URL: 'https://base-rpc.example.com',
         X402_PAY_TO: '0x1111111111111111111111111111111111111111',
-        X402_MANAGEMENT_TOKEN_SECRET: 'test-management-token-secret-32-bytes',
+        X402_SERVER_SECRET: 'test-x402-server-secret-at-least-32-bytes',
         CDP_API_KEY_ID: 'test-key-id',
         CDP_API_KEY_SECRET: 'test-key-secret',
       },
@@ -449,7 +576,7 @@ describe('control-plane import smoke', () => {
         X402_PUBLIC_BASE_URL: 'https://app.popcorn.reclaimprotocol.org',
         X402_BASE_RPC_URL: 'https://base-rpc.example.com',
         X402_PAY_TO: '0x1111111111111111111111111111111111111111',
-        X402_MANAGEMENT_TOKEN_SECRET: 'test-management-token-secret-32-bytes',
+        X402_SERVER_SECRET: 'test-x402-server-secret-at-least-32-bytes',
         CDP_API_KEY_ID: 'test-key-id',
         CDP_API_KEY_SECRET: 'test-key-secret',
       },
@@ -466,6 +593,90 @@ describe('control-plane import smoke', () => {
       status: 401,
       paymentRequired: null,
     });
+  });
+
+  test('allocates with valid client credentials while x402 is enabled', async () => {
+    const child = Bun.spawn([
+      'bun',
+      '-e',
+      `const {ClientService}=await import('./src/clients.ts');
+       const {SessionService}=await import('./src/sessions.ts');
+       ClientService.validateCredentials=async(id,secret)=>id==='client-test'&&secret==='secret-test';
+       ClientService.getClient=async(id)=>({id,name:'Credentialed client',active:true,allowedClusters:null,createdAt:new Date()});
+       SessionService.getSession=async()=>[];
+       SessionService.createSession=async()=>{};
+       let regionalRequest;
+       let regionalUrl;
+       globalThis.fetch=async(input,init)=>{
+         regionalUrl=String(input);
+         regionalRequest=JSON.parse(String(init?.body));
+         return Response.json({success:true,sessionId:regionalRequest.sessionId,url:'https://existing-gateway.example/liveview/credentialed-session/restricted.jwt/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',cdpUrl:'wss://existing-gateway.example/cdp/credentialed-session/restricted.jwt/',apiUrl:'https://existing-gateway.example/api',vncUrl:'https://existing-gateway.example/liveview/credentialed-session/restricted.jwt/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',vncWsUrl:'wss://existing-gateway.example/liveview-ws/credentialed-session/restricted.jwt'});
+       };
+       const app=(await import('./index.ts')).default;
+       const response=await app.fetch(new Request('http://localhost/v1/sessions',{method:'POST',headers:{Authorization:'Bearer client-test:secret-test','Content-Type':'application/json'},body:JSON.stringify({sessionId:'credentialed-session'})}));
+       console.log(JSON.stringify({status:response.status,paymentRequired:response.headers.get('PAYMENT-REQUIRED'),body:await response.json(),regionalUrl,regionalRequest}));`,
+    ], {
+      cwd: import.meta.dir + '/..',
+      env: {
+        ...process.env,
+        DATABASE_URL: 'postgresql://user:pass@127.0.0.1:5432/popcorn',
+        CONTROL_PLANE_SERVICE_AUTH_TOKEN: 'test-service-token',
+        CONTROL_PLANE_REGIONS: JSON.stringify([
+          {
+            name: 'asia-south1',
+            clusterName: 'existing-client-cluster',
+            poolManagerUrl: 'http://existing-pool-manager.local',
+            publicGatewayUrl: 'https://existing-gateway.example',
+            enabled: true,
+          },
+          {
+            name: 'x402-us-central1',
+            clusterName: 'x402-cluster',
+            poolManagerUrl: 'http://x402-pool-manager.local',
+            publicGatewayUrl: 'https://x402-gateway.example',
+            enabled: true,
+            x402Only: true,
+          },
+        ]),
+        X402_ENABLED: 'true',
+        X402_REGION_NAME: 'x402-us-central1',
+        X402_PUBLIC_BASE_URL: 'https://x402-api.example',
+        X402_BASE_RPC_URL: 'https://base-rpc.example',
+        X402_PAY_TO: '0x1111111111111111111111111111111111111111',
+        X402_SERVER_SECRET: 'test-x402-server-secret-at-least-32-bytes',
+        CDP_API_KEY_ID: 'test-key-id',
+        CDP_API_KEY_SECRET: 'test-key-secret',
+      },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const result = JSON.parse(stdout.trim().split('\n').at(-1)!);
+    expect(result).toMatchObject({
+      status: 200,
+      paymentRequired: null,
+      regionalUrl: 'http://existing-pool-manager.local/internal/sessions',
+      body: {
+        sessionId: 'credentialed-session',
+        region: 'asia-south1',
+        clusterName: 'existing-client-cluster',
+        vncUrl: 'https://existing-gateway.example/liveview/credentialed-session/restricted.jwt/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
+        vncWsUrl: 'wss://existing-gateway.example/liveview-ws/credentialed-session/restricted.jwt',
+      },
+      regionalRequest: {
+        sessionId: 'credentialed-session',
+        clientId: 'client-test',
+        clientName: 'Credentialed client',
+        publicGatewayUrl: 'https://existing-gateway.example',
+      },
+    });
+    expect(result.regionalRequest).not.toHaveProperty('tokenExpiresAt');
+    expect(result.regionalRequest).not.toHaveProperty('accessPolicy');
   });
 
   test('fails startup when the paid region is not explicitly x402-only', async () => {
@@ -485,7 +696,7 @@ describe('control-plane import smoke', () => {
         X402_PUBLIC_BASE_URL: 'https://app.popcorn.reclaimprotocol.org',
         X402_BASE_RPC_URL: 'https://base-rpc.example.com',
         X402_PAY_TO: '0x1111111111111111111111111111111111111111',
-        X402_MANAGEMENT_TOKEN_SECRET: 'test-management-token-secret-32-bytes',
+        X402_SERVER_SECRET: 'test-x402-server-secret-at-least-32-bytes',
         CDP_API_KEY_ID: 'test-key-id', CDP_API_KEY_SECRET: 'test-key-secret',
       },
       stdout: 'pipe', stderr: 'pipe',

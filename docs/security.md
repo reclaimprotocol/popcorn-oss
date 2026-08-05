@@ -1,135 +1,170 @@
-# Self-Hosting Security
+# Security
 
-Popcorn runs each browser session in an ephemeral Kubernetes workload and
-exposes access through signed gateway paths. This page is the short operator
-checklist for hosting it safely.
+Popcorn runs a real browser against untrusted websites. Treat browser workers
+as hostile workloads and design the cluster so compromise of one session does
+not expose durable data, control-plane credentials, or other sessions.
 
-## Baseline Controls
+## Security boundaries
 
-- Expose only the gateway publicly unless you have a clear reason to expose the
-  control plane.
-- Put TLS in front of every public gateway and control-plane endpoint.
-- Keep Redis, pool managers, Postgres, and internal service URLs private.
-- Use unique client credentials per integration.
-- Treat returned session URLs as bearer secrets and avoid logging them.
-- Set CPU and memory requests and limits for browser workloads.
-- Enable session cleanup with `ttlController` or your own operational cleanup.
-- Store secrets in Kubernetes Secrets or an external secret manager.
-- Pin production images by digest and scan images before release.
+| Boundary | Enforcement |
+| --- | --- |
+| Client to control plane | client ID/secret and allowed cluster list |
+| Operator to admin API | separate admin authentication and network exposure |
+| Control plane to pool manager | one regional service token |
+| Client to browser route | signed path token with route scope and expiry |
+| Gateway to browser | Redis route lookup to an allocated pod IP |
+| Browser to cluster | ServiceAccount, CNI, NetworkPolicy, node/runtime isolation |
+| Durable state | private Postgres and secret-managed credentials |
 
-## Trust Boundaries
+No single control is sufficient. A signed URL does not make a privileged
+browser safe, and a sandbox does not make leaked credentials harmless.
 
-- Clients call the control-plane `POST /v1/sessions` API with client
-  credentials.
-- The control plane validates clients, chooses an enabled region, and calls that
-  region's pool manager with a service token.
-- Pool managers accept only internal control-plane authenticated allocation
-  requests.
-- The gateway validates signed path tokens before routing browser, CDP, and
-  runtime API requests. The optional proof route is session-routed and should be
-  exposed only when attestation is enabled and the caller model is understood.
-- Redis stores live route state and should be reachable only by platform
-  services.
-- Browser pods are disposable runtime workloads, not trusted storage.
+## Minimum production controls
 
-## Secrets To Manage
+- Expose the gateway through TLS only.
+- Keep pool manager, Redis, Postgres, and Kubernetes/Agones APIs private.
+- Keep `/admin` private or behind a separately controlled ingress.
+- Use unique client credentials per integration and cluster allow lists.
+- Enable TTL cleanup and delete sessions when work completes.
+- Pin images and review their provenance before rollout.
+- Set browser CPU and memory requests and limits.
+- Separate browser workers onto dedicated nodes when tenant isolation matters.
+- Redact signed session URLs and Secret values from every logging layer.
+- Back up Postgres and test restoration.
 
-Production deployments should manage and rotate:
+## Session URLs are credentials
 
-- gateway JWT private and public keys;
-- control-plane client credentials for `/v1/sessions`;
-- `CONTROL_PLANE_SERVICE_AUTH_TOKEN`;
-- one `POOL_MANAGER_SERVICE_AUTH_TOKEN` per region;
-- admin credentials, admin session secret, and optional Google OAuth secret;
+`url`, `cdpUrl`, `cdpInternalUrl`, `apiUrl`, `vncUrl`, and `vncWsUrl` contain
+bearer tokens. Anyone holding a live URL may use that route until it expires,
+the route-bound deadline closes, or the session is deleted.
+
+Log identifiers instead:
+
+```text
+sessionId
+browserPodId
+region
+clusterName
+expiresAt
+```
+
+Ingress access logs, tracing attributes, exception messages, support bundles,
+and screenshots all need the same redaction policy.
+
+## CDP risk
+
+CDP can inspect pages, read storage, execute JavaScript, navigate the browser,
+and interact with downloads.
+
+- `/cdp` applies the restricted client command policy.
+- `/cdp-agent` provides automation-scoped full CDP for the x402 lifecycle.
+- `/cdp-internal` provides trusted full CDP.
+
+Do not expose full CDP to ordinary clients. Command filtering is defense in
+depth, not the primary tenant boundary; token scope, ownership, network
+exposure, runtime isolation, and session lifetime remain required.
+
+## Browser workload hardening
+
+The browser chart offers `legacy` and `hardened` security profiles. `legacy`
+retains `SYS_ADMIN` for compatibility. `hardened` drops capabilities, disables
+privilege escalation, and selects the runtime-default seccomp profile.
+
+Before selecting a profile:
+
+1. test the exact digest-pinned image;
+2. test LiveView and both intended CDP paths;
+3. test downloads and browser workloads representative of production;
+4. test with the chosen runtime class, such as gVisor;
+5. verify no sidecar reintroduces broader privileges.
+
+Use dedicated, autoscaled browser nodes. Avoid hostPath mounts, host networking,
+privileged containers, or credentials that grant access to durable services.
+
+## Kubernetes identity and RBAC
+
+Review rendered RBAC before install. The pool manager can allocate and delete
+GameServers, the TTL controller can delete expired GameServers, and the browser
+ServiceAccount can interact with its GameServer and read limited pod/node
+metadata.
+
+For public hostile workloads, consider disabling the chart-created browser
+ServiceAccount and relying on the minimum Agones SDK identity only after
+testing the rendered Fleet and network path. Never grant browser containers
+cluster-admin or cloud-wide credentials.
+
+## Network isolation
+
+Use [Networking](networking.md) to keep internal services private. Browser
+egress should be either:
+
+- direct public-web egress with private ranges and metadata blocked;
+- an approved HTTPS proxy; or
+- a stricter destination policy designed for the application.
+
+The bundled NetworkPolicy is a GKE-oriented baseline and must be reviewed for
+external Redis, custom DNS, service meshes, or another CNI. Ensure the cloud
+metadata address is not reachable from browser workloads.
+
+## Secrets and key rotation
+
+Store production Secrets outside source control. Assign separate owners and
+rotation schedules to:
+
+- gateway JWT signing keys;
+- regional pool-manager service tokens;
+- control-plane lifecycle and admin credentials;
 - Postgres credentials;
-- registry pull credentials, if using private images;
-- attestation signing material, if attestation is enabled.
+- browser proxy and registry credentials;
+- optional OTLP, attestation, and x402 credentials.
 
-Never commit private keys, client secrets, registry credentials, cloud
-credentials, or real production values.
+The gateway currently verifies one public key. JWT rotation invalidates active
+session URLs unless sessions are drained or the verifier is extended for key
+overlap. See [Secrets](secrets.md).
 
-## Session URLs
+## Public control plane
 
-Session creation returns signed gateway URLs:
+The control plane contains both client APIs and `/admin`. If clients require a
+public control-plane origin:
 
-- `url`: browser view.
-- `cdpUrl`: client-facing CDP endpoint.
-- `cdpInternalUrl`: trusted internal CDP endpoint.
-- `apiUrl`: browser runtime API endpoint.
+- use distinct ingress path sets or a separate protected admin ingress;
+- enforce TLS and rate limits;
+- use Google OAuth allow lists or bcrypt password-file authentication for
+  human operators;
+- use the admin bearer token only for controlled automation;
+- alert on repeated authentication failures and client-credential creation;
+- scope clients with `allowedClusters`.
 
-Anyone with a live URL can use that route until the token expires or the
-session is deleted. Redact full URLs in logs, analytics, tickets, and support
-screenshots. Prefer logging `sessionId`, `browserPodId`, `region`, and
-`clusterName`.
+## Supply chain
 
-## Admin Access
+- Pin platform and browser images by immutable reference.
+- Keep the chart version, image digest set, and browser build inputs together
+  in the deployment record.
+- Verify image signatures when release artifacts provide them.
+- Scan service and browser images, including the large browser runtime.
+- Restrict registry write access and node pull credentials.
+- Roll new browser images through a small Fleet before broad replacement.
 
-Admin endpoints under `/admin` use a separate auth layer from client session
-credentials. Supported strategies include token or Basic auth for scripts,
-password login, password-file login, and Google OAuth login.
+See [Images and releases](images-and-releases.md).
 
-For production:
+## Optional feature boundaries
 
-- prefer a bcrypt htpasswd-style password file or Google OAuth allow lists over
-  static `ADMIN_USER` and `ADMIN_PASS` values;
-- set `ADMIN_SESSION_SECRET` so browser admin cookies and OAuth state survive
-  restarts and replicas;
-- restrict Google OAuth by verified email or allowed domain;
-- keep `/admin` behind trusted network access when possible;
-- do not share admin credentials with client applications.
+- Attestation adds a proof service and confidential-node requirements; it does
+  not make browser content trustworthy.
+- x402 adds public payment and route-bound automation state; keep it in an
+  explicit `x402Only` region.
+- Session extensions run inside the browser pod and inherit its trust level.
+  Review images, env, Secret mounts, privileges, and exposed routes separately.
 
-Pool managers do not expose a public admin UI.
+## Security acceptance checklist
 
-## Kubernetes Hardening
-
-Use standard cluster isolation around the browser fleet:
-
-- run browser containers with the least privileges supported by the runtime;
-- avoid hostPath mounts and broad service account permissions;
-- use network policies to keep Redis, Postgres, and pool-manager traffic
-  internal;
-- dedicate browser nodes or node pools when tenant isolation matters;
-- set resource requests and limits for browser runtime and attestor containers;
-- use digest-pinned runtime images and controlled rollout windows;
-- delete sessions promptly when work is complete.
-
-## Advanced: CDP Scope
-
-The gateway exposes two CDP paths with different command scopes:
-
-- `/cdp/<sessionId>/<token>/...`: client-facing CDP path. The nginx config labels
-  this "CDP Exposure (Restricted)" and enforces a command allowlist.
-- `/cdp-internal/<sessionId>/<token>/...`: full-access CDP path. The nginx config
-  labels this "CDP Internal Exposure (Full Access)" and forwards unfiltered CDP.
-  The `cdpInternalUrl` / `/cdp-internal` name is legacy naming for this
-  full-access CDP surface.
-
-The full-access path uses a distinct token scope and should be used only by
-trusted automation or operations tooling, since it is not restricted by the
-command allowlist. In OSS v1, do not rely on command-level CDP filtering as the
-only security boundary. Use path-token scope, network exposure, client
-ownership, and short session lifetime as the primary controls.
-
-## Advanced: Gateway Keys
-
-Gateway path tokens depend on stable JWT keys. Rotating keys invalidates
-outstanding browser, CDP, and API URLs unless you deploy an overlap strategy.
-Plan key rotation around session lifetime and active workloads.
-
-## Advanced: Attestation
-
-Attestation is optional. When enabled on compatible confidential-computing
-infrastructure, the attestor can produce a proof that binds a caller nonce to
-the running browser runtime image digest, attestor image digest, and platform
-attestation token. See [attestation.md](attestation.md).
-
-## Preflight Checklist
-
-- TLS is configured for public traffic.
-- Only intended services are internet reachable.
-- Client credentials and admin credentials are distinct.
-- Session URLs and path tokens are redacted from logs.
-- Redis and Postgres are private.
-- Browser workloads have limits, cleanup, and minimal permissions.
-- Production images are digest pinned.
-- Secrets are stored outside source control.
+- [ ] Only intended gateway and control-plane paths are public.
+- [ ] All public traffic uses TLS/WSS.
+- [ ] Redis, Postgres, pool manager, and Kubernetes APIs are private.
+- [ ] Browser nodes, runtime profile, RBAC, and egress are reviewed.
+- [ ] Full CDP is limited to trusted automation.
+- [ ] Client cluster access is explicit.
+- [ ] Session URLs and Secret values are redacted.
+- [ ] Images and values are pinned and reviewable.
+- [ ] Postgres restoration and incident key rotation are rehearsed.
+- [ ] Optional components were threat-modeled independently.

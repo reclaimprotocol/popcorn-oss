@@ -27,9 +27,6 @@ import (
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 func main() {
-	installReclaimLibraryLogger()
-	defer func() { _ = reclaimLogger.Sync() }()
-
 	listen := flag.String("listen", envDefault("NOVNC_LISTEN", ":6080"), "HTTP listen address")
 	vnc := flag.String("vnc", envDefault("VNC_ADDR", "127.0.0.1:5900"), "upstream VNC address")
 	web := flag.String("web", envDefault("NOVNC_WEB_ROOT", "/usr/share/novnc"), "noVNC static web root")
@@ -37,7 +34,6 @@ func main() {
 	cdpUpstream := flag.String("cdp-upstream", envDefault("CDP_UPSTREAM_ADDR", "127.0.0.1:9223"), "upstream Chromium DevTools HTTP address")
 	cdpRestrictedListen := flag.String("cdp-restricted-listen", envDefault("CDP_RESTRICTED_LISTEN", "0.0.0.0:9222"), "restricted CDP proxy listen address; empty disables it")
 	cdpFullListen := flag.String("cdp-full-listen", envDefault("CDP_FULL_LISTEN", "0.0.0.0:9226"), "full CDP proxy listen address; empty disables it")
-	reclaimAPIListen := flag.String("reclaim-api-listen", envDefault("RECLAIM_API_LISTEN", "0.0.0.0:10001"), "dedicated reclaim API listen address (matches popcorn-images kernel-images-api port); empty disables it")
 	flag.Parse()
 
 	ready := readyGate{file: *readyFile}
@@ -47,14 +43,6 @@ func main() {
 			Handler:           noVNCMux(*web, *vnc, ready),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
-	}
-
-	if strings.TrimSpace(*reclaimAPIListen) != "" {
-		servers = append(servers, &http.Server{
-			Addr:              *reclaimAPIListen,
-			Handler:           reclaimAPIMux(),
-			ReadHeaderTimeout: 5 * time.Second,
-		})
 	}
 
 	if strings.TrimSpace(*cdpRestrictedListen) != "" {
@@ -90,31 +78,11 @@ func main() {
 	if strings.TrimSpace(*cdpFullListen) != "" {
 		log.Printf("serving full CDP on %s, proxying to %s", *cdpFullListen, *cdpUpstream)
 	}
-	if strings.TrimSpace(*reclaimAPIListen) != "" {
-		log.Printf("serving reclaim API on %s", *reclaimAPIListen)
-	}
-
 	log.Fatal(<-errs)
-}
-
-// registerReclaimRoutes wires the reclaim HTTP endpoints onto mux. Shared by the
-// noVNC surface (6080) and the dedicated reclaim API listener (10001) so both
-// expose the same handlers.
-func registerReclaimRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/reclaim/prove", reclaimProveHTTPHandler)
-	mux.HandleFunc("/reclaim/validate", reclaimValidateExtractionHTTPHandler)
-	mux.HandleFunc("/reclaim/validate-extraction", reclaimValidateExtractionHTTPHandler)
-}
-
-func reclaimAPIMux() http.Handler {
-	mux := http.NewServeMux()
-	registerReclaimRoutes(mux)
-	return mux
 }
 
 func noVNCMux(web, vnc string, ready readyGate) http.Handler {
 	mux := http.NewServeMux()
-	registerReclaimRoutes(mux)
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
 		serveWebsocket(w, r, vnc, ready)
 	})

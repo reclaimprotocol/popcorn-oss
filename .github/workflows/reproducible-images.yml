@@ -78,13 +78,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tag_args=(--tag "${IMAGE_PREFIX}/browser-runtime:${COMMIT_SHA}")
+          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == "main" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime:main" --tag "${IMAGE_PREFIX}/browser-runtime:latest")
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime:${GITHUB_REF_NAME}" --tag "${IMAGE_PREFIX}/browser-runtime:latest")
+          fi
           docker buildx build \
             --platform "${PLATFORM}" \
             --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
             --build-arg "UBUNTU_SNAPSHOT=${BROWSER_RUNTIME_UBUNTU_SNAPSHOT}" \
             --build-context "minimal-vnc-artifacts=${RUNNER_TEMP}/minimal-vnc-artifacts" \
             --metadata-file "${RUNNER_TEMP}/browser-runtime-metadata.json" \
-            --tag "${IMAGE_PREFIX}/browser-runtime:${COMMIT_SHA}" \
+            "${tag_args[@]}" \
             --push \
             images/minimal-vnc-desktop
 
@@ -97,11 +103,17 @@ jobs:
         run: |
           set -euo pipefail
           cp -f cosign.pub services/attestor/cosign.pub
+          tag_args=(--tag "${IMAGE_PREFIX}/browser-runtime-attestor:${COMMIT_SHA}")
+          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == "main" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime-attestor:main" --tag "${IMAGE_PREFIX}/browser-runtime-attestor:latest")
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime-attestor:${GITHUB_REF_NAME}" --tag "${IMAGE_PREFIX}/browser-runtime-attestor:latest")
+          fi
           docker buildx build \
             --platform "${PLATFORM}" \
             --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
             --metadata-file "${RUNNER_TEMP}/browser-runtime-attestor-metadata.json" \
-            --tag "${IMAGE_PREFIX}/browser-runtime-attestor:${COMMIT_SHA}" \
+            "${tag_args[@]}" \
             --push \
             services/attestor
 

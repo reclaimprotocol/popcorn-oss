@@ -10,14 +10,17 @@ import {
   reallocateExpiredRegionalSession,
 } from './pool-manager';
 import { SessionService } from './sessions';
-import { X402PaymentError, X402PaymentGateway, type X402Offer, type VerifiedX402Payment, x402UsdcAddress } from './x402-payment';
+import { X402PaymentError, X402PaymentGateway, type X402Offer, type VerifiedX402Payment } from './x402-payment';
 import { X402ClaimBusyError, X402Store, type X402PaymentRow, type X402SessionRow } from './x402-store';
 import {
   decryptX402SettlementRequest,
-  deriveManagementToken,
+  deriveSessionCapability,
   encryptX402SettlementRequest,
   hasX402ExtensionActivationWindow,
+  isOwnedPublicX402Session,
+  publicX402SessionUrl,
   publicX402Endpoints,
+  type PublicX402Endpoints,
 } from './x402-utils';
 import type { X402LeaseGuard } from './x402-coordination';
 import { recoverInterruptedExtension, runCleanupAttempt } from './x402-recovery';
@@ -87,9 +90,9 @@ function requestHash(value: Record<string, unknown>): string {
   return sha256(JSON.stringify(value));
 }
 
-function tokenMatches(token: string | undefined, expectedHash: string): boolean {
-  if (!token) return false;
-  const actual = Buffer.from(sha256(token), 'hex');
+function secretHashMatches(value: string | undefined, expectedHash: string | null | undefined): boolean {
+  if (!value || !expectedHash) return false;
+  const actual = Buffer.from(sha256(value), 'hex');
   const expected = Buffer.from(expectedHash, 'hex');
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
@@ -122,7 +125,32 @@ interface ExtensionRecoveryState {
   previousExpiresAt: string;
   previousPaidBlocks: number;
   previousMetadata: Record<string, unknown>;
-  previousEndpoints: { liveViewUrl?: string; connectUrl?: string };
+  previousEndpoints: PublicX402Endpoints;
+}
+
+function hasPublicSessionEndpoints(endpoints: PublicX402Endpoints): boolean {
+  return !!endpoints.connectUrl && !!endpoints.liveViewUrl
+    && !!endpoints.vncUrl && !!endpoints.vncWsUrl;
+}
+
+function samePublicSessionEndpoints(left: PublicX402Endpoints, right: PublicX402Endpoints): boolean {
+  return left.connectUrl === right.connectUrl
+    && left.liveViewUrl === right.liveViewUrl
+    && left.vncUrl === right.vncUrl
+    && left.vncWsUrl === right.vncWsUrl;
+}
+
+function normalizeStoredEndpoints(
+  endpoints: Record<string, unknown>,
+  publicGatewayUrl: string,
+  sessionId: string,
+): PublicX402Endpoints {
+  return publicX402Endpoints({
+    url: endpoints.liveViewUrl,
+    cdpUrl: endpoints.connectUrl,
+    vncUrl: endpoints.vncUrl,
+    vncWsUrl: endpoints.vncWsUrl,
+  }, publicGatewayUrl, sessionId);
 }
 
 function readExtensionRecovery(value: unknown): ExtensionRecoveryState | null {
@@ -143,14 +171,24 @@ function readExtensionRecovery(value: unknown): ExtensionRecoveryState | null {
   };
 }
 
-function endpointMetadata(session: { metadata?: unknown } | undefined, publicGatewayUrl: string, sessionId: string): { liveViewUrl?: string; connectUrl?: string } {
+function endpointMetadata(session: { metadata?: unknown } | undefined, publicGatewayUrl: string, sessionId: string): PublicX402Endpoints {
   const endpoints = getMetadata(session).x402PublicEndpoints;
   return endpoints && typeof endpoints === 'object' && !Array.isArray(endpoints)
-    ? publicX402Endpoints({
-      url: (endpoints as Record<string, unknown>).liveViewUrl,
-      cdpUrl: (endpoints as Record<string, unknown>).connectUrl,
-    }, publicGatewayUrl, sessionId)
+    ? normalizeStoredEndpoints(endpoints as Record<string, unknown>, publicGatewayUrl, sessionId)
     : {};
+}
+
+function publicSessionResponse(
+  body: Record<string, unknown>,
+  config: X402Config,
+  internalSessionId: string,
+): Record<string, unknown> {
+  const capability = deriveSessionCapability(config.serverSecret!, internalSessionId);
+  return {
+    ...body,
+    sessionId: capability,
+    sessionUrl: publicX402SessionUrl(config.publicBaseUrl!, capability),
+  };
 }
 
 function replaySettled(payment: X402PaymentRow, config: X402Config): X402HttpResult | null {
@@ -161,9 +199,7 @@ function replaySettled(payment: X402PaymentRow, config: X402Config): X402HttpRes
   return {
     status: 200,
     headers: { 'PAYMENT-RESPONSE': gateway.settlementHeader(settlement) },
-    body: payment.operation === 'create'
-      ? { ...body, managementToken: deriveManagementToken(config.managementTokenSecret!, payment.sessionId) }
-      : body,
+    body: publicSessionResponse(body, config, payment.sessionId),
   };
 }
 
@@ -180,6 +216,7 @@ async function reserveAndOffer(input: {
   idempotencyKey: string;
   requestHash: string;
   resourceUrl: string;
+  paymentSignature?: string;
 }): Promise<{ payment: X402PaymentRow; offer: X402Offer } | X402HttpResult> {
   const { config } = input.deps;
   const payment = await X402Store.reservePayment({
@@ -188,7 +225,7 @@ async function reserveAndOffer(input: {
     operation: input.operation,
     sessionId: input.sessionId,
     network: config.network,
-    asset: x402UsdcAddress(config.network),
+    asset: config.paymentAssetAddress,
     amountAtomic: String(input.blocks * config.pricePerBlockAtomic),
     payTo: config.payTo!,
     blocks: input.blocks,
@@ -198,7 +235,15 @@ async function reserveAndOffer(input: {
     return { status: 409, body: { error: 'Idempotency-Key was already used for a different request' } };
   }
   const replay = replaySettled(payment, config);
-  if (replay) return replay;
+  if (replay) {
+    // A create idempotency key is not a credential. Releasing the capability
+    // requires possession of the exact paid request as well.
+    if (input.operation === 'create'
+      && !secretHashMatches(input.paymentSignature, payment.paymentSignatureHash)) {
+      return { status: 409, body: { error: 'Settled create replay requires the original PAYMENT-SIGNATURE' } };
+    }
+    return replay;
+  }
   if (['operation_pending', 'settlement_pending', 'reconciliation_required', 'extension_recovery_required']
     .includes(payment.status)) {
     return {
@@ -219,8 +264,8 @@ async function reserveAndOffer(input: {
         `${config.publicBaseUrl}/`,
       ).toString(),
       description: input.operation === 'create'
-        ? 'Start a Popcorn browser session for 5 minutes'
-        : `Extend a Popcorn browser session by ${input.blocks * 5} minutes`,
+        ? `Start a Popcorn browser session for ${config.blockSeconds} seconds`
+        : `Extend a Popcorn browser session by ${input.blocks * config.blockSeconds} seconds`,
     });
   } catch (error) {
     console.error('x402 facilitator initialization failed:', error);
@@ -270,6 +315,7 @@ async function verifyAndReservePayload(input: {
   try {
     await X402Store.updatePayment(input.payment.id, {
       paymentPayloadHash: verified.payloadHash,
+      paymentSignatureHash: sha256(input.signature),
       payerWallet: verified.payer,
       asset: verified.requirements.asset,
       status: 'verified',
@@ -472,12 +518,12 @@ export class X402SessionController {
     const recovery = readExtensionRecovery(row.recovery);
     const region = recovery && this.deps.regions.find((candidate) => candidate.name === recovery.region);
     let expiresAt = typeof response.expiresAt === 'string' ? response.expiresAt : '';
-    const additionalMinutes = Number(response.additionalMinutes);
-    const paidMinutesTotal = Number(response.paidMinutesTotal);
-    const paidBlocks = paidMinutesTotal / 5;
+    const additionalSeconds = Number(response.additionalSeconds);
+    const paidSecondsTotal = Number(response.paidSecondsTotal);
+    const paidBlocks = paidSecondsTotal / this.deps.config.blockSeconds;
     if (!recovery || !region || !Number.isFinite(Date.parse(expiresAt))
       || !Number.isInteger(paidBlocks) || paidBlocks <= recovery.previousPaidBlocks
-      || !Number.isInteger(additionalMinutes) || additionalMinutes <= 0) {
+      || !Number.isInteger(additionalSeconds) || additionalSeconds <= 0) {
       throw new Error('Invalid settled extension access state');
     }
 
@@ -487,12 +533,22 @@ export class X402SessionController {
       // A long ambiguous-settlement outage may outlive the old GameServer. Once
       // payment is positively proven, recreate the expired workload under the
       // same session ID/token and grant the full purchased duration from now.
-      expiresAt = new Date(Date.now() + additionalMinutes * 60_000).toISOString();
+      expiresAt = new Date(Date.now() + additionalSeconds * 1000).toISOString();
       remote = await reallocateExpiredRegionalSession(
         region,
         row.sessionId,
         expiresAt,
         this.deps.serviceAuthToken,
+        {
+          clientId: PUBLIC_X402_CLIENT_ID,
+          clientName: PUBLIC_X402_CLIENT_NAME,
+          tokenExpiresAt: expiresAt,
+          accessPolicy: {
+            tokenMode: 'route-bound',
+            cdpScope: 'automation',
+            accessExpiresAt: expiresAt,
+          },
+        },
       );
     } else {
       remote = await extendRegionalSessionTtl(
@@ -515,16 +571,20 @@ export class X402SessionController {
       throw new Error(`Regional settled extension confirmation failed: ${confirmed.response.status}`);
     }
     const stableEndpoints = publicX402Endpoints(remote.body, region.publicGatewayUrl, row.sessionId);
-    if (!stableEndpoints.connectUrl || !stableEndpoints.liveViewUrl
-      || stableEndpoints.connectUrl !== recovery.previousEndpoints.connectUrl
-      || stableEndpoints.liveViewUrl !== recovery.previousEndpoints.liveViewUrl) {
+    const previousEndpoints = normalizeStoredEndpoints(
+      recovery.previousEndpoints as Record<string, unknown>,
+      region.publicGatewayUrl,
+      row.sessionId,
+    );
+    if (!hasPublicSessionEndpoints(stableEndpoints)
+      || !samePublicSessionEndpoints(stableEndpoints, previousEndpoints)) {
       throw new Error('Regional settled extension did not preserve the original URLs');
     }
 
     await SessionService.reactivateSession(row.sessionId, {
       ...recovery.previousMetadata,
       expiresAt,
-      restrictedTokenExpiresAt: expiresAt,
+      tokenExpiresAt: expiresAt,
       browserPodId: remote.body?.browserPodId,
       x402PublicEndpoints: stableEndpoints,
     });
@@ -695,7 +755,7 @@ export class X402SessionController {
             payload: PaymentPayload;
             requirements: PaymentRequirements;
             extensions?: Record<string, unknown>;
-          }>(this.deps.config.managementTokenSecret!, row.settlementRequestEncrypted);
+          }>(this.deps.config.serverSecret!, row.settlementRequestEncrypted);
           const chainOutcome = await inspectAuthorizationOutcome(
             request.payload,
             request.requirements,
@@ -766,7 +826,7 @@ export class X402SessionController {
             ...draft,
             payment: { ...paymentSummary, transaction: result.transaction },
           };
-          let finalizedResponse = response;
+          let finalizedResponse: Record<string, unknown> = response;
           if (row.operation === 'extend') {
             finalizedResponse = await this.applySettledExtension(row, response);
           }
@@ -811,6 +871,7 @@ export class X402SessionController {
         idempotencyKey: key.value!,
         requestHash: hash,
         resourceUrl: input.resourceUrl,
+        paymentSignature: input.paymentSignature,
       });
       if (!('payment' in prepared)) return prepared;
       const verified = await verifyAndReservePayload({ ...prepared, deps: this.deps, signature: input.paymentSignature });
@@ -836,13 +897,13 @@ export class X402SessionController {
           sessionId,
           response: {
             sessionId,
-            paidMinutes: 0,
+            paidSeconds: 0,
             expiresAt: createdAt.toISOString(),
             region: available.name,
             clusterName: available.clusterName,
           },
           settlementRequestEncrypted: encryptX402SettlementRequest(
-            this.deps.config.managementTokenSecret!,
+            this.deps.config.serverSecret!,
             {
               payload: verified.payload,
               requirements: verified.requirements,
@@ -861,8 +922,12 @@ export class X402SessionController {
         clientId: PUBLIC_X402_CLIENT_ID,
         clientName: PUBLIC_X402_CLIENT_NAME,
         expiresAt: expiresAt.toISOString(),
-        restrictedTokenExpiresAt: expiresAt.toISOString(),
-        automationProfile: 'x402-agent',
+        tokenExpiresAt: expiresAt.toISOString(),
+        accessPolicy: {
+          tokenMode: 'route-bound',
+          cdpScope: 'automation',
+          accessExpiresAt: expiresAt.toISOString(),
+        },
       }, this.deps.serviceAuthToken);
       if (!allocation.session) {
         await X402Store.updatePayment(prepared.payment.id, {
@@ -878,7 +943,7 @@ export class X402SessionController {
       }
 
       const endpoints = publicX402Endpoints(allocation.session, available.publicGatewayUrl, sessionId);
-      if (!endpoints.connectUrl || !endpoints.liveViewUrl) {
+      if (!hasPublicSessionEndpoints(endpoints)) {
         await X402Store.updatePayment(prepared.payment.id, {
           status: 'allocation_failed',
           failureReason: 'Pool manager returned invalid public gateway URLs',
@@ -892,7 +957,7 @@ export class X402SessionController {
         });
         return { status: 502, body: { error: 'The dedicated x402 cluster returned invalid public URLs' } };
       }
-      const token = deriveManagementToken(this.deps.config.managementTokenSecret!, sessionId);
+      const capability = deriveSessionCapability(this.deps.config.serverSecret!, sessionId);
       try {
         await SessionService.createSession(
           sessionId,
@@ -902,7 +967,7 @@ export class X402SessionController {
           available.name,
           {
             expiresAt: expiresAt.toISOString(),
-            restrictedTokenExpiresAt: expiresAt.toISOString(),
+            tokenExpiresAt: expiresAt.toISOString(),
             browserPodId: allocation.session.browserPodId,
             x402PublicEndpoints: endpoints,
             billing: { type: 'x402', paidBlocks: 1, amountAtomic: prepared.payment.amountAtomic },
@@ -910,7 +975,7 @@ export class X402SessionController {
         );
         await X402Store.createSessionAccess({
           sessionId,
-          managementTokenHash: sha256(token),
+          capabilityHash: sha256(capability),
           paidBlocks: 1,
           expiresAt,
         });
@@ -929,13 +994,17 @@ export class X402SessionController {
       const responseDraft = {
         sessionId,
         ...endpoints,
-        paidMinutes: 5,
+        paidSeconds: this.deps.config.blockSeconds,
         expiresAt: expiresAt.toISOString(),
         region: available.name,
         clusterName: available.clusterName,
         payment: {
           amountAtomic: prepared.payment.amountAtomic,
-          currency: 'USDC',
+          asset: {
+            address: this.deps.config.paymentAssetAddress,
+            name: this.deps.config.paymentAssetName,
+            version: this.deps.config.paymentAssetVersion,
+          },
           network: this.deps.config.network,
         },
       };
@@ -1022,38 +1091,44 @@ export class X402SessionController {
         paymentId: prepared.payment.id,
         sessionId,
         eventType: 'x402.session_created',
-        metadata: { amountAtomic: prepared.payment.amountAtomic, paidMinutes: 5, region: available.name },
+        metadata: {
+          amountAtomic: prepared.payment.amountAtomic,
+          paidSeconds: this.deps.config.blockSeconds,
+          region: available.name,
+        },
       }).catch((error) => console.error('Failed to record x402 session-created analytics:', error));
       return {
         status: 200,
         headers: { 'PAYMENT-RESPONSE': this.deps.gateway.settlementHeader(settlement) },
-        body: { ...response, managementToken: token },
+        body: publicSessionResponse(response, this.deps.config, sessionId),
       };
     });
   }
 
-  private async ownedSession(sessionId: string, bearerToken?: string): Promise<{
+  private async ownedSession(capability: string): Promise<{
     region: RegionConfig;
     session: Awaited<ReturnType<typeof SessionService.getSession>>[number];
     access: X402SessionRow;
   } | X402HttpResult> {
     const available = this.availability();
     if (!('name' in available)) return available;
-    const [session] = await SessionService.getSession(sessionId);
-    const access = await X402Store.getSessionAccess(sessionId);
-    if (!session || !access || session.clientId !== PUBLIC_X402_CLIENT_ID
-      || session.region !== available.name || session.clusterName !== available.clusterName) {
+    const access = await X402Store.getSessionAccessByCapabilityHash(sha256(capability));
+    if (!access) return { status: 404, body: { error: 'Session not found' } };
+    const [session] = await SessionService.getSession(access.sessionId);
+    if (!isOwnedPublicX402Session(session, access, {
+      clientId: PUBLIC_X402_CLIENT_ID,
+      region: available.name,
+      clusterName: available.clusterName,
+    })) {
       return { status: 404, body: { error: 'Session not found' } };
-    }
-    if (!tokenMatches(bearerToken, access.managementTokenHash)) {
-      return { status: 401, body: { error: 'Invalid session management token' } };
     }
     return { region: available, session, access };
   }
 
-  async status(sessionId: string, bearerToken?: string): Promise<X402HttpResult> {
-    const owned = await this.ownedSession(sessionId, bearerToken);
+  async status(capability: string): Promise<X402HttpResult> {
+    const owned = await this.ownedSession(capability);
     if (!('access' in owned)) return owned;
+    const sessionId = owned.session.sessionId;
     const unresolvedExtension = await X402Store.getUnresolvedExtensionForSession(sessionId);
     const recovery = readExtensionRecovery(unresolvedExtension?.recovery);
     const visibleExpiresAt = recovery ? new Date(recovery.previousExpiresAt) : owned.access.expiresAt;
@@ -1062,8 +1137,13 @@ export class X402SessionController {
     // Never expose unpaid TTL while an extension is unresolved. The stable
     // endpoints remain authorized only through the previous paid deadline.
     let endpoints = recovery?.previousEndpoints
-      || endpointMetadata(owned.session, owned.region.publicGatewayUrl, sessionId);
-    if (active && (!endpoints.connectUrl || !endpoints.liveViewUrl)) {
+      ? normalizeStoredEndpoints(
+        recovery.previousEndpoints as Record<string, unknown>,
+        owned.region.publicGatewayUrl,
+        sessionId,
+      )
+      : endpointMetadata(owned.session, owned.region.publicGatewayUrl, sessionId);
+    if (active && !hasPublicSessionEndpoints(endpoints)) {
       // A remote lookup is safe only when no payment transition is pending.
       if (!recovery) {
         const remote = await getRegionalSession(owned.region, sessionId, this.deps.serviceAuthToken).catch(() => null);
@@ -1072,21 +1152,22 @@ export class X402SessionController {
     }
     return {
       status: 200,
-      body: {
+      body: publicSessionResponse({
         sessionId,
         status: active ? 'active' : owned.session.status === 'active' ? 'expired' : owned.session.status,
-        paidMinutes: visiblePaidBlocks * 5,
+        paidSeconds: visiblePaidBlocks * this.deps.config.blockSeconds,
         expiresAt: visibleExpiresAt.toISOString(),
         region: owned.region.name,
         clusterName: owned.region.clusterName,
         ...(active ? endpoints : {}),
-      },
+      }, this.deps.config, sessionId),
     };
   }
 
-  async extend(sessionId: string, bearerToken: string | undefined, input: X402RequestInput, body: unknown): Promise<X402HttpResult> {
-    const owned = await this.ownedSession(sessionId, bearerToken);
+  async extend(capability: string, input: X402RequestInput, body: unknown): Promise<X402HttpResult> {
+    const owned = await this.ownedSession(capability);
     if (!('access' in owned)) return owned;
+    const sessionId = owned.session.sessionId;
     const blocks = body && typeof body === 'object' && !Array.isArray(body)
       ? (body as Record<string, unknown>).blocks
       : undefined;
@@ -1134,12 +1215,23 @@ export class X402SessionController {
       }
       // Mutable validation happens after settled replay, but before reserving a
       // new unpaid row for an already expired/invalid session.
-      if (!lockedSession || !lockedAccess || lockedSession.status !== 'active'
-        || !hasX402ExtensionActivationWindow(lockedAccess.expiresAt)) {
+      if (!lockedSession || !lockedAccess || !isOwnedPublicX402Session(lockedSession, lockedAccess, {
+        clientId: PUBLIC_X402_CLIENT_ID,
+        region: owned.region.name,
+        clusterName: owned.region.clusterName,
+      })) {
+        return { status: 404, body: { error: 'Session not found' } };
+      }
+      if (lockedSession.status !== 'active' || !hasX402ExtensionActivationWindow(lockedAccess.expiresAt)) {
         return { status: 409, body: { error: 'Sessions must be active with at least four minutes remaining to extend safely' } };
       }
       if (lockedAccess.paidBlocks + (blocks as number) > this.deps.config.maxPaidBlocks) {
-        return { status: 400, body: { error: `A session can have at most ${this.deps.config.maxPaidBlocks * 5} paid minutes` } };
+        return {
+          status: 400,
+          body: {
+            error: `A session can have at most ${this.deps.config.maxPaidBlocks * this.deps.config.blockSeconds} paid seconds`,
+          },
+        };
       }
       const prepared = await reserveAndOffer({
         deps: this.deps,
@@ -1149,6 +1241,7 @@ export class X402SessionController {
         idempotencyKey: key.value!,
         requestHash: hash,
         resourceUrl: input.resourceUrl,
+        paymentSignature: input.paymentSignature,
       });
       // Settled idempotent replay is returned by reserveAndOffer before these
       // mutable lifecycle/limit checks.
@@ -1175,11 +1268,18 @@ export class X402SessionController {
       const provisionalResponse = {
         sessionId,
         ...previousEndpoints,
-        additionalMinutes: (blocks as number) * 5,
+        additionalSeconds: (blocks as number) * this.deps.config.blockSeconds,
         amountPaidAtomic: prepared.payment.amountAtomic,
-        paidMinutesTotal: lockedAccess.paidBlocks * 5,
+        paidSecondsTotal: lockedAccess.paidBlocks * this.deps.config.blockSeconds,
         expiresAt: previousExpiresAt.toISOString(),
-        payment: { currency: 'USDC', network: this.deps.config.network },
+        payment: {
+          asset: {
+            address: this.deps.config.paymentAssetAddress,
+            name: this.deps.config.paymentAssetName,
+            version: this.deps.config.paymentAssetVersion,
+          },
+          network: this.deps.config.network,
+        },
       };
       const recovery = {
         region: owned.region.name,
@@ -1194,7 +1294,7 @@ export class X402SessionController {
           sessionId,
           response: provisionalResponse,
           settlementRequestEncrypted: encryptX402SettlementRequest(
-            this.deps.config.managementTokenSecret!,
+            this.deps.config.serverSecret!,
             {
               payload: verified.payload,
               requirements: verified.requirements,
@@ -1214,8 +1314,8 @@ export class X402SessionController {
         ? publicX402Endpoints(preflight.body, owned.region.publicGatewayUrl, sessionId)
         : {};
       if (!preflight?.response.ok || preflight.body?.expiresAt !== previousExpiresAt.toISOString()
-        || preflightEndpoints.connectUrl !== previousEndpoints.connectUrl
-        || preflightEndpoints.liveViewUrl !== previousEndpoints.liveViewUrl) {
+        || !hasPublicSessionEndpoints(preflightEndpoints)
+        || !samePublicSessionEndpoints(preflightEndpoints, previousEndpoints)) {
         await X402Store.updatePayment(prepared.payment.id, {
           status: 'extension_failed',
           failureReason: 'Regional session preflight failed before settlement',
@@ -1227,12 +1327,16 @@ export class X402SessionController {
       const responseDraft = {
         sessionId,
         ...previousEndpoints,
-        additionalMinutes: (blocks as number) * 5,
+        additionalSeconds: (blocks as number) * this.deps.config.blockSeconds,
         amountPaidAtomic: prepared.payment.amountAtomic,
-        paidMinutesTotal: (lockedAccess.paidBlocks + (blocks as number)) * 5,
+        paidSecondsTotal: (lockedAccess.paidBlocks + (blocks as number)) * this.deps.config.blockSeconds,
         expiresAt: newExpiresAt.toISOString(),
         payment: {
-          currency: 'USDC',
+          asset: {
+            address: this.deps.config.paymentAssetAddress,
+            name: this.deps.config.paymentAssetName,
+            version: this.deps.config.paymentAssetVersion,
+          },
           network: this.deps.config.network,
         },
       };
@@ -1320,16 +1424,17 @@ export class X402SessionController {
       return {
         status: 200,
         headers: { 'PAYMENT-RESPONSE': this.deps.gateway.settlementHeader(settlement) },
-        body: response,
+        body: publicSessionResponse(response, this.deps.config, sessionId),
       };
     });
   }
 
-  async terminate(sessionId: string, bearerToken?: string): Promise<X402HttpResult> {
-    const owned = await this.ownedSession(sessionId, bearerToken);
+  async terminate(capability: string): Promise<X402HttpResult> {
+    const owned = await this.ownedSession(capability);
     if (!('access' in owned)) return owned;
+    const sessionId = owned.session.sessionId;
     return await withX402Claims(`terminate:${sessionId}`, sessionId, async (lease) => {
-      const current = await this.ownedSession(sessionId, bearerToken);
+      const current = await this.ownedSession(capability);
       if (!('access' in current)) return current;
       if (await X402Store.getUnresolvedPaymentForSession(sessionId)) {
         return {
@@ -1353,7 +1458,10 @@ export class X402SessionController {
         eventType: 'x402.session_terminated',
         metadata: { refund: false, paidBlocks: current.access.paidBlocks },
       }).catch((error) => console.error('Failed to record x402 terminate analytics:', error));
-      return { status: 200, body: { success: true, sessionId, refund: false } };
+      return {
+        status: 200,
+        body: publicSessionResponse({ success: true, sessionId, refund: false }, this.deps.config, sessionId),
+      };
     });
   }
 }

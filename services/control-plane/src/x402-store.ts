@@ -115,7 +115,7 @@ export const X402Store = {
 
   async createSessionAccess(input: {
     sessionId: string;
-    managementTokenHash: string;
+    capabilityHash: string;
     paidBlocks: number;
     expiresAt: Date;
   }): Promise<void> {
@@ -125,6 +125,12 @@ export const X402Store = {
   async getSessionAccess(sessionId: string): Promise<X402SessionRow | undefined> {
     const [access] = await db.select().from(x402Sessions)
       .where(eq(x402Sessions.sessionId, sessionId)).limit(1);
+    return access;
+  },
+
+  async getSessionAccessByCapabilityHash(capabilityHash: string): Promise<X402SessionRow | undefined> {
+    const [access] = await db.select().from(x402Sessions)
+      .where(eq(x402Sessions.capabilityHash, capabilityHash)).limit(1);
     return access;
   },
 

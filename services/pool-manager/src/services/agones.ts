@@ -6,7 +6,7 @@ import { buildK8sFetchRequest, getK8sClusterServer } from "./k8s-fetch";
 import { retry } from "./retry";
 
 const kc = new KubeConfig();
-const EXTRA_ROUTE_PORTS = readExtraRoutePorts(process.env.POOL_MANAGER_EXTRA_ROUTE_PORTS);
+const EXTRA_ROUTE_PORTS = readExtraRoutePorts(process.env.POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS);
 try {
     kc.loadFromDefault();
 } catch (e) {
@@ -21,7 +21,7 @@ function readExtraRoutePorts(raw: string | undefined): Array<{ name: string; por
     try {
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is not a JSON object");
+            console.warn("Ignoring POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS because it is not a JSON object");
             return [];
         }
 
@@ -36,16 +36,15 @@ function readExtraRoutePorts(raw: string | undefined): Array<{ name: string; por
             return [];
         });
     } catch (e) {
-        console.warn("Ignoring POOL_MANAGER_EXTRA_ROUTE_PORTS because it is invalid JSON:", e);
+        console.warn("Ignoring POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS because it is invalid JSON:", e);
         return [];
     }
 }
 
-function staticInternalPorts() {
+export function staticInternalPorts() {
     return [
-        { name: "http", port: 8082, protocol: "TCP" },
+        { name: "novnc", port: 6080, protocol: "TCP" },
         { name: "cdp", port: 9222, protocol: "TCP" },
-        { name: "kernel-api", port: 10001, protocol: "TCP" },
         ...EXTRA_ROUTE_PORTS,
     ];
 }
