@@ -31,6 +31,11 @@ metadata:
     app: control-plane
 spec:
   replicas: {{ $controlPlane.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ $controlPlane.updateStrategy.maxSurge }}
+      maxUnavailable: {{ $controlPlane.updateStrategy.maxUnavailable }}
   selector:
     matchLabels:
       app: control-plane
@@ -41,6 +46,10 @@ spec:
     spec:
       serviceAccountName: control-plane-sa
 {{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+{{- with $controlPlane.topologySpreadConstraints }}
+      topologySpreadConstraints:
+{{ toYaml . | nindent 8 }}
+{{- end }}
 {{- if $hasSecretVolumes }}
       volumes:
 {{- if $controlPlane.adminAuth.passwordFileSecretName }}
@@ -268,6 +277,18 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 10
 ---
+{{- if $controlPlane.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: control-plane
+spec:
+  minAvailable: {{ $controlPlane.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: control-plane
+---
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
