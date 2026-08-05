@@ -232,16 +232,20 @@ describe('Google sign-in branding', () => {
     const css = await Bun.file(new URL('../public/admin.css', import.meta.url)).text();
 
     expect(html).toContain('aria-label="Sign in with Google"');
-    expect(html).toContain('<span>Sign in with Google</span>');
+    expect(html).toContain('class="google-login-label">Sign in with Google</span>');
+    expect(html).toContain('class="login-method-divider" role="separator"><span>or</span>');
+    expect(html).toContain("document.getElementById('google-auth').hidden = !config.google;");
     expect(html).not.toContain('Continue with Google');
     for (const color of ['#4285F4', '#34A853', '#FBBC05', '#EA4335']) {
       expect(html).toContain(color);
     }
-    expect(css).toContain('background: #131314;');
-    expect(css).toContain('border: 1px solid #8e918f;');
-    expect(css).toContain('color: #e3e3e3;');
-    expect(css).toContain('font-family: "Google Sans", Roboto, Arial, sans-serif;');
+    expect(css).toContain('background: #fff;');
+    expect(css).toContain('border: 1px solid #747775;');
+    expect(css).toContain('color: #1f1f1f;');
+    expect(css).toContain('font-family: Roboto, Arial, sans-serif;');
     expect(css).toContain('font-size: 14px;');
     expect(css).toContain('line-height: 20px;');
+    expect(css).toContain('margin-right: 10px;');
+    expect(css).toContain('padding: 0 12px;');
   });
 });
