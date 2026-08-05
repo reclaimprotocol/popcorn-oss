@@ -100,6 +100,9 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "replicas": { "type": "integer", "minimum": 1 },
+        "updateStrategy": { "type": "object" },
+        "podDisruptionBudget": { "type": "object" },
+        "topologySpreadConstraints": { "type": "array" },
         "regions": {
           "type": "array",
           "items": {
