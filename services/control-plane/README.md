@@ -96,7 +96,7 @@ The service requires Postgres and at least one valid region for end-to-end
 allocation. Unit tests cover configuration, admin auth, routing, session
 ownership, TTL behavior, analytics, and x402 state transitions.
 
-## x402 Smoke Tests
+## Payment Smoke Tests
 
 Run the client smoke flow against an enabled deployment:
 
@@ -108,6 +108,17 @@ X402_SMOKE_BASE_URL=https://control-plane.example.com \
 The smoke client uses a fresh in-memory EVM wallet, validates challenge terms,
 tests idempotent replay and extension, confirms stable session URLs, reads
 status, and terminates the session without printing the private key.
+
+To verify that an MPP client can pay the same x402 endpoint, configure a funded
+test wallet and the independently trusted payment terms described in the
+[payment client guide](../../docs/x402-client.md), then run:
+
+```bash
+bun run smoke:mpp-client
+```
+
+This flow uses `mppx` to recognize the x402 compatibility challenge, enforce
+the configured network, asset, payee, and amount, and sign the paid retry.
 
 `scripts/x402-smoke-dependencies.ts` supplies disposable regional and
 facilitator doubles for local integration testing. It does not replace a funded

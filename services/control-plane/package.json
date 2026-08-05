@@ -7,6 +7,7 @@
     "dev": "bun run --watch index.ts",
     "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
     "db:migrate": "bun run src/migrate.ts",
+    "smoke:mpp-client": "bun run scripts/mpp-smoke-client.ts",
     "smoke:x402-client": "bun run scripts/x402-smoke-client.ts",
     "test": "bun test"
   },
@@ -18,6 +19,7 @@
     "drizzle-orm": "^0.33.0",
     "postgres": "^3.4.0",
     "bcrypt": "^5.1.1",
+    "mppx": "0.8.15",
     "viem": "2.55.10"
   },
   "devDependencies": {

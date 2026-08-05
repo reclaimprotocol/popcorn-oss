@@ -70,7 +70,7 @@ Read the hosting pages in this order:
 - [Attestation](attestation.md) — confidential-computing requirements and proof
   verification.
 - [x402 API](x402.md) — isolated paid-session API and its operational model.
-- [x402 client](x402-client.md) — pay for a session and use LiveView or CDP.
+- [MPP and x402 client](x402-client.md) — pay for a session and use LiveView or CDP.
 - [Session extensions](configuration.md#session-extensions) — add an optional
   same-pod service without changing the OSS browser image.
 

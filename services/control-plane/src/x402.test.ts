@@ -1,4 +1,8 @@
 import { describe, expect, test } from 'bun:test';
+import { x402Client, x402HTTPClient } from '@x402/core/client';
+import { decodePaymentSignatureHeader } from '@x402/core/http';
+import { registerExactEvmScheme } from '@x402/evm/exact/client';
+import { Fetch, evm } from 'mppx/client';
 import { createAuthenticatedCdpFacilitator, hashCanonicalPaymentPayload, X402PaymentGateway } from './x402-payment';
 import {
   decryptX402SettlementRequest,
@@ -14,6 +18,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { withLeaseClaims, X402ClaimBusyError } from './x402-coordination';
 import { authorizationSearchRanges, inspectAuthorizationOutcome } from './x402-chain';
 import { encodeFunctionData, parseAbi } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { readBoundedJsonBody } from './http-body';
 import { recoverInterruptedExtension, runCleanupAttempt } from './x402-recovery';
 
@@ -206,6 +211,105 @@ describe('CDP facilitator authentication', () => {
 });
 
 describe('configurable x402 payment contract', () => {
+  test('accepts an MPP client payment through the x402 compatibility path', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (request: RequestInfo | URL) => {
+      const url = String(request);
+      if (url.endsWith('/supported')) {
+        return Response.json({
+          kinds: [{ x402Version: 2, scheme: 'exact', network: 'eip155:84532' }],
+          extensions: [],
+          signers: {},
+        });
+      }
+      if (url.endsWith('/verify')) {
+        return Response.json({ isValid: true, payer: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A' });
+      }
+      throw new Error(`Unexpected facilitator request: ${url}`);
+    }) as typeof fetch;
+
+    try {
+      const gateway = new X402PaymentGateway({
+        network: 'eip155:84532',
+        facilitatorUrl: 'https://facilitator.example/x402',
+        facilitatorAuthMode: 'none',
+        payTo: '0x1111111111111111111111111111111111111111',
+        pricePerBlockAtomic: 10_000,
+        paymentAssetAddress: '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
+        paymentAssetName: 'USDC',
+        paymentAssetVersion: '2',
+      } as any);
+      const resourceUrl = 'https://control-plane.example/v1/x402/sessions';
+      const offer = await gateway.createOffer({
+        blocks: 1,
+        method: 'POST',
+        resourceUrl,
+        description: 'Test session',
+      });
+      expect(offer.paymentRequired.extensions).toMatchObject({
+        mppx: { info: { method: 'POST' } },
+      });
+
+      let paymentSignature: string | null = null;
+      let calls = 0;
+      const paymentFetch = Fetch.from({
+        methods: [
+          evm.charge({
+            account: privateKeyToAccount(`0x${'11'.repeat(32)}`),
+            currencies: [evm.assets.baseSepolia.USDC],
+            maxAtomicAmount: '10000',
+            networks: [84532],
+          }),
+        ],
+        fetch: (async (_request: RequestInfo | URL, init?: RequestInit) => {
+          calls += 1;
+          const headers = new Headers(init?.headers);
+          paymentSignature = headers.get('PAYMENT-SIGNATURE');
+          if (!paymentSignature) {
+            return Response.json({ error: 'Payment required' }, {
+              status: 402,
+              headers: { 'PAYMENT-REQUIRED': offer.header },
+            });
+          }
+          return Response.json({ ok: true });
+        }) as typeof fetch,
+      });
+
+      const response = await paymentFetch(resourceUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': 'mpp-test',
+        },
+        body: '{}',
+      });
+      expect(response.status).toBe(200);
+      expect(calls).toBe(2);
+      expect(paymentSignature).not.toBeNull();
+
+      const payload = decodePaymentSignatureHeader(paymentSignature!);
+      expect(payload.extensions).toMatchObject({
+        mppx: { info: { method: 'POST' } },
+      });
+      expect((payload.extensions as any).mppx.info.nonce).toMatch(/^[a-f0-9]{64}$/);
+      await expect(gateway.verify(paymentSignature!, offer)).resolves.toMatchObject({
+        payer: '0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A',
+      });
+
+      const nativeClient = new x402Client();
+      registerExactEvmScheme(nativeClient, {
+        signer: privateKeyToAccount(`0x${'22'.repeat(32)}`),
+      });
+      const nativeHttpClient = new x402HTTPClient(nativeClient);
+      const nativePayload = await nativeHttpClient.createPaymentPayload(offer.paymentRequired);
+      const nativeSignature = nativeHttpClient.encodePaymentSignatureHeader(nativePayload)['PAYMENT-SIGNATURE'];
+      expect(nativeSignature).toBeString();
+      await expect(gateway.verify(nativeSignature!, offer)).resolves.toBeDefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('uses configured price, asset metadata, and static facilitator headers', async () => {
     const originalFetch = globalThis.fetch;
     let authorization: string | null = null;

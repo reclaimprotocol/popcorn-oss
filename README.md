@@ -98,7 +98,7 @@ client creation, session creation, and a Playwright smoke test.
 - [Browser runtime](docs/popcorn-browser.md)
 - [Attestation](docs/attestation.md)
 - [x402 paid-session API](docs/x402.md)
-- [x402 client guide](docs/x402-client.md)
+- [MPP and x402 payment client guide](docs/x402-client.md)
 - [Images and releases](docs/images-and-releases.md)
 - [Third-party software notices](THIRD_PARTY_NOTICES.md)
 

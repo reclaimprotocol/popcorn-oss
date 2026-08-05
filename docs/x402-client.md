@@ -1,8 +1,13 @@
-# Use the x402 client
+# Pay for a browser session
 
-The x402 API creates a paid browser session without a Popcorn client account.
-The caller pays from its own EVM wallet, receives capability URLs, and can use
-the browser through LiveView or Chrome DevTools Protocol (CDP).
+The payment API creates a browser session without a Popcorn client account.
+The caller pays Base USDC from its own EVM wallet, receives capability URLs,
+and can use the browser through LiveView or Chrome DevTools Protocol (CDP).
+
+The API remains x402 v2 on the wire and advertises the MPP route-binding
+extension. This lets the official `mppx` client consume it through MPP's x402
+compatibility path while preserving the existing durable settlement and
+reconciliation flow.
 
 This page covers the client side. Operators should start with
 [x402 deployment and operations](x402.md).
@@ -28,6 +33,12 @@ The example matches the library versions used by this release:
 npm install @x402/core@2.20.0 @x402/evm@2.20.0 viem@2.55.10
 ```
 
+MPP clients can instead install the version verified by this release:
+
+```bash
+npm install mppx@0.8.15 viem@2.55.10
+```
+
 Set the expected contract and wallet values outside source control:
 
 ```bash
@@ -44,7 +55,90 @@ export X402_PRICE_PER_BLOCK_ATOMIC=10000
 Use a secret manager or wallet signer in production. An environment variable is
 shown only to keep the example small.
 
-## Create a paid request helper
+## Pay with MPP
+
+`mppx` recognizes Popcorn's x402 challenge, validates it against the configured
+EVM payment policy, signs `PAYMENT-SIGNATURE`, and repeats the request. Keep the
+independent offer validation in `onChallenge`; a wallet must not sign terms just
+because they came from a `402` response.
+
+```ts
+import { Fetch, evm } from 'mppx/client';
+import { privateKeyToAccount } from 'viem/accounts';
+
+function required(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) throw new Error(`${name} is required`);
+  return value;
+}
+
+const baseUrl = required('POPCORN_X402_BASE_URL').replace(/\/$/, '');
+const expected = {
+  network: required('X402_NETWORK'),
+  asset: required('X402_ASSET_ADDRESS').toLowerCase(),
+  assetName: required('X402_ASSET_NAME'),
+  assetVersion: required('X402_ASSET_VERSION'),
+  payTo: required('X402_PAY_TO').toLowerCase(),
+  pricePerBlockAtomic: BigInt(required('X402_PRICE_PER_BLOCK_ATOMIC')),
+};
+const account = privateKeyToAccount(required('PAYER_PRIVATE_KEY') as `0x${string}`);
+const chainId = Number(expected.network.replace('eip155:', ''));
+const paidFetch = Fetch.from({
+  methods: [
+    evm.charge({
+      account,
+      authorization: {
+        name: expected.assetName,
+        version: expected.assetVersion,
+      },
+      currencies: [expected.asset as `0x${string}`],
+      decimals: 6,
+      maxAtomicAmount: expected.pricePerBlockAtomic.toString(),
+      networks: [chainId],
+    }),
+  ],
+  onChallenge: async (challenge, { createCredential }) => {
+    const offer = challenge.request as Record<string, unknown>;
+    if (offer.network !== expected.network
+      || String(offer.asset).toLowerCase() !== expected.asset
+      || String(offer.payTo).toLowerCase() !== expected.payTo
+      || offer.amount !== expected.pricePerBlockAtomic.toString()) {
+      throw new Error('Untrusted Popcorn payment offer');
+    }
+    return await createCredential();
+  },
+});
+
+const response = await paidFetch(`${baseUrl}/v1/x402/sessions`, {
+  method: 'POST',
+  headers: {
+    'Content-Type': 'application/json',
+    'Idempotency-Key': crypto.randomUUID(),
+  },
+  body: '{}',
+});
+if (!response.ok) throw new Error(`Paid request failed: ${response.status}`);
+const session = await response.json();
+```
+
+The bundled `smoke:mpp-client` command runs this compatibility path against a
+deployment using the same trusted settings listed above.
+
+## Cloudflare Wallets
+
+Cloudflare has announced that its Account Wallets and agent-scoped Virtual
+Wallets will pay x402-compatible endpoints. Popcorn therefore does not need a
+Cloudflare-specific server credential: a Virtual Wallet is a buyer-side signer
+and will pay the same challenge exposed here.
+
+As of 2026-08-05, Cloudflare only permits reserving a Wallet handle. Wallet
+funding, Virtual Wallet API keys, spending policies, and Agents SDK support are
+announced but not yet available. Do not add placeholder Cloudflare secrets to
+Popcorn. When Cloudflare publishes the wallet API, connect the Virtual Wallet on
+the client side and retain its allowance, allow-list, and maximum-transaction
+guardrails.
+
+## Pay with the native x402 client
 
 The server first returns `402 Payment Required` with a `PAYMENT-REQUIRED`
 header. The helper validates the offer, creates an exact EVM payment payload,

@@ -257,6 +257,7 @@ async function reserveAndOffer(input: {
   try {
     offer = await input.deps.gateway.createOffer({
       blocks: input.blocks,
+      method: 'POST',
       resourceUrl: new URL(
         input.operation === 'create'
           ? '/v1/x402/sessions'

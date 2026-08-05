@@ -13,6 +13,17 @@ import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { generateJwt } from '@coinbase/cdp-sdk/auth';
 import type { X402Config } from './config';
 
+const MPPX_EXTENSION_KEY = 'mppx';
+const MPPX_ROUTE_BINDING_SCHEMA = {
+  additionalProperties: false,
+  properties: {
+    method: { type: 'string' },
+    nonce: { type: 'string' },
+  },
+  required: ['method'],
+  type: 'object',
+};
+
 export interface X402Offer {
   paymentRequired: PaymentRequired;
   requirements: PaymentRequirements;
@@ -57,7 +68,14 @@ export class X402PaymentGateway {
         } : {}),
       });
     this.resourceServer = new x402ResourceServer(facilitator)
-      .register(config.network, new ExactEvmScheme());
+      .register(config.network, new ExactEvmScheme())
+      // mppx adds a fresh nonce when it turns this x402 challenge into an MPP
+      // EVM charge. Keep the HTTP method immutable while allowing that client
+      // nonce to vary. Clients that only speak x402 can omit the extension.
+      .registerExtension({
+        key: MPPX_EXTENSION_KEY,
+        dynamicInfoFields: ['nonce'],
+      });
   }
 
   async initialize(): Promise<void> {
@@ -74,6 +92,7 @@ export class X402PaymentGateway {
     blocks: number;
     resourceUrl: string;
     description: string;
+    method?: string;
   }): Promise<X402Offer> {
     await this.initialize();
     const amount = String(input.blocks * this.config.pricePerBlockAtomic);
@@ -103,7 +122,14 @@ export class X402PaymentGateway {
         description: input.description,
         mimeType: 'application/json',
         serviceName: 'Popcorn x402',
-        tags: ['browser', 'x402', 'popcorn'],
+        tags: ['browser', 'mpp', 'x402', 'popcorn'],
+      },
+      undefined,
+      {
+        [MPPX_EXTENSION_KEY]: {
+          info: { method: (input.method || 'POST').toUpperCase() },
+          schema: MPPX_ROUTE_BINDING_SCHEMA,
+        },
       },
     );
     if (paymentRequired.x402Version !== 2) {
