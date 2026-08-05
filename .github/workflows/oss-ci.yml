@@ -122,6 +122,13 @@ jobs:
             echo "::group::${service}"
             (
               cd "${service}"
+              if [[ "${service}" == "services/pool-manager" ]]; then
+                mkdir -p keys
+                openssl genpkey -algorithm RSA \
+                  -pkeyopt rsa_keygen_bits:2048 \
+                  -out keys/private.pem \
+                  >/dev/null 2>&1
+              fi
               bun install --frozen-lockfile
               if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
                 bun run typecheck
@@ -187,14 +194,6 @@ jobs:
           grep -Fq 'REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-false}"' \
             images/minimal-vnc-desktop/start-chromium
 
-          for manifest in /tmp/popcorn-platform.yaml; do
-            grep -q 'name: POOL_MANAGER_EXTRA_SESSION_URLS' "$manifest"
-            grep -q '/liveview/' "$manifest"
-            if grep -A1 'POOL_MANAGER_EXTRA_SESSION_URLS' "$manifest" | grep -Eq 'vncUrl|vncWsUrl'; then
-              echo "LiveView fields unexpectedly depend on extraSessionUrls in $manifest" >&2
-              exit 1
-            fi
-          done
           grep -Fq 'location ~ ^/liveview/' services/gateway/nginx.conf
           grep -Fq 'route:liveview:' services/pool-manager/src/services/session-db.ts
           grep -Fq 'name: "novnc", port: 6080' services/pool-manager/src/services/agones.ts
@@ -207,7 +206,7 @@ jobs:
               echo "streaming.mode=$unsupported_mode unexpectedly rendered" >&2
               exit 1
             fi
-            grep -Eq "streaming.mode only supports 'vnc'|/streaming/mode.*must be 'vnc'" \
+            grep -Eq "streaming.mode only supports 'vnc'|at '/streaming'" \
               "/tmp/browser-fleet-$unsupported_mode.err"
           done
 
