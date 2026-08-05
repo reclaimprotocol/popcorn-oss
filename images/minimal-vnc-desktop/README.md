@@ -1,8 +1,8 @@
 # Minimal noVNC Desktop Image
 
-This is a standalone, fast-booting desktop image for visual browser/app sessions.
-It intentionally does not use `popcorn-images`, WebRTC, neko, supervisor,
-Chromedriver, Playwright, the kernel-images API, or audio streaming.
+This is the maintained, standalone desktop image for visual browser/app sessions.
+It intentionally does not use WebRTC, neko, supervisor, Chromedriver,
+Playwright, the kernel-images API, or audio streaming.
 
 ## Build
 
@@ -23,12 +23,20 @@ files. For a different GitHub mirror, set `GITHUB_ARTIFACT_MIRROR_REPO` and
 
 ### Tilion Fortress (stealth)
 
-The browser is **Tilion Fortress**, a stealth stock-Chromium fork pulled as an
-OCI image (pinned by digest) and symlinked over `chromium` — it fully replaces
-stock chromium. Its shared-library closure is supplied by the chromium
-runtime-lib block in `locks/apt-packages.txt`. See
-[`FORTRESS-INTEGRATION.md`](FORTRESS-INTEGRATION.md) and [`STEALTH.md`](STEALTH.md)
-for the full stealth surface and the `CLOAK_*` runtime knobs.
+The browser is
+[**Tilion Fortress**](https://github.com/tiliondev/fortress), a stealth
+stock-Chromium fork pulled as an OCI image (pinned by digest) and symlinked over
+`chromium` — it fully replaces stock Chromium. Its shared-library closure is
+supplied by the Chromium runtime-lib block in `locks/apt-packages.txt`. See
+[`STEALTH.md`](STEALTH.md) for its persona, limitations, and verification
+workflow.
+
+Fortress permits source and binary redistribution under BSD-3-Clause. Its
+license, upstream notice, Chromium license, and bundled-font license are kept in
+[`third-party/fortress`](third-party/fortress) and copied into every built image
+at `/usr/share/doc/popcorn/third-party/fortress`. The matching source and
+attribution details are documented in
+[`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md).
 
 - **amd64-only.** The pin (tag `149`, stable Chromium 149) has no arm64 manifest,
   so the whole image is amd64-only. Build **natively** on an amd64 host — do not
@@ -70,79 +78,14 @@ their HTTP and WebSocket routes return `503` until the configured app opens a
 matching X window. The default readiness pattern waits for Chromium/Chrome.
 Startup logs are written under `/var/log/app` by default, matching the fleet
 chart's mounted log directory. `novnc-proxy` inherits container stdout, so its
-server records, `/reclaim/prove` lifecycle records, and TEE library events are
-available to Kubernetes/OpenTelemetry and are also retained in `entrypoint.log`.
-The proxy injects a structured logger into `reclaim-tee` and forwards library
-levels, messages, and fields without filtering, including debug records.
+server records are available to Kubernetes/OpenTelemetry and are also retained
+in `entrypoint.log`.
 The fleet chart sets pod `fsGroup: 1000` so the mounted log directory remains
 writable by the image's non-root `kernel` user.
 
-The Reclaim proof endpoint is served on the same HTTP surface as noVNC
-(`NOVNC_PORT`, `6080` by default):
-
-```text
-POST http://localhost:6080/reclaim/prove
-```
-
-This endpoint does not depend on Chromium readiness. It uses the pinned
-`github.com/reclaimprotocol/reclaim-tee` client plus embedded OPRF circuit and
-proving-key assets copied from `popcorn-images`. Those assets add about 73 MB to
-the source tree and require a cgo-enabled Go build.
-
-An integration test for this endpoint lives in `tests/reclaim-prove.test.ts`. It
-exercises both `oprf-mpc` and `oprf` hash types plus an IP-check provider
-(`api.ipify.org`) against a running instance, and validates the returned claim,
-TEE attestation context, and signatures. Run it against a reachable instance
-(defaults to `http://localhost:6080`):
-
-```bash
-BASE_URL=http://localhost:6080 node tests/reclaim-prove.test.ts
-```
-
-**Proxy toggle tests.** The test also proves the IP provider twice — once with
-`disableProxy:false` and once with `disableProxy:true` — to show the egress IP
-change. These only run when `HTTPS_PROXY_URL` is set **on the test runner** (it
-just gates whether the block executes). More importantly, the proxy is only
-actually used when `HTTPS_PROXY_URL` is set **on the server container** and its
-value contains the `{{geoLocation}}` placeholder — that is the env the reclaim
-client reads. If the container has no `HTTPS_PROXY_URL`, every request goes
-direct (`via_proxy:false` in the logs) and proxy-on vs proxy-off return the
-**same** IP. To see the IP actually change, start the container with it:
-
-```bash
-docker run -d --name mvnc -p 6080:6080 -p 9222:9222 \
-  -e HTTPS_PROXY_URL='https://<user>-country-{{geoLocation}}:<pass>@brd.superproxy.io:22225' \
-  popcorn/minimal-vnc-desktop:local
-
-# runner env just enables the toggle tests:
-HTTPS_PROXY_URL=1 node tests/reclaim-prove.test.ts
-```
-
-A lightweight extraction-validation endpoint is served on the same surface:
-
-```text
-POST http://localhost:6080/reclaim/validate
-POST http://localhost:6080/reclaim/validate-extraction
-```
-
-Both paths map to the same handler. It runs the reclaim-tee
-`providers.GetResponseRedactions` pipeline against a supplied response body and
-checks that the configured `xPath`/`jsonPath`/`regex` extraction yields the
-`expectedValue`, without performing a full TEE proof. The request body is:
-
-```json
-{
-  "responseBody": "<raw HTTP response body>",
-  "expectedValue": "<value the extraction should yield>",
-  "xPath": "<optional>",
-  "jsonPath": "<optional>",
-  "regex": "<optional>"
-}
-```
-
-At least one of `xPath`, `jsonPath`, or `regex` is required. The response
-reports `valid`, the extracted value, the redaction ranges, and per-step
-diagnostics in `steps`.
+The browser image deliberately contains no application-specific API handlers or
+proof assets. Deployments can add those capabilities as separate same-pod
+services through the browser-fleet chart's extension hooks.
 
 The restricted CDP proxy allows discovery endpoints (`/json`, `/json/list`,
 `/json/version`) and filters client WebSocket commands to the same allowlist as
@@ -192,14 +135,14 @@ commands the probes need):
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `APP_COMMAND` | `/usr/local/bin/start-chromium` | GUI app command launched on the VNC display. |
-| `APP_URL` | depends on `REPLACE_DEFAULT_PAGE` | Default startup URL for `start-chromium`. When unset, falls back to the Reclaim loading page (`REPLACE_DEFAULT_PAGE=true`, default) or `https://www.google.com` (`REPLACE_DEFAULT_PAGE=false`). Set explicitly to override both. |
+| `APP_URL` | depends on `REPLACE_DEFAULT_PAGE` | Default startup URL for `start-chromium`. When unset, falls back to DuckDuckGo (`REPLACE_DEFAULT_PAGE=false`, default) or the Reclaim loading page (`REPLACE_DEFAULT_PAGE=true`). Set explicitly to override both. |
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
 | `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log` (including proxy/TEE events), `xvnc.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
-| `REPLACE_DEFAULT_PAGE` | `true` | When `true`, use the Reclaim portal as the default page: startup falls back to the Reclaim loading page and the Reclaim portal managed policy (new-tab page and search) is applied before Chromium starts. When `false`, fall back to `https://www.google.com` and keep the default policy. |
+| `REPLACE_DEFAULT_PAGE` | `false` | When `false`, start on DuckDuckGo and keep the neutral DuckDuckGo managed policy. Set to `true` to opt into the Reclaim portal startup page and managed policy (new-tab page and search). The browser-fleet chart exposes this as `browserPolicy.variant`. |
 | `CHROMIUM_POLICY_DIR` | `/etc/chromium/policies/managed` | Managed Chromium policy directory. |
 | `CHROMIUM_POLICY_VARIANT_DIR` | `/etc/chromium/policy-variants` | Directory containing alternate policy JSON files. |
 | `READY_WINDOW_PATTERN` | derived from `APP_COMMAND` | Case-insensitive extended regex matched against `xwininfo -root -tree` before noVNC reports ready. |
@@ -222,14 +165,6 @@ commands the probes need):
 | `AGONES_SDK_HOST` | `127.0.0.1` | Agones SDK HTTP sidecar host. |
 | `AGONES_SDK_HTTP_PORT` | `9358` | Agones SDK HTTP sidecar port; `AGONES_SDK_PORT` is also accepted as a fallback. |
 | `AGONES_HEALTH_INTERVAL` | `2` | Seconds between Agones `/health` pings. |
-| `RECLAIM_ROUTER_URL` | `https://tee.reclaimprotocol.org` | Reclaim router URL passed to the pinned client; `ROUTER_URL` is also accepted as a fallback. |
-| `ATTESTOR_URL` | `wss://attestor.reclaimprotocol.org:444/ws` | Reclaim attestor WebSocket URL. |
-| `TEE_K_URL` | `wss://tk.reclaimprotocol.org/ws` | Legacy config field preserved for request/config compatibility; the pinned client resolves TEE pairs through the router. |
-| `TEE_T_URL` | `wss://tt.reclaimprotocol.org/ws` | Legacy config field preserved for request/config compatibility; the pinned client resolves TEE pairs through the router. |
-| `RECLAIM_PROVE_TIMEOUT` | `5m` | Outer timeout for `/reclaim/prove`. |
-| `RECLAIM_PROVE_CLEANUP_GRACE` | `10s` | Grace period to wait for protocol cleanup after closing the Reclaim client on timeout/cancel. |
-| `HTTPS_PROXY_URL` | _(unset)_ | HTTPS proxy URL template the reclaim client routes outbound traffic through. Must contain the `{{geoLocation}}` placeholder. When unset, `/reclaim/prove` connects directly (`via_proxy:false`) regardless of the request's `geoLocation`. |
-| `RECLAIM_DISABLE_PROXY` | `false` | Service-wide default for skipping the proxy. Overridden per request by `disableProxy` in `config_json` (`true` forces a direct connection even when `HTTPS_PROXY_URL` is set; `false` forces proxy use). |
 
 Example app override:
 

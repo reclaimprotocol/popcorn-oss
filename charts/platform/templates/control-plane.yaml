@@ -110,6 +110,16 @@ spec:
               value: {{ $controlPlane.x402.publicBaseUrl | quote }}
             - name: X402_PAY_TO
               value: {{ $controlPlane.x402.payTo | quote }}
+            - name: X402_BLOCK_SECONDS
+              value: {{ $controlPlane.x402.blockSeconds | quote }}
+            - name: X402_PRICE_PER_BLOCK_ATOMIC
+              value: {{ $controlPlane.x402.pricePerBlockAtomic | quote }}
+            - name: X402_PAYMENT_ASSET_ADDRESS
+              value: {{ $controlPlane.x402.paymentAssetAddress | quote }}
+            - name: X402_PAYMENT_ASSET_NAME
+              value: {{ $controlPlane.x402.paymentAssetName | quote }}
+            - name: X402_PAYMENT_ASSET_VERSION
+              value: {{ $controlPlane.x402.paymentAssetVersion | quote }}
             - name: X402_MAX_EXTENSION_BLOCKS
               value: {{ $controlPlane.x402.maxExtensionBlocks | quote }}
             - name: X402_MAX_PAID_BLOCKS
@@ -118,6 +128,8 @@ spec:
               value: {{ $controlPlane.x402.regionName | quote }}
             - name: X402_FACILITATOR_URL
               value: {{ $controlPlane.x402.facilitatorUrl | quote }}
+            - name: X402_FACILITATOR_AUTH_MODE
+              value: {{ $controlPlane.x402.facilitatorAuthMode | quote }}
             - name: X402_TRUSTED_PROXY_HOPS
               value: {{ $controlPlane.x402.trustedProxyHops | quote }}
             - name: X402_RATE_LIMIT_PER_MINUTE
@@ -260,8 +272,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: control-plane
+{{- if $controlPlane.staticIpName }}
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+{{- end }}
 spec:
-  type: {{ $controlPlane.serviceType }}
+  type: {{ if $controlPlane.staticIpName }}ClusterIP{{ else }}{{ $controlPlane.serviceType }}{{ end }}
   selector:
     app: control-plane
   ports:

@@ -6,7 +6,16 @@
 
 Popcorn is a self-hostable browser platform for running isolated, on-demand Chromium sessions in Kubernetes. It gives each session its own ephemeral browser pod, then exposes browser view, Chrome DevTools Protocol, and session APIs through a gateway.
 
-Popcorn OSS v1 is focused on the browser runtime platform: local Kind development, GCP/GKE deployment, session lifecycle APIs, CDP access, browser images, and optional GCP attestation docs.
+The repository includes the runtime, control services, Helm charts, local Kind
+workflow, GKE deployment guidance, and optional x402 and GCP attestation paths.
+
+Clients can use either of two independent public API paths:
+
+- the standard client API, authenticated with an operator-issued client ID and
+  client secret; or
+- the optional x402 API, which creates paid sessions without a Popcorn account.
+
+Enabling x402 does not change or replace the standard client API.
 
 ## What It Runs
 
@@ -14,61 +23,46 @@ Popcorn is built from a few small services:
 
 - `control-plane`: validates clients, routes new sessions across configured regions, and stores analytics.
 - `pool-manager`: allocates Agones GameServers in one cluster, creates local route records, and returns connection URLs.
-- `gateway`: routes authenticated browser, CDP, API, and proof paths to the correct browser pod.
-- `browser-node`: runs the browser runtime container.
+- `gateway`: routes authenticated live-view, CDP, optional integration API,
+  and attestation paths to the correct browser pod.
+- `browser-runtime`: runs Chromium and exposes its desktop over VNC/live view.
 - `ttl-controller`: expires sessions and shuts down old GameServers.
 - `redis`: stores route and session state for the local platform.
 - `browser-runtime-attestor`: optional attestation sidecar for deployments that support confidential computing.
-- `popcorn-images`: a separate OSS repository for browser base images and image build assets.
 
-There is no hosted public demo for OSS v1; run the local Kind flow or deploy it to GKE.
+There is no hosted public demo; run the local Kind flow or deploy it to GKE.
 
 ```mermaid
 flowchart LR
-    client[Client app or user] --> gateway[Gateway]
-    gateway --> pool[Pool manager]
-    pool --> agones[Agones allocator]
-    agones --> browser[Browser GameServer pod]
+    client["Client app or user"] --> control["Control plane"]
+    control --> pool["Pool manager"]
+    pool --> agones["Agones allocator"]
+    agones --> browser["Browser GameServer pod"]
+    client --> gateway["Gateway"]
     gateway --> browser
-    browser --> cdp[CDP and browser APIs]
-    browser --> proof[Optional attestor]
-    pool --> redis[(Redis)]
+    pool --> redis[("Redis")]
+    control --> postgres[("Postgres")]
 ```
 
 ## Repository Layout
 
 - `services/pool-manager`: session API and Agones allocation service.
+- `services/control-plane`: client/admin API and multi-region routing.
 - `services/gateway`: OpenResty gateway and JWT path authorization.
-- `services/browser-node`: browser runtime wrapper.
+- `images/minimal-vnc-desktop`: VNC/live-view browser runtime image.
 - `services/ttl-controller`: session cleanup controller.
 - `services/attestor`: optional proof sidecar.
 - `charts/platform`: platform Helm chart.
 - `charts/browser-fleet`: browser fleet Helm chart.
-- `popcorn-images`: separate OSS image repository, tracked as a submodule.
 - `docs`: quickstart, deployment, configuration, operations, security, and reference docs.
 
 ## Quickstart
 
-Prerequisites on your local machine:
-
-- Docker Engine or Docker Desktop, running locally, with BuildKit enabled
-- Kind
-- kubectl
-- Helm
-- Make
-- jq
-
-Clone with submodules so the browser image assets are present:
+Install Docker, Kind, kubectl, Helm, Make, and jq, then run:
 
 ```bash
-git clone --recursive https://github.com/reclaimprotocol/popcorn-oss.git
+git clone https://github.com/reclaimprotocol/popcorn-oss.git
 cd popcorn-oss
-```
-
-If you already cloned without submodules:
-
-```bash
-git submodule update --init --recursive
 ```
 
 Expected OSS local flow:
@@ -78,127 +72,45 @@ make local-keys
 make run-local-cluster
 ```
 
-`make run-local-cluster` builds the local platform images, creates or updates
-the Kind cluster, deploys Popcorn, and publishes the local ports. `make connect`
-is optional and only prints the local endpoint reminder.
-
-The local gateway is expected at:
-
-```text
-http://localhost:8080
-```
-
-Create a browser session:
-
-```bash
-CONTROL_PLANE_URL=http://localhost:8081
-CONTROL_PLANE_ADMIN_TOKEN=local_admin_token_for_dev
-
-CLIENT_JSON=$(curl -sS -X POST "$CONTROL_PLANE_URL/admin/clients" \
-  -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"demo client"}')
-
-export CLIENT_ID=$(printf '%s' "$CLIENT_JSON" | jq -r .clientId)
-export CLIENT_SECRET=$(printf '%s' "$CLIENT_JSON" | jq -r .clientSecret)
-
-curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
-  -H "Authorization: Bearer $CLIENT_ID:$CLIENT_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId":"demo-session","regions":["local"]}'
-```
-
-Client session creation uses the control-plane `/v1/sessions` API. See
-[Reference](docs/reference.md) for the client credential workflow and response
-shape.
-
-The response includes:
-
-- `url`: browser view URL.
-- `cdpUrl`: restricted CDP WebSocket URL for client automation.
-- `cdpInternalUrl`: full CDP WebSocket URL for trusted internal tools.
-- `apiUrl`: browser runtime API URL.
-- `sessionId`: the allocated session ID.
-
-For a purely local demo, the OSS Helm example values include development credentials and local services. Do not use production credentials in a local quickstart.
-
-## Playwright
-
-```js
-import { chromium } from "playwright";
-
-const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
-const clientId = process.env.POPCORN_CLIENT_ID;
-const clientSecret = process.env.POPCORN_CLIENT_SECRET;
-const response = await fetch(`${controlPlaneUrl}/v1/sessions`, {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${clientId}:${clientSecret}`,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({ sessionId: `pw-${Date.now()}`, regions: ["local"] }),
-});
-
-const session = await response.json();
-const browser = await chromium.connectOverCDP(session.cdpUrl);
-const page = browser.contexts()[0]?.pages()[0] ?? await browser.newPage();
-
-await page.goto("https://example.com");
-console.log(await page.title());
-await browser.close();
-```
-
-## Puppeteer
-
-```js
-import puppeteer from "puppeteer-core";
-
-const controlPlaneUrl = process.env.CONTROL_PLANE_URL ?? "http://localhost:8081";
-const clientId = process.env.POPCORN_CLIENT_ID;
-const clientSecret = process.env.POPCORN_CLIENT_SECRET;
-const response = await fetch(`${controlPlaneUrl}/v1/sessions`, {
-  method: "POST",
-  headers: {
-    Authorization: `Bearer ${clientId}:${clientSecret}`,
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({ sessionId: `pptr-${Date.now()}`, regions: ["local"] }),
-});
-
-const session = await response.json();
-const browser = await puppeteer.connect({
-  browserWSEndpoint: session.cdpUrl,
-});
-
-const page = await browser.newPage();
-await page.goto("https://example.com");
-console.log(await page.title());
-await browser.close();
-```
+`make run-local-cluster` builds and deploys the local platform, publishing the
+gateway at `http://localhost:8080` and control plane at
+`http://localhost:8081`. Continue with the [Quickstart](docs/quickstart.md) for
+client creation, session creation, and a Playwright smoke test.
 
 ## Documentation
 
 - [Docs index](docs/index.md)
-- [Quickstart](docs/quickstart.md)
-- [Deployment](docs/deployment.md)
+- [Local quickstart](docs/quickstart.md)
+- [Requirements and planning](docs/prerequisites.md)
+- [Production installation](docs/deployment.md)
 - [Configuration](docs/configuration.md)
+- [Networking](docs/networking.md)
+- [Data and recovery](docs/storage.md)
+- [Chart options](docs/chart-options.md)
 - [Secrets](docs/secrets.md)
-- [Reference](docs/reference.md)
+- [API and gateway reference](docs/reference.md)
 - [Operations](docs/operations.md)
 - [High availability](docs/high-availability.md)
+- [Upgrades and uninstall](docs/upgrades.md)
+- [Observability](docs/observability.md)
 - [Security](docs/security.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Browser runtime](docs/popcorn-browser.md)
 - [Attestation](docs/attestation.md)
+- [x402 paid-session API](docs/x402.md)
+- [x402 client guide](docs/x402-client.md)
 - [Images and releases](docs/images-and-releases.md)
-- [popcorn-images](https://github.com/reclaimprotocol/popcorn-images)
+- [Third-party software notices](THIRD_PARTY_NOTICES.md)
 
 ## Limitations
 
-- There is no hosted public demo for OSS v1.
+- There is no hosted public demo.
 - Production deployment support is GCP/GKE only for now.
 - Local deployment depends on generated local JWT keys and development-only Helm values.
 - Confidential-computing attestation requires compatible GCP infrastructure and signed digest-pinned images.
-- The restricted CDP endpoint currently relies on scoped gateway tokens; command-level filtering is planned but should not be treated as the primary security boundary yet.
+- The restricted CDP endpoint applies a command allowlist, but filtering should
+  not be treated as the only security boundary; scoped path tokens, ownership,
+  and short session lifetimes remain required.
 
 ## Contributing
 

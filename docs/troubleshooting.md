@@ -1,309 +1,227 @@
 # Troubleshooting
 
-Use this page when a self-hosted Popcorn install does not create or serve
-browser sessions. Start with Kubernetes state, then follow the symptom that
-matches the failure.
+Start with evidence and isolate the failing hop. Do not change several values
+at once, delete state blindly, or share signed URLs and Secret contents.
 
-## First Checks
+## First five minutes
 
 ```bash
-kubectl -n popcorn get pods
-kubectl -n popcorn get fleet,fleetautoscaler,gameservers
-kubectl -n popcorn get secret gateway-jwt-keys pool-manager-service-auth control-plane-secret analytics-db-secret
-kubectl -n popcorn logs deployment/control-plane --tail=100
-kubectl -n popcorn logs deployment/pool-manager --tail=100
-kubectl -n popcorn logs deployment/popcorn-gateway --tail=100
+export POPCORN_NAMESPACE=popcorn
+
+helm -n "$POPCORN_NAMESPACE" list
+kubectl -n "$POPCORN_NAMESPACE" get deploy,ds,job,pods -o wide
+kubectl -n "$POPCORN_NAMESPACE" get fleet,fleetautoscaler,gameservers
+kubectl -n "$POPCORN_NAMESPACE" get svc,ingress,endpoints
+kubectl -n "$POPCORN_NAMESPACE" get events --sort-by=.lastTimestamp | tail -50
 ```
 
-If pods are pending, check capacity first. If pods are in
-`CreateContainerConfigError`, check missing Secrets first. If session creation
-returns `401`, `403`, or `5xx`, check control-plane and pool-manager auth.
+Then identify the stage:
 
-## Helm Install Or Upgrade Fails
-
-Render locally with the same values file used for the release:
-
-```bash
-helm template popcorn-platform charts/platform --values <your-platform-values.yaml>
-helm template browser-fleet charts/browser-fleet --values <your-browser-fleet-values.yaml>
+```text
+render/install -> pod startup -> Ready GameServer -> allocation
+-> control-plane response -> gateway authorization -> browser upstream
 ```
 
-Common causes:
+## Helm render or upgrade fails
 
-- a values key has the wrong type;
-- External Secrets templates are enabled but External Secrets Operator is not installed;
-- a Secret name in values does not match the Secret created in the cluster;
-- GKE-only options are enabled on a non-GKE cluster;
-- IP-only values still contain `http://REPLACE_WITH_GATEWAY_IP` instead of the
-  reserved gateway IP.
-- a fresh cluster is trying to install Agones CRDs and browser Fleet resources
-  in the same release. Install Agones first, wait for the controller, then
-  install browser-fleet with `agones.install=false`.
-
-If a platform upgrade fails because `control-plane-migrate` already exists and
-its pod template is immutable, delete only that completed Job and retry:
+Render locally with the exact values layers:
 
 ```bash
-kubectl -n popcorn delete job control-plane-migrate --ignore-not-found
-```
-
-If you are not using External Secrets Operator, disable the relevant
-`externalSecrets.enabled` value and create Kubernetes Secrets directly.
-
-## Pods Are Stuck In ImagePullBackOff
-
-Describe the pod and check the registry error:
-
-```bash
-kubectl -n popcorn describe pod <pod-name>
+helm lint charts/platform
+helm lint charts/browser-fleet
+helm template test charts/platform -n "$POPCORN_NAMESPACE" -f <platform-values>
+helm template test charts/browser-fleet -n "$POPCORN_NAMESPACE" -f <browser-values>
 ```
 
 Common causes:
 
-- GHCR packages are private and the namespace is missing an `imagePullSecrets`
-  entry;
-- the GitHub token used for the pull Secret does not have `read:packages`;
-- `browser-runtime:latest` does not exist. Use a published commit tag or digest;
-- the cluster is pulling from Artifact Registry without node/service account
-  permissions.
+- an invalid `sessionExtensions` object;
+- both or neither OTLP endpoint while `otel.enabled=true`;
+- incomplete control-plane region or additional-ingress objects;
+- an extension `routing` block missing `portName`, `port`, or `routeKey`;
+- values intended for one chart passed only to the other.
 
-If you need a private GHCR pull while packages are not public, create a
-`docker-registry` Secret and reference it from platform and browser-fleet
-values:
+If the platform upgrade waits on `control-plane-migrate`, inspect the Job:
 
 ```bash
-kubectl -n popcorn create secret docker-registry ghcr-pull \
-  --docker-server=ghcr.io \
-  --docker-username=<github-user> \
-  --docker-password=<token-with-read-packages>
+kubectl -n "$POPCORN_NAMESPACE" get job control-plane-migrate
+kubectl -n "$POPCORN_NAMESPACE" logs job/control-plane-migrate
 ```
 
-## Pods Are Stuck In CreateContainerConfigError
+Check Postgres Secret keys, DNS, TLS/CA settings, credentials, and migration
+permissions. Do not bypass the Job.
 
-Describe the pod and look for the missing Secret or key:
+## Pods are Pending
 
 ```bash
-kubectl -n popcorn describe pod <pod-name>
+kubectl -n "$POPCORN_NAMESPACE" describe pod <pod>
+kubectl get nodes -L kubernetes.io/arch,topology.kubernetes.io/zone
 ```
 
-Check the required defaults:
+Look for:
+
+- insufficient CPU, memory, or ephemeral storage;
+- amd64 browser image scheduled to an incompatible node;
+- node selector/toleration mismatch;
+- unavailable runtime class;
+- confidential-computing resource request on ordinary nodes;
+- unbound Redis PVCs;
+- PDB or topology constraints stricter than available nodes.
+
+## ImagePullBackOff
 
 ```bash
-kubectl -n popcorn get secret gateway-jwt-keys
-kubectl -n popcorn get secret pool-manager-service-auth
-kubectl -n popcorn get secret control-plane-secret
-kubectl -n popcorn get secret analytics-db-secret
+kubectl -n "$POPCORN_NAMESPACE" describe pod <pod>
+kubectl -n "$POPCORN_NAMESPACE" get secret
 ```
 
-Create the missing Secret with the keys listed in `docs/secrets.md`, then
-restart the affected deployment:
+Verify the exact image exists for the node architecture, the digest/tag is
+correct, registry credentials are attached through `imagePullSecrets`, and the
+node can reach the registry. Test on a newly created browser node, not only a
+node with cached layers.
+
+## CreateContainerConfigError
+
+This normally means a missing Secret, key, ConfigMap, or volume. Compare the
+event with [Secrets](secrets.md). Check key names without decoding values:
 
 ```bash
-kubectl -n popcorn rollout restart deployment/pool-manager deployment/popcorn-gateway deployment/control-plane
+kubectl -n "$POPCORN_NAMESPACE" get secret <name> \
+  -o go-template='{{range $k,$v := .data}}{{printf "%s\n" $k}}{{end}}'
 ```
 
-## Pool Manager Does Not Become Ready
-
-The pool manager requires `POOL_MANAGER_SERVICE_AUTH_TOKEN` from
-`pool-manager-service-auth`.
+## No Ready GameServers
 
 ```bash
-kubectl -n popcorn describe pod -l app=pool-manager
-kubectl -n popcorn get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
-kubectl -n popcorn logs deployment/pool-manager --tail=100
+kubectl -n "$POPCORN_NAMESPACE" describe fleet browser-fleet
+kubectl -n "$POPCORN_NAMESPACE" get gameservers -o wide
+kubectl -n "$POPCORN_NAMESPACE" describe gameserver <name>
+kubectl -n "$POPCORN_NAMESPACE" logs <browser-pod> -c browser-runtime --tail=200
 ```
 
-Common causes:
+Check browser startup, Agones SDK health, resources, node capacity, image pulls,
+runtime security profile, and Agones namespace configuration. Popcorn uses
+`portPolicy: None`; host-port range tuning will not fix an unready browser.
 
-- the Secret is missing;
-- the key name is wrong;
-- the token differs from the token configured for the region in the control plane;
-- Redis is unavailable;
-- the pod cannot reach the Kubernetes API or Agones resources.
+## Session creation returns 401 or 403
 
-## Session API Returns 401 Or 403
+For client routes, verify the header format is exactly:
 
-Use the control-plane `/v1/sessions` API for client-created sessions. The pool
-manager internal session endpoints are bearer-protected and are not public
-client APIs.
+```text
+Authorization: Bearer <client-id>:<client-secret>
+```
 
-Check the region wiring and service token:
+Verify the client is active and its `allowedClusters` includes the target
+cluster name. Region names and cluster names are different fields.
+
+For control-plane-to-pool-manager failures, verify both sides reference the
+same regional `POOL_MANAGER_SERVICE_AUTH_TOKEN` Secret and restart workloads
+after environment-backed Secret rotation.
+
+## Session creation returns 503
+
+This usually means no eligible region allocated a browser. Check:
+
+1. requested region names are configured and enabled;
+2. the client is allowed to use their cluster names;
+3. the pool-manager Service has endpoints;
+4. service authentication succeeds;
+5. a Ready GameServer exists;
+6. Redis and Agones are reachable from the pool manager.
 
 ```bash
-kubectl -n popcorn get deploy control-plane -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CONTROL_PLANE_REGIONS")].value}'
-kubectl -n popcorn get secret pool-manager-service-auth -o jsonpath='{.data.POOL_MANAGER_SERVICE_AUTH_TOKEN}' | base64 -d
+kubectl -n "$POPCORN_NAMESPACE" get endpoints pool-manager
+kubectl -n "$POPCORN_NAMESPACE" get gameservers
+kubectl -n "$POPCORN_NAMESPACE" logs deployment/control-plane --tail=200
+kubectl -n "$POPCORN_NAMESPACE" logs deployment/pool-manager --tail=200
 ```
 
-Common causes:
+## LiveView returns 404 or 502
 
-- client ID or client secret was not created in the control plane;
-- the client was revoked;
-- admin username or password is wrong;
-- `ADMIN_SESSION_SECRET` differs across control-plane replicas;
-- Google OAuth user email is unverified or outside the allowlist;
-- control-plane region token does not match the regional pool-manager token.
-
-## Session API Returns 5xx
-
-Check the control plane, database, pool manager, and Agones state:
+Use the session ID—not the full signed URL—to inspect the route:
 
 ```bash
-kubectl -n popcorn logs deployment/control-plane --tail=200
-kubectl -n popcorn logs deployment/pool-manager --tail=200
-kubectl -n popcorn get fleet,fleetautoscaler,gameservers
-kubectl -n popcorn get endpoints
+# Simple Redis
+kubectl -n "$POPCORN_NAMESPACE" exec deployment/redis -- \
+  redis-cli GET route:liveview:<session-id>
+
+# Bundled HA Redis
+kubectl -n "$POPCORN_NAMESPACE" exec statefulset/redis-ha-node -c redis -- \
+  redis-cli -h redis-ha-master GET route:liveview:<session-id>
 ```
 
-Common causes:
+Expected value: `<browser-pod-ip>:6080`.
 
-- Postgres is unavailable or credentials are wrong;
-- no Ready GameServers are available;
-- the pool-manager service URL in `controlPlane.regions` is wrong;
-- gateway JWT keys are missing or invalid;
-- browser pods are failing image pull or readiness checks.
+- Empty route: allocation did not publish state, route expired, wrong Redis,
+  or the session was deleted.
+- Route exists but 502: gateway cannot reach the pod IP/port, the browser pod
+  is gone, or NetworkPolicy/CNI blocks the path.
+- 403: the path token is invalid, expired, or for another scope/session.
+- HTML loads but WebSocket fails: ingress/proxy upgrade or timeout problem.
 
-## Browser URL Opens But CDP Or Runtime API Fails
+## CDP does not connect
 
-Use the URL returned for that access path. Browser, CDP, and runtime API URLs
-each have scoped tokens. The optional proof route is separate and uses
-`/proof/<sessionId>?nonce=<hex>`.
+Confirm which surface the client should use:
 
-Check the CDP scheme:
+- `cdpUrl` -> restricted `:9222`;
+- `cdpInternalUrl` -> trusted full CDP `:9226`;
+- x402 automation -> `/cdp-agent` with route-bound access.
 
-- local HTTP gateway: `ws://.../cdp/...`
-- TLS gateway: `wss://.../cdp/...`
+Check the matching Redis route, gateway logs, browser proxy logs, and WebSocket
+support. A restricted command rejection is different from a failed WebSocket
+connection.
 
-Do not reuse a browser URL token for CDP or a CDP token for the runtime API.
-If all scoped URLs fail, check gateway logs and JWT key consistency between
-pool manager and gateway.
+## Gateway health works but session routes fail
 
-For IP-only GKE deployments, the returned browser URL should start with
-`http://<gateway-ip>` and the returned CDP URL should start with
-`ws://<gateway-ip>`. If they still use the placeholder or a DNS name, fix
-`controlPlane.regions[].publicGatewayUrl` and restart the control plane.
+`/health` proves OpenResty is running; it does not prove Redis lookup or browser
+pod reachability. Check gateway Redis DNS/host configuration, route keys,
+gateway-to-pod connectivity, and whether gateway replicas all use the same
+Redis authority.
 
-If a newly created public IP-only control-plane Ingress briefly returns
-connection resets or default backend `404`, wait for the GKE forwarding rule and
-URL map to finish warming up. `kubectl describe ingress control-plane` should
-show the control-plane backend as `HEALTHY`.
-
-## Browser Pods Do Not Become Ready
-
-Inspect the GameServer and browser pod:
+## Control plane is unhealthy
 
 ```bash
-kubectl -n popcorn get gameservers -o wide
-kubectl -n popcorn describe gameserver <name>
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
+kubectl -n "$POPCORN_NAMESPACE" logs deployment/control-plane --tail=200
+kubectl -n "$POPCORN_NAMESPACE" get endpoints control-plane
 ```
 
-Common causes:
+Check Postgres connectivity and TLS, the five database Secret keys, migration
+status, region JSON, and admin Secret references. If one replica fails while
+another succeeds, compare their image, env, mounts, and node/network path.
 
-- browser runtime image cannot be pulled;
-- private registry credentials are missing;
-- CPU or memory requests cannot fit on browser nodes;
-- confidential-computing or sandbox settings do not match the node pool.
+## Redis problems
 
-## Live View (VNC) Does Not Connect
+Simple Redis is non-persistent. A restart loses routes. For HA Redis, inspect
+Sentinel, the stable master Service, replica state, PVCs, and master-set name.
+Do not enable simple and HA Redis simultaneously or point gateway and pool
+manager at different authorities.
 
-The browser streams over the noVNC HTTP/WebSocket port (`6080`) on the pod,
-routed through the gateway as the `liveview` route. This path is TCP only.
-
-Typical symptoms:
-
-- the live-view page loads but the canvas stays blank or reconnects in a loop;
-- the WebSocket connection to `/liveview-ws/<sessionId>/<token>` fails to
-  upgrade;
-- the browser runtime returns `503` on the noVNC HTTP and WebSocket routes.
-
-Check the live-view route and the pod's noVNC port:
+## TTL cleanup does not run
 
 ```bash
-kubectl -n popcorn get gameservers -o wide
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
-kubectl -n popcorn logs deployment/popcorn-gateway --tail=200
+kubectl -n "$POPCORN_NAMESPACE" logs deployment/ttl-controller --tail=200
+kubectl get lease -A | grep ttl-controller
+kubectl auth can-i delete gameservers --as \
+  system:serviceaccount:"$POPCORN_NAMESPACE":ttl-controller-sa -A
 ```
 
-Common causes:
+Check leader election, ClusterRole/Binding, GameServer timestamps, control-plane
+URL, and `CONTROL_PLANE_SERVICE_AUTH_TOKEN`.
 
-- the gateway route or `proxy_pass` does not reach the pod's `6080` (noVNC) port;
-- the `/liveview-ws/<sessionId>/<token>` WebSocket upgrade is blocked by a proxy
-  or load balancer that does not forward `Upgrade`/`Connection` headers;
-- the returned `vncUrl`/`vncWsUrl` point at the wrong base or a stale token;
-- Chromium is not ready yet. noVNC and CDP listeners bind early, but their HTTP
-  and WebSocket routes return `503` until Chromium's X window matches the
-  readiness pattern (`READY_WINDOW_PATTERN`, default Chromium/Chrome). See
-  `images/minimal-vnc-desktop/README.md` for the readiness behavior. A `503`
-  that clears on its own once the window opens is expected; a persistent `503`
-  means the app window never matched the pattern or the app failed to start.
+## OTEL logs do not arrive
 
-If the `503` persists, check the browser-runtime startup logs for the app window
-and readiness state:
+Check that exactly one endpoint is configured, the DaemonSet runs on browser
+nodes, host log paths are mounted, exporter headers exist, and the destination
+accepts the selected gRPC or HTTP protocol.
 
 ```bash
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
+kubectl -n "$POPCORN_NAMESPACE" get pods -l app=otel-agent -o wide
+kubectl -n "$POPCORN_NAMESPACE" logs daemonset/otel-agent --tail=200
 ```
 
-## Optional Component Fails
+## Safe escalation data
 
-For TTL controller, verify the control-plane service token and logs:
-
-```bash
-kubectl -n popcorn get secret control-plane-secret -o jsonpath='{.data.CONTROL_PLANE_SERVICE_AUTH_TOKEN}' | base64 -d
-kubectl -n popcorn logs deployment/ttl-controller --tail=100
-```
-
-For control-plane database failures, verify the database Secret and network path:
-
-```bash
-kubectl -n popcorn get secret analytics-db-secret -o yaml
-kubectl -n popcorn get pods -l app=postgres
-```
-
-For OpenTelemetry issues, check the collector and configured exporter path:
-
-```bash
-kubectl -n popcorn get daemonset otel-agent
-kubectl -n popcorn logs daemonset/otel-agent --tail=100
-kubectl -n popcorn logs deployment/pool-manager --tail=100 | grep -i otel
-```
-
-For attestation or GKE node prescaler issues, disable the optional component and
-confirm the base session lifecycle still works before debugging the add-on.
-
-## Advanced: Local Kind
-
-For the local Makefile path, the gateway should be reachable at
-`http://localhost:8080`:
-
-```bash
-kubectl config current-context
-kubectl get svc popcorn-gateway
-curl -i http://localhost:8080/health
-```
-
-If the service exists but curl fails, recreate the Kind cluster:
-
-```bash
-make clean
-make run-local-cluster
-```
-
-For same-machine Kind, live view (VNC) is served over TCP through the gateway.
-Verify the GameServer is Ready and the browser runtime's noVNC port is serving:
-
-```bash
-kubectl -n popcorn get gameservers -o wide
-kubectl -n popcorn logs <browser-pod-name> -c browser-runtime --tail=200
-```
-
-Once Chromium is ready, the noVNC HTTP and WebSocket routes on port `6080` stop
-returning `503` (see "Live View (VNC) Does Not Connect" above). If the live-view
-page will not load, confirm the gateway is reachable at
-`http://localhost:8080` and re-check the `liveview` route.
-
-## Advanced: Public Repo Checks
-
-Public OSS changes should not include private deployment paths, private GitHub
-URLs, production domains, or secret material. Run local checks where possible
-before opening a release PR.
+Collect workload status, Agones state, recent events, chart versions, and
+redacted logs as described in [Operations](operations.md#safe-diagnostic-bundle).
+Never attach Secret bodies, database credentials, client secrets, payment
+payloads, or full session URLs.

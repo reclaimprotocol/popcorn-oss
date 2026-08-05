@@ -1,290 +1,224 @@
-# Deployment
+# Production installation on GKE
 
-The supported production path for Popcorn OSS is Google Kubernetes Engine
-(GKE). Local Kind is for development and smoke testing.
+This runbook installs one Popcorn region into a GKE Standard cluster. It assumes
+the decisions in [Requirements and planning](prerequisites.md) are complete.
 
-## GKE Cluster Settings
+## Installation model
 
-Use a GKE Standard cluster for production. Popcorn runs browser workloads as
-Agones GameServers, so the cluster should be built for long-running browser
-pods, dynamic capacity, and public gateway ingress.
+Install three layers in this order:
 
-Recommended baseline:
+1. Cluster infrastructure: Agones and, optionally, External Secrets Operator.
+2. `popcorn-platform`: pool manager, gateway, control plane, route-state Redis,
+   TTL controller, and optional observability components.
+3. `browser-fleet`: Agones Fleet, FleetAutoscaler, browser runtime, and optional
+   browser-side components.
 
-- VPC-native networking.
-- Workload Identity enabled, especially if using External Secrets Operator,
-  GCP Secret Manager, the GKE node prescaler, or attestation.
-- Shielded nodes enabled.
-- A managed node pool with autoscaling enabled.
-- Browser-capable node size, for example an `n2d-standard-8` class machine or
-  larger once load increases.
-- Enough node disk for browser images; internal deployments use 200 GB
-  balanced persistent disks as a starting point.
-- Node service account permissions for image pulls, logging, and monitoring.
-- A GCP global static IP for the gateway Ingress.
-- Optional: a separate GCP global static IP and DNS name for the control plane
-  if you expose the client/admin API publicly.
-- DNS pointed at those IPs before relying on managed certificates. DNS is not
-  required for an HTTP IP-only smoke test.
+Agones is cluster-scoped infrastructure. Install it once. The two Popcorn Helm
+releases should normally share one namespace.
 
-If you want attestation, create the browser node pool with Confidential GKE
-Nodes enabled and use a machine family that supports GCP confidential computing,
-such as AMD-based `n2d` machines in supported regions. Then enable the browser
-attestor and confidential-computing device plugin in the browser-fleet values.
-See [Attestation](attestation.md#setup) for the concrete node-pool, IAM, and
-Helm values.
+## 1. Set installation variables
 
-If you do not need attestation, confidential nodes are optional. Keep
-`browserRuntimeAttestor.enabled=false` and `ccDevicePlugin.enabled=false`.
+```bash
+export POPCORN_NAMESPACE=popcorn
+export POPCORN_CLUSTER=popcorn-prod
+export POPCORN_REGION=us-central1
+export POPCORN_GATEWAY_DOMAIN=browser.example.com
+```
 
-The browser streams over live view (VNC) through the gateway's HTTP/WebSocket
-surface — plain TCP, with no special browser networking to plan for:
+Confirm the target cluster before doing anything else:
 
-- Set `streaming.mode=vnc` in the browser-fleet values.
-- Wire the live-view route so the platform serves the browser desktop over the
-  gateway. See the LiveView Route Wiring in
-  [Configuration](configuration.md#liveview-route-wiring).
+```bash
+kubectl config current-context
+kubectl get nodes -L kubernetes.io/arch,topology.kubernetes.io/zone
+```
 
-## Production Shape
+## 2. Install Agones
 
-Install two Helm releases into the same namespace:
-
-- `charts/platform`: gateway, pool manager, Redis, control plane, TTL
-  controller, RBAC, and optional operations services.
-- `charts/browser-fleet`: Agones Fleet, browser runtime, live-view (VNC)
-  streaming settings, autoscaler, and optional attestor.
-
-Use one namespace unless you have a specific reason to split platform and
-browser workloads.
-
-## Requirements
-
-- GKE Standard cluster with the settings above.
-- Agones installed in the cluster before installing the browser fleet.
-- `gcloud`, `kubectl`, Helm 3, jq, and openssl.
-- GCP global static IP for the gateway. Use a DNS name when you want the chart
-  to create a GKE ManagedCertificate and HTTPS redirect.
-- Optional control-plane DNS name and GCP global static IP, or a private access
-  plan such as port-forward, VPN, or internal ingress.
-- Popcorn images available to the cluster.
-- Kubernetes Secrets from [Secrets](secrets.md).
-
-The control plane and Metabase expect `analytics-db-secret` to point at an
-existing Postgres database. Use managed Postgres or a database you operate
-outside the platform chart.
-
-External Secrets Operator is optional, but recommended when syncing from GCP
-Secret Manager.
-
-If you do not have DNS ready, use [GKE IP-only deployment](gke-ip-only-deployment.md)
-first. That path exposes the gateway at `http://<gateway-ip>`, can temporarily
-expose the control plane at `http://<control-plane-ip>`, and avoids GKE
-ManagedCertificate.
-
-## Install Agones
-
-For a fresh self-hosted cluster, install Agones before the browser-fleet chart:
+The repository vendors the tested Agones chart:
 
 ```bash
 helm upgrade --install agones charts/browser-fleet/charts/agones-1.57.0.tgz \
   --namespace agones-system \
   --create-namespace \
   --set agones.controller.generateTLS=false \
-  --set gameservers.minPort=59000 \
-  --set gameservers.maxPort=61000 \
-  --set-json 'gameservers.namespaces=["popcorn"]'
+  --set-json "gameservers.namespaces=[\"$POPCORN_NAMESPACE\"]"
 
 kubectl -n agones-system rollout status deployment/agones-controller
 kubectl -n agones-system rollout status deployment/agones-extensions
 ```
 
-Then keep the dependency disabled in browser-fleet values:
+Popcorn ports use Agones `portPolicy: None`; do not configure an Agones host
+port range for Popcorn.
 
-```yaml
-# browser-fleet values
-agones:
-  install: false
+## 3. Prepare production values
 
-agonesInstaller:
-  gameservers:
-    namespaces:
-      - popcorn
-    minPort: 59000
-    maxPort: 61000
-```
-
-Agones is cluster-level infrastructure, so avoid letting multiple Helm releases
-manage it.
-
-## Prepare Values
-
-Start from examples and edit copies outside the repo:
+Copy the examples into a private deployment repository or another location
+outside this checkout:
 
 ```bash
 cp examples/helm/platform-values.yaml /tmp/popcorn-platform.yaml
-cp examples/helm/browser-fleet-values.yaml /tmp/popcorn-browser-fleet.yaml
+cp examples/helm/browser-fleet-values.yaml /tmp/popcorn-browser.yaml
 ```
 
-For an IP-only GKE smoke test, start from:
+At minimum, change:
+
+- `clusterName`, `region`, `registry`, and `imageTag` in platform values;
+- `gateway.domainName`, `gateway.staticIpName`, and desired replica counts;
+- `controlPlane.regions` and its pool-manager service-token Secret reference;
+- Postgres, admin, gateway JWT, and service-token Secret names;
+- the route-state choice: bundled HA Redis or an external managed Redis;
+- `region`, `gatewayDomain`, `browserRuntimeImage`, Fleet resources, and
+  autoscaler bounds in browser values.
+
+Leave `agones.install=false`. Pin production images instead of using `latest`.
+See [Configuration](configuration.md) for design choices and
+[Helm values](chart-options.md) for the complete reference.
+
+## 4. Create Secrets
+
+Create the namespace and required Secrets before installing workloads:
 
 ```bash
-cp examples/helm/platform-ip-values.yaml /tmp/popcorn-platform-ip.yaml
-cp examples/helm/browser-fleet-ip-values.yaml /tmp/popcorn-browser-fleet-ip.yaml
+kubectl create namespace "$POPCORN_NAMESPACE" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
 
-Minimum platform shape:
+Follow [Secrets](secrets.md). A standard deployment needs:
 
-```yaml
-clusterName: popcorn-prod
-provider: gcp
-region: us-central1
-registry: ghcr.io/reclaimprotocol/popcorn-oss
-imageTag: <release-or-commit-tag>
+- `gateway-jwt-keys`;
+- `pool-manager-service-auth`;
+- `control-plane-secret`;
+- `analytics-db-secret`.
 
-poolManager:
-  enabled: true
+Do not generate production values with the local Makefile targets. They create
+development credentials.
 
-gateway:
-  enabled: true
-  replicas: 2
-  domainName: gateway.example.com
-  staticIpName: popcorn-gateway-ip
+## 5. Render and review
 
-controlPlane:
-  enabled: true
-  # Leave these empty if the control plane stays private and operators use
-  # port-forward, VPN, or an internal ingress instead.
-  domainName: control-plane.example.com
-  staticIpName: popcorn-control-plane-ip
-  regions:
-    - name: us-central1
-      clusterName: popcorn-prod
-      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
-      publicGatewayUrl: https://gateway.example.com
-      enabled: true
-
-redis:
-  enabled: true
-
-ttlController:
-  enabled: true
-```
-
-Minimum browser fleet shape:
-
-```yaml
-region: us-central1
-gatewayDomain: gateway.example.com
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
-
-# Live view (VNC) is the only browser streaming mode.
-streaming:
-  mode: vnc
-
-agones:
-  install: false
-
-agonesInstaller:
-  gameservers:
-    namespaces:
-      - popcorn
-    minPort: 59000
-    maxPort: 61000
-
-fleet:
-  replicas: 2
-
-autoscaler:
-  minReplicas: 2
-  maxReplicas: 20
-```
-
-You must also wire the live-view route on the platform side so `streaming.mode:
-vnc` is served over the gateway. See the LiveView Route Wiring in
-[Configuration](configuration.md#liveview-route-wiring) for the
-`poolManager.extraRoutePorts`, `poolManager.extraSessionUrls`, and
-`gateway.extraSessionRoutes` values.
-
-For IP-only deployments, leave `gateway.domainName` empty, set
-`gateway.staticIpName` to the reserved global static IP name, and set
-`controlPlane.regions[].publicGatewayUrl` to `http://<gateway-ip>`. The chart
-will render a hostless HTTP GKE Ingress without ManagedCertificate. For a
-temporary public control-plane smoke test, also set
-`controlPlane.staticIpName` to a second reserved global static IP and keep
-`controlPlane.domainName` empty.
-
-## Install
+Rendering is a required preflight, not just a debugging step:
 
 ```bash
-kubectl create namespace popcorn --dry-run=client -o yaml | kubectl apply -f -
+helm lint charts/platform
+helm lint charts/browser-fleet
 
+helm template popcorn-platform charts/platform \
+  --namespace "$POPCORN_NAMESPACE" \
+  --values /tmp/popcorn-platform.yaml > /tmp/popcorn-platform-rendered.yaml
+
+helm template browser-fleet charts/browser-fleet \
+  --namespace "$POPCORN_NAMESPACE" \
+  --values /tmp/popcorn-browser.yaml > /tmp/popcorn-browser-rendered.yaml
+```
+
+Review image references, public Services and Ingresses, Secret names, RBAC,
+node selectors, tolerations, resource limits, and optional components.
+
+## 6. Install the platform
+
+```bash
 helm upgrade --install popcorn-platform charts/platform \
-  --namespace popcorn \
-  --values /tmp/popcorn-platform.yaml
+  --namespace "$POPCORN_NAMESPACE" \
+  --values /tmp/popcorn-platform.yaml \
+  --wait --timeout 10m
+```
 
+The control-plane migration Job must finish successfully before the control
+plane is considered ready:
+
+```bash
+kubectl -n "$POPCORN_NAMESPACE" get jobs,pods
+kubectl -n "$POPCORN_NAMESPACE" rollout status deployment/pool-manager
+kubectl -n "$POPCORN_NAMESPACE" rollout status deployment/popcorn-gateway
+kubectl -n "$POPCORN_NAMESPACE" rollout status deployment/control-plane
+```
+
+If a component is disabled in your values, omit its rollout check.
+
+## 7. Install the browser fleet
+
+```bash
 helm upgrade --install browser-fleet charts/browser-fleet \
-  --namespace popcorn \
-  --values /tmp/popcorn-browser-fleet.yaml
+  --namespace "$POPCORN_NAMESPACE" \
+  --values /tmp/popcorn-browser.yaml \
+  --wait --timeout 15m
 ```
 
-Watch rollout:
+Verify Agones capacity:
 
 ```bash
-kubectl -n popcorn get pods
-kubectl -n popcorn get fleet,fleetautoscaler,gameservers
-kubectl -n popcorn rollout status deployment/pool-manager
-kubectl -n popcorn rollout status deployment/popcorn-gateway
+kubectl -n "$POPCORN_NAMESPACE" get fleet,fleetautoscaler,gameservers
+kubectl -n "$POPCORN_NAMESPACE" get pods -l app=browser-runtime -o wide
 ```
 
-## Verify
+At least one GameServer must be `Ready` before allocation can succeed.
 
-First create client credentials. Use the public control-plane URL if you exposed
-it, or port-forward the service for an operator-only smoke test:
+## 8. Complete DNS and TLS
+
+When `gateway.staticIpName` is set, the platform chart creates a GCE Ingress.
+When `gateway.domainName` is also set, it creates a GKE ManagedCertificate and
+HTTPS redirect. It also enables a Network Endpoint Group on the gateway
+Service; no separate NEG annotation is required. Point DNS at the reserved
+global IP and wait for both the Ingress and certificate to become active.
 
 ```bash
-kubectl -n popcorn port-forward svc/control-plane 8081:3000
+kubectl -n "$POPCORN_NAMESPACE" get ingress,managedcertificate
+kubectl -n "$POPCORN_NAMESPACE" describe managedcertificate popcorn-gateway
 ```
 
-In another shell:
+Do not run production sessions over plaintext HTTP. See
+[Networking](networking.md) for private exposure and non-default topologies.
+
+## 9. Run the acceptance test
+
+If the control plane is private, port-forward it for the operator test:
 
 ```bash
-CONTROL_PLANE_URL=http://localhost:8081
-CONTROL_PLANE_ADMIN_TOKEN=<admin-token-from-control-plane-secret>
+kubectl -n "$POPCORN_NAMESPACE" port-forward svc/control-plane 8081:3000
+```
 
-CLIENT_JSON=$(curl -sS -X POST "$CONTROL_PLANE_URL/admin/clients" \
+Create a narrowly scoped client:
+
+```bash
+export CONTROL_PLANE_URL=http://localhost:8081
+export CONTROL_PLANE_ADMIN_TOKEN='<admin token>'
+
+CLIENT_JSON=$(curl -fsS -X POST "$CONTROL_PLANE_URL/admin/clients" \
   -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"gke smoke"}')
+  -H 'Content-Type: application/json' \
+  -d "{\"name\":\"install check\",\"allowedClusters\":[\"$POPCORN_CLUSTER\"]}")
 
-export CLIENT_ID=$(printf '%s' "$CLIENT_JSON" | jq -r .clientId)
-export CLIENT_SECRET=$(printf '%s' "$CLIENT_JSON" | jq -r .clientSecret)
-```
+CLIENT_ID=$(printf '%s' "$CLIENT_JSON" | jq -r .clientId)
+CLIENT_SECRET=$(printf '%s' "$CLIENT_JSON" | jq -r .clientSecret)
 
-Then create a session:
-
-```bash
-curl -sS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
+SESSION_JSON=$(curl -fsS -X POST "$CONTROL_PLANE_URL/v1/sessions" \
   -H "Authorization: Bearer $CLIENT_ID:$CLIENT_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"sessionId":"gke-smoke","regions":["us-central1"]}'
+  -H 'Content-Type: application/json' \
+  -d "{\"sessionId\":\"install-check\",\"regions\":[\"$POPCORN_REGION\"]}")
+
+printf '%s\n' "$SESSION_JSON" | jq
 ```
 
-The response should include `url`, `cdpUrl`, `apiUrl`, `sessionId`, and
-`region`.
+Acceptance requires all of the following:
 
-## Upgrade
+- the returned `url` loads LiveView over HTTPS;
+- `cdpUrl` accepts a client automation connection;
+- the session appears in control-plane admin state;
+- deleting the session removes its GameServer and route state;
+- no required workload is restarting or unschedulable.
 
-Upgrade both charts with the same private values files and new image refs:
+## 10. Production gate
 
-```bash
-helm upgrade --install popcorn-platform charts/platform \
-  --namespace popcorn \
-  --values /tmp/popcorn-platform.yaml
+Before opening access:
 
-helm upgrade --install browser-fleet charts/browser-fleet \
-  --namespace popcorn \
-  --values /tmp/popcorn-browser-fleet.yaml
-```
+- [ ] Postgres backup and restore are tested.
+- [ ] Redis topology matches the required recovery objective.
+- [ ] Gateway and browser capacity span the intended failure domains.
+- [ ] Session cleanup is enabled.
+- [ ] Public endpoints use TLS and internal endpoints remain private.
+- [ ] Session URLs are redacted from logs.
+- [ ] Images are pinned and pullable on a newly created node.
+- [ ] Alerts cover failed allocations, no Ready GameServers, gateway errors,
+      and database/Redis health.
 
-Keep JWT signing keys stable across rollouts. Rotating them invalidates active
-browser URLs.
+Continue with [Operations](operations.md), [High availability](high-availability.md),
+and [Upgrades](upgrades.md).

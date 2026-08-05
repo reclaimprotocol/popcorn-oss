@@ -4,8 +4,8 @@ set -euo pipefail
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1080}"
 RECLAIM_LOADING_PAGE="https://reclaim-portal-loading-page.s3.ap-south-1.amazonaws.com/index.html"
-FALLBACK_PAGE="https://www.google.com"
-REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-true}"
+FALLBACK_PAGE="https://start.duckduckgo.com/"
+REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-false}"
 if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
   DEFAULT_PAGE="$RECLAIM_LOADING_PAGE"
 else

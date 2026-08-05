@@ -101,6 +101,7 @@ metadata:
   name: control-plane-{{ $name }}
   annotations:
     cloud.google.com/backend-config: '{"ports":{"http":"control-plane-{{ $name }}"}}'
+    cloud.google.com/neg: '{"ingress": true}'
 spec:
   type: ClusterIP
   selector:

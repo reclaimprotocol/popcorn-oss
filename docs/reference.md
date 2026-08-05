@@ -1,19 +1,23 @@
-# Reference
+# API and gateway reference
 
-This page is a compact reference for the self-hosted Popcorn OSS surface. For
-walkthroughs, see [Quickstart](quickstart.md) and [Deployment](deployment.md).
+This page describes the stable self-hosted interfaces operators need to expose
+or integrate. Pool-manager `/internal/*` routes are implementation APIs and
+must remain private.
 
-## Session API
+## Credentialed client API
 
-Client integrations create browser sessions through the control plane:
+Client routes use:
+
+```http
+Authorization: Bearer <client-id>:<client-secret>
+```
+
+### Create a session
 
 ```http
 POST /v1/sessions
-Authorization: Bearer <client-id>:<client-secret>
 Content-Type: application/json
 ```
-
-Request body:
 
 ```json
 {
@@ -23,206 +27,166 @@ Request body:
 }
 ```
 
-- `sessionId` is optional. When set, use 1-64 characters from `A-Z`, `a-z`,
-  `0-9`, `_`, and `-`.
-- `ttlSeconds` is optional. When set, it must be a positive integer no larger
-  than the control-plane `SESSION_MAX_TTL_SECONDS` setting.
-- `regions` is optional. When set, the control plane tries only those enabled
-  regions in order.
-- If `sessionId` is omitted, Popcorn generates one. If `ttlSeconds` is omitted,
-  GameServer cleanup uses the configured TTL controller fallback.
+All fields are optional:
 
-Client integrations fetch their own browser sessions through the control plane:
+- `sessionId`: 1–64 letters, digits, `_`, or `-`; generated when omitted;
+- `ttlSeconds`: positive integer no greater than
+  `controlPlane.sessionMaxTtlSeconds`;
+- `regions`: enabled region names tried in the supplied order.
+
+### Get a session
 
 ```http
 GET /v1/session/:id
-Authorization: Bearer <client-id>:<client-secret>
 ```
 
-Response:
+The caller must own the session.
 
-```json
-{
-  "success": true,
-  "sessionId": "demo-session",
-  "url": "https://asia.popcorn.example/browser-fleet-abc/demo-session/<token>/",
-  "cdpUrl": "wss://asia.popcorn.example/cdp/demo-session/<token>/",
-  "apiUrl": "https://asia.popcorn.example/api/demo-session/<token>/",
-  "expiresAt": "2026-05-26T12:30:00.000Z",
-  "region": "asia-south1",
-  "clusterName": "asia-cluster"
-}
-```
-
-The response mirrors the creation response, with `region` and `clusterName`
-added by the control plane.
-
-- `404` — the session does not exist, or it belongs to another client.
-- `409` — the session exists but its region is not configured on this control
-  plane.
-- `502` — the control plane could not reach the regional pool manager.
-
-Client integrations extend their own browser sessions through the control plane:
+### Extend a session
 
 ```http
 PATCH /v1/session/:id/ttl
-Authorization: Bearer <client-id>:<client-secret>
 Content-Type: application/json
 ```
 
-Request body:
-
 ```json
 {
-  "extendBySeconds": 900
+  "extendBySeconds": 300
 }
 ```
 
-Client integrations delete their own browser sessions through the control plane:
+### Delete a session
 
 ```http
 DELETE /v1/session/:id
-Authorization: Bearer <client-id>:<client-secret>
 ```
 
-Local defaults:
+Deletion ends the allocated GameServer and removes active route state. Clients
+should delete sessions as soon as work is complete rather than waiting for TTL
+cleanup.
 
-```text
-Control plane: http://localhost:8081
-Gateway:       http://localhost:8080
-```
-
-## Response Fields
-
-Successful response:
+## Session response
 
 ```json
 {
   "success": true,
   "sessionId": "demo-session",
-  "url": "https://gateway.example.com/browser-fleet-abc/demo-session/<token>/",
-  "cdpUrl": "wss://gateway.example.com/cdp/demo-session/<token>/",
-  "cdpInternalUrl": "wss://gateway.example.com/cdp-internal/demo-session/<token>/",
-  "apiUrl": "https://gateway.example.com/api/demo-session/<token>/",
+  "url": "https://browser.example.com/liveview/demo-session/<token>/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000",
+  "cdpUrl": "wss://browser.example.com/cdp/demo-session/<token>/",
+  "cdpInternalUrl": "wss://browser.example.com/cdp-internal/demo-session/<token>/",
+  "apiUrl": "https://browser.example.com/api/demo-session/<token>/",
+  "vncUrl": "https://browser.example.com/liveview/demo-session/<token>/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000",
+  "vncWsUrl": "wss://browser.example.com/liveview-ws/demo-session/<token>",
   "browserPodId": "browser-fleet-abc",
-  "expiresAt": "2026-05-26T12:30:00.000Z",
+  "expiresAt": "2026-08-04T12:30:00.000Z",
   "region": "us-central1",
-  "clusterName": "prod-us-central1"
+  "clusterName": "popcorn-prod-us"
 }
 ```
 
-- `url`: interactive browser view. In VNC/LiveView mode this can be overridden
-  to a `/liveview/.../liveview.html` value.
-- `cdpUrl`: client-facing Chrome DevTools Protocol endpoint.
-- `cdpInternalUrl`: trusted internal CDP endpoint.
-- `apiUrl`: browser runtime API endpoint.
-- `browserPodId`: allocated browser pod or Agones GameServer name.
-- `expiresAt`: explicit session expiry when the session was created or extended
-  with a per-session TTL.
-- `region`: control-plane region that allocated the session.
-- `clusterName`: Kubernetes cluster name configured for that region.
-
-Deployments can add fields through `poolManager.extraSessionUrls`. VNC/LiveView
-deployments commonly keep the historical field names while returning LiveView
-paths:
-
-```json
-{
-  "vncUrl": "https://gateway.example.com/liveview/demo-session/<token>/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000",
-  "vncWsUrl": "wss://gateway.example.com/liveview-ws/demo-session/<token>"
-}
-```
-
-Treat every returned URL as a bearer secret. The embedded path tokens authorize
-access until the token expires or the session is deleted.
-
-Common errors:
-
-- `400`: invalid session ID, unknown region, disabled region, or malformed body.
-- `401`: missing or invalid client credentials.
-- `403`: invalid gateway path token or insufficient token scope.
-- `404`: session or route not found.
-- `409`: requested session ID already exists.
-- `502`: regional pool manager could not delete the session.
-- `503`: no requested region could allocate a browser session.
-
-## Gateway Paths
-
-The gateway authorizes and routes these paths:
-
-| Path | Purpose |
+| Field | Meaning |
 | --- | --- |
-| `/<browserPodId>/<sessionId>/<token>/...` | Browser view and browser assets. |
-| `/liveview/<sessionId>/<token>/liveview.html?...` | LiveView HTML route for noVNC-style desktop viewing. |
-| `/liveview-ws/<sessionId>/<token>` | LiveView WebSocket route for RFB traffic. |
-| `/cdp/<sessionId>/<token>/...` | Client-facing CDP WebSocket/API route. |
-| `/cdp-internal/<sessionId>/<token>/...` | Trusted internal CDP route. |
-| `/api/<sessionId>/<token>/...` | Browser runtime API route. |
-| `/proof/<sessionId>?nonce=<hex>` | Optional attestation proof route. |
-| `/health` | Gateway health check. |
+| `url` | canonical interactive LiveView page |
+| `cdpUrl` | restricted client CDP endpoint |
+| `cdpInternalUrl` | trusted full-CDP endpoint |
+| `apiUrl` | generic optional extension API path; it may be unavailable when no matching extension is installed |
+| `vncUrl` | compatibility name for the canonical LiveView page |
+| `vncWsUrl` | compatibility name for the RFB WebSocket endpoint |
+| `browserPodId` | allocated Agones GameServer/pod identity |
+| `expiresAt` | session deadline when one is set |
+| `region` | selected control-plane region name |
+| `clusterName` | selected cluster access identity |
 
-The LiveView response fields intentionally retain the historic names `vncUrl`
-and `vncWsUrl` so existing clients do not need a response-shape migration. The
-route paths and user-facing name are LiveView.
+`sessionExtensions.*.routing.sessionUrls` may add deployment-owned response
+fields. Extensions cannot replace the core LiveView fields.
 
-The gateway also falls back to the pool manager for internal UI and API routes
-when deployed in that mode. New public clients should use the control-plane
-`POST /v1/sessions` API, not pool-manager internal endpoints.
+Treat every full URL as a bearer secret.
 
-## Admin And Internal APIs
+## Common API status codes
 
-Control-plane admin routes are for trusted operators:
+| Status | Typical meaning |
+| ---: | --- |
+| 400 | invalid identifier, TTL, region, or request body |
+| 401 | missing or invalid client/admin credentials |
+| 403 | client lacks cluster access or gateway token scope is wrong |
+| 404 | session or route not found, or owned by another client |
+| 409 | requested session already exists or state conflicts |
+| 502 | a regional dependency returned an invalid/error response |
+| 503 | no eligible region could allocate a browser |
 
-- `GET /admin`: browser admin UI.
-- `POST /admin/clients`: create client credentials.
-- `GET /admin/clients`: list clients.
-- `DELETE /admin/clients/:id`: revoke a client.
-- `GET /admin/regions`: list configured regions and health.
-- `GET /admin/sessions`: list stored sessions.
-- `POST /admin/sessions`: create an operator session.
-- `GET /admin/session/:id`: inspect a routed session.
-- `DELETE /admin/session/:id`: delete a routed session.
-- `PATCH /admin/session/:id/ttl`: extend a routed session.
+Error bodies and logs provide the specific reason; clients should not infer
+ownership or payment state from status alone.
 
-Create a client with the admin bearer token:
+## Admin surface
+
+Admin routes are for trusted operators. The control plane provides a browser UI
+at `/admin` plus JSON routes including:
+
+| Route | Purpose |
+| --- | --- |
+| `GET /admin/regions` | configured region health |
+| `GET /admin/sessions` | durable session records |
+| `POST /admin/sessions` | operator-created session |
+| `GET /admin/session/:id` | inspect one session |
+| `PATCH /admin/session/:id/ttl` | extend one session |
+| `DELETE /admin/session/:id` | terminate one session |
+| `GET /admin/clients` | list clients |
+| `POST /admin/clients` | create credentials |
+| `PATCH /admin/clients/:id` | update status or cluster access |
+| `DELETE /admin/clients/:id` | revoke a client |
+
+Create a scoped client:
 
 ```bash
-CLIENT_JSON=$(curl -sS -X POST "$CONTROL_PLANE_URL/admin/clients" \
+curl -fsS -X POST "$CONTROL_PLANE_URL/admin/clients" \
   -H "Authorization: Bearer $CONTROL_PLANE_ADMIN_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"my integration"}')
-
-export CLIENT_ID=$(printf '%s' "$CLIENT_JSON" | jq -r .clientId)
-export CLIENT_SECRET=$(printf '%s' "$CLIENT_JSON" | jq -r .clientSecret)
+  -H 'Content-Type: application/json' \
+  -d '{"name":"automation","allowedClusters":["popcorn-prod-us"]}'
 ```
 
-Regional pool managers expose only control-plane authenticated internal routes:
+`allowedClusters` contains cluster names, not region names. An empty or omitted
+list is deny-all. `null` grants all current and future non-x402 clusters and
+should be used only as an explicit compatibility choice.
 
-- `GET /internal/servers`
-- `POST /internal/sessions`
-- `GET /internal/session/:id`
-- `DELETE /internal/session/:id`
-- `PATCH /internal/session/:id/ttl`
-- `GET /health`
+## Gateway paths
 
-## Config Option Index
-
-Core Helm values:
-
-| Area | Key examples | Notes |
+| Path | Token/access model | Upstream |
 | --- | --- | --- |
-| Images | `registry`, `imageTag`, `browserRuntimeImage` | Use published GHCR images or a private mirror. Pin digests for production. |
-| Gateway | `gateway.enabled`, `gateway.domainName`, `gateway.serviceType`, `gateway.extraSessionRoutes` | Public entry point for browser, CDP, API, and proof paths. |
-| Pool manager | `poolManager.enabled`, `poolManager.gameServerNamespace`, `poolManager.extraSessionUrls`, `poolManager.extraRoutePorts` | Allocates browser sessions and writes route state. |
-| Control plane | `controlPlane.enabled`, `controlPlane.domainName`, `controlPlane.regions` | Client session API, admin UI, regional routing, and analytics records. |
-| Admin auth | `controlPlane.adminAuth.*` | Password, password file, token, and Google OAuth settings. |
-| Secrets | `secrets.*`, `*.secretName`, `*.secretKey` | JWT keys, service tokens, database credentials, admin auth, and the optional browser egress proxy URL. |
-| Redis | `redis.enabled`, `poolManager.redisHost`, `gateway.redisHost` | Stores active route and session state. Keep private. |
-| Postgres | `controlPlane.database*`, `metabase.database*` | Stores clients, sessions, analytics metadata, and optional Metabase state. |
-| Browser fleet | `fleet.*`, `autoscaler.*`, `streaming.mode`, `extraBrowserRuntimeEnv` | Capacity, resource limits, live-view streaming, and runtime environment. |
-| Cleanup | `ttlController.*` | Expires sessions and reports terminal state to the control plane. |
-| Operations | `otel.*`, `gkeNodePrescaler.*`, `imagePrepuller.*` | OTLP browser log/session event export, capacity, and image warmup helpers. |
-| Attestation | `browserRuntimeAttestor.*`, `ccDevicePlugin.*` | Optional confidential-computing proof support. |
+| `/liveview/<session>/<token>/...` | restricted session token | browser `:6080` |
+| `/liveview-ws/<session>/<token>` | restricted session token | browser `:6080` |
+| `/cdp/<session>/<token>/...` | restricted session token and CDP policy | browser `:9222` |
+| `/cdp-agent/<session>/<token>/...` | route-bound automation scope | browser `:9226` |
+| `/cdp-internal/<session>/<token>/...` | internal scope | browser `:9226` |
+| `/api/<session>/<token>/...` | internal scope | optional route key `api` |
+| `/proof/<session>?nonce=<hex>` | session route and proof validation | optional attestor `:8085` |
+| `/health` | no session token | gateway health response |
 
-Advanced details live in [Configuration](configuration.md),
-[Observability](observability.md), and [Security](security.md).
+The gateway may also serve the older
+`/<browserPodId>/<session>/<token>/...` browser asset path. New integrations
+should use the returned URLs rather than constructing paths.
+
+## Internal regional API
+
+The control plane calls the pool manager with
+`POOL_MANAGER_SERVICE_AUTH_TOKEN`. The pool manager exposes:
+
+```text
+GET    /internal/servers
+POST   /internal/sessions
+GET    /internal/session/:id
+PATCH  /internal/session/:id/ttl
+PATCH  /internal/session/:id/access-ttl
+POST   /internal/session/:id/reallocate-expired
+DELETE /internal/session/:id
+GET    /health
+```
+
+These routes can allocate and terminate browser workloads. Do not expose them
+as a public client API.
+
+## Optional x402 API
+
+The paid API is isolated under `/v1/x402/sessions`. It uses payment challenges
+and capability-style session access rather than client ID/client secret.
+Enabling it does not change `/v1/sessions`. See [x402 API](x402.md) for the
+complete lifecycle and security model.

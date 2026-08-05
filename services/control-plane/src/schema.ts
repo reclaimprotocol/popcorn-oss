@@ -120,7 +120,7 @@ export const x402Events = pgTable('x402_events', {
 }));
 
 // Durable cleanup outbox. A worker/operator can retry rows until completed;
-// the paid five-minute TTL remains the final containment boundary.
+// the configured paid TTL remains the final containment boundary.
 export const x402CleanupOutbox = pgTable('x402_cleanup_outbox', {
   id: uuid('id').primaryKey().defaultRandom(),
   paymentId: uuid('payment_id').references(() => x402Payments.id).notNull(),

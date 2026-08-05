@@ -1,3 +1,5 @@
+import type { SessionAccessPolicy } from "./session-access";
+
 export interface Pod {
     name: string;
     namespace?: string;
@@ -6,11 +8,12 @@ export interface Pod {
     podUid?: string;
     boundAt?: string;
     clientId?: string;
+    clientName?: string;
     createdAt?: number;
     expiresAt?: string;
-    restrictedTokenExpiresAt?: string;
-    publicAccessExpiresAt?: string;
-    automationProfile?: "x402-agent";
+    tokenExpiresAt?: string;
+    accessExpiresAt?: string;
+    accessPolicy?: SessionAccessPolicy;
 }
 
 export interface AllocationResponse {

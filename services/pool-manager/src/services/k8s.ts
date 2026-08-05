@@ -45,8 +45,6 @@ export const K8s = {
                 const labels = p.metadata?.labels || {};
                 return labels['app'] === 'browser-runtime' ||
                     labels['app'] === 'browser-runtime-taken' ||
-                    labels['app'] === 'browser-node' ||
-                    labels['app'] === 'browser-node-taken' ||
                     labels['agones.dev/role'] === 'gameserver';
             });
 

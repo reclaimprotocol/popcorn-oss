@@ -51,9 +51,6 @@ case "$selector" in
   attestor)
     selector="browser-runtime-attestor"
     ;;
-  browser-node)
-    selector="browser-runtime"
-    ;;
   *)
     echo "Unknown service selector: $selector" >&2
     usage >&2
@@ -219,14 +216,14 @@ build_attestor_once() {
   rm -f "$metadata_file"
 }
 
-build_browser_node_once() {
+build_browser_runtime_once() {
   local metadata_file out_dir artifact_dir ubuntu_snapshot
 
   metadata_file="$(mktemp)"
   out_dir="$(mktemp -d)"
   artifact_dir="$(mktemp -d)"
   CLEANUP_DIRS+=("$out_dir" "$artifact_dir")
-  browser_node_local_layout_dir="$out_dir"
+  browser_runtime_local_layout_dir="$out_dir"
 
   ubuntu_snapshot="$(awk -F '=' '$1 == "UBUNTU_SNAPSHOT" { print $2 }' images/minimal-vnc-desktop/locks/ubuntu-snapshot.lock)"
   if [[ -z "$ubuntu_snapshot" ]]; then
@@ -246,7 +243,7 @@ build_browser_node_once() {
     --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime:${requested_commit}" \
     images/minimal-vnc-desktop
 
-  browser_node_local="$(config_digest_from_metadata "$metadata_file")"
+  browser_runtime_local="$(config_digest_from_metadata "$metadata_file")"
   rm -f "$metadata_file"
 }
 
@@ -261,10 +258,10 @@ attestor_published=""
 attestor_local=""
 attestor_published_ref=""
 attestor_local_layout_dir=""
-browser_node_published=""
-browser_node_local=""
-browser_node_published_ref=""
-browser_node_local_layout_dir=""
+browser_runtime_published=""
+browser_runtime_local=""
+browser_runtime_published_ref=""
+browser_runtime_local_layout_dir=""
 
 for service in "${services[@]}"; do
   case "$service" in
@@ -276,16 +273,16 @@ for service in "${services[@]}"; do
       ;;
     browser-runtime)
       echo "Comparing published and local browser-runtime digests..."
-      browser_node_published_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-runtime:${requested_commit}"
-      browser_node_published="$(pull_published_image browser-runtime)"
-      build_browser_node_once
+      browser_runtime_published_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-runtime:${requested_commit}"
+      browser_runtime_published="$(pull_published_image browser-runtime)"
+      build_browser_runtime_once
       ;;
   esac
 done
 
 python3 - "$selector" "$SOURCE_DATE_EPOCH" \
   "$requested_commit" "$attestor_published" "$attestor_local" \
-  "$browser_node_published" "$browser_node_local" <<'PY'
+  "$browser_runtime_published" "$browser_runtime_local" <<'PY'
 from __future__ import annotations
 
 import json
@@ -359,13 +356,13 @@ if [[ -n "$attestor_published" && "$attestor_published" != "$attestor_local" ]];
   fi
 fi
 
-if [[ -n "$browser_node_published" && "$browser_node_published" != "$browser_node_local" ]]; then
+if [[ -n "$browser_runtime_published" && "$browser_runtime_published" != "$browser_runtime_local" ]]; then
   check_failed=1
-  if [[ -n "$browser_node_published_ref" && -n "$browser_node_local_layout_dir" ]]; then
+  if [[ -n "$browser_runtime_published_ref" && -n "$browser_runtime_local_layout_dir" ]]; then
     python3 "$SCRIPT_DIR/diff-image-layers.py" \
       --service browser-runtime \
-      --published-image-ref "$browser_node_published_ref" \
-      --local-oci-layout "$browser_node_local_layout_dir" \
+      --published-image-ref "$browser_runtime_published_ref" \
+      --local-oci-layout "$browser_runtime_local_layout_dir" \
       --output-json "dist/reproducible-image-layer-diff-browser-runtime.json" \
       --output-md "dist/reproducible-image-layer-diff-browser-runtime.md"
   fi
@@ -377,8 +374,8 @@ if (( check_failed )); then
   if [[ -n "$attestor_published" && "$attestor_published" != "$attestor_local" ]]; then
     echo "  - browser-runtime-attestor: published=${attestor_published} local=${attestor_local}" >&2
   fi
-  if [[ -n "$browser_node_published" && "$browser_node_published" != "$browser_node_local" ]]; then
-    echo "  - browser-runtime: published=${browser_node_published} local=${browser_node_local}" >&2
+  if [[ -n "$browser_runtime_published" && "$browser_runtime_published" != "$browser_runtime_local" ]]; then
+    echo "  - browser-runtime: published=${browser_runtime_published} local=${browser_runtime_local}" >&2
   fi
   exit 1
 fi

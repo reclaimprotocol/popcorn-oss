@@ -10,6 +10,15 @@ import { normalizeExpiresAt } from "./src/session-ttl";
 import { OtelEvents } from "./src/services/otel";
 import { retry } from "./src/services/retry";
 import { buildSessionMetadata } from "./src/session-metadata";
+import { browserRoutePort } from "./src/allocation-port";
+import {
+    readSessionAccessRequest,
+    sessionAccessFields,
+    storedSessionAccess,
+    storedSessionTokenExpiresAt,
+    type SessionAccessPolicy,
+} from "./src/session-access";
+import { buildSessionUrls, websocketBaseUrl } from "./src/session-urls";
 
 const app = new Hono();
 const PORT = 3000;
@@ -22,7 +31,7 @@ const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SESSION_METADATA_PATCH_ATTEMPTS = 3;
 const SESSION_METADATA_PATCH_DELAY_MS = 250;
 const POOL_MANAGER_SERVICE_AUTH_TOKEN = requireEnv("POOL_MANAGER_SERVICE_AUTH_TOKEN");
-const EXTRA_SESSION_URLS = readExtraSessionUrls(process.env.POOL_MANAGER_EXTRA_SESSION_URLS);
+const EXTRA_SESSION_URLS = readExtraSessionUrls(process.env.POOL_MANAGER_SESSION_EXTENSION_URLS);
 const ANNOTATION_SESSION_EXPIRES_AT = "popcorn.dev/expires-at";
 
 interface ClientIdentity {
@@ -114,7 +123,7 @@ function readExtraSessionUrls(raw: string | undefined): Record<string, string> {
     try {
         const parsed = JSON.parse(raw);
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            console.warn("Ignoring POOL_MANAGER_EXTRA_SESSION_URLS because it is not a JSON object");
+            console.warn("Ignoring POOL_MANAGER_SESSION_EXTENSION_URLS because it is not a JSON object");
             return {};
         }
 
@@ -125,7 +134,7 @@ function readExtraSessionUrls(raw: string | undefined): Record<string, string> {
             })
         );
     } catch (e) {
-        console.warn("Ignoring POOL_MANAGER_EXTRA_SESSION_URLS because it is invalid JSON:", e);
+        console.warn("Ignoring POOL_MANAGER_SESSION_EXTENSION_URLS because it is invalid JSON:", e);
         return {};
     }
 }
@@ -156,20 +165,22 @@ async function annotatePodWithSessionMetadata(namespace: string, podName: string
 
 function buildSessionDetails(c: any, sessionId: string, session: any, publicBaseUrl?: string | null) {
     const baseUrl = publicBaseUrl || requestBaseUrl(c);
-    const parsedBase = new URL(baseUrl);
-    const wsBase = `${parsedBase.protocol === "https:" ? "wss:" : "ws:"}//${parsedBase.host}`;
+    const wsBase = websocketBaseUrl(baseUrl);
+    const accessPolicy = storedSessionAccess(session);
+    const tokenExpiresAt = storedSessionTokenExpiresAt(session);
+    const routeBound = accessPolicy.tokenMode === "route-bound";
     const token = Auth.signToken(
         sessionId,
         'restricted',
-        session.restrictedTokenExpiresAt || session.expiresAt,
-        session.automationProfile === "x402-agent",
+        tokenExpiresAt,
+        routeBound,
     );
-    const automationToken = session.automationProfile === "x402-agent"
+    const automationToken = accessPolicy.cdpScope === "automation"
         ? Auth.signToken(
             sessionId,
             'automation',
-            session.restrictedTokenExpiresAt || session.expiresAt,
-            true,
+            tokenExpiresAt,
+            routeBound,
         )
         : null;
     const internalToken = Auth.signToken(sessionId, 'internal', session.expiresAt);
@@ -177,12 +188,14 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
     const details: Record<string, unknown> = {
         success: true,
         sessionId,
-        url: `${baseUrl}/${session.name}/${sessionId}/${token}/`,
-        cdpUrl: automationToken
-            ? `${wsBase}/cdp-agent/${sessionId}/${automationToken}/`
-            : `${wsBase}/cdp/${sessionId}/${token}/`,
-        cdpInternalUrl: `${wsBase}/cdp-internal/${sessionId}/${internalToken}/`,
-        apiUrl: `${baseUrl}/api/${sessionId}/${internalToken}/`,
+        ...buildSessionUrls({
+            baseUrl,
+            browserPodId: session.name,
+            sessionId,
+            restrictedToken: token,
+            automationToken,
+            internalToken,
+        }),
         browserPodId: session.name,
         allocationRequestedAt: session.allocationRequestedAt,
         gameServerAllocatedAt: session.gameServerAllocatedAt,
@@ -204,6 +217,10 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
     };
 
     for (const [key, template] of Object.entries(EXTRA_SESSION_URLS)) {
+        // LiveView is part of the core session contract. Deployment-specific
+        // URL templates may add fields or override legacy aliases, but cannot
+        // remove or replace these canonical endpoints.
+        if (key === "vncUrl" || key === "vncWsUrl") continue;
         details[key] = expandSessionUrlTemplate(template, templateValues);
     }
 
@@ -214,8 +231,8 @@ async function allocateSessionLocally(
     identity: ClientIdentity,
     requestedSessionId?: string,
     expiresAt?: string,
-    restrictedTokenExpiresAt?: string,
-    automationProfile?: "x402-agent",
+    tokenExpiresAt?: string,
+    accessPolicy: SessionAccessPolicy = { tokenMode: "expiring", cdpScope: "restricted" },
 ) {
     const allocationRequestedAt = new Date();
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
@@ -239,7 +256,7 @@ async function allocateSessionLocally(
         const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
-        const port = allocation.ports?.[0]?.port || 8080;
+        const port = browserRoutePort(allocation.ports);
         const podUrl = `http://${allocation.address}:${port}`;
 
         const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
@@ -256,11 +273,10 @@ async function allocateSessionLocally(
             gameServerAllocationLatencyMs: Math.max(0, gameServerAllocatedAt.getTime() - allocationRequestedAt.getTime()),
             boundAt: bound.boundAt,
             clientId: identity.clientId,
+            clientName: identity.clientName,
             createdAt: Date.now(),
             ...(expiresAt ? { expiresAt } : {}),
-            ...(restrictedTokenExpiresAt ? { restrictedTokenExpiresAt } : {}),
-            ...(automationProfile === "x402-agent" && expiresAt ? { publicAccessExpiresAt: expiresAt } : {}),
-            ...(automationProfile ? { automationProfile } : {}),
+            ...sessionAccessFields(tokenExpiresAt, accessPolicy),
         };
 
         const sessionAnnotations = {
@@ -361,12 +377,7 @@ async function createControlPlaneSession(c: any): Promise<Response> {
         const clientName = typeof body?.clientName === "string" ? body.clientName.trim() : "";
         const publicBaseUrl = normalizeBaseUrl(body?.publicGatewayUrl);
         const expiresAt = normalizeExpiresAt(body?.expiresAt);
-        const restrictedTokenExpiresAt = normalizeExpiresAt(body?.restrictedTokenExpiresAt);
-        const automationProfile = body?.automationProfile === undefined
-            ? undefined
-            : body.automationProfile === "x402-agent"
-                ? "x402-agent"
-                : null;
+        const access = readSessionAccessRequest(body, expiresAt);
 
         if (!sessionId || !clientId || !clientName || !publicBaseUrl) {
             return c.json({ error: "Missing sessionId, clientId, clientName, or valid publicGatewayUrl" }, 400);
@@ -376,25 +387,21 @@ async function createControlPlaneSession(c: any): Promise<Response> {
             return c.json({ error: "Invalid expiresAt" }, 400);
         }
 
-        if (body?.restrictedTokenExpiresAt && !restrictedTokenExpiresAt) {
-            return c.json({ error: "Invalid restrictedTokenExpiresAt" }, 400);
+        if (access.error || !access.value?.accessPolicy) {
+            return c.json({ error: access.error || "Invalid session access policy" }, 400);
         }
 
-        if (automationProfile === null) {
-            return c.json({ error: "Invalid automationProfile" }, 400);
-        }
-
-        if (expiresAt && restrictedTokenExpiresAt
-            && Date.parse(restrictedTokenExpiresAt) < Date.parse(expiresAt)) {
-            return c.json({ error: "restrictedTokenExpiresAt cannot precede expiresAt" }, 400);
+        if (expiresAt && access.value.tokenExpiresAt
+            && Date.parse(access.value.tokenExpiresAt) < Date.parse(expiresAt)) {
+            return c.json({ error: "tokenExpiresAt cannot precede expiresAt" }, 400);
         }
 
         const allocation = await allocateSessionLocally(
             { clientId, clientName },
             sessionId,
             expiresAt,
-            restrictedTokenExpiresAt,
-            automationProfile,
+            access.value.tokenExpiresAt,
+            access.value.accessPolicy,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (e) {
@@ -419,16 +426,17 @@ async function extendLocalSessionTtl(c: any, sessionId: string): Promise<Respons
             return c.json({ success: false, error: "Session has no GameServer name" }, 409);
         }
 
+        const currentAccessPolicy = storedSessionAccess(session);
+        const updatedAccessPolicy = currentAccessPolicy.tokenMode === "route-bound"
+            ? {
+                ...currentAccessPolicy,
+                accessExpiresAt: currentAccessPolicy.accessExpiresAt || session.expiresAt,
+            }
+            : currentAccessPolicy;
         const updatedSession = {
             ...session,
             expiresAt,
-            restrictedTokenExpiresAt: expiresAt,
-            // x402 public access is activated only after settlement. Preserve
-            // its old deadline while the workload and private routes are first
-            // extended; the URL itself is stable.
-            ...(session.automationProfile === "x402-agent"
-                ? { publicAccessExpiresAt: session.publicAccessExpiresAt || session.expiresAt }
-                : {}),
+            ...sessionAccessFields(expiresAt, updatedAccessPolicy),
         };
         await DB.updateSession(sessionId, updatedSession);
 
@@ -466,14 +474,21 @@ async function activateLocalSessionAccess(c: any, sessionId: string): Promise<Re
         if (!session) {
             return c.json({ success: false, error: "Session not found" }, 404);
         }
-        if (session.automationProfile !== "x402-agent") {
+        const currentAccessPolicy = storedSessionAccess(session);
+        if (currentAccessPolicy.tokenMode !== "route-bound") {
             return c.json({ success: false, error: "Session does not use route-bound access" }, 409);
         }
         if (!session.expiresAt || Date.parse(expiresAt) !== Date.parse(session.expiresAt)) {
             return c.json({ success: false, error: "Access deadline must match the active session deadline" }, 409);
         }
 
-        const updatedSession = { ...session, publicAccessExpiresAt: expiresAt };
+        const updatedSession = {
+            ...session,
+            ...sessionAccessFields(
+                storedSessionTokenExpiresAt(session),
+                { ...currentAccessPolicy, accessExpiresAt: expiresAt },
+            ),
+        };
         await DB.updateSession(sessionId, updatedSession);
         return c.json(buildSessionDetails(
             c,
@@ -482,12 +497,12 @@ async function activateLocalSessionAccess(c: any, sessionId: string): Promise<Re
             normalizeBaseUrl(c.req.query("publicGatewayUrl")),
         ));
     } catch (error) {
-        console.error("❌ Failed to activate paid session access:", error);
-        return c.json({ success: false, error: "Failed to activate paid session access" }, 502);
+        console.error("❌ Failed to activate session access:", error);
+        return c.json({ success: false, error: "Failed to activate session access" }, 502);
     }
 }
 
-async function reallocateExpiredX402Session(c: any, sessionId: string): Promise<Response> {
+async function reallocateExpiredSession(c: any, sessionId: string): Promise<Response> {
     try {
         const body = await c.req.json();
         const expiresAt = normalizeExpiresAt(body?.expiresAt);
@@ -497,10 +512,25 @@ async function reallocateExpiredX402Session(c: any, sessionId: string): Promise<
         }
 
         const existing = await DB.getSession(sessionId);
+        if (body?.accessPolicy === undefined) {
+            return c.json({ success: false, error: "Missing accessPolicy" }, 400);
+        }
+        const access = readSessionAccessRequest(body, expiresAt);
+        if (access.error || !access.value?.accessPolicy) {
+            return c.json({ success: false, error: access.error || "Invalid session access policy" }, 400);
+        }
+
+        const clientId = typeof body?.clientId === "string" && body.clientId.trim()
+            ? body.clientId.trim()
+            : existing?.clientId || "";
+        const clientName = typeof body?.clientName === "string" && body.clientName.trim()
+            ? body.clientName.trim()
+            : existing?.clientName || "";
+        if (!clientId || !clientName) {
+            return c.json({ success: false, error: "Missing clientId or clientName" }, 400);
+        }
+
         if (existing) {
-            if (existing.automationProfile !== "x402-agent") {
-                return c.json({ success: false, error: "Only expired x402 sessions can be reallocated" }, 409);
-            }
             if (existing.expiresAt && Date.parse(existing.expiresAt) > Date.now()) {
                 // Idempotent reconciliation after a caller timeout: the
                 // replacement may have completed even when its response did not.
@@ -513,15 +543,15 @@ async function reallocateExpiredX402Session(c: any, sessionId: string): Promise<
         }
 
         const allocation = await allocateSessionLocally(
-            { clientId: "x402-public", clientName: "Public x402" },
+            { clientId, clientName },
             sessionId,
             expiresAt,
-            expiresAt,
-            "x402-agent",
+            access.value.tokenExpiresAt,
+            access.value.accessPolicy,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (error) {
-        console.error("❌ Failed to reallocate expired paid session:", error);
+        console.error("❌ Failed to reallocate expired session:", error);
         return allocationErrorResponse(c, error);
     }
 }
@@ -626,7 +656,7 @@ app.patch("/internal/session/:id/access-ttl", async (c) => {
 app.post("/internal/session/:id/reallocate-expired", async (c) => {
     const unauthorized = requireControlPlane(c);
     if (unauthorized) return unauthorized;
-    return reallocateExpiredX402Session(c, c.req.param("id"));
+    return reallocateExpiredSession(c, c.req.param("id"));
 });
 
 app.delete("/internal/session/:id", async (c) => {

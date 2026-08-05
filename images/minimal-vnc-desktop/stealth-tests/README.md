@@ -2,8 +2,7 @@
 
 End-to-end checks for the CloakBrowser stealth surface. Each probe attaches
 to the **running container's** chromium over CDP and drives it directly, so
-it exercises the real image, not a mock. Ported from `popcorn-images`
-`chromium-headful/stealth-tests`.
+it exercises the real image, not a mock.
 
 Unlike that image, minimal-vnc-desktop ships **no node/playwright**, so the
 suite runs from the **host** and connects to the **full CDP proxy** (`9226`).

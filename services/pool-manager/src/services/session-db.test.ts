@@ -72,8 +72,9 @@ const pod = {
     status: "ready",
     createdAt: new Date().toISOString(),
     expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-    restrictedTokenExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    tokenExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     ports: [
+        { name: "novnc", port: 6080 },
         { name: "cdp", port: 9223 },
         { name: "kernel-api", port: 3000 },
     ],
@@ -89,13 +90,31 @@ describe("session database dual writes", () => {
         expect(secondary.hashes).toEqual(primary.hashes);
         expect(secondary.strings).toEqual(primary.strings);
         expect(primary.strings.get("route:session-1")?.value).toBe("10.0.0.8:9222");
+        expect(primary.strings.get("route:liveview:session-1")?.value).toBe("10.0.0.8:6080");
         expect(primary.strings.get("route:cdp-internal:session-1")?.value).toBe("10.0.0.8:9226");
         expect(primary.strings.get("route:session-1")?.ttlSeconds).toBeLessThanOrEqual(300);
-        expect((await database.getSession("session-1"))?.restrictedTokenExpiresAt)
-            .toBe(pod.restrictedTokenExpiresAt);
+        expect((await database.getSession("session-1"))?.tokenExpiresAt)
+            .toBe(pod.tokenExpiresAt);
     });
 
-    test("persists the refreshed restricted-token deadline with a TTL extension", async () => {
+    test("keeps a session-extension route alongside the core LiveView route", async () => {
+        const primary = new FakeRedis();
+        const database = createSessionDatabase(
+            asRedis(primary),
+            null,
+            JSON.stringify({ "kernel-api": { routeKey: "api", port: 3000 } }),
+        );
+
+        expect(await database.createSession("with-extension", pod)).toBe(true);
+        expect(primary.strings.get("route:liveview:with-extension")?.value).toBe("10.0.0.8:6080");
+        expect(primary.strings.get("route:api:with-extension")?.value).toBe("10.0.0.8:3000");
+
+        await database.deleteSession("with-extension");
+        expect(primary.strings.has("route:liveview:with-extension")).toBe(false);
+        expect(primary.strings.has("route:api:with-extension")).toBe(false);
+    });
+
+    test("persists the refreshed token deadline with a TTL extension", async () => {
         const primary = new FakeRedis();
         const database = createSessionDatabase(asRedis(primary));
         expect(await database.createSession("session-refresh", pod)).toBe(true);
@@ -104,51 +123,65 @@ describe("session database dual writes", () => {
         await database.updateSession("session-refresh", {
             ...pod,
             expiresAt: refreshedExpiry,
-            restrictedTokenExpiresAt: refreshedExpiry,
+            tokenExpiresAt: refreshedExpiry,
         });
 
         const refreshed = await database.getSession("session-refresh");
         expect(refreshed?.expiresAt).toBe(refreshedExpiry);
-        expect(refreshed?.restrictedTokenExpiresAt).toBe(refreshedExpiry);
+        expect(refreshed?.tokenExpiresAt).toBe(refreshedExpiry);
         expect(primary.strings.get("route:session-refresh")?.ttlSeconds).toBeGreaterThan(300);
         expect(primary.strings.get("route:session-refresh")?.ttlSeconds).toBeLessThanOrEqual(900);
     });
 
-    test("keeps x402 paid access at the old deadline until it is activated", async () => {
+    test("keeps generic route-bound access at the old deadline until it is activated", async () => {
         const primary = new FakeRedis();
         const database = createSessionDatabase(asRedis(primary));
         const initialExpiry = new Date(Date.now() + 5 * 60 * 1000).toISOString();
         const extendedExpiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-        const x402Pod = {
+        const routeBoundPod = {
             ...pod,
-            automationProfile: "x402-agent",
+            tokenExpiresAt: initialExpiry,
+            accessExpiresAt: initialExpiry,
+            accessPolicy: {
+                tokenMode: "route-bound",
+                cdpScope: "automation",
+                accessExpiresAt: initialExpiry,
+            },
             expiresAt: initialExpiry,
-            publicAccessExpiresAt: initialExpiry,
         } as any;
 
-        expect(await database.createSession("x402-stable", x402Pod)).toBe(true);
-        expect(primary.strings.get("auth:route-bound:x402-stable")?.value)
+        expect(await database.createSession("route-bound-stable", routeBoundPod)).toBe(true);
+        expect(primary.strings.get("auth:route-bound:route-bound-stable")?.value)
             .toBe(String(Date.parse(initialExpiry)));
 
-        await database.updateSession("x402-stable", {
-            ...x402Pod,
+        await database.updateSession("route-bound-stable", {
+            ...routeBoundPod,
             expiresAt: extendedExpiry,
-            publicAccessExpiresAt: initialExpiry,
+            accessExpiresAt: initialExpiry,
+            accessPolicy: {
+                ...routeBoundPod.accessPolicy,
+                accessExpiresAt: initialExpiry,
+            },
         });
-        expect(primary.strings.get("route:x402-stable")?.ttlSeconds).toBeGreaterThan(300);
-        expect(primary.strings.get("auth:route-bound:x402-stable")?.value)
+        expect(primary.strings.get("route:route-bound-stable")?.ttlSeconds).toBeGreaterThan(300);
+        expect(primary.strings.get("auth:route-bound:route-bound-stable")?.value)
             .toBe(String(Date.parse(initialExpiry)));
 
-        await database.updateSession("x402-stable", {
-            ...x402Pod,
+        await database.updateSession("route-bound-stable", {
+            ...routeBoundPod,
             expiresAt: extendedExpiry,
-            publicAccessExpiresAt: extendedExpiry,
+            accessExpiresAt: extendedExpiry,
+            accessPolicy: {
+                ...routeBoundPod.accessPolicy,
+                accessExpiresAt: extendedExpiry,
+            },
         });
-        expect(primary.strings.get("auth:route-bound:x402-stable")?.value)
+        expect(primary.strings.get("auth:route-bound:route-bound-stable")?.value)
             .toBe(String(Date.parse(extendedExpiry)));
 
-        await database.deleteSession("x402-stable");
-        expect(primary.strings.has("auth:route-bound:x402-stable")).toBe(false);
+        await database.deleteSession("route-bound-stable");
+        expect(primary.strings.has("auth:route-bound:route-bound-stable")).toBe(false);
+        expect(primary.strings.has("route:liveview:route-bound-stable")).toBe(false);
     });
 
     test("keeps the primary available when the secondary write fails", async () => {

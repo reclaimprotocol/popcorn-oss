@@ -1,384 +1,243 @@
 # Configuration
 
-Popcorn is configured through Helm values and Kubernetes Secrets. Keep the base
-deployment small, then enable optional pieces one at a time.
+Popcorn uses two values documents: one for `charts/platform` and one for
+`charts/browser-fleet`. Keep environment-specific values in a private
+deployment repository and keep the chart defaults unchanged.
 
-## Required Configuration
+This page explains how to choose values. The exhaustive key and default list is
+in [Helm values reference](chart-options.md).
 
-| Area | Values | Why it matters |
-| --- | --- | --- |
-| Deployment identity | `clusterName`, `provider`, `region` | Labels sessions and chooses provider-specific behavior. |
-| Images | `registry`, `imageTag`, `browserRuntimeImage`, `imagePullSecrets` | Controls what runs in the cluster. Pin digests for production. |
-| Gateway | `gateway.enabled`, `gateway.domainName`, `gateway.staticIpName`, `gateway.serviceType` | Public entry point for browser, CDP, API, and proof routes. `staticIpName` can be used without `domainName` for an HTTP IP-only GKE Ingress. |
-| Pool manager | `poolManager.enabled`, `poolManager.serviceAuth`, `poolManager.gameServerFleet` | Allocates Agones browser GameServers. |
-| Browser fleet | `gatewayDomain`, `fleet.replicas`, `autoscaler.*` | Controls browser capacity and returned URLs. |
-| Agones | `agones.install`, `agonesInstaller.*` | Optionally installs Agones from the browser-fleet chart for fresh clusters. Keep `agones.install=false` after installing Agones as cluster infrastructure. |
-| Control plane | `controlPlane.enabled`, `controlPlane.regions`, `controlPlane.sessionMaxTtlSeconds` | Client credential API, regional session routing, and maximum client-requested TTL. |
-| Secrets | `secrets.*`, `browser-fleet.secrets.browserRuntimeProxyName` | Names of required Kubernetes Secrets. |
+## Values layering
 
-## Optional Configuration
+Use a small base plus one environment overlay:
 
-| Option | Values | Use when |
-| --- | --- | --- |
-| Bundled Redis | `redis.enabled` | You want the chart to run Redis for route state. |
-| TTL cleanup | `ttlController.enabled`, `ttlController.ttlDuration` | You want old sessions cleaned up automatically. Recommended. |
-| Browser runtime env | `extraBrowserRuntimeEnv`, `secrets.browserRuntimeProxyName` | You need to tune the browser image (persona, startup URL, CDP ports) or route egress through an HTTPS proxy. |
-| Admin auth | `controlPlane.adminAuth.*` | You need password, htpasswd, or Google OAuth admin login. |
-| Observability | `otel.*` | You want backend-neutral OTLP export for browser logs and session lifecycle events. |
-| GKE node prescaler | `gkeNodePrescaler.*` | You want browser node pools scaled ahead of demand on GKE. |
-| Attestation | `browserRuntimeAttestor.*`, `ccDevicePlugin.*` | You run compatible GCP confidential-computing nodes. |
-| Extra routes | `fleet.extraPorts`, `poolManager.extraRoutePorts`, `gateway.extraSessionRoutes` | Your browser runtime exposes additional services. |
-
-## Base Production Example
-
-The default production example uses DNS and GKE ManagedCertificate. For a
-domainless smoke test, use
-[`examples/helm/platform-ip-values.yaml`](../examples/helm/platform-ip-values.yaml)
-and
-[`examples/helm/browser-fleet-ip-values.yaml`](../examples/helm/browser-fleet-ip-values.yaml).
-
-```yaml
-# platform values
-clusterName: popcorn-prod
-provider: gcp
-region: us-central1
-registry: ghcr.io/reclaimprotocol/popcorn-oss
-imageTag: <release-or-commit-tag>
-
-poolManager:
-  enabled: true
-
-gateway:
-  enabled: true
-  replicas: 2
-  domainName: gateway.example.com
-  staticIpName: popcorn-gateway-ip
-  updateStrategy:
-    maxSurge: 1
-    maxUnavailable: 0
-  podDisruptionBudget:
-    enabled: true
-    minAvailable: 1
-  topologySpreadConstraints:
-    - maxSkew: 1
-      topologyKey: topology.kubernetes.io/zone
-      whenUnsatisfiable: DoNotSchedule
-      labelSelector:
-        matchLabels:
-          app: gateway
-    - maxSkew: 1
-      topologyKey: kubernetes.io/hostname
-      whenUnsatisfiable: DoNotSchedule
-      labelSelector:
-        matchLabels:
-          app: gateway
-
-controlPlane:
-  enabled: true
-  regions:
-    - name: us-central1
-      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
-      publicGatewayUrl: https://gateway.example.com
-      enabled: true
-
-redis:
-  enabled: true
-
-ttlController:
-  enabled: true
+```text
+deploy/
+├── platform-base.yaml
+├── browser-base.yaml
+└── production/
+    ├── platform.yaml
+    └── browser.yaml
 ```
 
-For production gateways, run at least three replicas, set the disruption
-budget to keep two available, and add both zone and hostname topology spread
-constraints. The chart uses a zero-unavailable rolling update. During
-termination it first keeps OpenResty serving while Kubernetes and the load
-balancer remove the endpoint, then gracefully stops OpenResty. Set
-`gateway.gracefulShutdown.delaySeconds` to at least the time needed for the
-external load balancer to stop routing new connections to a removed endpoint.
-
-```yaml
-# browser-fleet values
-region: us-central1
-gatewayDomain: gateway.example.com
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
-
-streaming:
-  mode: vnc
-
-agones:
-  install: false
-
-agonesInstaller:
-  gameservers:
-    namespaces:
-      - popcorn
-    minPort: 59000
-    maxPort: 61000
-
-fleet:
-  replicas: 2
-
-autoscaler:
-  minReplicas: 2
-  maxReplicas: 20
-```
-
-## Streaming (Live View)
-
-Popcorn streams the browser desktop over VNC / live view. The shipped browser
-image is the minimal-vnc "Popcorn Browser" running Tilion Fortress and serves the
-desktop through noVNC on port `6080`. Set `streaming.mode=vnc` in the
-browser-fleet values.
-
-Use the LiveView route names for the browser desktop surface. The API response
-field names remain `vncUrl` and `vncWsUrl` for compatibility, but the URL paths
-are `/liveview` and `/liveview-ws`:
-
-```yaml
-# browser-fleet values
-streaming:
-  mode: vnc
-
-# platform values
-poolManager:
-  extraRoutePorts:
-    novnc:
-      routeKey: liveview
-      port: 6080
-  extraSessionUrls:
-    url: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
-    vncUrl: "{baseUrl}/liveview/{sessionId}/{restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000"
-    vncWsUrl: "{wsBase}/liveview-ws/{sessionId}/{restrictedToken}"
-
-gateway:
-  extraSessionRoutes:
-    - pathPrefix: liveview
-      routeKey: liveview
-```
-
-`liveview.html` connects to `/websockify` relative to the LiveView route. The
-gateway rewrites that relative path to the browser runtime's internal
-`/websockify` endpoint. The standalone gateway also accepts `/liveview-ws` for
-clients that need the raw WebSocket URL.
-
-## Browser Runtime Environment
-
-Use `extraBrowserRuntimeEnv` in the browser-fleet values to pass additional
-environment variables into the `browser-runtime` container. Entries are standard
-Kubernetes env entries and are templated, so `value` and `valueFrom` both work:
-
-```yaml
-# browser-fleet values
-extraBrowserRuntimeEnv:
-  - name: APP_URL
-    value: "https://example.com/start"
-  - name: CHROMIUM_FLAGS
-    value: "--window-size=1920,1080"
-  - name: CLOAK_FINGERPRINT_PLATFORM
-    value: "linux"
-```
-
-The shipped image reads two groups of knobs:
-
-- Persona / stealth (`start-chromium`): `CLOAK_*` (for example
-  `CLOAK_FINGERPRINT_SEED`, `CLOAK_TIMEZONE`, `CLOAK_LOCALE`,
-  `CLOAK_FINGERPRINT_PLATFORM`, `CLOAK_ALLOW_3P_COOKIES`, `CLOAK_PROFILE_SEED`)
-  and `TILION_*` (`TILION_TZ`, `TILION_LANG`) tune the default Tilion Fortress
-  Windows persona and timezone/locale coherence.
-- Runtime config: `APP_URL`, `CHROMIUM_FLAGS`, `REPLACE_DEFAULT_PAGE`,
-  `READY_WINDOW_PATTERN`, `NOVNC_PORT`, the CDP port knobs (`CDP_INTERNAL_PORT`,
-  `CDP_RESTRICTED_PORT`, `CDP_FULL_PORT`, listen/upstream addresses),
-  `RECLAIM_ROUTER_URL`, and related settings.
-
-See the full table in
-[`images/minimal-vnc-desktop/README.md`](../images/minimal-vnc-desktop/README.md)
-under "Runtime Configuration" for every supported variable, defaults, and
-behavior.
-
-## Advanced: Existing Postgres
-
-Point `analytics-db-secret` at your database:
-
-```yaml
-controlPlane:
-  enabled: true
-  databaseSecretName: analytics-db-secret
-  databaseSsl: true
-```
-
-`analytics-db-secret` must contain `host`, `port`, `database`, `username`, and
-`password`.
-
-## Advanced: Observability
-
-Keep observability disabled until the base deployment can create sessions:
-
-```yaml
-otel:
-  enabled: false
-```
-
-When enabled, `otel.*` deploys an OpenTelemetry collector DaemonSet for browser
-GameServer logs. Pool-manager session lifecycle events are sent directly to the
-configured external OTLP endpoint over the selected protocol. Configure exactly
-one external collector endpoint:
-
-```yaml
-otel:
-  enabled: true
-  exporter:
-    grpcEndpoint: otel-grpc.example.com:4317
-```
-
-If your OTLP backend requires headers, create a Secret and map header names to
-Secret keys:
-
-```yaml
-otel:
-  exporter:
-    headersSecretName: otel-exporter-headers
-    headers:
-      Authorization: authorization
-```
-
-ClickHouse session bindings are a legacy fallback and must be enabled
-explicitly:
-
-```yaml
-otel:
-  clickhouse:
-    enabled: true
-    database: otel
-    secretName: otel-clickhouse-secret
-```
-
-See [Observability](observability.md) for session correlation semantics,
-exporter recipes, and exported fields.
-
-## Advanced: Split Namespaces
-
-Same-namespace installs are easier. If browser workloads must run elsewhere:
-
-```yaml
-poolManager:
-  gameServerNamespace: popcorn-browsers
-
-gkeNodePrescaler:
-  namespace: popcorn-browsers
-```
-
-Make sure RBAC and referenced Secrets exist in the namespaces the charts use.
-
-## Advanced: Existing Agones
-
-If your cluster already has Agones installed, leave the dependency disabled:
-
-```yaml
-agones:
-  install: false
-```
-
-For a fresh self-hosted cluster, install Agones before browser-fleet:
-
-```bash
-helm upgrade --install agones charts/browser-fleet/charts/agones-1.57.0.tgz \
-  --namespace agones-system \
-  --create-namespace \
-  --set agones.controller.generateTLS=false \
-  --set gameservers.minPort=59000 \
-  --set gameservers.maxPort=61000 \
-  --set-json 'gameservers.namespaces=["popcorn"]'
-```
-
-Then keep the dependency disabled in browser-fleet values:
-
-```yaml
-agones:
-  install: false
-
-agonesInstaller:
-  gameservers:
-    namespaces:
-      - popcorn
-    minPort: 59000
-    maxPort: 61000
-```
-
-Agones is cluster-level infrastructure. Do not enable the dependency from more
-than one browser-fleet release in the same cluster.
-
-## Advanced: GKE IP-Only Gateway
-
-Use this when DNS is not ready and you only need a GKE smoke test:
-
-```yaml
-gateway:
-  enabled: true
-  domainName: ""
-  staticIpName: popcorn-oss-ip-test-gateway-ip
-
-controlPlane:
-  enabled: true
-  serviceType: ClusterIP
-  regions:
-    - name: us-central1
-      publicGatewayUrl: http://<gateway-ip>
-```
-
-With `staticIpName` set and `domainName` empty, the chart renders a hostless
-HTTP GKE Ingress. ManagedCertificate and HTTPS redirect are created only when a
-domain name is configured.
-
-For a temporary public control-plane test without DNS, reserve a second global
-static IP and set:
-
-```yaml
-controlPlane:
-  domainName: ""
-  staticIpName: popcorn-oss-ip-test-control-plane-ip
-```
-
-This is HTTP-only. For production, use DNS and TLS or keep the control plane on
-a private access path.
-
-## Advanced: Extra Session Routes
-
-Use matching names across the browser fleet, pool manager, and gateway:
-
-```yaml
-# browser-fleet values
-fleet:
-  extraPorts:
-    - name: tool-http
-      containerPort: 3000
-      portPolicy: None
-      protocol: TCP
-
-# platform values
-poolManager:
-  extraRoutePorts:
-    tool-http:
-      routeKey: tool
-      port: 3000
-  extraSessionUrls:
-    toolUrl: "{baseUrl}/tool/{sessionId}/{internalToken}/"
-
-gateway:
-  extraSessionRoutes:
-    - pathPrefix: tool
-      routeKey: tool
-      tokenScope: internal
-```
-
-`extraSessionUrls` supports `{baseUrl}`, `{wsBase}`, `{sessionId}`,
-`{browserPodId}`, `{restrictedToken}`, and `{internalToken}`.
-
-## Validate Values
+Render the exact combination that will be installed:
 
 ```bash
 helm template popcorn-platform charts/platform \
-  --values /tmp/popcorn-platform.yaml
-
-helm template browser-fleet charts/browser-fleet \
-  --values /tmp/popcorn-browser-fleet.yaml
+  --namespace popcorn \
+  -f deploy/platform-base.yaml \
+  -f deploy/production/platform.yaml
 ```
+
+Avoid large collections of `--set` flags in production. They are hard to review
+and easy to lose during an upgrade.
+
+## Deployment identity and images
+
+Set stable names that match the control-plane region configuration:
+
+```yaml
+clusterName: popcorn-prod-us
+provider: gcp
+region: us-central1
+registry: ghcr.io/reclaimprotocol/popcorn-oss
+imageTag: <pinned-release>
+```
+
+`clusterName` controls client access lists and analytics identity. Treat a
+rename as a migration, not a cosmetic change. The browser image is configured
+separately:
+
+```yaml
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+browserRuntimeImagePullPolicy: IfNotPresent
+```
+
+## Choose route-state Redis
+
+Exactly one design should be authoritative:
+
+| Design | Values | Use |
+| --- | --- | --- |
+| Simple in-cluster Redis | `redis.enabled=true` | Local testing and non-critical evaluation only |
+| Bundled HA Redis | `redisHa.enabled=true` | Production when the chart owns Redis |
+| External Redis | both disabled; set pool-manager and gateway hosts | Production when Redis is managed elsewhere |
+
+The simple Redis Deployment has no persistent volume. Do not increase its
+replica count expecting HA; independent Redis processes do not form a shared
+store.
+
+For bundled HA Redis, point both `poolManager.redisHost` and
+`gateway.redisHost` at `redis-ha-master`. For an external service, point both at
+the same authoritative endpoint unless a documented migration deliberately
+uses `poolManager.redisSecondaryHost`.
+
+## Configure the gateway
+
+For the chart-managed GKE Ingress:
+
+```yaml
+gateway:
+  enabled: true
+  replicas: 3
+  domainName: browser.example.com
+  staticIpName: popcorn-gateway-ip
+  serviceType: ClusterIP
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+```
+
+Setting `staticIpName` creates a GCE Ingress. Adding `domainName` also creates a
+ManagedCertificate and HTTPS redirect. The chart automatically enables a GKE
+Network Endpoint Group on the Service. For a private or externally managed
+ingress, leave `staticIpName` empty and configure the Service and external
+proxy deliberately. The proxy must support long-lived WebSockets.
+
+## Configure the pool manager
+
+```yaml
+poolManager:
+  enabled: true
+  gameServerNamespace: popcorn
+  gameServerFleet: browser-fleet
+  redisHost: redis-ha-master.popcorn.svc.cluster.local
+  serviceAuth:
+    secretName: pool-manager-us-service-auth
+    secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+```
+
+The pool manager and browser Fleet must refer to the same namespace and Fleet
+name. The service token is a regional trust boundary; use a distinct token for
+each pool manager.
+
+## Configure the control plane
+
+The control plane needs Postgres and at least one enabled region:
+
+```yaml
+controlPlane:
+  enabled: true
+  replicas: 2
+  databaseSsl: true
+  databaseSecretName: analytics-db-secret
+  sessionMaxTtlSeconds: 900
+  regions:
+    - name: us-central1
+      clusterName: popcorn-prod-us
+      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
+      publicGatewayUrl: https://browser.example.com
+      enabled: true
+      poolManagerAuth:
+        secretName: pool-manager-us-service-auth
+        secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+```
+
+`name` is the region value clients may request. `clusterName` is the access-list
+identity stored on clients. `publicGatewayUrl` is used to construct returned
+session URLs and must match the public TLS endpoint.
+
+Keep the control plane private unless clients must call it directly. If public,
+expose only the intended paths and protect `/admin` separately.
+
+## Configure browser capacity
+
+```yaml
+fleet:
+  replicas: 10
+  browserRuntimeCpuRequest: "1000m"
+  browserRuntimeCpuLimit: "2000m"
+  browserRuntimeMemoryRequest: 2Gi
+  browserRuntimeMemoryLimit: 4Gi
+
+autoscaler:
+  bufferSize: 5
+  minReplicas: 10
+  maxReplicas: 50
+```
+
+`bufferSize` is warm capacity, not total capacity. Coordinate these values with
+the browser node-pool autoscaler. Use node selectors and tolerations when
+browser workers have dedicated or sandboxed nodes.
+
+LiveView and CDP are built in. The Fleet always exposes fixed pod ports with
+Agones `portPolicy: None`; there is no streaming mode or host-port range.
+
+## Browser policy and environment
+
+```yaml
+browserPolicy:
+  variant: neutral
+
+extraBrowserRuntimeEnv:
+  - name: APP_URL
+    value: https://example.com/start
+  - name: CLOAK_TIMEZONE
+    value: America/New_York
+```
+
+Environment entries use the Kubernetes `env` shape and support `valueFrom`.
+See [Browser runtime](popcorn-browser.md) for runtime variables and security
+profiles.
+
+## Session extensions
+
+An extension is an optional service in the browser pod. Define it once in a
+keyed map and load the same document into both charts:
+
+```yaml
+sessionExtensions:
+  tool:
+    enabled: true
+    browser:
+      ports:
+        - name: tool-http
+          containerPort: 3000
+          portPolicy: None
+          protocol: TCP
+      containers:
+        - name: tool
+          image: registry.example.com/tool@sha256:<digest>
+          ports:
+            - name: tool-http
+              containerPort: 3000
+    routing:
+      portName: tool-http
+      port: 3000
+      routeKey: tool
+      sessionUrls:
+        toolUrl: "{baseUrl}/tool/{sessionId}/{internalToken}/"
+      gatewayRoutes:
+        - pathPrefix: tool
+          routeKey: tool
+          tokenScope: internal
+```
+
+The keyed map is intentional: Helm merges extension names while it replaces
+lists. Do not create separate container, port, pool-manager, and gateway lists.
+VNC and CDP are core routes and must not be restated as extensions.
+
+## Optional components
+
+Enable one optional area at a time after the core acceptance test passes:
+
+- `ttlController.enabled`: recommended session cleanup.
+- `otel.enabled`: browser log collection and session lifecycle export.
+- `imagePrepuller.enabled`: reduce cold pull time on browser nodes.
+- `networkPolicy.enabled`: restrict browser egress; review cluster-specific
+  DNS and Kubernetes API CIDRs first.
+- `browserRuntimeAttestor.enabled` and `ccDevicePlugin.enabled`: confidential
+  attestation only.
+- `controlPlane.x402.enabled`: isolated paid-session API only.
+
+## Configuration checks
+
+Before applying values:
+
+- [ ] Both charts render with no schema errors.
+- [ ] Images are pinned and available to every target node.
+- [ ] Exactly one Redis design is authoritative.
+- [ ] Region names, cluster names, URLs, Fleet names, and Secret names align.
+- [ ] Public URLs use TLS and WebSocket-capable infrastructure.
+- [ ] Browser capacity fits within node autoscaling limits.
+- [ ] Optional components have their dependencies and Secrets.

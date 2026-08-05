@@ -75,14 +75,22 @@ export function selectTrustedClientAddress(
   return candidate && candidate.length <= 128 ? candidate : 'unknown';
 }
 
+export interface PublicX402Endpoints {
+  liveViewUrl?: string;
+  connectUrl?: string;
+  vncUrl?: string;
+  vncWsUrl?: string;
+}
+
 // Explicitly allow only restricted public endpoints on the configured gateway.
 // Internal CDP/API/token fields are never copied, even if a pool manager adds
-// new response fields later.
+// new response fields later. Missing LiveView compatibility fields can be
+// reconstructed from an older regional response during a rolling upgrade.
 export function publicX402Endpoints(
   regional: Record<string, unknown>,
   publicGatewayUrl: string,
   sessionId: string,
-): { liveViewUrl?: string; connectUrl?: string } {
+): PublicX402Endpoints {
   let expected: URL;
   try {
     expected = new URL(publicGatewayUrl);
@@ -102,18 +110,26 @@ export function publicX402Endpoints(
       return undefined;
     }
   };
+  const basePath = expected.pathname.replace(/\/+$/, '');
+  const relativeSegments = (value: URL | undefined): string[] => {
+    if (!value) return [];
+    if (basePath && value.pathname !== basePath && !value.pathname.startsWith(`${basePath}/`)) return [];
+    return value.pathname.slice(basePath.length).split('/').filter(Boolean);
+  };
   const live = allow(regional.url, 'https:', true);
   const connect = allow(regional.cdpUrl, 'wss:');
+  const providedVnc = allow(regional.vncUrl, 'https:', true);
+  const providedVncWs = allow(regional.vncWsUrl, 'wss:');
   const encodedSessionId = encodeURIComponent(sessionId);
-  const liveSegments = live?.pathname.split('/').filter(Boolean) || [];
-  const connectSegments = connect?.pathname.split('/').filter(Boolean) || [];
+  const liveSegments = relativeSegments(live);
+  const connectSegments = relativeSegments(connect);
   const browserRoute = live && !live.search && liveSegments.length === 3
     && /^browser(?:-|$)/.test(liveSegments[0]!)
     && liveSegments[1] === encodedSessionId
     && !!liveSegments[2];
   const vncParams = live?.searchParams;
-  const vncRoute = live && liveSegments.length === 4
-    && liveSegments[0] === 'vnc'
+  const liveViewRoute = live && liveSegments.length === 4
+    && (liveSegments[0] === 'vnc' || liveSegments[0] === 'liveview')
     && liveSegments[1] === encodedSessionId
     && !!liveSegments[2]
     && liveSegments[3] === 'liveview.html'
@@ -121,14 +137,52 @@ export function publicX402Endpoints(
     && vncParams.get('resize') === 'scale'
     && vncParams.get('reconnect') === '1'
     && vncParams.get('reconnect_delay') === '2000';
-  const liveViewUrl = browserRoute || vncRoute ? live?.toString() : undefined;
+  const liveViewUrl = browserRoute || liveViewRoute ? live?.toString() : undefined;
   const connectUrl = connect && connectSegments.length === 3
     && connectSegments[0] === 'cdp-agent'
     && connectSegments[1] === encodedSessionId
     && !!connectSegments[2]
     ? connect.toString() : undefined;
+
+  const providedVncSegments = relativeSegments(providedVnc);
+  const providedVncParams = providedVnc?.searchParams;
+  const providedVncToken = providedVnc && providedVncSegments.length === 4
+    && providedVncSegments[0] === 'liveview'
+    && providedVncSegments[1] === encodedSessionId
+    && !!providedVncSegments[2]
+    && providedVncSegments[3] === 'liveview.html'
+    && providedVncParams?.size === 3
+    && providedVncParams.get('resize') === 'scale'
+    && providedVncParams.get('reconnect') === '1'
+    && providedVncParams.get('reconnect_delay') === '2000'
+    ? providedVncSegments[2] : undefined;
+  const fallbackToken = browserRoute || liveViewRoute ? liveSegments[2] : undefined;
+  const restrictedToken = providedVncToken || fallbackToken;
+
+  const gatewayBase = expected.href.replace(/\/+$/, '');
+  const websocketGateway = new URL(expected.href);
+  websocketGateway.protocol = 'wss:';
+  const websocketBase = websocketGateway.href.replace(/\/+$/, '');
+  const vncUrl = providedVncToken
+    ? providedVnc!.toString()
+    : restrictedToken
+      ? `${gatewayBase}/liveview/${encodedSessionId}/${restrictedToken}/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000`
+      : undefined;
+
+  const providedVncWsSegments = relativeSegments(providedVncWs);
+  const vncWsUrl = providedVncWs && restrictedToken
+    && providedVncWsSegments.length === 3
+    && providedVncWsSegments[0] === 'liveview-ws'
+    && providedVncWsSegments[1] === encodedSessionId
+    && providedVncWsSegments[2] === restrictedToken
+    ? providedVncWs.toString()
+    : restrictedToken
+      ? `${websocketBase}/liveview-ws/${encodedSessionId}/${restrictedToken}`
+      : undefined;
   return {
-    ...(liveViewUrl ? { liveViewUrl } : {}),
+    ...(liveViewUrl || vncUrl ? { liveViewUrl: liveViewUrl || vncUrl } : {}),
     ...(connectUrl ? { connectUrl } : {}),
+    ...(vncUrl ? { vncUrl } : {}),
+    ...(vncWsUrl ? { vncWsUrl } : {}),
   };
 }

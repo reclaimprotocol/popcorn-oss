@@ -1,68 +1,95 @@
-# Popcorn Docs
+# Popcorn documentation
 
-Popcorn is a self-hostable browser runtime platform for Kubernetes. It starts
-ephemeral Chromium sessions, routes browser/CDP/API traffic through a gateway,
-and lets clients create sessions through the control plane.
+Popcorn runs disposable Chromium sessions on Kubernetes. Agones manages the
+browser workers, a pool manager allocates them, and an authenticated gateway
+exposes LiveView and Chrome DevTools Protocol (CDP) without publishing worker
+pods directly.
 
-These docs are organized for operators who want to run Popcorn themselves.
+This documentation is written for the people who install and operate Popcorn.
+The supported production target is GKE Standard. Kind is provided for local
+evaluation and development.
 
-## Understand How It Works
+## Choose a path
 
-- [Architecture](architecture.md): how the platform works end to end — services, the
-  session lifecycle, the token model, state, and trust boundaries.
-- [The Popcorn Browser](popcorn-browser.md): the browser runtime that runs in each session
-  pod — build, boot, ports, engine, and configuration.
-
-## Read This First
-
-1. [Quickstart](quickstart.md): run Popcorn locally with Kind.
-2. [Deployment](deployment.md): deploy the supported production shape on GKE.
-3. [GKE IP-only deployment](gke-ip-only-deployment.md): smoke-test GKE
-   self-hosting before DNS and managed certificates are ready.
-4. [Configuration](configuration.md): understand required and optional settings.
-5. [Secrets](secrets.md): create the Kubernetes Secrets Popcorn expects.
-6. [Reference](reference.md): session API, gateway paths, and config index.
-
-## Operate It
-
-- [Operations](operations.md): validate, upgrade, scale, and run optional services.
-- [High availability](high-availability.md): run multi-zone gateway and Redis,
-  migrate from singleton Redis, and validate failover.
-- [Security](security.md): practical self-hosting security model and hardening.
-- [Browser networking](networking.md): how the browser streams to clients over VNC / live view through the gateway.
-- [Observability](observability.md): backend-neutral OpenTelemetry log and session lifecycle export.
-- [Troubleshooting](troubleshooting.md): diagnose local, Helm, auth, and browser issues.
-
-## Optional Areas
-
-- [Attestation](attestation.md): GCP confidential-computing proof flow.
-- [Images and releases](images-and-releases.md): images, tags, digests, and release inputs.
-
-## Repository Map
-
-| Path | Purpose |
+| Goal | Start here |
 | --- | --- |
-| `charts/platform` | Gateway, pool manager, Redis, control plane, transitional bundled Postgres, TTL controller, and optional operations services. |
-| `charts/browser-fleet` | Agones browser Fleet, browser runtime, live-view (VNC) streaming, autoscaler, and optional attestor. |
-| `services/*` | Source for platform services. |
-| `popcorn-images` | Browser image assets and runtime image build inputs. |
-| `examples/helm` | Starting values for production-style GKE installs. |
-| `examples/kubernetes` | Secret bootstrap examples. |
+| See Popcorn working on one machine | [Local quickstart](quickstart.md) |
+| Decide whether a cluster can host it | [Requirements and planning](prerequisites.md) |
+| Install a production deployment | [Production installation](deployment.md) |
+| Understand traffic, state, and trust boundaries | [Architecture](architecture.md) |
+| Find a Helm value | [Helm values reference](chart-options.md) |
+| Operate an existing deployment | [Operations](operations.md) |
+| Diagnose a failure | [Troubleshooting](troubleshooting.md) |
 
-## What Runs In A Normal Install
+## Hosting guide
+
+Read the hosting pages in this order:
+
+1. [Requirements and planning](prerequisites.md) — supported environment,
+   dependencies, capacity inputs, and decisions to make before installation.
+2. [Production installation](deployment.md) — install Agones, prepare values and
+   Secrets, deploy the two charts, and run an end-to-end acceptance test.
+3. [Configuration](configuration.md) — choose exposure, data, capacity,
+   authentication, and optional-feature settings.
+4. [Networking](networking.md) — DNS, TLS, ingress, WebSockets, internal service
+   paths, egress, and NetworkPolicy.
+5. [Data and recovery](storage.md) — what lives in Postgres and Redis, what must
+   be backed up, and how to recover.
+6. [Security](security.md) — production threat boundaries and a hardening
+   checklist.
+
+## Day-2 guide
+
+- [Operations](operations.md) — health checks, scaling, maintenance, and
+  session cleanup.
+- [High availability](high-availability.md) — replicas, failure domains, Redis
+  HA, and acceptance tests.
+- [Upgrades and uninstall](upgrades.md) — backup, render, rollout, rollback, and
+  safe removal.
+- [Observability](observability.md) — logs, session correlation, OTLP export,
+  and useful signals.
+- [Troubleshooting](troubleshooting.md) — evidence-first diagnosis by symptom.
+- [Images and releases](images-and-releases.md) — image inventory, pinning, and
+  release verification.
+
+## Concepts and reference
+
+- [Architecture](architecture.md) — components, request flow, state, and
+  deployment topologies.
+- [Browser runtime](popcorn-browser.md) — the worker pod, built-in ports,
+  LiveView, CDP, security profiles, and browser policy.
+- [API and gateway reference](reference.md) — credentialed session APIs,
+  response fields, admin routes, and gateway paths.
+- [Secrets reference](secrets.md) — required Secret names, keys, ownership, and
+  rotation effects.
+- [Helm values reference](chart-options.md) — every value shipped by both
+  charts.
+
+## Optional features
+
+- [Attestation](attestation.md) — confidential-computing requirements and proof
+  verification.
+- [x402 API](x402.md) — isolated paid-session API and its operational model.
+- [x402 client](x402-client.md) — pay for a session and use LiveView or CDP.
+- [Session extensions](configuration.md#session-extensions) — add an optional
+  same-pod service without changing the OSS browser image.
+
+## What gets installed
 
 ```mermaid
 flowchart LR
-    client["Client or user"] --> control["Control plane"]
+    client["Client"] --> control["Control plane"]
     control --> pool["Pool manager"]
     pool --> agones["Agones"]
-    agones --> browser["Browser GameServer"]
+    agones --> worker["Browser GameServer"]
     client --> gateway["Gateway"]
-    gateway --> browser
+    gateway --> worker
     pool --> redis[("Redis")]
-    control --> pg[("Postgres")]
+    control --> postgres[("Postgres")]
 ```
 
-The gateway is the only service that normally needs to be public. The control
-plane can be public if clients create sessions directly, but protect its admin
-surface carefully.
+The platform chart owns the gateway, pool manager, control plane, optional
+Redis, TTL controller, and observability agent. The browser-fleet chart owns the
+Agones Fleet, FleetAutoscaler, browser runtime, image pre-puller, and optional
+attestor. Agones itself is cluster-level infrastructure and should normally be
+installed once, outside either release.

@@ -2,16 +2,24 @@
 {{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.gateway.jwtSecretName }}
 {{- $gatewayRedisHost := default (printf "redis.%s.svc.cluster.local" .Release.Namespace) .Values.gateway.redisHost }}
 {{- $gatewayPoolManagerHost := default (printf "pool-manager.%s.svc.cluster.local" .Release.Namespace) .Values.gateway.poolManagerHost }}
-{{- if .Values.gateway.extraSessionRoutes }}
+{{- $sessionExtensionRoutes := list }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- range $route := dig "routing" "gatewayRoutes" (list) $extension }}
+{{- $sessionExtensionRoutes = append $sessionExtensionRoutes $route }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $sessionExtensionRoutes }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: popcorn-gateway-extra-session-routes
+  name: popcorn-gateway-session-extension-routes
 data:
-  extra-session-routes.conf: |
-{{- range .Values.gateway.extraSessionRoutes }}
-    {{- $pathPrefix := required "gateway.extraSessionRoutes[].pathPrefix is required" .pathPrefix }}
-    {{- $routeKey := required "gateway.extraSessionRoutes[].routeKey is required" .routeKey }}
+  session-extension-routes.conf: |
+{{- range $sessionExtensionRoutes }}
+    {{- $pathPrefix := required "sessionExtensions.*.routing.gatewayRoutes[].pathPrefix is required" .pathPrefix }}
+    {{- $routeKey := required "sessionExtensions.*.routing.gatewayRoutes[].routeKey is required" .routeKey }}
     {{- $tokenScope := .tokenScope }}
         location ~ ^/{{ $pathPrefix }}/([^/]+)/([^/]+)(.*) {
             set $session_id $1;
@@ -92,7 +100,7 @@ spec:
   template:
     metadata:
       annotations:
-        checksum/gateway-route-config: {{ printf "%s|%s" (toJson .Values.gateway.extraSessionRoutes) $gatewayRedisHost | sha256sum }}
+        checksum/gateway-route-config: {{ printf "%s|%s" (toJson $sessionExtensionRoutes) $gatewayRedisHost | sha256sum }}
       labels:
         app: gateway
     spec:
@@ -110,10 +118,10 @@ spec:
             items:
               - key: public.pem
                 path: public.pem
-{{- if .Values.gateway.extraSessionRoutes }}
-        - name: extra-session-routes
+{{- if $sessionExtensionRoutes }}
+        - name: session-extension-routes
           configMap:
-            name: popcorn-gateway-extra-session-routes
+            name: popcorn-gateway-session-extension-routes
 {{- end }}
       containers:
         - name: gateway
@@ -125,8 +133,8 @@ spec:
             - name: jwt-keys
               mountPath: /etc/nginx/certs
               readOnly: true
-{{- if .Values.gateway.extraSessionRoutes }}
-            - name: extra-session-routes
+{{- if $sessionExtensionRoutes }}
+            - name: session-extension-routes
               mountPath: /usr/local/openresty/nginx/conf/session-routes
               readOnly: true
 {{- end }}
@@ -181,13 +189,18 @@ apiVersion: v1
 kind: Service
 metadata:
   name: popcorn-gateway
-{{- if or .Values.gateway.backendConfig.enabled .Values.gateway.serviceAnnotations }}
+{{- if or .Values.gateway.staticIpName .Values.gateway.backendConfig.enabled .Values.gateway.serviceAnnotations }}
   annotations:
+{{- if .Values.gateway.staticIpName }}
+    cloud.google.com/neg: '{"ingress": true}'
+{{- end }}
 {{- if .Values.gateway.backendConfig.enabled }}
     cloud.google.com/backend-config: '{"ports":{"http":"popcorn-gateway","https":"popcorn-gateway"}}'
 {{- end }}
 {{- range $key, $value := .Values.gateway.serviceAnnotations }}
+{{- if not (and $.Values.gateway.staticIpName (eq $key "cloud.google.com/neg")) }}
     {{ $key }}: {{ $value | quote }}
+{{- end }}
 {{- end }}
 {{- end }}
 spec:

@@ -1,144 +1,139 @@
-# Images And Releases
+# Images and releases
 
-Popcorn OSS v1 keeps image ownership explicit:
+Treat a Popcorn release as a reviewed set of chart versions, service images,
+browser image, configuration schema, and database migration—not as one mutable
+tag.
 
-- Popcorn platform services live in this repository.
-- The browser runtime image is built from `images/minimal-vnc-desktop` in this
-  repository.
+## Image inventory
 
-The browser streams over VNC / live view, served by the `browser-runtime` image.
+| Image | Chart | Role |
+| --- | --- | --- |
+| `pool-manager` | platform | regional allocation and route publication |
+| `gateway` | platform | authenticated browser/CDP proxy |
+| `control-plane` | platform | client/admin API and migrations |
+| `ttl-controller` | platform | expired GameServer cleanup |
+| `browser-runtime` | browser-fleet | Chromium, LiveView, and CDP proxies |
+| `browser-runtime-attestor` | browser-fleet, optional | confidential proof service |
 
-## Image Set
+The HA Redis and OTEL agent use third-party images configured by chart values.
+Session extensions bring their own operator-owned images.
 
-The OSS v1 platform expects these runtime images:
+## Production pinning
 
-- `pool-manager`
-- `gateway`
-- `browser-runtime`
-- `ttl-controller`
-- optional `browser-runtime-attestor`
-
-Optional analytics and observability images may be used by operators, but the core local demo should not require hosted analytics.
-
-Public OSS examples use GitHub Container Registry style references:
+Platform services share `registry` and `imageTag`; the browser and attestor have
+full image values:
 
 ```yaml
 registry: ghcr.io/reclaimprotocol/popcorn-oss
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:<commit-sha>
-browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:<commit-sha>
+imageTag: <immutable release or commit tag>
 ```
 
-The OSS CI workflow publishes platform service images from `reclaimprotocol/popcorn-oss` to GHCR on pushes to `main`, release tags, and manual runs. Pull requests only smoke-build images and do not push packages.
+```yaml
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
+```
 
-The reproducible browser image workflow publishes:
+Prefer immutable digests. If platform charts only accept a shared tag, publish
+that tag immutably in the controlled registry and record each resolved digest
+in the deployment change.
+
+## Browser build
+
+The maintained browser source is `images/minimal-vnc-desktop`. It combines the
+desktop, noVNC/LiveView proxy, Chromium distribution, CDP proxies, runtime
+entrypoint, and pinned build inputs.
+
+Relevant inputs include:
 
 ```text
-ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:<commit-sha>
-ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:<commit-sha>
+images/minimal-vnc-desktop/Dockerfile
+images/minimal-vnc-desktop/locks/
+images/minimal-vnc-desktop/prepare-artifacts.sh
+images/minimal-vnc-desktop/proxy/
 ```
 
-Those digest refs are signed with keyless cosign by `.github/workflows/reproducible-images.yml`.
+The image is Linux/amd64. Third-party notices and packaged licenses are
+described in [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md).
 
-Production deployments can either pull the published GHCR images directly or mirror them into their own GCP Artifact Registry. Public examples use GHCR.
+## Local builds
 
-If GHCR packages are still private during a test, create a Kubernetes
-`docker-registry` Secret and reference it with `imagePullSecrets` in both
-charts. The live IP-only GKE test required this until package visibility is
-made public.
-
-Browser runtime images are published by commit tag or digest. Do not assume
-`browser-runtime:latest` exists; use a known commit tag or an immutable digest
-in `browserRuntimeImage`.
-
-## Browser Images
-
-The `browser-runtime` image is the minimal VNC / live-view desktop built from:
-
-```text
-images/minimal-vnc-desktop/
-```
-
-This is a standalone, fast-booting desktop image for visual browser sessions. It
-serves noVNC live view and the browser is Tilion Fortress (a stealth
-stock-Chromium fork pulled as a pinned OCI image). It is deliberately minimal —
-just the virtual display, noVNC, Chromium, and a small Go helper. See
-`images/minimal-vnc-desktop/README.md` for build details.
-
-The OSS reproducible workflow sets `GITHUB_ARTIFACT_MIRROR_REPO=reclaimprotocol/popcorn-oss` so pinned Chromium/noVNC release assets are resolved from the OSS repository before falling back to pinned upstream URLs.
-
-## Local Images
-
-For Kind:
-
-```bash
-make run-local-cluster
-```
-
-The local flow builds images such as:
-
-```text
-popcorn/pool-manager:local
-popcorn/gateway:local
-popcorn/minimal-vnc-desktop:local
-```
-
-Use explicit service build targets when you only want the OSS v1 local image set:
+The Kind workflow builds and loads local images:
 
 ```bash
 make build-pool-manager
+make build-control-plane
 make build-gateway
 make build-local-browser-runtime
 make build-ttl-controller
 ```
 
-`make build-local-browser-runtime` builds `build-minimal-vnc-desktop`, producing
-`popcorn/minimal-vnc-desktop:local`. `make run-local-cluster` uses the same
-target. Then the images are loaded into the Kind cluster.
+`make run-local-cluster` invokes the required build and load steps
+automatically.
 
-## Release Images
+## Release verification
 
-Production deployments should use immutable image references:
-
-```text
-ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
-ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
-```
-
-Avoid mutable tags for production rollouts unless the tag is only used to discover a digest and the chart ultimately deploys the digest.
-
-Verify the keyless signature before rollout:
+The reproducible image workflow publishes commit-addressed browser runtime and
+attestor artifacts plus a manifest describing source commit and pinned inputs.
+When a release supplies keyless Cosign signatures, verify the immutable digest
+against the expected workflow identity:
 
 ```bash
 cosign verify \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp 'https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/(heads/main|tags/v.*)' \
+  --certificate-identity-regexp \
+  'https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/(heads/main|tags/v.*)' \
   ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
 ```
 
-## Release Checklist
+Verification must cover the exact digest deployed, not a mutable alias.
 
-- Root `LICENSE` exists and matches the intended release license.
-- Public README and docs do not mention private registries, domains, or credentials.
-- Private components are not part of the OSS release branch.
-- `popcorn-images` submodule points to the intended public release.
-- Local Kind demo works from a fresh clone with submodules.
-- OSS Helm example values are present.
-- Images are built for supported platforms.
-- Production image references are digest-pinned.
-- Attestor images are signed if attestation is documented for the release.
+## Rebuild check
 
-## Versioning
+At the source commit recorded by the release manifest:
 
-Use a single release version across the platform image set when possible:
-
-```text
-v0.1.0
+```bash
+./scripts/ci/check-reproducible-images.sh \
+  --commit-sha "$(git rev-parse HEAD)" \
+  --service all
 ```
 
-For production chart values, record both the human version and digest:
+The check rebuilds the reproducible browser images and compares configuration
+digests, writing reports under `dist/`. Platform service images follow the
+normal OSS build workflow unless explicitly included in the reproducible set.
 
-```yaml
-imageTag: v0.1.0
-browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:<digest>
-browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:<digest>
-```
+## Rollout strategy
+
+1. Verify chart schemas and release notes.
+2. Resolve and record every image digest.
+3. Scan and signature-check images.
+4. Render production values.
+5. Back up Postgres.
+6. Upgrade the platform and migration Job.
+7. Test a canary session.
+8. Upgrade a small browser Fleet or staging region.
+9. Test LiveView, restricted CDP, extensions, TTL, and deletion.
+10. Expand capacity and retain rollback artifacts.
+
+Browser image rollout can terminate active GameServers. Plan it as workload
+maintenance even when the Kubernetes rollout itself is healthy.
+
+## Private registry mirrors
+
+Mirror all required images, including dependencies and extension images, before
+an isolated deployment. Configure `imagePullSecrets` in both charts and test a
+newly provisioned node with an empty image cache.
+
+## Release record
+
+Keep this information for every production change:
+
+- source commit and release tag;
+- platform and browser chart versions;
+- every deployed image digest;
+- values repository commit;
+- database backup/restore point and migration result;
+- signature/scan results;
+- acceptance-test result;
+- known rollback revision and schema compatibility.
+
+Use [Upgrades](upgrades.md) for the operational procedure.

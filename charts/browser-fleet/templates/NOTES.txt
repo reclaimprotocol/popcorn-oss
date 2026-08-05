@@ -1,0 +1,10 @@
+Popcorn browser fleet installed in {{ .Release.Namespace }}.
+
+Streaming is VNC-only. Browser GameServers expose noVNC on TCP port 6080;
+WebRTC, direct UDP media ports, and TURN credentials are not used.
+Check the fleet and wait for ready capacity:
+  kubectl -n {{ .Release.Namespace }} get fleet,fleetautoscaler,gameservers
+  kubectl -n {{ .Release.Namespace }} get pods -l app=browser-runtime
+
+The platform release must use the matching LiveView defaults so the pool
+manager publishes the `liveview` route and the gateway serves `/liveview/...`.

@@ -1,15 +1,8 @@
-{{- $browserTurnSecret := default "browser-turn-secret" .Values.secrets.browserTurnName }}
 {{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
-{{- $streamingMode := default "webrtc" .Values.streaming.mode }}
-{{- if not (has $streamingMode (list "webrtc" "vnc" "both")) }}
-{{- fail "streaming.mode must be one of 'webrtc', 'vnc', or 'both'" }}
-{{- end }}
 {{- $securityProfile := default "legacy" .Values.browserRuntimeSecurityProfile }}
 {{- if not (has $securityProfile (list "legacy" "hardened")) }}
 {{- fail "browserRuntimeSecurityProfile must be one of 'legacy' or 'hardened'" }}
 {{- end }}
-{{- $enableWebrtc := or (eq $streamingMode "webrtc") (eq $streamingMode "both") }}
-{{- $enableVnc := or (eq $streamingMode "vnc") (eq $streamingMode "both") }}
 apiVersion: agones.dev/v1
 kind: Fleet
 metadata:
@@ -34,21 +27,10 @@ spec:
         periodSeconds: {{ .Values.fleet.health.periodSeconds }}
         failureThreshold: {{ .Values.fleet.health.failureThreshold }}
       ports:
-{{- if $enableWebrtc }}
-        - name: webrtc-udp
-          portPolicy: Passthrough
-          protocol: UDP
-{{- end }}
-        - name: http
-          containerPort: 8082
-          portPolicy: None
-          protocol: TCP
-{{- if $enableVnc }}
         - name: novnc
           containerPort: 6080
           portPolicy: None
           protocol: TCP
-{{- end }}
         - name: cdp
           containerPort: 9222
           portPolicy: None
@@ -57,12 +39,12 @@ spec:
           containerPort: 9226
           portPolicy: None
           protocol: TCP
-        - name: kernel-api
-          containerPort: 10001
-          portPolicy: None
-          protocol: TCP
-{{- with .Values.fleet.extraPorts }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- with dig "browser" "ports" (list) $extension }}
 {{ tpl (toYaml .) $ | nindent 8 }}
+{{- end }}
+{{- end }}
 {{- end }}
       template:
         spec:
@@ -131,52 +113,16 @@ spec:
                       fieldPath: spec.nodeName
                 - name: REDIS_HOST
                   value: redis
-                - name: NEKO_SCREEN
-                  value: "1920x1080@30"
-                - name: NEKO_PASSWORD
-                  value: neko
-                - name: NEKO_PASSWORD_ADMIN
-                  value: admin
-{{- if $enableWebrtc }}
-                - name: TURN_KEY_ID
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ $browserTurnSecret | quote }}
-                      key: TURN_KEY_ID
-                - name: TURN_API_TOKEN
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ $browserTurnSecret | quote }}
-                      key: TURN_API_TOKEN
-                - name: NEKO_ICESERVERS
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ $browserTurnSecret | quote }}
-                      key: NEKO_ICESERVERS
-                      optional: true
-{{- end }}
                 - name: HTTPS_PROXY_URL
                   valueFrom:
                     secretKeyRef:
                       name: {{ $browserRuntimeProxySecret | quote }}
                       key: HTTPS_PROXY_URL
                       optional: true
-{{- if .Values.webrtc.advertiseHost }}
-                - name: POPCORN_WEBRTC_ADVERTISE_HOST
-                  value: {{ .Values.webrtc.advertiseHost | quote }}
-{{- end }}
-                - name: NEKO_LOG_JSON
-                  value: "true"
-                - name: NEKO_LOG_LEVEL
-                  value: info
-                - name: NEKO_LOG_TIME
-                  value: unixms
-                - name: NEKO_LOG_NOCOLOR
-                  value: "true"
                 - name: REPLACE_DEFAULT_PAGE
-                  value: "true"
+                  value: {{ eq .Values.browserPolicy.variant "reclaim-portal" | quote }}
                 - name: POPCORN_BROWSER_STREAMING_MODE
-                  value: {{ $streamingMode | quote }}
+                  value: "vnc"
 {{- with .Values.extraBrowserRuntimeEnv }}
 {{ tpl (toYaml .) $ | nindent 16 }}
 {{- end }}
@@ -218,8 +164,12 @@ spec:
                   name: tpm-eventlog
                   readOnly: true
 {{- end }}
-{{- with .Values.fleet.extraContainers }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- with dig "browser" "containers" (list) $extension }}
 {{ tpl (toYaml .) $ | nindent 12 }}
+{{- end }}
+{{- end }}
 {{- end }}
           volumes:
             - name: dshm

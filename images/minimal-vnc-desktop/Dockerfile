@@ -17,11 +17,10 @@ WORKDIR /src
 ARG TARGETARCH
 ARG TARGETOS
 ARG SOURCE_DATE_EPOCH=0
-COPY proxy/go.mod proxy/go.sum ./
+COPY proxy/go.mod ./
 COPY proxy/*.go ./
-COPY proxy/circuits ./circuits
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
+    CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /out/novnc-proxy .
 
 FROM ${UBUNTU_IMAGE} AS ubuntu-snapshot
@@ -218,6 +217,7 @@ COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
 COPY --chmod=0755 start-chromium /usr/local/bin/start-chromium
 COPY liveview.html /usr/share/novnc/liveview.html
+COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress
 COPY --chown=kernel:kernel extensions/proxy /home/kernel/extensions/proxy
 COPY --chown=kernel:kernel policies/managed/policy.json /etc/chromium/policies/managed/policy.json
 COPY --chown=kernel:kernel policies/variants/policy.reclaim-portal.json /etc/chromium/policy-variants/policy.reclaim-portal.json
@@ -229,8 +229,8 @@ RUN set -eux; \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
         /usr/share/novnc/liveview.html; \
-    find /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+    find /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 USER kernel
-EXPOSE 6080 9222 9226 10001
+EXPOSE 6080 9222 9226
 ENTRYPOINT ["/usr/local/bin/minimal-vnc-entrypoint"]

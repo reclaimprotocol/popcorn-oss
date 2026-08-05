@@ -13,11 +13,6 @@ import { ExactEvmScheme } from '@x402/evm/exact/server';
 import { generateJwt } from '@coinbase/cdp-sdk/auth';
 import type { X402Config } from './config';
 
-const USDC_BY_NETWORK = {
-  'eip155:8453': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-  'eip155:84532': '0x036CbD53842c5426634e7929541eC2318f3dCF7e',
-} as const;
-
 export interface X402Offer {
   paymentRequired: PaymentRequired;
   requirements: PaymentRequirements;
@@ -42,8 +37,10 @@ export class X402PaymentGateway {
   private initialization?: Promise<void>;
 
   constructor(private readonly config: X402Config) {
-    const authHeaders = config.facilitatorAuthHeaders;
-    const facilitator = config.facilitatorUrl.startsWith('https://api.cdp.coinbase.com/')
+    const authHeaders = config.facilitatorAuthMode === 'headers'
+      ? config.facilitatorAuthHeaders
+      : undefined;
+    const facilitator = config.facilitatorAuthMode === 'coinbase-cdp'
       ? createAuthenticatedCdpFacilitator({
         apiKeyId: config.cdpApiKeyId,
         apiKeySecret: config.cdpApiKeySecret,
@@ -85,11 +82,11 @@ export class X402PaymentGateway {
       network: this.config.network,
       payTo: this.config.payTo!,
       price: {
-        asset: USDC_BY_NETWORK[this.config.network],
+        asset: this.config.paymentAssetAddress,
         amount,
         extra: {
-          name: this.config.network === 'eip155:8453' ? 'USD Coin' : 'USDC',
-          version: '2',
+          name: this.config.paymentAssetName,
+          version: this.config.paymentAssetVersion,
         },
       },
       // Leave enough validity for a crash-safe reconciliation pass. The
@@ -185,10 +182,6 @@ function withDeadline<T>(promise: Promise<T>, milliseconds: number, message: str
     const timeout = setTimeout(() => reject(new Error(message)), milliseconds);
     promise.then(resolve, reject).finally(() => clearTimeout(timeout));
   });
-}
-
-export function x402UsdcAddress(network: X402Config['network']): string {
-  return USDC_BY_NETWORK[network];
 }
 
 export function createAuthenticatedCdpFacilitator(input: {

@@ -5,6 +5,10 @@ import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 
 const baseUrl = (process.env.X402_SMOKE_BASE_URL || 'http://127.0.0.1:4021').replace(/\/$/, '');
 const serviceToken = process.env.X402_SMOKE_SERVICE_TOKEN;
+const blockSeconds = Number(process.env.X402_BLOCK_SECONDS || '300');
+const pricePerBlockAtomic = Number(process.env.X402_PRICE_PER_BLOCK_ATOMIC || '10000');
+const network = process.env.X402_NETWORK || 'eip155:84532';
+const paymentAssetName = process.env.X402_PAYMENT_ASSET_NAME || 'USDC';
 const account = privateKeyToAccount(generatePrivateKey());
 const paymentClient = new x402Client();
 registerExactEvmScheme(paymentClient, { signer: account });
@@ -47,8 +51,8 @@ async function paidRequest(input: {
   assert(paymentRequired.x402Version === 2, 'Expected x402 v2 challenge');
   assert(paymentRequired.accepts.length === 1, 'Expected exactly one payment option');
   assert(paymentRequired.accepts[0]?.amount === input.expectedAmount,
-    `Expected ${input.expectedAmount} atomic USDC, got ${paymentRequired.accepts[0]?.amount}`);
-  assert(paymentRequired.accepts[0]?.network === 'eip155:84532', 'Expected Base Sepolia challenge');
+    `Expected ${input.expectedAmount} atomic ${paymentAssetName}, got ${paymentRequired.accepts[0]?.amount}`);
+  assert(paymentRequired.accepts[0]?.network === network, `Expected ${network} challenge`);
 
   const payload = await httpClient.createPaymentPayload(paymentRequired);
   const paidHeaders = new Headers(headers);
@@ -73,15 +77,17 @@ const created = await paidRequest({
   path: '/v1/x402/sessions',
   idempotencyKey: createKey,
   body: {},
-  expectedAmount: '10000',
+  expectedAmount: String(pricePerBlockAtomic),
 });
-assert(created.body.paidMinutes === 5, 'Create did not purchase five minutes');
+assert(created.body.paidSeconds === blockSeconds, 'Create did not purchase one configured time block');
 assert(typeof created.body.sessionId === 'string' && /^x402s_[A-Za-z0-9_-]{43}$/.test(created.body.sessionId),
   'Create did not return an opaque session capability');
 assert(created.body.sessionUrl === `${baseUrl}/v1/x402/sessions/${created.body.sessionId}`,
   'Create did not return the canonical anonymous session URL');
 assert(typeof created.body.connectUrl === 'string' && typeof created.body.liveViewUrl === 'string',
   'Create did not return both public connection URLs');
+assert(typeof created.body.vncUrl === 'string' && typeof created.body.vncWsUrl === 'string',
+  'Create did not return both LiveView compatibility URLs');
 const createdExpiry = Date.parse(created.body.expiresAt);
 
 const unauthenticatedReplay = await fetch(`${baseUrl}/v1/x402/sessions`, {
@@ -110,21 +116,28 @@ const extended = await paidRequest({
   path: `/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}/extend`,
   idempotencyKey: `smoke-extend-${crypto.randomUUID()}`,
   body: { blocks: 2 },
-  expectedAmount: '20000',
+  expectedAmount: String(pricePerBlockAtomic * 2),
 });
 const extendedExpiry = Date.parse(extended.body.expiresAt);
-assert(extended.body.additionalMinutes === 10 && extended.body.paidMinutesTotal === 15,
-  'Extension did not add two five-minute blocks');
-assert(extendedExpiry - createdExpiry === 10 * 60 * 1000, 'Extension deadline did not advance by ten minutes');
+assert(extended.body.additionalSeconds === blockSeconds * 2
+  && extended.body.paidSecondsTotal === blockSeconds * 3,
+  'Extension did not add two configured time blocks');
+assert(extendedExpiry - createdExpiry === blockSeconds * 2 * 1000,
+  'Extension deadline did not advance by two configured time blocks');
 assert(extended.body.liveViewUrl === created.body.liveViewUrl && extended.body.connectUrl === created.body.connectUrl,
   'Extension replaced the stable connection URLs');
+assert(extended.body.vncUrl === created.body.vncUrl && extended.body.vncWsUrl === created.body.vncWsUrl,
+  'Extension replaced the stable LiveView compatibility URLs');
 
 const status = await fetch(`${baseUrl}/v1/x402/sessions/${encodeURIComponent(created.body.sessionId)}`);
 const statusBody = await jsonBody(status.clone());
-assert(status.status === 200 && statusBody.paidMinutes === 15, 'Status did not show the paid extension');
+assert(status.status === 200 && statusBody.paidSeconds === blockSeconds * 3,
+  'Status did not show the paid extension');
 assert(statusBody.expiresAt === extended.body.expiresAt, 'Status did not show the extended deadline');
 assert(statusBody.liveViewUrl === extended.body.liveViewUrl && statusBody.connectUrl === extended.body.connectUrl,
   'Status did not preserve the original connection URLs');
+assert(statusBody.vncUrl === extended.body.vncUrl && statusBody.vncWsUrl === extended.body.vncWsUrl,
+  'Status did not preserve the original LiveView compatibility URLs');
 
 let staleExpiryRejected = false;
 if (serviceToken) {
@@ -155,13 +168,13 @@ assert(terminated.status === 200 && terminatedBody.success === true && terminate
 
 console.log(JSON.stringify({
   ok: true,
-  network: 'eip155:84532',
+  network,
   payer: account.address,
   sessionId: created.body.sessionId,
   createAmountAtomic: created.paymentRequired.accepts[0]?.amount,
   extensionAmountAtomic: extended.paymentRequired.accepts[0]?.amount,
-  initialPaidMinutes: created.body.paidMinutes,
-  finalPaidMinutes: extended.body.paidMinutesTotal,
+  initialPaidSeconds: created.body.paidSeconds,
+  finalPaidSeconds: extended.body.paidSecondsTotal,
   stableLiveViewUrl: extended.body.liveViewUrl === created.body.liveViewUrl,
   stableConnectUrl: extended.body.connectUrl === created.body.connectUrl,
   staleExpiryRejected,

@@ -26,6 +26,16 @@ If you are unsure which checks apply, describe what you ran and why in the pull 
 - Keep generated files and dependency updates separate unless they are required for the change.
 - Be responsive to review comments and keep the conversation constructive.
 
+## Documentation Ownership
+
+Keep reusable API, architecture, development, deployment, operations,
+security, and release documentation in this repository. Examples must work for
+an ordinary OSS checkout and use placeholder domains, project IDs, credentials,
+and payment settings. Private infrastructure topology, production values,
+secret identifiers, and incident procedures belong in the private deployment
+repository instead.
+
 ## License
 
-The root project license is pending approval before public release. Until a root `LICENSE` file is added, do not assume a final license for new use, redistribution, or contribution terms. Maintainers will update this section when the license is approved.
+Popcorn is released under the MIT License. By contributing, you agree that your
+contribution is provided under the repository's [LICENSE](LICENSE).

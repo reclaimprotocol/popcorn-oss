@@ -1288,7 +1288,10 @@ app.get('/admin/regions', async (c) => {
 app.get('/admin/x402/analytics', async (c) => {
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return unauthorized;
-  return c.json(await getX402Analytics(normalizeWindowHours(c.req.query('windowHours') ?? 24)));
+  return c.json(await getX402Analytics(
+    normalizeWindowHours(c.req.query('windowHours') ?? 24),
+    ControlPlaneConfig.x402.blockSeconds,
+  ));
 });
 
 app.get('/admin/sessions', async (c) => {

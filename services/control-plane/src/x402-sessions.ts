@@ -10,7 +10,7 @@ import {
   reallocateExpiredRegionalSession,
 } from './pool-manager';
 import { SessionService } from './sessions';
-import { X402PaymentError, X402PaymentGateway, type X402Offer, type VerifiedX402Payment, x402UsdcAddress } from './x402-payment';
+import { X402PaymentError, X402PaymentGateway, type X402Offer, type VerifiedX402Payment } from './x402-payment';
 import { X402ClaimBusyError, X402Store, type X402PaymentRow, type X402SessionRow } from './x402-store';
 import {
   decryptX402SettlementRequest,
@@ -20,6 +20,7 @@ import {
   isOwnedPublicX402Session,
   publicX402SessionUrl,
   publicX402Endpoints,
+  type PublicX402Endpoints,
 } from './x402-utils';
 import type { X402LeaseGuard } from './x402-coordination';
 import { recoverInterruptedExtension, runCleanupAttempt } from './x402-recovery';
@@ -124,7 +125,32 @@ interface ExtensionRecoveryState {
   previousExpiresAt: string;
   previousPaidBlocks: number;
   previousMetadata: Record<string, unknown>;
-  previousEndpoints: { liveViewUrl?: string; connectUrl?: string };
+  previousEndpoints: PublicX402Endpoints;
+}
+
+function hasPublicSessionEndpoints(endpoints: PublicX402Endpoints): boolean {
+  return !!endpoints.connectUrl && !!endpoints.liveViewUrl
+    && !!endpoints.vncUrl && !!endpoints.vncWsUrl;
+}
+
+function samePublicSessionEndpoints(left: PublicX402Endpoints, right: PublicX402Endpoints): boolean {
+  return left.connectUrl === right.connectUrl
+    && left.liveViewUrl === right.liveViewUrl
+    && left.vncUrl === right.vncUrl
+    && left.vncWsUrl === right.vncWsUrl;
+}
+
+function normalizeStoredEndpoints(
+  endpoints: Record<string, unknown>,
+  publicGatewayUrl: string,
+  sessionId: string,
+): PublicX402Endpoints {
+  return publicX402Endpoints({
+    url: endpoints.liveViewUrl,
+    cdpUrl: endpoints.connectUrl,
+    vncUrl: endpoints.vncUrl,
+    vncWsUrl: endpoints.vncWsUrl,
+  }, publicGatewayUrl, sessionId);
 }
 
 function readExtensionRecovery(value: unknown): ExtensionRecoveryState | null {
@@ -145,13 +171,10 @@ function readExtensionRecovery(value: unknown): ExtensionRecoveryState | null {
   };
 }
 
-function endpointMetadata(session: { metadata?: unknown } | undefined, publicGatewayUrl: string, sessionId: string): { liveViewUrl?: string; connectUrl?: string } {
+function endpointMetadata(session: { metadata?: unknown } | undefined, publicGatewayUrl: string, sessionId: string): PublicX402Endpoints {
   const endpoints = getMetadata(session).x402PublicEndpoints;
   return endpoints && typeof endpoints === 'object' && !Array.isArray(endpoints)
-    ? publicX402Endpoints({
-      url: (endpoints as Record<string, unknown>).liveViewUrl,
-      cdpUrl: (endpoints as Record<string, unknown>).connectUrl,
-    }, publicGatewayUrl, sessionId)
+    ? normalizeStoredEndpoints(endpoints as Record<string, unknown>, publicGatewayUrl, sessionId)
     : {};
 }
 
@@ -202,7 +225,7 @@ async function reserveAndOffer(input: {
     operation: input.operation,
     sessionId: input.sessionId,
     network: config.network,
-    asset: x402UsdcAddress(config.network),
+    asset: config.paymentAssetAddress,
     amountAtomic: String(input.blocks * config.pricePerBlockAtomic),
     payTo: config.payTo!,
     blocks: input.blocks,
@@ -241,8 +264,8 @@ async function reserveAndOffer(input: {
         `${config.publicBaseUrl}/`,
       ).toString(),
       description: input.operation === 'create'
-        ? 'Start a Popcorn browser session for 5 minutes'
-        : `Extend a Popcorn browser session by ${input.blocks * 5} minutes`,
+        ? `Start a Popcorn browser session for ${config.blockSeconds} seconds`
+        : `Extend a Popcorn browser session by ${input.blocks * config.blockSeconds} seconds`,
     });
   } catch (error) {
     console.error('x402 facilitator initialization failed:', error);
@@ -495,12 +518,12 @@ export class X402SessionController {
     const recovery = readExtensionRecovery(row.recovery);
     const region = recovery && this.deps.regions.find((candidate) => candidate.name === recovery.region);
     let expiresAt = typeof response.expiresAt === 'string' ? response.expiresAt : '';
-    const additionalMinutes = Number(response.additionalMinutes);
-    const paidMinutesTotal = Number(response.paidMinutesTotal);
-    const paidBlocks = paidMinutesTotal / 5;
+    const additionalSeconds = Number(response.additionalSeconds);
+    const paidSecondsTotal = Number(response.paidSecondsTotal);
+    const paidBlocks = paidSecondsTotal / this.deps.config.blockSeconds;
     if (!recovery || !region || !Number.isFinite(Date.parse(expiresAt))
       || !Number.isInteger(paidBlocks) || paidBlocks <= recovery.previousPaidBlocks
-      || !Number.isInteger(additionalMinutes) || additionalMinutes <= 0) {
+      || !Number.isInteger(additionalSeconds) || additionalSeconds <= 0) {
       throw new Error('Invalid settled extension access state');
     }
 
@@ -510,12 +533,22 @@ export class X402SessionController {
       // A long ambiguous-settlement outage may outlive the old GameServer. Once
       // payment is positively proven, recreate the expired workload under the
       // same session ID/token and grant the full purchased duration from now.
-      expiresAt = new Date(Date.now() + additionalMinutes * 60_000).toISOString();
+      expiresAt = new Date(Date.now() + additionalSeconds * 1000).toISOString();
       remote = await reallocateExpiredRegionalSession(
         region,
         row.sessionId,
         expiresAt,
         this.deps.serviceAuthToken,
+        {
+          clientId: PUBLIC_X402_CLIENT_ID,
+          clientName: PUBLIC_X402_CLIENT_NAME,
+          tokenExpiresAt: expiresAt,
+          accessPolicy: {
+            tokenMode: 'route-bound',
+            cdpScope: 'automation',
+            accessExpiresAt: expiresAt,
+          },
+        },
       );
     } else {
       remote = await extendRegionalSessionTtl(
@@ -538,16 +571,20 @@ export class X402SessionController {
       throw new Error(`Regional settled extension confirmation failed: ${confirmed.response.status}`);
     }
     const stableEndpoints = publicX402Endpoints(remote.body, region.publicGatewayUrl, row.sessionId);
-    if (!stableEndpoints.connectUrl || !stableEndpoints.liveViewUrl
-      || stableEndpoints.connectUrl !== recovery.previousEndpoints.connectUrl
-      || stableEndpoints.liveViewUrl !== recovery.previousEndpoints.liveViewUrl) {
+    const previousEndpoints = normalizeStoredEndpoints(
+      recovery.previousEndpoints as Record<string, unknown>,
+      region.publicGatewayUrl,
+      row.sessionId,
+    );
+    if (!hasPublicSessionEndpoints(stableEndpoints)
+      || !samePublicSessionEndpoints(stableEndpoints, previousEndpoints)) {
       throw new Error('Regional settled extension did not preserve the original URLs');
     }
 
     await SessionService.reactivateSession(row.sessionId, {
       ...recovery.previousMetadata,
       expiresAt,
-      restrictedTokenExpiresAt: expiresAt,
+      tokenExpiresAt: expiresAt,
       browserPodId: remote.body?.browserPodId,
       x402PublicEndpoints: stableEndpoints,
     });
@@ -860,7 +897,7 @@ export class X402SessionController {
           sessionId,
           response: {
             sessionId,
-            paidMinutes: 0,
+            paidSeconds: 0,
             expiresAt: createdAt.toISOString(),
             region: available.name,
             clusterName: available.clusterName,
@@ -885,8 +922,12 @@ export class X402SessionController {
         clientId: PUBLIC_X402_CLIENT_ID,
         clientName: PUBLIC_X402_CLIENT_NAME,
         expiresAt: expiresAt.toISOString(),
-        restrictedTokenExpiresAt: expiresAt.toISOString(),
-        automationProfile: 'x402-agent',
+        tokenExpiresAt: expiresAt.toISOString(),
+        accessPolicy: {
+          tokenMode: 'route-bound',
+          cdpScope: 'automation',
+          accessExpiresAt: expiresAt.toISOString(),
+        },
       }, this.deps.serviceAuthToken);
       if (!allocation.session) {
         await X402Store.updatePayment(prepared.payment.id, {
@@ -902,7 +943,7 @@ export class X402SessionController {
       }
 
       const endpoints = publicX402Endpoints(allocation.session, available.publicGatewayUrl, sessionId);
-      if (!endpoints.connectUrl || !endpoints.liveViewUrl) {
+      if (!hasPublicSessionEndpoints(endpoints)) {
         await X402Store.updatePayment(prepared.payment.id, {
           status: 'allocation_failed',
           failureReason: 'Pool manager returned invalid public gateway URLs',
@@ -926,7 +967,7 @@ export class X402SessionController {
           available.name,
           {
             expiresAt: expiresAt.toISOString(),
-            restrictedTokenExpiresAt: expiresAt.toISOString(),
+            tokenExpiresAt: expiresAt.toISOString(),
             browserPodId: allocation.session.browserPodId,
             x402PublicEndpoints: endpoints,
             billing: { type: 'x402', paidBlocks: 1, amountAtomic: prepared.payment.amountAtomic },
@@ -953,13 +994,17 @@ export class X402SessionController {
       const responseDraft = {
         sessionId,
         ...endpoints,
-        paidMinutes: 5,
+        paidSeconds: this.deps.config.blockSeconds,
         expiresAt: expiresAt.toISOString(),
         region: available.name,
         clusterName: available.clusterName,
         payment: {
           amountAtomic: prepared.payment.amountAtomic,
-          currency: 'USDC',
+          asset: {
+            address: this.deps.config.paymentAssetAddress,
+            name: this.deps.config.paymentAssetName,
+            version: this.deps.config.paymentAssetVersion,
+          },
           network: this.deps.config.network,
         },
       };
@@ -1046,7 +1091,11 @@ export class X402SessionController {
         paymentId: prepared.payment.id,
         sessionId,
         eventType: 'x402.session_created',
-        metadata: { amountAtomic: prepared.payment.amountAtomic, paidMinutes: 5, region: available.name },
+        metadata: {
+          amountAtomic: prepared.payment.amountAtomic,
+          paidSeconds: this.deps.config.blockSeconds,
+          region: available.name,
+        },
       }).catch((error) => console.error('Failed to record x402 session-created analytics:', error));
       return {
         status: 200,
@@ -1088,8 +1137,13 @@ export class X402SessionController {
     // Never expose unpaid TTL while an extension is unresolved. The stable
     // endpoints remain authorized only through the previous paid deadline.
     let endpoints = recovery?.previousEndpoints
-      || endpointMetadata(owned.session, owned.region.publicGatewayUrl, sessionId);
-    if (active && (!endpoints.connectUrl || !endpoints.liveViewUrl)) {
+      ? normalizeStoredEndpoints(
+        recovery.previousEndpoints as Record<string, unknown>,
+        owned.region.publicGatewayUrl,
+        sessionId,
+      )
+      : endpointMetadata(owned.session, owned.region.publicGatewayUrl, sessionId);
+    if (active && !hasPublicSessionEndpoints(endpoints)) {
       // A remote lookup is safe only when no payment transition is pending.
       if (!recovery) {
         const remote = await getRegionalSession(owned.region, sessionId, this.deps.serviceAuthToken).catch(() => null);
@@ -1101,7 +1155,7 @@ export class X402SessionController {
       body: publicSessionResponse({
         sessionId,
         status: active ? 'active' : owned.session.status === 'active' ? 'expired' : owned.session.status,
-        paidMinutes: visiblePaidBlocks * 5,
+        paidSeconds: visiblePaidBlocks * this.deps.config.blockSeconds,
         expiresAt: visibleExpiresAt.toISOString(),
         region: owned.region.name,
         clusterName: owned.region.clusterName,
@@ -1172,7 +1226,12 @@ export class X402SessionController {
         return { status: 409, body: { error: 'Sessions must be active with at least four minutes remaining to extend safely' } };
       }
       if (lockedAccess.paidBlocks + (blocks as number) > this.deps.config.maxPaidBlocks) {
-        return { status: 400, body: { error: `A session can have at most ${this.deps.config.maxPaidBlocks * 5} paid minutes` } };
+        return {
+          status: 400,
+          body: {
+            error: `A session can have at most ${this.deps.config.maxPaidBlocks * this.deps.config.blockSeconds} paid seconds`,
+          },
+        };
       }
       const prepared = await reserveAndOffer({
         deps: this.deps,
@@ -1209,11 +1268,18 @@ export class X402SessionController {
       const provisionalResponse = {
         sessionId,
         ...previousEndpoints,
-        additionalMinutes: (blocks as number) * 5,
+        additionalSeconds: (blocks as number) * this.deps.config.blockSeconds,
         amountPaidAtomic: prepared.payment.amountAtomic,
-        paidMinutesTotal: lockedAccess.paidBlocks * 5,
+        paidSecondsTotal: lockedAccess.paidBlocks * this.deps.config.blockSeconds,
         expiresAt: previousExpiresAt.toISOString(),
-        payment: { currency: 'USDC', network: this.deps.config.network },
+        payment: {
+          asset: {
+            address: this.deps.config.paymentAssetAddress,
+            name: this.deps.config.paymentAssetName,
+            version: this.deps.config.paymentAssetVersion,
+          },
+          network: this.deps.config.network,
+        },
       };
       const recovery = {
         region: owned.region.name,
@@ -1248,8 +1314,8 @@ export class X402SessionController {
         ? publicX402Endpoints(preflight.body, owned.region.publicGatewayUrl, sessionId)
         : {};
       if (!preflight?.response.ok || preflight.body?.expiresAt !== previousExpiresAt.toISOString()
-        || preflightEndpoints.connectUrl !== previousEndpoints.connectUrl
-        || preflightEndpoints.liveViewUrl !== previousEndpoints.liveViewUrl) {
+        || !hasPublicSessionEndpoints(preflightEndpoints)
+        || !samePublicSessionEndpoints(preflightEndpoints, previousEndpoints)) {
         await X402Store.updatePayment(prepared.payment.id, {
           status: 'extension_failed',
           failureReason: 'Regional session preflight failed before settlement',
@@ -1261,12 +1327,16 @@ export class X402SessionController {
       const responseDraft = {
         sessionId,
         ...previousEndpoints,
-        additionalMinutes: (blocks as number) * 5,
+        additionalSeconds: (blocks as number) * this.deps.config.blockSeconds,
         amountPaidAtomic: prepared.payment.amountAtomic,
-        paidMinutesTotal: (lockedAccess.paidBlocks + (blocks as number)) * 5,
+        paidSecondsTotal: (lockedAccess.paidBlocks + (blocks as number)) * this.deps.config.blockSeconds,
         expiresAt: newExpiresAt.toISOString(),
         payment: {
-          currency: 'USDC',
+          asset: {
+            address: this.deps.config.paymentAssetAddress,
+            name: this.deps.config.paymentAssetName,
+            version: this.deps.config.paymentAssetVersion,
+          },
           network: this.deps.config.network,
         },
       };

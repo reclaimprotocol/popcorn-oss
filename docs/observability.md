@@ -1,247 +1,138 @@
 # Observability
 
-Popcorn's observability path is backend-neutral. Popcorn emits OpenTelemetry
-logs/events over OTLP; operators choose the collector exporters, storage, query
-engine, and UI.
+The bundled observability path exports browser container logs and pool-manager
+session lifecycle events through OTLP. It does not currently provide a complete
+metrics or tracing stack.
 
-There is no universal OpenTelemetry UI or standard OTEL query API. OTLP is a
-delivery protocol between telemetry sources, collectors, and backends. See the
-OpenTelemetry [OTLP spec](https://opentelemetry.io/docs/specs/otlp/) and
-[collector exporter docs](https://opentelemetry.io/docs/collector/components/exporter/).
+## Signals
 
-## What It Deploys
+| Signal | Source | Delivery |
+| --- | --- | --- |
+| Browser/container logs | node log files for Agones GameServers | OTEL agent DaemonSet to OTLP |
+| `session.start` and `session.end` events | pool manager | direct OTLP log export |
+| Platform application logs | stdout/stderr | Kubernetes logging unless collected externally |
+| Kubernetes events and workload status | Kubernetes API | operator tooling |
+| Metrics | infrastructure/provider tooling | not supplied as a complete Popcorn metrics stack |
 
-Set `otel.enabled=true` in the platform chart to deploy:
+## Enable OTLP export
 
-- an `otel-agent` DaemonSet in the Popcorn namespace;
-- an `otel-agent-config` ConfigMap;
-- an `otel-agent` ServiceAccount;
-- a ClusterRole and ClusterRoleBinding that let the collector read pod,
-  namespace, and node metadata.
-
-The collector runs on every scheduled node, reads browser GameServer container
-logs from `/var/log/pods`, enriches them with Kubernetes metadata, filters for
-Agones GameServer pods in the Popcorn namespace, batches records, and exports
-them to the configured external collector.
-
-The pool manager can also send `session.start` and `session.end` OTLP LogRecord
-events directly to the configured external OTLP endpoint. Popcorn does not
-deploy or require SigNoz, Loki, Grafana, ClickHouse, or any other viewer
-backend.
-
-## Enable Or Disable
-
-Disabled is the default:
-
-```yaml
-otel:
-  enabled: false
-```
-
-When enabled, configure exactly one external collector endpoint. OTLP gRPC:
+Choose exactly one endpoint:
 
 ```yaml
 otel:
   enabled: true
   exporter:
-    grpcEndpoint: otel-grpc.example.com:4317
+    grpcEndpoint: otel-collector.example.com:4317
+    httpEndpoint: null
+    tls: {}
 ```
 
-OTLP HTTP:
-
-```bash
-kubectl -n popcorn create secret generic otel-exporter-headers \
-  --from-literal=authorization="Bearer replace-me"
-```
+Or:
 
 ```yaml
 otel:
   enabled: true
   exporter:
-    httpEndpoint: https://otel-http.example.com
+    grpcEndpoint: null
+    httpEndpoint: https://otel-collector.example.com
+```
+
+Chart rendering fails when both or neither endpoint is set while OTEL is
+enabled.
+
+## Exporter headers
+
+Map outgoing header names to keys in one Kubernetes Secret:
+
+```yaml
+otel:
+  exporter:
     headersSecretName: otel-exporter-headers
     headers:
       Authorization: authorization
-    tls:
-      insecure: false
+      X-Tenant-ID: tenant-id
 ```
 
-`otel.exporter.headers` maps OTLP header names to keys in
-`otel.exporter.headersSecretName`. Header values are loaded from the Secret by
-the collector and pool manager; they are not rendered into the collector
-ConfigMap or literal Pod env values.
+Create those keys without printing their values. Header names are converted to
+environment-variable-safe names in the rendered workloads.
 
-Browser container logs and pool-manager lifecycle events can use either
-`grpcEndpoint` or `httpEndpoint`. Lifecycle events are emitted directly by the
-pool-manager process over the selected OTLP protocol; Popcorn does not expose
-the `otel-agent` as an in-cluster OTLP receiver.
+## Browser log collection
 
-If `otel.enabled=true` and no endpoint is configured, Helm fails the render. If
-both endpoints are configured, Helm also fails the render so Popcorn does not
-silently fan out telemetry.
+The OTEL agent runs as a DaemonSet, mounts node container log directories
+read-only, and reads logs for `browser-fleet-*` GameServer pods in the release
+namespace. File-storage state under `/var/lib/popcorn/otel-agent/file-storage`
+tracks read offsets across collector restarts on the same node.
 
-## Session Correlation
+It enriches records with Kubernetes pod/node metadata, Agones Fleet/role
+labels, cluster identity, and—after session binding—the `session.id` attribute.
+Pre-allocation startup logs intentionally lack a session ID.
 
-After Agones allocation, the pool manager patches the allocated browser Pod with
-session annotations:
-
-- `popcorn.dev/session-id`;
-- `popcorn.dev/session-bound-at`;
-- `popcorn.dev/session-bound-at-unix-nano`.
-
-The collector reads those annotations with `k8sattributes`, uses the binding
-timestamp to gate session attribution, and exports standard `session.id` only on
-browser logs emitted at or after the bind time.
-
-Browser logs emitted before the Pod was assigned remain unsessioned. They are
-still correlated through standard Kubernetes attributes such as `k8s.pod.uid`.
-
-## What It Emits
-
-Browser GameServer log records include:
-
-- `service.name=browser-runtime`;
-- `service.namespace=popcorn`;
-- `k8s.cluster.name`;
-- `k8s.namespace.name`;
-- `k8s.pod.name`;
-- `k8s.pod.uid`;
-- `k8s.container.name`;
-- `k8s.node.name`;
-- `agones.dev.role`;
-- `agones.dev.fleet`;
-- `session.id`, only for post-bind browser logs.
-
-Pool-manager lifecycle LogRecord events use `service.name=pool-manager` and:
-
-- LogRecord `eventName=session.start` or `eventName=session.end`;
-- `session.id`;
-- `k8s.pod.uid`;
-- `k8s.pod.name`;
-- `k8s.namespace.name`;
-- `k8s.cluster.name`;
-- `popcorn.region`.
-
-The agent exports browser GameServer logs. The pool manager exports lifecycle
-events directly when OTEL is enabled and either OTLP endpoint is set. Popcorn
-does not export gateway, control-plane, Redis, Postgres, or Kubernetes event
-logs by default.
-
-## Query Semantics
-
-For session-scoped logs, filter on:
-
-```text
-session.id = "<session-id>"
-```
-
-This shows only logs emitted after the browser Pod was bound to the session.
-
-For full Pod lifecycle logs:
-
-1. Find the `session.start` event by `session.id`.
-2. Copy `k8s.pod.uid`.
-3. Filter logs by `k8s.pod.uid`.
-
-This shows startup and pre-session logs plus the session logs. The distinction is
-intentional: pre-session logs are Pod lifecycle telemetry, not session telemetry.
-
-## Optional Legacy ClickHouse Binding
-
-The old `session_bindings` side table is now an optional legacy fallback. It is
-not the primary OTEL correlation path.
-
-Enable it explicitly:
+Schedule the agent on every node that may run browser GameServers. With a
+dedicated browser pool, mirror its node selector and toleration:
 
 ```yaml
 otel:
-  enabled: true
-  clickhouse:
-    enabled: true
-    database: otel
-    secretName: otel-clickhouse-secret
+  agent:
+    nodeSelector:
+      cloud.google.com/gke-nodepool: browser
+    tolerations:
+      - key: browser
+        operator: Equal
+        value: "true"
+        effect: NoSchedule
 ```
 
-Create the Secret only when `otel.clickhouse.enabled=true`:
+## Lifecycle events
+
+The pool manager emits structured `session.start` and `session.end` OTLP log
+records when direct OTLP export is configured. Useful attributes include
+session ID, cluster, region, namespace, pod identity, and event time.
+
+Lifecycle export failure must not be treated as proof that allocation or
+deletion failed. Correlate control-plane records, Redis state, Agones objects,
+and application logs.
+
+## Useful operational views
+
+Build dashboards or queries for:
+
+- session creation success/failure by region;
+- allocation latency and no-capacity failures;
+- Ready, Allocated, Pending, and unhealthy GameServers;
+- browser pod startup and image-pull duration;
+- gateway 4xx/5xx and WebSocket upgrade failures;
+- pool-manager Redis and Agones errors;
+- control-plane Postgres and regional dependency errors;
+- TTL deletion failures;
+- session duration and abnormal termination rate.
+
+The exact metrics must come from your Kubernetes, load balancer, database,
+Redis, and log backends; the chart does not install Prometheus.
+
+## Verify export
 
 ```bash
-kubectl -n popcorn create secret generic otel-clickhouse-secret \
-  --from-literal=CLICKHOUSE_ENDPOINT="$CLICKHOUSE_ENDPOINT" \
-  --from-literal=CLICKHOUSE_HTTP_ENDPOINT="$CLICKHOUSE_HTTP_ENDPOINT" \
-  --from-literal=CLICKHOUSE_USERNAME="$CLICKHOUSE_USERNAME" \
-  --from-literal=CLICKHOUSE_PASSWORD="$CLICKHOUSE_PASSWORD"
+kubectl -n popcorn rollout status daemonset/otel-agent
+kubectl -n popcorn logs daemonset/otel-agent --tail=200
+kubectl -n popcorn get pods -l app=otel-agent -o wide
 ```
 
-Legacy table shape:
+Create and delete one canary session, then confirm:
 
-```sql
-CREATE DATABASE IF NOT EXISTS otel;
+- browser log records arrive;
+- post-allocation records include `session.id`;
+- one `session.start` and one `session.end` lifecycle record are present;
+- cluster and region attributes match the deployment.
 
-CREATE TABLE IF NOT EXISTS otel.session_bindings
-(
-  session_id String,
-  cluster_name String,
-  namespace String,
-  pod_name String,
-  pod_uid String,
-  bound_at DateTime64(3, 'UTC')
-)
-ENGINE = MergeTree
-ORDER BY (session_id, bound_at);
-```
+## Log hygiene
 
-## Recipes
+Do not export full session URLs, path tokens, client secrets, admin tokens, or
+decoded Kubernetes Secrets. Configure redaction at application, ingress, agent,
+and destination layers. Review diagnostic exports before sharing them.
 
-Generic OTLP backend:
+## Legacy ClickHouse option
 
-- Set exactly one of `otel.exporter.grpcEndpoint` or
-  `otel.exporter.httpEndpoint`.
-- Put sensitive OTLP headers in a Kubernetes Secret, set
-  `otel.exporter.headersSecretName`, and map header names to Secret keys in
-  `otel.exporter.headers`.
-- Add TLS settings required by your backend.
-- Query `session.id` for post-bind logs and `k8s.pod.uid` for full Pod
-  lifecycle logs.
-
-Grafana plus ClickHouse:
-
-- Point Popcorn at an external collector that exports OTLP logs to ClickHouse.
-- Point Grafana at ClickHouse with the ClickHouse datasource's OpenTelemetry
-  table mapping mode. Grafana documents ClickHouse datasource
-  [configuration](https://grafana.com/docs/plugins/grafana-clickhouse-datasource/latest/configure/)
-  and [OpenTelemetry support](https://grafana.com/docs/plugins/grafana-clickhouse-datasource/latest/).
-- Keep this as an operator recipe; Popcorn core does not require Grafana or
-  ClickHouse.
-
-Local verification:
-
-- Point `otel.exporter.grpcEndpoint` or `otel.exporter.httpEndpoint` at a
-  throwaway external collector with a debug/file exporter.
-- Create a session.
-- Check `kubectl -n popcorn logs daemonset/otel-agent --tail=200`.
-
-## Verify
-
-```bash
-kubectl -n popcorn get daemonset otel-agent
-kubectl -n popcorn logs daemonset/otel-agent --tail=100
-```
-
-Then create a session and verify:
-
-- `session.start` has `session.id` and `k8s.pod.uid`;
-- post-bind browser logs have `session.id`;
-- pre-bind browser logs do not have `session.id`;
-- all browser Pod logs can be found by `k8s.pod.uid`;
-- collector logs do not show exporter connection errors.
-
-## Current Limits
-
-- Metrics and traces are not wired by the bundled collector config.
-- The bundled collector config intentionally supports one outbound OTLP
-  exporter. Use your external collector for fanout, storage-specific exporters,
-  and backend-specific processors.
-- The collector reads host log paths, so it needs node-level log access through
-  `hostPath` mounts.
-- Viewer behavior is backend-specific. Popcorn only controls emitted OTLP and
-  collector export configuration.
+`otel.clickhouse.enabled=true` enables legacy direct session-binding writes
+from the pool manager using `otel-clickhouse-secret`. It is not required for
+OTLP logs and should remain disabled unless an existing deployment depends on
+it.

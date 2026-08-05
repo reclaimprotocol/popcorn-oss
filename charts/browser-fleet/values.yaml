@@ -11,8 +11,6 @@ agonesInstaller:
   gameservers:
     namespaces:
       - default
-    minPort: 59000
-    maxPort: 61000
 
 externalSecrets:
   enabled: false
@@ -30,7 +28,6 @@ browserRuntimeSecurityProfile: legacy
 runtimeClassName: ""
 
 secrets:
-  browserTurnName: browser-turn-secret
   browserRuntimeProxyName: browser-runtime-proxy-secret
 
 ccDevicePlugin:
@@ -48,6 +45,11 @@ networkPolicy:
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
 browserRuntimeImagePullPolicy: IfNotPresent
 
+# The OSS default keeps the browser's DuckDuckGo search and new-tab policy.
+# Internal deployments can opt into the bundled Reclaim portal variant.
+browserPolicy:
+  variant: neutral
+
 browserRuntimeAttestor:
   enabled: false
   imagePullPolicy: IfNotPresent
@@ -56,11 +58,15 @@ browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime
 
 extraBrowserRuntimeEnv: []
 
+# Merge-friendly, operator-owned same-pod services. Each named extension may
+# provide browser ports/containers and image-prepuller containers. The matching
+# platform chart consumes the optional `routing` section from the same values
+# document.
+sessionExtensions: {}
+
 imagePrepuller:
   enabled: false
   imagePullPolicy: IfNotPresent
-  extraInitContainers: []
-  extraContainers: []
   nodeSelector: {}
   tolerations: []
   affinity: {}
@@ -71,12 +77,6 @@ imagePrepuller:
     limits:
       cpu: 50m
       memory: 128Mi
-
-webrtc:
-  advertiseHost: ""
-
-streaming:
-  mode: webrtc
 
 fleet:
   replicas: 10
@@ -96,8 +96,6 @@ fleet:
   browserRuntimeAttestorCpuLimit: "200m"
   browserRuntimeAttestorMemoryRequest: 128Mi
   browserRuntimeAttestorMemoryLimit: 256Mi
-  extraPorts: []
-  extraContainers: []
 
 autoscaler:
   bufferSize: 5

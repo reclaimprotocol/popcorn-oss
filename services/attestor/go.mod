@@ -1,4 +1,4 @@
-module github.com/reclaimprotocol/popcorn/services/attestor
+module github.com/reclaimprotocol/popcorn-oss/services/attestor
 
 go 1.25.6
 

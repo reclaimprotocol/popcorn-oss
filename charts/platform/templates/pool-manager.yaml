@@ -5,6 +5,22 @@
 {{- $otelHttpEndpoint := default "" .Values.otel.exporter.httpEndpoint }}
 {{- $otelLogsEnabled := and .Values.otel.enabled (or (ne $otelGrpcEndpoint "") (ne $otelHttpEndpoint "")) }}
 {{- $otelHeaders := .Values.otel.exporter.headers | default dict }}
+{{- $sessionExtensionUrls := dict }}
+{{- $sessionExtensionRoutePorts := dict }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- $routing := dig "routing" (dict) $extension }}
+{{- if $routing }}
+{{- $portName := required (printf "sessionExtensions.%s.routing.portName is required" $extensionName) $routing.portName }}
+{{- $routeKey := required (printf "sessionExtensions.%s.routing.routeKey is required" $extensionName) $routing.routeKey }}
+{{- $port := required (printf "sessionExtensions.%s.routing.port is required" $extensionName) $routing.port }}
+{{- $_ := set $sessionExtensionRoutePorts $portName (dict "routeKey" $routeKey "port" $port) }}
+{{- range $field, $template := ($routing.sessionUrls | default dict) }}
+{{- $_ := set $sessionExtensionUrls $field $template }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if $otelLogsEnabled }}
 {{- include "popcorn-platform.validateOtelHeaders" . }}
 {{- end }}
@@ -58,12 +74,12 @@ spec:
               value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
             - name: GAME_SERVER_FLEET
               value: {{ .Values.poolManager.gameServerFleet | quote }}
-{{- with .Values.poolManager.extraSessionUrls }}
-            - name: POOL_MANAGER_EXTRA_SESSION_URLS
+{{- with $sessionExtensionUrls }}
+            - name: POOL_MANAGER_SESSION_EXTENSION_URLS
               value: {{ tpl (toJson .) $ | quote }}
 {{- end }}
-{{- with .Values.poolManager.extraRoutePorts }}
-            - name: POOL_MANAGER_EXTRA_ROUTE_PORTS
+{{- with $sessionExtensionRoutePorts }}
+            - name: POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS
               value: {{ tpl (toJson .) $ | quote }}
 {{- end }}
             - name: POPCORN_REGION
