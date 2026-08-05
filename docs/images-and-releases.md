@@ -102,9 +102,12 @@ At the source commit recorded by the release manifest:
   --service all
 ```
 
-The check rebuilds the reproducible browser images and compares configuration
-digests, writing reports under `dist/`. Platform service images follow the
-normal OSS build workflow unless explicitly included in the reproducible set.
+The check rebuilds the reproducible browser images with the pinned Buildx,
+BuildKit, Dockerfile frontend, compression, media-type, provenance, and
+timestamp policy. It requires both the image configuration digest and complete
+registry manifest digest to match, writing reports under `dist/`. Platform
+service images follow the normal OSS build workflow unless explicitly included
+in the reproducible set.
 
 ## Rollout strategy
 

@@ -10,8 +10,8 @@ Usage:
   scripts/ci/check-reproducible-images.sh --commit-sha <sha> [--service all|browser-runtime-attestor|browser-runtime]
 
 Pulls the published immutable image tag for the selected reproducible image set,
-rebuilds that image locally from the same commit, and compares the resulting
-image config digest with the published image config digest.
+rebuilds that image locally from the same commit, and compares both the image
+config digest and the complete registry manifest digest.
 EOF
 }
 
@@ -81,6 +81,7 @@ if [[ "$requested_commit" != "$current_commit" ]]; then
 fi
 
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --pretty=%ct)}"
+export SOURCE_DATE_EPOCH
 
 declare -a CLEANUP_TARGETS=()
 declare -a CLEANUP_DIRS=()
@@ -209,10 +210,12 @@ build_attestor_once() {
     --platform linux/amd64 \
     --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
     --metadata-file "$metadata_file" \
-    --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime-attestor:${requested_commit}" \
+    --provenance=false \
+    --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime-attestor:${requested_commit},oci-mediatypes=true,compression=gzip,compression-level=9,force-compression=true,rewrite-timestamp=true" \
     services/attestor
 
   attestor_local="$(config_digest_from_metadata "$metadata_file")"
+  attestor_local_manifest="$(metadata_value "$metadata_file" "containerimage.digest")"
   rm -f "$metadata_file"
 }
 
@@ -240,10 +243,12 @@ build_browser_runtime_once() {
     --build-arg "UBUNTU_SNAPSHOT=${ubuntu_snapshot}" \
     --build-context "minimal-vnc-artifacts=${artifact_dir}" \
     --metadata-file "$metadata_file" \
-    --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime:${requested_commit}" \
+    --provenance=false \
+    --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime:${requested_commit},oci-mediatypes=true,compression=gzip,compression-level=9,force-compression=true,rewrite-timestamp=true" \
     images/minimal-vnc-desktop
 
   browser_runtime_local="$(config_digest_from_metadata "$metadata_file")"
+  browser_runtime_local_manifest="$(metadata_value "$metadata_file" "containerimage.digest")"
   rm -f "$metadata_file"
 }
 
@@ -256,10 +261,14 @@ fi
 
 attestor_published=""
 attestor_local=""
+attestor_published_manifest=""
+attestor_local_manifest=""
 attestor_published_ref=""
 attestor_local_layout_dir=""
 browser_runtime_published=""
 browser_runtime_local=""
+browser_runtime_published_manifest=""
+browser_runtime_local_manifest=""
 browser_runtime_published_ref=""
 browser_runtime_local_layout_dir=""
 
@@ -269,27 +278,43 @@ for service in "${services[@]}"; do
       echo "Comparing published and local browser-runtime-attestor digests..."
       attestor_published_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-runtime-attestor:${requested_commit}"
       attestor_published="$(pull_published_image browser-runtime-attestor)"
+      attestor_published_manifest="$(pull_published_repo_digest browser-runtime-attestor)"
       build_attestor_once
       ;;
     browser-runtime)
       echo "Comparing published and local browser-runtime digests..."
       browser_runtime_published_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-runtime:${requested_commit}"
       browser_runtime_published="$(pull_published_image browser-runtime)"
+      browser_runtime_published_manifest="$(pull_published_repo_digest browser-runtime)"
       build_browser_runtime_once
       ;;
   esac
 done
 
-python3 - "$selector" "$SOURCE_DATE_EPOCH" \
-  "$requested_commit" "$attestor_published" "$attestor_local" \
-  "$browser_runtime_published" "$browser_runtime_local" <<'PY'
+python3 - "$selector" "$SOURCE_DATE_EPOCH" "$requested_commit" \
+  "$attestor_published" "$attestor_local" \
+  "$attestor_published_manifest" "$attestor_local_manifest" \
+  "$browser_runtime_published" "$browser_runtime_local" \
+  "$browser_runtime_published_manifest" "$browser_runtime_local_manifest" <<'PY'
 from __future__ import annotations
 
 import json
 import pathlib
 import sys
 
-selector, source_date_epoch, commit_sha, att_published, att_local, browser_published, browser_local = sys.argv[1:]
+(
+    selector,
+    source_date_epoch,
+    commit_sha,
+    att_published,
+    att_local,
+    att_published_manifest,
+    att_local_manifest,
+    browser_published,
+    browser_local,
+    browser_published_manifest,
+    browser_local_manifest,
+) = sys.argv[1:]
 source_date_epoch = int(source_date_epoch)
 
 results = {}
@@ -298,20 +323,31 @@ if selector in {"all", "browser-runtime-attestor"}:
     results["browser-runtime-attestor"] = {
         "published_config_digest": att_published,
         "local_config_digest": att_local,
-        "match": bool(att_published) and att_published == att_local,
+        "config_match": bool(att_published) and att_published == att_local,
+        "published_manifest_digest": att_published_manifest,
+        "local_manifest_digest": att_local_manifest,
+        "manifest_match": bool(att_published_manifest)
+        and att_published_manifest == att_local_manifest,
     }
 
 if selector in {"all", "browser-runtime"}:
     results["browser-runtime"] = {
         "published_config_digest": browser_published,
         "local_config_digest": browser_local,
-        "match": bool(browser_published) and browser_published == browser_local,
+        "config_match": bool(browser_published) and browser_published == browser_local,
+        "published_manifest_digest": browser_published_manifest,
+        "local_manifest_digest": browser_local_manifest,
+        "manifest_match": bool(browser_published_manifest)
+        and browser_published_manifest == browser_local_manifest,
     }
+
+for result in results.values():
+    result["match"] = result["config_match"] and result["manifest_match"]
 
 payload = {
     "commit_sha": commit_sha,
     "source_date_epoch": source_date_epoch,
-    "registry_policy": "immutable tags; verification compares published image config digests with local rebuilds",
+    "registry_policy": "immutable tags; verification compares config and registry manifest digests with local rebuilds",
     "results": results,
 }
 
@@ -322,20 +358,37 @@ json_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 lines = [
     "## Reproducible Image Verification",
     "",
-    "This check pulls the published immutable image for the requested commit, rebuilds locally from the same commit, and compares the resulting image config digests.",
+    "This check pulls the published immutable image for the requested commit, rebuilds locally from the same commit, and compares config and registry manifest digests.",
     "",
     f"Commit SHA: `{commit_sha}`",
     f"Source date epoch: `{source_date_epoch}`",
-    "Registry policy: immutable tags; verification compares published image config digests with local rebuilds",
+    "Registry policy: immutable tags; verification compares config and registry manifest digests with local rebuilds",
     "",
-    "| Image | Published config | Local rebuild config | Match |",
+    "| Image | Config match | Manifest match | Overall |",
     "| --- | --- | --- | --- |",
 ]
 
 for image_name, result in results.items():
-    match = "yes" if result["match"] else "no"
+    config_match = "yes" if result["config_match"] else "no"
+    manifest_match = "yes" if result["manifest_match"] else "no"
+    overall_match = "yes" if result["match"] else "no"
     lines.append(
-        f"| `{image_name}` | `{result['published_config_digest']}` | `{result['local_config_digest']}` | `{match}` |"
+        f"| `{image_name}` | `{config_match}` | `{manifest_match}` | `{overall_match}` |"
+    )
+
+lines.append("")
+
+for image_name, result in results.items():
+    lines.extend(
+        [
+            f"### `{image_name}` digests",
+            "",
+            f"  - Published config: `{result['published_config_digest']}`",
+            f"  - Local config: `{result['local_config_digest']}`",
+            f"  - Published manifest: `{result['published_manifest_digest']}`",
+            f"  - Local manifest: `{result['local_manifest_digest']}`",
+            "",
+        ]
     )
 
 markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -344,9 +397,12 @@ PY
 
 check_failed=0
 
-if [[ -n "$attestor_published" && "$attestor_published" != "$attestor_local" ]]; then
+if [[ -n "$attestor_published" ]] \
+  && { [[ "$attestor_published" != "$attestor_local" ]] \
+    || [[ "$attestor_published_manifest" != "$attestor_local_manifest" ]]; }; then
   check_failed=1
-  if [[ -n "$attestor_published_ref" && -n "$attestor_local_layout_dir" ]]; then
+  if [[ "$attestor_published" != "$attestor_local" ]] \
+    && [[ -n "$attestor_published_ref" && -n "$attestor_local_layout_dir" ]]; then
     python3 "$SCRIPT_DIR/diff-image-layers.py" \
       --service browser-runtime-attestor \
       --published-image-ref "$attestor_published_ref" \
@@ -356,9 +412,12 @@ if [[ -n "$attestor_published" && "$attestor_published" != "$attestor_local" ]];
   fi
 fi
 
-if [[ -n "$browser_runtime_published" && "$browser_runtime_published" != "$browser_runtime_local" ]]; then
+if [[ -n "$browser_runtime_published" ]] \
+  && { [[ "$browser_runtime_published" != "$browser_runtime_local" ]] \
+    || [[ "$browser_runtime_published_manifest" != "$browser_runtime_local_manifest" ]]; }; then
   check_failed=1
-  if [[ -n "$browser_runtime_published_ref" && -n "$browser_runtime_local_layout_dir" ]]; then
+  if [[ "$browser_runtime_published" != "$browser_runtime_local" ]] \
+    && [[ -n "$browser_runtime_published_ref" && -n "$browser_runtime_local_layout_dir" ]]; then
     python3 "$SCRIPT_DIR/diff-image-layers.py" \
       --service browser-runtime \
       --published-image-ref "$browser_runtime_published_ref" \
@@ -371,11 +430,19 @@ fi
 if (( check_failed )); then
   echo >&2
   echo "Reproducibility check failed for:" >&2
-  if [[ -n "$attestor_published" && "$attestor_published" != "$attestor_local" ]]; then
-    echo "  - browser-runtime-attestor: published=${attestor_published} local=${attestor_local}" >&2
+  if [[ -n "$attestor_published" ]] \
+    && { [[ "$attestor_published" != "$attestor_local" ]] \
+      || [[ "$attestor_published_manifest" != "$attestor_local_manifest" ]]; }; then
+    echo "  - browser-runtime-attestor:" >&2
+    echo "      config: published=${attestor_published} local=${attestor_local}" >&2
+    echo "      manifest: published=${attestor_published_manifest} local=${attestor_local_manifest}" >&2
   fi
-  if [[ -n "$browser_runtime_published" && "$browser_runtime_published" != "$browser_runtime_local" ]]; then
-    echo "  - browser-runtime: published=${browser_runtime_published} local=${browser_runtime_local}" >&2
+  if [[ -n "$browser_runtime_published" ]] \
+    && { [[ "$browser_runtime_published" != "$browser_runtime_local" ]] \
+      || [[ "$browser_runtime_published_manifest" != "$browser_runtime_local_manifest" ]]; }; then
+    echo "  - browser-runtime:" >&2
+    echo "      config: published=${browser_runtime_published} local=${browser_runtime_local}" >&2
+    echo "      manifest: published=${browser_runtime_published_manifest} local=${browser_runtime_local_manifest}" >&2
   fi
   exit 1
 fi
