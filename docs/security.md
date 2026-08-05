@@ -122,6 +122,44 @@ The gateway currently verifies one public key. JWT rotation invalidates active
 session URLs unless sessions are drained or the verifier is extended for key
 overlap. See [Secrets](secrets.md).
 
+## Repository secret hygiene
+
+CI scans every new commit range with Gitleaks before builds run. The two
+allowlisted matches in `.gitleaks.toml` are fixed protocol/test strings, not
+credentials; keep exceptions exact and review any proposed expansion.
+
+Before changing this repository from private to public:
+
+1. Rotate every credential that ever appeared in Git, even if a scanner cannot
+   verify that it is still active. Prioritize JWT signing keys, database
+   passwords, service tokens, cloud credentials, and registry credentials.
+2. Replace the repository history with a reviewed clean root or fully filter
+   the affected objects.
+3. Delete or rewrite every remote branch and tag that can reach the old
+   objects. Rewriting only `main` is insufficient; backup refs preserve the
+   exposure.
+4. Re-clone the remote into an empty directory and scan all reachable refs with
+   both Gitleaks and a verifier-backed scanner such as TruffleHog.
+5. Enable GitHub secret scanning and push protection before accepting new
+   contributions.
+6. Only then make the repository public.
+
+GHCR packages may be published independently after their Docker build contexts
+and final filesystems have been scanned. Confirm that ignored local keys and
+environment files cannot enter `COPY . .` layers, and verify anonymous access
+to every documented image after changing package visibility.
+
+Inventory remote refs before and after the reset:
+
+```bash
+git ls-remote --heads --tags origin
+```
+
+History rewriting cannot revoke credentials or remove copies from forks,
+clones, caches, build logs, or previously published artifacts. Rotation is the
+security boundary; history cleanup reduces continued discovery and accidental
+reuse.
+
 ## Public control plane
 
 The control plane contains both client APIs and `/admin`. If clients require a

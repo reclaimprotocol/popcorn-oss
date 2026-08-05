@@ -18,6 +18,11 @@ tag.
 The HA Redis and OTEL agent use third-party images configured by chart values.
 Session extensions bring their own operator-owned images.
 
+The official GHCR packages must be public so the default images do not require
+an `imagePullSecret`; CI verifies anonymous access after publishing. The
+`latest` and `main` aliases follow the latest successful build from `main`; a
+`v*` release tag never moves either alias backward.
+
 ## Production pinning
 
 Platform services share `registry` and `imageTag`; the browser and attestor have

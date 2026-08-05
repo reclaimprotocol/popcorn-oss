@@ -17,12 +17,56 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan new commits
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            log_opts="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+          elif [[ "${EVENT_NAME}" == "push" ]] \
+            && [[ -n "${BEFORE_SHA}" ]] \
+            && [[ ! "${BEFORE_SHA}" =~ ^0+$ ]] \
+            && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            log_opts="${BEFORE_SHA}..${GITHUB_SHA}"
+          elif git rev-parse "${GITHUB_SHA}^" >/dev/null 2>&1; then
+            log_opts="${GITHUB_SHA}^..${GITHUB_SHA}"
+          else
+            log_opts="${GITHUB_SHA}"
+          fi
+
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/repo:ro" \
+            --workdir /repo \
+            "${GITLEAKS_IMAGE}" \
+            git \
+            --config=/repo/.gitleaks.toml \
+            --log-opts="${log_opts}" \
+            --no-banner \
+            --redact \
+            /repo
+
   documentation:
     name: Service documentation
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Require a README for every service
         shell: bash
@@ -41,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Verify browser redistribution notices
         shell: bash
@@ -66,10 +110,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: stable
           cache-dependency-path: |
@@ -102,10 +146,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: latest
 
@@ -156,10 +200,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Helm
-        uses: azure/setup-helm@v4
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Render OSS examples
         shell: bash
@@ -243,7 +287,7 @@ jobs:
             context: services/control-plane
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Log in to GHCR
         if: github.event_name != 'pull_request' && github.repository == 'reclaimprotocol/popcorn-oss'
@@ -260,7 +304,7 @@ jobs:
           image="ghcr.io/${repo}/${{ matrix.service }}"
           refs=("${image}:sha-${GITHUB_SHA}")
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            refs+=("${image}:${GITHUB_REF_NAME}" "${image}:latest")
+            refs+=("${image}:${GITHUB_REF_NAME}")
           elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
             refs+=("${image}:main" "${image}:latest")
           else
@@ -283,3 +327,22 @@ jobs:
               docker push "$ref"
             done
           fi
+
+  published-images:
+    name: Public GHCR images
+    if: github.event_name != 'pull_request' && github.repository == 'reclaimprotocol/popcorn-oss'
+    needs: docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Verify anonymous image access
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in pool-manager gateway ttl-controller control-plane; do
+            docker manifest inspect \
+              "ghcr.io/reclaimprotocol/popcorn-oss/${service}:sha-${GITHUB_SHA}" \
+              >/dev/null
+          done
