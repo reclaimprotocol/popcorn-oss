@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { renderClientsViewHtml, renderShellHtml, type AdminView } from './admin-ui';
+import { renderClientsViewHtml, renderClustersViewHtml, renderShellHtml, type AdminView } from './admin-ui';
 
 const views: Array<{ view: AdminView; pagePath: string; fragmentPath: string }> = [
   { view: 'clients', pagePath: '/admin/clients', fragmentPath: '/admin/ui/clients' },
@@ -16,12 +16,39 @@ describe('admin shell navigation', () => {
     expect(html).toContain(`id="admin-content" hx-get="${fragmentPath}"`);
   });
 
+  test('preserves a selected region when the clusters page is loaded directly', async () => {
+    const html = await renderShellHtml('clusters', '/admin/ui/clusters?region=us-central1');
+    expect(html).toContain('id="admin-content" hx-get="/admin/ui/clusters?region=us-central1"');
+  });
+
   test('links every view to a refreshable page URL', async () => {
     const html = await renderShellHtml();
 
     for (const { pagePath } of views) {
       expect(html).toContain(`href="${pagePath}"`);
     }
+  });
+
+  test('prioritizes analytics, then clusters, then clients in navigation', async () => {
+    const html = await renderShellHtml();
+    const analytics = html.indexOf('data-tab="analytics"');
+    const clusters = html.indexOf('data-tab="clusters"');
+    const clients = html.indexOf('data-tab="clients"');
+
+    expect(analytics).toBeGreaterThan(-1);
+    expect(analytics).toBeLessThan(clusters);
+    expect(clusters).toBeLessThan(clients);
+    expect(html).toContain('class="tab-button active" data-tab="analytics"');
+  });
+
+  test('uses the redesigned sidebar shell and responsive workspace navigation', async () => {
+    const html = await renderShellHtml('clients');
+
+    expect(html).toContain('class="app-shell"');
+    expect(html).toContain('class="app-sidebar"');
+    expect(html).toContain('class="mobile-header"');
+    expect(html).toContain('class="environment-chip"');
+    expect(html).toContain('hx-swap="innerHTML scroll:top"');
   });
 
   test('includes favicon, app icon, and browser theme metadata', async () => {
@@ -31,7 +58,7 @@ describe('admin shell navigation', () => {
     expect(html).toContain('rel="icon" href="/favicon.ico?v=brand-kernel-1"');
     expect(html).toContain('rel="apple-touch-icon"');
     expect(html).toContain('rel="manifest"');
-    expect(html).toContain('name="theme-color" content="#0d141b"');
+    expect(html).toContain('name="theme-color" content="#0b0c0f"');
     expect(html).toContain('class="brand-mark"');
   });
 });
@@ -49,6 +76,10 @@ describe('client cluster access controls', () => {
   test('creates clients with selected-cluster mode and an empty safe default', async () => {
     const html = await renderClientsViewHtml({ ...clientViewBase, clients: [] });
 
+    expect(html).toContain('clients-table-panel');
+    expect(html).toContain('Client directory');
+    expect(html).toContain('data-dialog-open="create-client-dialog"');
+    expect(html).toContain('id="create-client-dialog" class="admin-dialog"');
     expect(html).toContain('name="clusterAccessMode" value="selected" checked');
     expect(html).toContain('Leaving every cluster unchecked denies new sessions.');
     expect(html).toContain('value="gcp-us-central1-popcorn"');
@@ -68,7 +99,7 @@ describe('client cluster access controls', () => {
       }],
     });
 
-    expect(html).toContain('all normal clusters · legacy');
+    expect(html).toContain('All normal clusters (legacy)');
     expect(html).toContain('name="clusterAccessMode" value="all" checked');
     expect(html).toContain('name="confirmAllClusters" value="yes"');
     expect(html).toContain('every current and future normal cluster');
@@ -88,6 +119,7 @@ describe('client cluster access controls', () => {
     });
     expect(selectedHtml).toMatch(/value="gcp-us-central1-popcorn" checked/);
     expect(selectedHtml).toContain('hx-patch="/admin/ui/clients/client_scoped/access"');
+    expect(selectedHtml).toContain('data-dialog-open="client-access-client_scoped"');
 
     const reservedHtml = await renderClientsViewHtml({
       ...clientViewBase,
@@ -102,5 +134,52 @@ describe('client cluster access controls', () => {
     });
     expect(reservedHtml).toContain('Built-in system client access cannot be changed here.');
     expect(reservedHtml).toContain('<fieldset disabled="">');
+  });
+});
+
+describe('cluster workspace layout', () => {
+  test('uses a scalable region selector and filterable pod inventory', async () => {
+    const html = await renderClustersViewHtml({
+      selectedRegion: 'us-central1',
+      regions: [{
+        name: 'us-central1',
+        clusterName: 'gcp-us-central1-popcorn',
+        enabled: true,
+        publicGatewayUrl: 'http://localhost:8080',
+        healthy: true,
+        servers: [{ name: 'browser-pod-01', status: 'Allocated', sessionId: 'session-01' }],
+        error: null,
+      }],
+    });
+
+    expect(html).toContain('class="clusters-layout-flat"');
+    expect(html).toContain('class="cluster-command-bar"');
+    expect(html).toContain('id="region-scope-select"');
+    expect(html).toContain('data-pod-inventory');
+    expect(html).toContain('data-pod-search');
+    expect(html).toContain('data-pod-status');
+    expect(html).toContain('data-pod-status-value="allocated"');
+    expect(html).toContain('data-dialog-open="create-pod-dialog"');
+    expect(html).toContain('class="cluster-operations"');
+    expect(html).not.toContain('class="region-tabs"');
+    expect(html).not.toContain('class="region-rail"');
+    expect(html).not.toContain('class="cluster-detail-stack"');
+  });
+
+  test('keeps every region available without rendering an expanding tab strip', async () => {
+    const regions = Array.from({ length: 24 }, (_, index) => ({
+      name: `region-${index + 1}`,
+      clusterName: `cluster-${index + 1}`,
+      enabled: true,
+      publicGatewayUrl: `https://region-${index + 1}.example.test`,
+      healthy: true,
+      servers: [],
+      error: null,
+    }));
+    const html = await renderClustersViewHtml({ regions });
+    const scopeStart = html.indexOf('id="region-scope-select"');
+    const scopeMarkup = html.slice(scopeStart, html.indexOf('</select>', scopeStart));
+    expect((scopeMarkup.match(/<option value="region-/g) || []).length).toBe(24);
+    expect(html).not.toContain('class="region-tab');
   });
 });

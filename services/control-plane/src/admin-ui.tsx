@@ -115,10 +115,19 @@ export interface ActionNotice {
 export type AdminView = 'clients' | 'clusters' | 'analytics';
 
 const ADMIN_VIEWS: Record<AdminView, { pagePath: string; fragmentPath: string; label: string }> = {
-  clients: { pagePath: '/admin/clients', fragmentPath: '/admin/ui/clients', label: 'Clients' },
-  clusters: { pagePath: '/admin/clusters', fragmentPath: '/admin/ui/clusters', label: 'Clusters' },
   analytics: { pagePath: '/admin/analytics', fragmentPath: '/admin/ui/analytics', label: 'Analytics' },
+  clusters: { pagePath: '/admin/clusters', fragmentPath: '/admin/ui/clusters', label: 'Clusters' },
+  clients: { pagePath: '/admin/clients', fragmentPath: '/admin/ui/clients', label: 'Clients' },
 };
+
+function NavIcon({ view }: { view: AdminView }) {
+  return <span class={`nav-icon nav-icon-${view}`} aria-hidden="true"><i></i><i></i><i></i></span>;
+}
+
+function ActionIcon({ name }: { name: 'refresh' | 'plus' | 'logout' }) {
+  if (name === 'refresh') return <span class="action-icon action-icon-refresh" aria-hidden="true">↻</span>;
+  return <span class={`action-icon action-icon-${name}`} aria-hidden="true"></span>;
+}
 
 function formatDate(value: Date | string | null | undefined) {
   if (!value) return '-';
@@ -184,6 +193,10 @@ function percent(part: number, total: number) {
   return Math.max(0, Math.min(100, Math.round((part / total) * 100)));
 }
 
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return count === 1 ? singular : plural;
+}
+
 function clientQuery(clientId: string | null | undefined) {
   return clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
 }
@@ -196,8 +209,8 @@ export async function renderFragment(node: any) {
   return await node.toString();
 }
 
-export function renderShellHtml(activeView: AdminView = 'clients') {
-  return renderHtml(<AdminShell activeView={activeView} />);
+export function renderShellHtml(activeView: AdminView = 'analytics', initialFragmentPath?: string) {
+  return renderHtml(<AdminShell activeView={activeView} initialFragmentPath={initialFragmentPath} />);
 }
 
 export function renderClientsViewHtml(props: Parameters<typeof ClientsView>[0]) {
@@ -216,79 +229,136 @@ export function renderAnalyticsViewHtml(props: Parameters<typeof AnalyticsView>[
   return renderFragment(<AnalyticsView {...props} />);
 }
 
-export function AdminShell({ activeView = 'clients' }: { activeView?: AdminView }) {
+export function AdminShell({ activeView = 'analytics', initialFragmentPath }: { activeView?: AdminView; initialFragmentPath?: string }) {
   const initialView = ADMIN_VIEWS[activeView];
   return (
     <html lang="en" data-theme="dark">
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <meta name="theme-color" content="#0d141b" />
+        <meta name="theme-color" content="#0b0c0f" />
         <title>Popcorn Control Plane</title>
         <link rel="icon" type="image/svg+xml" href="/admin/assets/site-icon.svg?v=brand-kernel-1" />
         <link rel="icon" href="/favicon.ico?v=brand-kernel-1" sizes="any" />
         <link rel="icon" type="image/png" sizes="32x32" href="/admin/assets/favicon-32.png?v=brand-kernel-1" />
         <link rel="apple-touch-icon" sizes="180x180" href="/admin/assets/apple-touch-icon.png?v=brand-kernel-1" />
         <link rel="manifest" href="/admin/assets/site.webmanifest?v=brand-kernel-1" />
-        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css" />
         <link rel="stylesheet" href="/admin/assets/admin.css" />
         <script src="https://unpkg.com/htmx.org@2.0.4"></script>
       </head>
       <body>
-        <header class="app-header">
-          <div class="brand-lockup">
-            <img class="brand-mark" src="/admin/assets/site-icon.svg?v=brand-kernel-1" alt="" width="40" height="40" />
-            <div class="brand-block">
-              <span class="eyebrow">Control Plane</span>
-              <h1>Popcorn Operations</h1>
-              <p>Route client sessions across configured regions.</p>
-            </div>
-          </div>
-          <form method="post" action="/admin/logout">
-            <button type="submit" class="secondary">Sign out</button>
-          </form>
-        </header>
-        <nav class="view-tabs" aria-label="Admin views">
-          {(Object.entries(ADMIN_VIEWS) as [AdminView, typeof initialView][]).map(([view, config]) => (
-            <a
-              class={`tab-button${view === activeView ? ' active' : ''}`}
-              data-tab={view}
-              href={config.pagePath}
-              hx-get={config.fragmentPath}
-              hx-push-url={config.pagePath}
-              hx-target="#admin-content"
-              hx-swap="innerHTML"
-              aria-current={view === activeView ? 'page' : undefined}
-            >
-              {config.label}
+        <div class="app-shell">
+          <aside class="app-sidebar">
+            <a class="brand-lockup" href="/admin/analytics" aria-label="Popcorn Control Plane">
+              <span class="brand-mark-wrap"><img class="brand-mark" src="/admin/assets/site-icon.svg?v=brand-kernel-1" alt="" width="40" height="40" /></span>
+              <span class="brand-block"><strong>Popcorn</strong><small>Control plane</small></span>
             </a>
-          ))}
-        </nav>
-        <main id="admin-content" hx-get={initialView.fragmentPath} hx-trigger="load" hx-swap="innerHTML">
-          <section aria-busy="true">Loading Control Plane...</section>
-        </main>
+            <div class="nav-label">Workspace</div>
+            <nav class="view-tabs" aria-label="Admin views">
+              {(Object.entries(ADMIN_VIEWS) as [AdminView, typeof initialView][]).map(([view, config]) => (
+                <a
+                  class={`tab-button${view === activeView ? ' active' : ''}`}
+                  data-tab={view}
+                  href={config.pagePath}
+                  hx-get={config.fragmentPath}
+                  hx-push-url={config.pagePath}
+                  hx-target="#admin-content"
+                  hx-swap="innerHTML scroll:top"
+                  aria-current={view === activeView ? 'page' : undefined}
+                >
+                  <NavIcon view={view} />
+                  <span>{config.label}</span>
+                </a>
+              ))}
+            </nav>
+            <div class="sidebar-footer">
+              <div class="environment-chip"><span></span><div><strong>Control plane</strong><small>Operational</small></div></div>
+              <form method="post" action="/admin/logout">
+                <button type="submit" class="icon-button sign-out"><ActionIcon name="logout" /><span>Sign out</span></button>
+              </form>
+            </div>
+          </aside>
+          <header class="mobile-header">
+            <div class="brand-lockup">
+              <img class="brand-mark" src="/admin/assets/site-icon.svg?v=brand-kernel-1" alt="" width="32" height="32" />
+              <span class="brand-block"><strong>Popcorn</strong><small>Control plane</small></span>
+            </div>
+          </header>
+          <main id="admin-content" hx-get={initialFragmentPath || initialView.fragmentPath} hx-trigger="load" hx-swap="innerHTML">
+            <section class="loading-state" aria-busy="true"><span></span>Loading workspace…</section>
+          </main>
+        </div>
         <script>
           {raw(`
+          let resetContentScroll = false;
           document.body.addEventListener('htmx:beforeRequest', (event) => {
             const tab = event.target.closest('[data-tab]');
             if (!tab) return;
+            resetContentScroll = true;
             document.querySelectorAll('[data-tab]').forEach((node) => {
-              node.classList.toggle('active', node === tab);
+              const active = node === tab;
+              node.classList.toggle('active', active);
+              if (active) node.setAttribute('aria-current', 'page');
+              else node.removeAttribute('aria-current');
             });
+            document.title = tab.textContent.trim() + ' · Popcorn Control Plane';
           });
           const preservedScroll = new Map();
+          const syncAccessForm = (form) => {
+            if (!form) return;
+            const submit = form.querySelector('[data-access-submit]');
+            if (!submit || submit.hasAttribute('data-always-disabled')) return;
+            const allClusters = form.querySelector('input[name="clusterAccessMode"][value="all"]')?.checked;
+            const confirmed = form.querySelector('input[name="confirmAllClusters"]')?.checked;
+            submit.disabled = Boolean(allClusters && !confirmed);
+          };
+          const syncPodInventory = (root) => {
+            if (!root) return;
+            const query = (root.querySelector('[data-pod-search]')?.value || '').trim().toLowerCase();
+            const status = root.querySelector('[data-pod-status]')?.value || 'all';
+            const rows = Array.from(root.querySelectorAll('[data-pod-row]'));
+            let visible = 0;
+            rows.forEach((row) => {
+              const matchesQuery = !query || (row.getAttribute('data-pod-search-value') || '').includes(query);
+              const rowStatus = row.getAttribute('data-pod-status-value') || 'other';
+              const matchesStatus = status === 'all' || rowStatus === status;
+              row.hidden = !(matchesQuery && matchesStatus);
+              if (!row.hidden) visible += 1;
+            });
+            const visibleCount = root.querySelector('[data-visible-pods]');
+            if (visibleCount) visibleCount.textContent = String(visible);
+            const filteredEmpty = root.querySelector('[data-filtered-pod-empty]');
+            if (filteredEmpty) filteredEmpty.hidden = visible > 0 || rows.length === 0;
+          };
+          const resetAdminContentScroll = () => {
+            const content = document.getElementById('admin-content');
+            if (!content) return;
+            content.scrollTop = 0;
+            content.scrollLeft = 0;
+          };
           document.body.addEventListener('htmx:beforeSwap', () => {
             document.querySelectorAll('[data-preserve-scroll]').forEach((node) => {
               preservedScroll.set(node.getAttribute('data-preserve-scroll'), node.scrollTop);
             });
           });
+          document.body.addEventListener('htmx:afterSwap', () => {
+            if (resetContentScroll) resetAdminContentScroll();
+          });
           document.body.addEventListener('htmx:afterSettle', () => {
+            if (resetContentScroll) {
+              resetAdminContentScroll();
+              requestAnimationFrame(resetAdminContentScroll);
+              setTimeout(resetAdminContentScroll, 100);
+              resetContentScroll = false;
+            }
             document.querySelectorAll('[data-preserve-scroll]').forEach((node) => {
               const key = node.getAttribute('data-preserve-scroll');
               if (preservedScroll.has(key)) {
                 node.scrollTop = preservedScroll.get(key);
               }
             });
+            document.querySelectorAll('[data-access-form]').forEach(syncAccessForm);
+            document.querySelectorAll('[data-pod-inventory]').forEach(syncPodInventory);
           });
           document.body.addEventListener('htmx:afterRequest', (event) => {
             if (event.detail.failed) return;
@@ -296,6 +366,30 @@ export function AdminShell({ activeView = 'clients' }: { activeView?: AdminView 
             if (source && source.matches('[data-clear-on-success]')) {
               source.reset();
             }
+          });
+          document.body.addEventListener('click', (event) => {
+            const openTrigger = event.target.closest('[data-dialog-open]');
+            if (openTrigger) {
+              const dialog = document.getElementById(openTrigger.getAttribute('data-dialog-open'));
+              dialog?.showModal();
+              syncAccessForm(dialog?.querySelector('[data-access-form]'));
+              return;
+            }
+            const closeTrigger = event.target.closest('[data-dialog-close]');
+            if (closeTrigger) {
+              closeTrigger.closest('dialog')?.close();
+              return;
+            }
+            if (event.target.matches('dialog[data-modal]')) {
+              event.target.close();
+            }
+          });
+          document.body.addEventListener('change', (event) => {
+            syncAccessForm(event.target.closest('[data-access-form]'));
+            syncPodInventory(event.target.closest('[data-pod-inventory]'));
+          });
+          document.body.addEventListener('input', (event) => {
+            syncPodInventory(event.target.closest('[data-pod-inventory]'));
           });
           `)}
         </script>
@@ -313,44 +407,81 @@ export function ClientsView(props: {
   secretNotice?: ClientSecretNotice | null;
   notice?: ActionNotice | null;
 }) {
-  const selectedClient = props.clients.find((client) => client.id === props.selectedClientId) || props.clients[0] || null;
+  const selectedClient = props.clients.find((client) => client.id === props.selectedClientId) || null;
   const counts = clientCounts(props.clients);
   const selectedActiveSessions = props.sessions.filter((session) => session.status === 'active').length;
   return (
     <div class="workspace clients-workspace">
-      <section class="panel command-panel">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Client Management</span>
-            <h2>Directory</h2>
-            <p>Create clients, rotate access by revoking old credentials, and inspect session ownership.</p>
-          </div>
-          <button
-            type="button"
-            class="secondary"
-            hx-get={`/admin/ui/clients${clientQuery(selectedClient?.id)}`}
-            hx-target="#admin-content"
-            hx-swap="innerHTML"
-          >
-            Refresh
-          </button>
+      <header class="page-header">
+        <div>
+          <span class="eyebrow">Identity & access</span>
+          <h1>Clients</h1>
+          <p>Manage credentials, placement access, and session ownership.</p>
         </div>
-        <div class="panel-body stack">
-          <div class="stat-strip three">
-            <Metric label="Total clients" value={String(counts.total)} />
-            <Metric label="Active" value={String(counts.active)} tone="success" />
-            <Metric label="Revoked" value={String(counts.revoked)} tone="danger" />
-          </div>
-          <CreateClientForm clusters={props.clusters} />
-          {props.secretNotice ? <SecretNotice notice={props.secretNotice} /> : null}
-          {props.notice ? <Notice notice={props.notice} /> : null}
-          <ClientList clients={props.clients} selectedClientId={selectedClient?.id} />
+        <div class="page-actions">
+          <button type="button" data-dialog-open="create-client-dialog"><ActionIcon name="plus" /> New client</button>
+          <button type="button" class="secondary icon-button" hx-get={`/admin/ui/clients${clientQuery(selectedClient?.id)}`} hx-target="#admin-content" hx-swap="innerHTML"><ActionIcon name="refresh" /> Refresh</button>
         </div>
+      </header>
+      {!selectedClient && props.secretNotice ? <SecretNotice notice={props.secretNotice} /> : null}
+      {!selectedClient && props.notice ? <Notice notice={props.notice} /> : null}
+      <section class="panel clients-table-panel">
+        <div class="client-table-toolbar">
+          <div><h2>Client directory</h2><p>Credentials with access to the control plane.</p></div>
+          <div class="inline-counts" aria-label="Client summary">
+            <span><strong>{counts.total}</strong> total</span>
+            <span class="success"><strong>{counts.active}</strong> active</span>
+            <span class="danger"><strong>{counts.revoked}</strong> revoked</span>
+          </div>
+        </div>
+        <ClientDirectoryTable clients={props.clients} selectedClientId={selectedClient?.id} />
       </section>
-      <div class="client-detail-stack">
-        <SelectedClientCard client={selectedClient} activeSessions={selectedActiveSessions} clusters={props.clusters} />
-        <ClientSessionsPanel client={selectedClient} sessions={props.sessions} pagination={props.pagination} />
-      </div>
+      <dialog id="create-client-dialog" class="admin-dialog" data-modal="true" aria-labelledby="create-client-title" aria-describedby="create-client-description">
+        <div class="dialog-heading">
+          <div><span class="eyebrow">New credential</span><h2 id="create-client-title">Create client</h2><p id="create-client-description">Set its name and session-placement policy.</p></div>
+          <button type="button" class="dialog-close" data-dialog-close aria-label="Close dialog">×</button>
+        </div>
+        <CreateClientForm clusters={props.clusters} />
+      </dialog>
+      {selectedClient ? (
+        <div class="client-drawer-layer">
+          <button type="button" class="drawer-scrim" aria-label="Close client details" hx-get="/admin/ui/clients" hx-target="#admin-content" hx-swap="innerHTML" hx-push-url="/admin/clients"></button>
+          <aside class="client-drawer" aria-label={`${selectedClient.name} details`}>
+            <div class="drawer-heading"><div><span class="eyebrow">Client details</span><strong>{selectedClient.name}</strong></div><button type="button" class="dialog-close" aria-label="Close client details" hx-get="/admin/ui/clients" hx-target="#admin-content" hx-swap="innerHTML" hx-push-url="/admin/clients">×</button></div>
+            <div class="drawer-content">
+              {props.secretNotice ? <SecretNotice notice={props.secretNotice} /> : null}
+              {props.notice ? <Notice notice={props.notice} /> : null}
+          <SelectedClientCard client={selectedClient} activeSessions={selectedActiveSessions} clusters={props.clusters} />
+          <ClientSessionsPanel client={selectedClient} sessions={props.sessions} pagination={props.pagination} />
+            </div>
+          </aside>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ClientDirectoryTable({ clients, selectedClientId }: { clients: Client[]; selectedClientId?: string | null }) {
+  if (!clients.length) return <div class="empty client-table-empty">No clients yet. Create one to issue your first credential.</div>;
+  return (
+    <div class="table-scroll">
+      <table class="ops-table client-directory-table">
+        <thead><tr><th>Client</th><th>Cluster access</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody>
+          {clients.map((client) => {
+            const access = client.allowedClusters === null ? 'All normal clusters' : client.allowedClusters.length ? `${client.allowedClusters.length} selected` : 'No access';
+            return (
+              <tr class={client.id === selectedClientId ? 'selected' : ''}>
+                <td><strong>{client.name}</strong><small><code>{client.id}</code></small></td>
+                <td><span class={`access-summary ${client.allowedClusters === null ? 'legacy' : client.allowedClusters.length ? 'scoped' : 'none'}`}>{access}</span></td>
+                <td><span class={`status-pill ${client.active ? 'success' : 'danger'}`}>{client.active ? 'active' : 'revoked'}</span></td>
+                <td>{formatDate(client.createdAt)}</td>
+                <td><button type="button" class="secondary view-client" hx-get={`/admin/ui/clients?clientId=${encodeURIComponent(client.id)}`} hx-target="#admin-content" hx-swap="innerHTML" hx-push-url={`/admin/clients?clientId=${encodeURIComponent(client.id)}`}>View details</button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -363,13 +494,14 @@ function CreateClientForm({ clusters }: { clusters: ClientClusterOption[] }) {
       hx-target="#admin-content"
       hx-swap="innerHTML"
       data-clear-on-success="true"
+      data-access-form="true"
     >
-      <label>
-        New client name
-        <input name="name" autocomplete="off" required placeholder="Production app, staging worker..." />
+      <label class="field-label">
+        <span>Client name</span>
+        <input name="name" autocomplete="off" required placeholder="e.g. Production API" />
       </label>
       <ClusterAccessFields clusters={clusters} allowedClusters={[]} prefix="create" />
-      <button type="submit">Create client</button>
+      <div class="dialog-actions"><button type="button" class="secondary" data-dialog-close>Cancel</button><button type="submit" data-access-submit><ActionIcon name="plus" /> Create client</button></div>
     </form>
   );
 }
@@ -388,12 +520,12 @@ function SelectedClientCard({ client, activeSessions, clusters }: {
   }
 
   return (
-    <section class="panel selected-entity">
+    <section class="panel selected-entity client-profile">
       <div class="entity-main">
         <div>
-          <span class="eyebrow">Selected Client</span>
+          <span class="eyebrow">Client profile</span>
           <h2>{client.name}</h2>
-          <code>{client.id}</code>
+          <div class="copy-value"><code>{client.id}</code></div>
         </div>
         <span class={`status-pill ${client.active ? 'success' : 'danger'}`}>{client.active ? 'active' : 'revoked'}</span>
       </div>
@@ -406,16 +538,18 @@ function SelectedClientCard({ client, activeSessions, clusters }: {
           <dt>Active sessions on this page</dt>
           <dd>{activeSessions}</dd>
         </div>
-        <div>
-          <dt>Cluster access</dt>
-          <dd>{client.allowedClusters === null
-            ? <span class="status-pill warning">all normal clusters · legacy</span>
-            : client.allowedClusters.length
-              ? `${client.allowedClusters.length} selected`
-              : <span class="status-pill neutral">no cluster access</span>}</dd>
-        </div>
       </dl>
-      <ClientClusterAccessForm client={client} clusters={clusters} />
+      <div class="entity-footer">
+        <div><strong>Placement access</strong><small>{client.allowedClusters === null ? 'All normal clusters' : client.allowedClusters.length ? `${client.allowedClusters.length} selected clusters` : 'No cluster access'}</small></div>
+        <button type="button" class="secondary" disabled={client.id === 'admin' || client.id === 'x402-public'} data-dialog-open={`client-access-${client.id}`}>Edit cluster access</button>
+      </div>
+      <dialog id={`client-access-${client.id}`} class="admin-dialog access-dialog" data-modal="true" aria-labelledby={`client-access-title-${client.id}`} aria-describedby={`client-access-description-${client.id}`}>
+        <div class="dialog-heading">
+          <div><span class="eyebrow">Placement policy</span><h2 id={`client-access-title-${client.id}`}>Edit cluster access</h2><p id={`client-access-description-${client.id}`}>Control where {client.name} can create new sessions.</p></div>
+          <button type="button" class="dialog-close" data-dialog-close aria-label="Close dialog">×</button>
+        </div>
+        <ClientClusterAccessForm client={client} clusters={clusters} />
+      </dialog>
     </section>
   );
 }
@@ -428,6 +562,7 @@ function ClientClusterAccessForm({ client, clusters }: { client: Client; cluster
       hx-patch={`/admin/ui/clients/${encodeURIComponent(client.id)}/access`}
       hx-target="#admin-content"
       hx-swap="innerHTML"
+      data-access-form="true"
     >
       <div class="access-form-heading">
         <div>
@@ -436,11 +571,11 @@ function ClientClusterAccessForm({ client, clusters }: { client: Client; cluster
             ? 'Built-in system client access cannot be changed here.'
             : 'Changes apply to new session placement. Existing sessions are not moved.'}</small>
         </div>
-        <button type="submit" class="secondary" disabled={reserved}>Save access</button>
       </div>
       <fieldset disabled={reserved}>
         <ClusterAccessFields clusters={clusters} allowedClusters={client.allowedClusters} prefix={`edit-${client.id}`} />
       </fieldset>
+      <div class="dialog-actions"><button type="button" class="secondary" data-dialog-close>Cancel</button><button type="submit" disabled={reserved} data-access-submit data-always-disabled={reserved ? 'true' : undefined}>Save changes</button></div>
     </form>
   );
 }
@@ -454,6 +589,7 @@ function ClusterAccessFields({ clusters, allowedClusters, prefix }: {
   const selected = new Set(allowedClusters || []);
   return (
     <div class="cluster-access-fields">
+      <div class="field-label access-label">Placement policy</div>
       <label class="access-mode-option" for={`${prefix}-selected`}>
         <input id={`${prefix}-selected`} type="radio" name="clusterAccessMode" value="selected" checked={!unrestricted} />
         <span><strong>Selected clusters</strong><small>Safe default. Leaving every cluster unchecked denies new sessions.</small></span>
@@ -488,7 +624,7 @@ function ClusterAccessFields({ clusters, allowedClusters, prefix }: {
 
 function SecretNotice({ notice }: { notice: ClientSecretNotice }) {
   return (
-    <article class="notice success">
+    <article class="notice success" role="status" aria-live="polite">
       <strong>Client created</strong>
       <p>Copy this secret now. It will not be shown again.</p>
       <dl class="secret-grid">
@@ -503,7 +639,7 @@ function SecretNotice({ notice }: { notice: ClientSecretNotice }) {
 
 function Notice({ notice }: { notice: ActionNotice }) {
   return (
-    <article class={`notice ${notice.tone}`}>
+    <article class={`notice ${notice.tone}`} role="status" aria-live="polite">
       <strong>{notice.title}</strong>
       <p>{notice.message}</p>
       {notice.href ? <a href={notice.href} target="_blank" rel="noreferrer">Open session</a> : null}
@@ -559,10 +695,9 @@ export function ClientSessionsPanel({ client, sessions, pagination }: {
   const reserved = client?.id === 'admin' || client?.id === 'x402-public';
   return (
     <section class="panel" id="client-sessions-panel">
-      <div class="section-heading">
+      <div class="panel-heading">
         <div>
-          <span class="eyebrow">Session Ownership</span>
-          <h2>Sessions</h2>
+          <h2>Recent sessions</h2>
           <p>{client ? `Recent sessions created by ${client.name}.` : 'Select a client to inspect sessions.'}</p>
         </div>
         {client ? (
@@ -702,83 +837,83 @@ export function ClustersView({ regions, selectedRegion = 'all', notice }: {
   const selectedRegionDetails = selectedRegion === 'all'
     ? null
     : regions.find((region) => region.name === selectedRegion) || null;
+  const unhealthyRegions = enabledRegions.filter((region) => !region.healthy).length;
   return (
     <div class="workspace clusters-workspace">
-      <section class="panel command-panel cluster-directory-panel">
-        <div class="section-heading">
-          <div>
-            <span class="eyebrow">Cluster Management</span>
-            <h2>Directory</h2>
-            <p>Choose a region to inspect capacity, create pods, and operate current sessions.</p>
-          </div>
+      <header class="page-header">
+        <div>
+          <span class="eyebrow">Infrastructure</span>
+          <h1>Clusters</h1>
+          <p>Monitor regional capacity and operate live browser sessions.</p>
+        </div>
+        <div class="page-actions">
+          <button type="button" data-dialog-open="create-pod-dialog" disabled={!enabledRegions.length}><ActionIcon name="plus" /> New session</button>
           <button
             type="button"
-            class="secondary"
+            class="secondary icon-button"
             hx-get={`/admin/ui/clusters?region=${encodeURIComponent(selectedRegion)}`}
             hx-target="#admin-content"
             hx-swap="innerHTML"
           >
-            Refresh
+            <ActionIcon name="refresh" /> Refresh
           </button>
         </div>
-        <div class="panel-body stack">
-          <div class="stat-strip three">
-            <Metric label="Healthy" value={`${totals.healthy}/${totals.enabled}`} tone={totals.healthy === totals.enabled ? 'success' : 'warning'} />
-            <Metric label="Ready" value={String(totals.ready)} tone={totals.ready > 0 ? 'success' : 'warning'} />
-            <Metric label="Allocated" value={String(totals.allocated)} tone={totals.allocated > 0 ? 'warning' : 'neutral'} />
+      </header>
+      <div class="clusters-layout-flat">
+        <div class="cluster-command-bar">
+          <RegionScopeSelect regions={regions} selectedRegion={selectedRegion} totals={totals} />
+          <div class="fleet-health-strip" aria-label="Fleet health summary">
+            <span class="health-summary healthy"><i></i><strong>{totals.healthy}</strong> healthy</span>
+            <span class={`health-summary ${unhealthyRegions ? 'danger' : 'quiet'}`}><i></i><strong>{unhealthyRegions}</strong> degraded</span>
+            <span class="health-summary quiet"><strong>{regions.length}</strong> {pluralize(regions.length, 'region')}</span>
+            <span class="health-summary quiet"><strong>{totals.total}</strong> {pluralize(totals.total, 'pod')}</span>
           </div>
-          <RegionDirectory regions={regions} selectedRegion={selectedRegion} totals={totals} />
         </div>
-      </section>
-
-      <div class="cluster-detail-stack">
-        <SelectedRegionCard region={selectedRegionDetails} selectedRegion={selectedRegion} totals={totals} />
-
-        <section class="panel allocation-panel">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Allocate Session</span>
-              <h2>Create Pod</h2>
-              <p>Creates a routed admin session in the selected region.</p>
+        <section class="cluster-operations">
+          <SelectedRegionCard region={selectedRegionDetails} selectedRegion={selectedRegion} totals={totals} />
+          {notice ? <Notice notice={notice} /> : null}
+          <div class="pod-inventory" data-pod-inventory>
+            <div class="inventory-heading">
+              <div><h2>Pod inventory</h2><p>{selectedRegion === 'all' ? 'Live capacity across every region' : `Live capacity in ${selectedRegion}`}</p></div>
+              <div class="inventory-tools">
+                <label class="inventory-search">
+                  <span class="sr-only">Search pods</span>
+                  <input type="search" placeholder="Search pod or session" data-pod-search autocomplete="off" />
+                </label>
+                <label class="inventory-status-filter">
+                  <span class="sr-only">Filter pod status</span>
+                  <select data-pod-status aria-label="Filter pod status">
+                    <option value="all">All statuses</option>
+                    <option value="ready">Ready</option>
+                    <option value="allocated">Allocated</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <span class="inventory-count"><strong data-visible-pods>{servers.length}</strong> of {servers.length}</span>
+              </div>
             </div>
-            <form
-              class="cluster-create"
-              hx-post="/admin/ui/sessions"
-              hx-target="#admin-content"
-              hx-swap="innerHTML"
-              data-clear-on-success="true"
-            >
-              <label>
-                Session name
-                <input name="sessionId" placeholder="optional" autocomplete="off" />
-              </label>
-              <label>
-                Region
-                <select name="region" required>
-                  {enabledRegions.map((region) => (
-                    <option value={region.name} selected={region.name === createRegion}>{region.name}</option>
-                  ))}
-                </select>
-              </label>
-              <button type="submit" disabled={!enabledRegions.length}>Create pod</button>
-            </form>
-          </div>
-          {notice ? <div class="panel-body"><Notice notice={notice} /></div> : null}
-        </section>
-
-        <section class="panel pods-panel">
-          <div class="section-heading">
-            <div>
-              <span class="eyebrow">Live Inventory</span>
-              <h2>Current Pods</h2>
-              <p>{selectedRegion === 'all' ? 'All regions' : `${selectedRegion} pods`}</p>
-            </div>
-          </div>
-          <div class="panel-body stack">
             <PodsTable servers={servers} selectedRegion={selectedRegion} />
+            <div class="filtered-empty" data-filtered-pod-empty hidden>No pods match these filters.</div>
           </div>
         </section>
       </div>
+      <dialog id="create-pod-dialog" class="admin-dialog" data-modal="true" aria-labelledby="create-pod-title" aria-describedby="create-pod-description">
+        <div class="dialog-heading">
+          <div><span class="eyebrow">Fleet allocation</span><h2 id="create-pod-title">New browser session</h2><p id="create-pod-description">Allocate a routed browser in an enabled region.</p></div>
+          <button type="button" class="dialog-close" data-dialog-close aria-label="Close dialog">×</button>
+        </div>
+        <form
+          class="cluster-create-dialog"
+          hx-post="/admin/ui/sessions"
+          hx-target="#admin-content"
+          hx-swap="innerHTML"
+          data-clear-on-success="true"
+        >
+          <label class="field-label"><span>Session name</span><input name="sessionId" placeholder="Optional label" autocomplete="off" /></label>
+          <label class="field-label"><span>Region</span><select name="region" required>{enabledRegions.map((region) => <option value={region.name} selected={region.name === createRegion}>{region.name} · {regionStats(region).ready} ready</option>)}</select></label>
+          <div class="dialog-actions"><button type="button" class="secondary" data-dialog-close>Cancel</button><button type="submit" disabled={!enabledRegions.length}><ActionIcon name="plus" /> Create session</button></div>
+        </form>
+      </dialog>
     </div>
   );
 }
@@ -1289,12 +1424,11 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
 
   return (
     <div class="workspace analytics-workspace">
-      {raw(`<style>${ANALYTICS_STYLE}</style>`)}
-
-      <div class="an-topbar">
+      <header class="page-header an-topbar">
         <div class="an-title">
-          <h2>Session Analytics</h2>
-          <p>Live fleet allocation and session lifecycle for the {windowLabel(data.windowHours)}.</p>
+          <span class="eyebrow">Performance</span>
+          <h1>Analytics</h1>
+          <p>Fleet allocation and session lifecycle across the {windowLabel(data.windowHours)}.</p>
         </div>
         <div class="an-controls">
           <select
@@ -1317,10 +1451,10 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
             hx-target="#admin-content"
             hx-swap="innerHTML"
           >
-            Refresh
+            <ActionIcon name="refresh" /> Refresh
           </button>
         </div>
-      </div>
+      </header>
 
       <div class="an-sublabel">Live fleet</div>
       <div class="an-kpis">
@@ -1350,81 +1484,56 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
       </div>
 
       <div class="an-sublabel">Session lifecycle · {windowLabel(data.windowHours)} · TTL {formatDuration(data.configuredTtlSeconds)}</div>
-      <div class="an-kpis">
+      <div class="an-kpis lifecycle-kpis">
         <AnKpi label="Created" value={String(window.created)} hint={`${window.ended} ended`} />
-        <AnKpi label="Avg duration" value={formatDuration(window.avgDurationSeconds)} tone="accent" />
-        <AnKpi label="p50 duration" value={formatDuration(window.p50DurationSeconds)} />
-        <AnKpi label="p95 duration" value={formatDuration(window.p95DurationSeconds)} />
+        <AnKpi label="Avg duration" value={formatDuration(window.avgDurationSeconds)} hint={`p50 ${formatDuration(window.p50DurationSeconds)} · p95 ${formatDuration(window.p95DurationSeconds)}`} tone="accent" />
         <AnKpi label="Throughput" value={`${data.throughput.sessionsPerMinute}`} hint="sessions / min" />
         <AnKpi label="Total session time" value={formatDuration(window.totalDurationSeconds)} />
         <AnKpi
-          label="Allocation p50"
+          label="Allocation latency"
           value={data.allocation.measuredSessions ? `${Math.round(data.allocation.p50LatencyMs)} ms` : '—'}
-          hint={`${data.allocation.measuredSessions} measured`}
-        />
-        <AnKpi
-          label="Allocation p95"
-          value={data.allocation.measuredSessions ? `${Math.round(data.allocation.p95LatencyMs)} ms` : '—'}
-          hint="request → allocated"
+          hint={data.allocation.measuredSessions ? `p50 · p95 ${Math.round(data.allocation.p95LatencyMs)} ms` : 'No measured sessions'}
           tone="accent"
         />
       </div>
 
-      <div class="an-charts">
-        <div class="an-card">
-          <div class="an-card-head">
-            <h3>Sessions created vs ended</h3>
-            <span class="an-card-sub">per interval</span>
+      {hasActivity ? (
+        <div class="an-charts">
+          <div class="an-card">
+            <div class="an-card-head"><h3>Sessions created vs ended</h3><span class="an-card-sub">per interval</span></div>
+            {raw(outcomesChartSvg(series, data.windowHours))}
+            <div class="viz-legend"><LegendItem color={VIZ.deleted} label="Killed" /><LegendItem color={VIZ.expired} label="Expired" /><LegendItem color={VIZ.created} label="Created" /></div>
           </div>
-          {hasActivity ? raw(outcomesChartSvg(series, data.windowHours)) : <div class="viz-empty">No session activity in this window.</div>}
-          <div class="viz-legend">
-            <LegendItem color={VIZ.deleted} label="Killed" />
-            <LegendItem color={VIZ.expired} label="Expired" />
-            <LegendItem color={VIZ.created} label="Created" />
+          <div class="an-card">
+            <div class="an-card-head"><h3>Average session duration</h3><span class="an-card-sub">per interval</span></div>
+            {raw(durationChartSvg(series, data.windowHours))}
+            <div class="viz-legend"><LegendItem color={VIZ.line} label="Avg duration" /></div>
           </div>
-        </div>
-
-        <div class="an-card">
-          <div class="an-card-head">
-            <h3>Average session duration</h3>
-            <span class="an-card-sub">per interval</span>
+          <div class="an-card outcome-card">
+            <div class="an-card-head"><h3>Outcome split</h3><span class="an-card-sub">deleted vs expired</span></div>
+            <div class="donut-row">{raw(outcomeDonutSvg(window.deleted, window.expired))}<div class="viz-legend outcome-legend"><LegendItem color={VIZ.deleted} label={`Killed · ${window.deleted}`} /><LegendItem color={VIZ.expired} label={`Expired · ${window.expired}`} /></div></div>
           </div>
-          {hasActivity ? raw(durationChartSvg(series, data.windowHours)) : <div class="viz-empty">No sessions ended in this window.</div>}
-          <div class="viz-legend">
-            <LegendItem color={VIZ.line} label="Avg duration" />
+          <div class="an-card">
+            <div class="an-card-head"><h3>Allocation by region</h3><span class="an-card-sub">allocated / capacity</span></div>
+            <RegionBreakdown regions={data.byRegion} />
           </div>
-        </div>
-
-        <div class="an-card">
-          <div class="an-card-head">
-            <h3>Outcome split</h3>
-            <span class="an-card-sub">deleted vs expired</span>
-          </div>
-          <div class="donut-row">
-            {raw(outcomeDonutSvg(window.deleted, window.expired))}
-            <div class="viz-legend" style="flex-direction:column;gap:0.5rem">
-              <LegendItem color={VIZ.deleted} label={`Killed · ${window.deleted}`} />
-              <LegendItem color={VIZ.expired} label={`Expired · ${window.expired}`} />
-            </div>
+          <div class="an-card">
+            <div class="an-card-head"><h3>Top clients</h3><span class="an-card-sub">by sessions created</span></div>
+            <TopClients clients={data.topClients} />
           </div>
         </div>
-
-        <div class="an-card">
-          <div class="an-card-head">
-            <h3>Allocation by region</h3>
-            <span class="an-card-sub">allocated / capacity</span>
+      ) : (
+        <div class="analytics-quiet-grid">
+          <div class="analytics-empty-state">
+            <div class="empty-pulse"><span></span></div>
+            <div><h3>No session activity yet</h3><p>Charts will appear when sessions are created or ended in this time range.</p></div>
           </div>
-          <RegionBreakdown regions={data.byRegion} />
-        </div>
-
-        <div class="an-card">
-          <div class="an-card-head">
-            <h3>Top clients</h3>
-            <span class="an-card-sub">by sessions created</span>
+          <div class="an-card">
+            <div class="an-card-head"><h3>Allocation by region</h3><span class="an-card-sub">live capacity</span></div>
+            <RegionBreakdown regions={data.byRegion} />
           </div>
-          <TopClients clients={data.topClients} />
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1436,16 +1545,19 @@ function SelectedRegionCard({ region, selectedRegion, totals }: {
 }) {
   if (!region) {
     return (
-      <section class="panel selected-entity">
-        <div class="entity-main">
+      <header class="cluster-context">
+        <div class="cluster-context-title">
           <div>
-            <span class="eyebrow">Selected Scope</span>
+            <span class="eyebrow">Fleet scope</span>
             <h2>All regions</h2>
-            <code>{totals.enabled} configured</code>
+            <p>Capacity and sessions across {totals.enabled} enabled {pluralize(totals.enabled, 'region')}.</p>
           </div>
-          <span class={`status-pill ${totals.healthy === totals.enabled ? 'success' : 'warning'}`}>{totals.healthy}/{totals.enabled} healthy</span>
         </div>
-        <dl class="entity-meta">
+        <dl class="cluster-facts">
+          <div class="cluster-health-fact">
+            <dt>Health</dt>
+            <dd><span class={`status-pill ${totals.healthy === totals.enabled ? 'success' : 'warning'}`}>{totals.healthy}/{totals.enabled} healthy</span></dd>
+          </div>
           <div>
             <dt>Ready pods</dt>
             <dd>{totals.ready}</dd>
@@ -1454,25 +1566,34 @@ function SelectedRegionCard({ region, selectedRegion, totals }: {
             <dt>Allocated pods</dt>
             <dd>{totals.allocated}</dd>
           </div>
+          <div>
+            <dt>Total pods</dt>
+            <dd>{totals.total}</dd>
+          </div>
+          <div>
+            <dt>Utilization</dt>
+            <dd>{percent(totals.allocated, totals.total)}%</dd>
+          </div>
         </dl>
-      </section>
+      </header>
     );
   }
 
   const stats = regionStats(region);
   return (
-    <section class="panel selected-entity">
-      <div class="entity-main">
+    <header class="cluster-context">
+      <div class="cluster-context-title">
         <div>
-          <span class="eyebrow">Selected Region</span>
+          <span class="eyebrow">Region profile</span>
           <h2>{selectedRegion}</h2>
-          <code>{region.clusterName}</code>
+          <p><code>{region.clusterName}</code></p>
         </div>
-        <span class={`status-pill ${region.healthy ? 'success' : 'danger'}`}>
-          {region.healthy ? 'healthy' : region.error || 'unavailable'}
-        </span>
       </div>
-      <dl class="entity-meta">
+      <dl class="cluster-facts">
+        <div class="cluster-health-fact">
+          <dt>Health</dt>
+          <dd><span class={`status-pill ${!region.enabled ? 'warning' : region.healthy ? 'success' : 'danger'}`}>{!region.enabled ? 'disabled' : region.healthy ? 'healthy' : region.error || 'unavailable'}</span></dd>
+        </div>
         <div>
           <dt>Ready pods</dt>
           <dd>{stats.ready}</dd>
@@ -1486,15 +1607,19 @@ function SelectedRegionCard({ region, selectedRegion, totals }: {
           <dd>{stats.total}</dd>
         </div>
         <div>
+          <dt>Utilization</dt>
+          <dd>{percent(stats.allocated, stats.total)}%</dd>
+        </div>
+        <div>
           <dt>Gateway</dt>
           <dd><code>{region.publicGatewayUrl}</code></dd>
         </div>
       </dl>
-    </section>
+    </header>
   );
 }
 
-function RegionDirectory({ regions, selectedRegion, totals }: {
+function RegionScopeSelect({ regions, selectedRegion, totals }: {
   regions: AdminRegion[];
   selectedRegion: string;
   totals: ReturnType<typeof clusterTotals>;
@@ -1502,84 +1627,24 @@ function RegionDirectory({ regions, selectedRegion, totals }: {
   if (!regions.length) {
     return <div class="empty">No regions configured.</div>;
   }
-  const enabledRegions = regions.filter((region) => region.enabled);
-  const disabledRegions = regions.filter((region) => !region.enabled);
   return (
-    <div class="region-list" data-preserve-scroll="region-directory">
-      <RegionScopeRow selected={selectedRegion === 'all'} totals={totals} />
-      <RegionListGroup title="Enabled regions" regions={enabledRegions} selectedRegion={selectedRegion} />
-      {disabledRegions.length ? <RegionListGroup title="Disabled regions" regions={disabledRegions} selectedRegion={selectedRegion} /> : null}
-    </div>
-  );
-}
-
-function RegionScopeRow({ selected, totals }: { selected: boolean; totals: ReturnType<typeof clusterTotals> }) {
-  return (
-    <button
-      type="button"
-      class={`region-row ${selected ? 'selected' : ''}`}
-      hx-get="/admin/ui/clusters?region=all"
-      hx-target="#admin-content"
-      hx-swap="innerHTML"
-    >
-      <span>
-        <strong>All regions</strong>
-        <small>{totals.total} pods across {totals.enabled} enabled regions</small>
-      </span>
-      <span class={`status-pill ${totals.healthy === totals.enabled ? 'success' : 'warning'}`}>{totals.healthy}/{totals.enabled}</span>
-    </button>
-  );
-}
-
-function RegionListGroup({ title, regions, selectedRegion }: {
-  title: string;
-  regions: AdminRegion[];
-  selectedRegion: string;
-}) {
-  if (!regions.length) {
-    return null;
-  }
-  return (
-    <div class="region-list-group">
-      <div class="list-label">{title}</div>
-      {regions.map((region) => (
-        <RegionRow region={region} selected={selectedRegion === region.name} />
-      ))}
-    </div>
-  );
-}
-
-function RegionRow({ region, selected }: { region: AdminRegion; selected: boolean }) {
-  const stats = regionStats(region);
-  const allocation = percent(stats.allocated, stats.total);
-  return (
-    <button
-      type="button"
-      class={`region-row ${selected ? 'selected' : ''}`}
-      hx-get={`/admin/ui/clusters?region=${encodeURIComponent(region.name)}`}
-      hx-target="#admin-content"
-      hx-swap="innerHTML"
-    >
-      <span>
-        <span class="region-row-title">
-          <strong>{region.name}</strong>
-          <small>{region.clusterName}</small>
-        </span>
-        <small>{stats.ready} ready, {stats.allocated} allocated, {stats.total} total</small>
-        <span class="capacity-bar" aria-label={`Allocation ${allocation}%`}>
-          <span style={`width: ${allocation}%`}></span>
-        </span>
-      </span>
-      <span class={`status-pill ${!region.enabled ? 'neutral' : region.healthy ? 'success' : 'danger'}`}>
-        {!region.enabled ? 'disabled' : region.healthy ? 'healthy' : region.error || 'unavailable'}
-      </span>
-    </button>
+    <form class="region-scope-form" method="get" action="/admin/clusters">
+      <label for="region-scope-select"><span>Region scope</span><small>{selectedRegion === 'all' ? 'Viewing the complete fleet' : 'Viewing one region'}</small></label>
+      <select id="region-scope-select" name="region" onchange="this.form.requestSubmit()">
+        <option value="all" selected={selectedRegion === 'all'}>All regions · {totals.total} {pluralize(totals.total, 'pod')}</option>
+        {regions.map((region) => {
+          const stats = regionStats(region);
+          const health = !region.enabled ? 'disabled' : region.healthy ? 'healthy' : 'degraded';
+          return <option value={region.name} selected={selectedRegion === region.name}>{region.name} · {stats.total} {pluralize(stats.total, 'pod')} · {health}</option>;
+        })}
+      </select>
+    </form>
   );
 }
 
 function PodsTable({ servers, selectedRegion }: { servers: ReturnType<typeof regionServers>; selectedRegion: string }) {
   return (
-    <div class="table-scroll">
+    <div class="table-scroll pod-inventory-scroll">
       <table class="ops-table pods-table">
         <thead>
           <tr>
@@ -1593,26 +1658,20 @@ function PodsTable({ servers, selectedRegion }: { servers: ReturnType<typeof reg
         <tbody>
           {servers.length ? servers.map((server) => {
             const active = Boolean(server.sessionId);
+            const normalizedStatus = String(server.status || '').toLowerCase();
+            const filterStatus = normalizedStatus === 'ready' ? 'ready' : normalizedStatus === 'allocated' ? 'allocated' : 'other';
+            const searchValue = [server.name, server.sessionId, server.region, server.clusterName, server.status].filter(Boolean).join(' ').toLowerCase();
             return (
-              <tr>
+              <tr data-pod-row data-pod-status-value={filterStatus} data-pod-search-value={searchValue}>
                 <td>
                   <code>{server.name || '-'}</code>
-                  <small>{server.clusterName}</small>
                 </td>
-                <td>{server.region}</td>
+                <td><strong>{server.region}</strong><small>{server.clusterName}</small></td>
                 <td><span class={`status-pill ${statusClass(server.status)}`}>{server.status || '-'}</span></td>
                 <td>{server.sessionId ? <code>{server.sessionId}</code> : <span class="muted">-</span>}</td>
                 <td>
                   <div class="row-actions">
-                    <a
-                      role="button"
-                      class={`secondary ${active ? '' : 'disabled'}`}
-                      href={active ? `/admin/ui/session/${encodeURIComponent(server.sessionId!)}/open` : '#'}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open
-                    </a>
+                    {active ? <a role="button" class="secondary" href={`/admin/ui/session/${encodeURIComponent(server.sessionId!)}/open`} target="_blank" rel="noreferrer">Open</a> : <button type="button" class="secondary" disabled>Open</button>}
                     <button
                       type="button"
                       class="contrast"

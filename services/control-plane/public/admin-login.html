@@ -1,130 +1,54 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0d141b">
-  <title>Popcorn Control Plane</title>
+  <meta name="theme-color" content="#0b0c0f">
+  <title>Sign in · Popcorn Control Plane</title>
   <link rel="icon" type="image/svg+xml" href="/admin/assets/site-icon.svg?v=brand-kernel-1">
   <link rel="icon" href="/favicon.ico?v=brand-kernel-1" sizes="any">
   <link rel="icon" type="image/png" sizes="32x32" href="/admin/assets/favicon-32.png?v=brand-kernel-1">
   <link rel="apple-touch-icon" sizes="180x180" href="/admin/assets/apple-touch-icon.png?v=brand-kernel-1">
   <link rel="manifest" href="/admin/assets/site.webmanifest?v=brand-kernel-1">
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #0f1519;
-      --panel: #172026;
-      --border: #2b3a42;
-      --text: #f5f7f8;
-      --muted: #a7b4bb;
-      --accent: #27b39d;
-      --danger: #df625d;
-    }
-
-    body {
-      min-height: 100vh;
-      margin: 0;
-      display: grid;
-      place-items: center;
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, sans-serif;
-    }
-
-    main {
-      width: min(420px, calc(100vw - 32px));
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 24px;
-    }
-
-    h1 {
-      margin: 0 0 20px;
-      font-size: 1.4rem;
-    }
-
-    .login-mark {
-      display: block;
-      height: 72px;
-      margin: -4px auto 12px;
-      object-fit: contain;
-      width: 72px;
-    }
-
-    label {
-      display: block;
-      color: var(--muted);
-      margin: 14px 0 8px;
-      font-size: 0.9rem;
-    }
-
-    input {
-      width: 100%;
-      box-sizing: border-box;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      background: #0c141b;
-      color: var(--text);
-      padding: 12px;
-    }
-
-    button,
-    .google {
-      display: block;
-      width: 100%;
-      box-sizing: border-box;
-      margin-top: 16px;
-      border: 0;
-      border-radius: 6px;
-      background: var(--accent);
-      color: #06110f;
-      padding: 12px;
-      font-weight: 700;
-      text-align: center;
-      text-decoration: none;
-      cursor: pointer;
-    }
-
-    .google {
-      background: #f5f7f8;
-      color: #0f1519;
-    }
-
-    .error {
-      color: var(--danger);
-      margin-bottom: 16px;
-      display: none;
-    }
-
-    .empty {
-      color: var(--muted);
-    }
-
-    [hidden] {
-      display: none !important;
-    }
-  </style>
+  <link rel="stylesheet" href="/admin/assets/admin.css">
 </head>
+<body class="login-page">
+  <main class="login-shell">
+    <section class="login-story" aria-label="Popcorn Control Plane">
+      <div class="login-brand">
+        <span class="brand-mark-wrap"><img class="brand-mark" src="/admin/assets/site-icon.svg?v=brand-kernel-1" alt="" width="44" height="44"></span>
+        <span class="brand-block"><strong>Popcorn</strong><small>Control plane</small></span>
+      </div>
+      <div class="login-story-copy">
+        <span class="eyebrow">Operations workspace</span>
+        <h1>Browsers at scale.<br><span>Under control.</span></h1>
+        <p>Manage client access, regional capacity, and live sessions from one secure workspace.</p>
+      </div>
+      <div class="login-status"><span></span><p><strong>Control plane operational</strong><small>Secure administrator access</small></p></div>
+    </section>
 
-<body>
-  <main>
-    <img class="login-mark" src="/admin/assets/site-icon.svg?v=brand-kernel-1" alt="Popcorn Browser">
-    <h1>Popcorn Control Plane</h1>
-    <div id="error" class="error"></div>
+    <section class="login-auth">
+      <div class="login-auth-inner">
+        <span class="eyebrow">Welcome back</span>
+        <h2>Sign in to Popcorn</h2>
+        <p>Use your administrator credentials to continue.</p>
+        <div id="error" class="login-error" role="alert"></div>
 
-    <form id="password-form" method="post" action="/admin/auth/password" hidden>
-      <label for="username">Username</label>
-      <input id="username" name="username" autocomplete="username" required>
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required>
-      <button type="submit">Sign in</button>
-    </form>
+        <form id="password-form" method="post" action="/admin/auth/password" hidden>
+          <label class="field-label" for="username"><span>Username</span>
+            <input id="username" name="username" autocomplete="username" required placeholder="admin">
+          </label>
+          <label class="field-label" for="password"><span>Password</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required placeholder="Enter your password">
+          </label>
+          <button type="submit">Sign in</button>
+        </form>
 
-    <a id="google-link" class="google" href="/admin/auth/google" hidden>Sign in with Google</a>
-    <p id="empty" class="empty" hidden>No control-plane admin auth strategy is configured.</p>
+        <a id="google-link" class="google-login" href="/admin/auth/google" hidden><span class="google-mark">G</span> Continue with Google</a>
+        <p id="empty" class="login-empty" hidden>No administrator sign-in method is configured.</p>
+        <small class="login-footnote">Protected control-plane access. Activity may be audited.</small>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -145,10 +69,9 @@
       })
       .catch(() => {
         const errorEl = document.getElementById('error');
-        errorEl.textContent = 'Unable to load admin auth configuration.';
+        errorEl.textContent = 'Unable to load administrator sign-in options.';
         errorEl.style.display = 'block';
       });
   </script>
 </body>
-
 </html>

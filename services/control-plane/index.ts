@@ -784,7 +784,7 @@ async function renderClientsPage(c: any, options: {
   notice?: ActionNotice | null;
 } = {}) {
   const clients = await ClientService.listClients();
-  const selectedClientId = options.selectedClientId || c.req.query('clientId')?.trim() || clients[0]?.id || null;
+  const selectedClientId = options.selectedClientId || c.req.query('clientId')?.trim() || null;
   const { sessions, pagination } = selectedClientId
     ? await listSessionPage(c, selectedClientId)
     : await listSessionPage(c, undefined);
@@ -1059,11 +1059,15 @@ app.get('/admin', async (c) => {
   setAdminResponseHeaders(c);
   const unauthorized = await requireAdmin(c);
   if (unauthorized) return c.redirect('/admin/login', 302);
-  return c.html(await renderShellHtml('clients'));
+  return c.redirect('/admin/analytics', 302);
 });
 
 app.get('/admin/clusters', async (c) => {
-  return c.html(await renderShellHtml('clusters'));
+  const region = c.req.query('region');
+  const fragmentPath = region
+    ? `/admin/ui/clusters?region=${encodeURIComponent(region)}`
+    : '/admin/ui/clusters';
+  return c.html(await renderShellHtml('clusters', fragmentPath));
 });
 
 app.get('/admin/analytics', async (c) => {
