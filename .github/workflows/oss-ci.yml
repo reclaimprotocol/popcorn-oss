@@ -128,6 +128,11 @@ jobs:
                   -pkeyopt rsa_keygen_bits:2048 \
                   -out keys/private.pem \
                   >/dev/null 2>&1
+                mkdir -p ../gateway/keys
+                openssl pkey -in keys/private.pem \
+                  -pubout \
+                  -out ../gateway/keys/public.pem \
+                  >/dev/null 2>&1
               fi
               bun install --frozen-lockfile
               if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
