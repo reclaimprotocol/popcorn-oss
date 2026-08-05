@@ -1004,6 +1004,20 @@ function formatBucketLabel(iso: string, windowHours: number) {
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
 }
 
+function bucketSizeLabel(windowHours: number, bucketCount: number) {
+  const seconds = (windowHours * 3600) / Math.max(1, bucketCount);
+  if (seconds < 3600) {
+    const minutes = Math.max(1, Math.round(seconds / 60));
+    return `${minutes}-minute buckets`;
+  }
+  if (seconds < 86400) {
+    const hours = Math.max(1, Math.round(seconds / 3600));
+    return `${hours}-hour buckets`;
+  }
+  const days = Math.max(1, Math.round(seconds / 86400));
+  return `${days}-day buckets`;
+}
+
 function xmlEscape(value: string) {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
@@ -1207,8 +1221,10 @@ function outcomeDonutSvg(deleted: number, expired: number) {
     + `<text x="${cx}" y="${(cy + 17).toFixed(0)}" text-anchor="middle" font-size="10.5" letter-spacing="0.06em" fill="${VIZ.axis}">ENDED</text></svg>`;
 }
 
-// Smooth area + line chart of average session duration per time bucket.
-function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
+// Smooth area + line chart of average session duration per time bucket. Empty
+// buckets are gaps, not zero-duration sessions, and the weighted window average
+// is shown as a reference so it is clear why it may differ from bucket averages.
+function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number, windowAverageSeconds: number) {
   const W = 760;
   const H = 250;
   const padL = 44;
@@ -1221,7 +1237,13 @@ function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
   const n = series.length;
   if (!n) return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"></svg>`;
 
-  const maxY = niceMax(Math.max(1, ...series.map((p) => p.avgDurationSeconds)));
+  const measured = series.filter((p) => p.ended > 0);
+  if (!measured.length) {
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" role="img" aria-label="No completed sessions in this range">`
+      + `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="12" fill="${VIZ.axis}">No completed sessions in this range</text></svg>`;
+  }
+
+  const maxY = niceMax(Math.max(1, windowAverageSeconds, ...measured.map((p) => p.avgDurationSeconds)));
   const step = plotW / n;
   const px = (i: number) => padL + (i + 0.5) * step;
   const py = (v: number) => baseY - (plotH * v) / maxY;
@@ -1233,10 +1255,24 @@ function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
       + `<text x="${(padL - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${xmlEscape(formatDuration(v))}</text>`;
   }).join('');
 
-  const pts = series.map((p, i) => ({ x: px(i), y: py(p.avgDurationSeconds) }));
-  const linePath = smoothPath(pts);
-  // Area = smooth top + down to baseline; clipped so the curve never bleeds below.
-  const areaPath = `${linePath} L ${pts[n - 1].x.toFixed(2)} ${baseY} L ${pts[0].x.toFixed(2)} ${baseY} Z`;
+  const segments: Array<Array<{ x: number; y: number }>> = [];
+  series.forEach((p, i) => {
+    if (p.ended <= 0) return;
+    const previous = i > 0 ? series[i - 1] : undefined;
+    if (!previous || previous.ended <= 0) segments.push([]);
+    segments[segments.length - 1].push({ x: px(i), y: py(p.avgDurationSeconds) });
+  });
+  const areas = segments.map((pts) => {
+    const path = smoothPath(pts);
+    return `<path d="${path} L ${pts[pts.length - 1].x.toFixed(2)} ${baseY} L ${pts[0].x.toFixed(2)} ${baseY} Z" fill="url(#anDurGrad)"/>`;
+  }).join('');
+  const lines = segments.map((pts) => `<path d="${smoothPath(pts)}" fill="none" stroke="${VIZ.line}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`).join('');
+
+  const referenceY = py(windowAverageSeconds);
+  const reference = windowAverageSeconds > 0
+    ? `<line x1="${padL}" y1="${referenceY.toFixed(1)}" x2="${padL + plotW}" y2="${referenceY.toFixed(1)}" stroke="rgba(232,234,237,0.38)" stroke-width="1" stroke-dasharray="5 5"/>`
+      + `<text x="${padL + plotW - 4}" y="${Math.max(padT + 10, referenceY - 6).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.ink}">${xmlEscape(windowLabel(windowHours))} avg · ${xmlEscape(formatDuration(windowAverageSeconds))}</text>`
+    : '';
 
   const labelEvery = Math.max(1, Math.ceil(n / 6));
   const marks = series.map((p, i) => {
@@ -1258,8 +1294,7 @@ function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number) {
     + `</defs>`;
   return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" role="img" aria-label="Average session duration per interval">`
     + `${defs}${grid}`
-    + `<g clip-path="url(#anDurClip)"><path d="${areaPath}" fill="url(#anDurGrad)"/>`
-    + `<path d="${linePath}" fill="none" stroke="${VIZ.line}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/></g>`
+    + `<g clip-path="url(#anDurClip)">${areas}${reference}${lines}</g>`
     + `${marks}${axis}</svg>`;
 }
 
@@ -1505,9 +1540,9 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
             <div class="viz-legend"><LegendItem color={VIZ.deleted} label="Killed" /><LegendItem color={VIZ.expired} label="Expired" /><LegendItem color={VIZ.created} label="Created" /></div>
           </div>
           <div class="an-card">
-            <div class="an-card-head"><h3>Average session duration</h3><span class="an-card-sub">per interval</span></div>
-            {raw(durationChartSvg(series, data.windowHours))}
-            <div class="viz-legend"><LegendItem color={VIZ.line} label="Avg duration" /></div>
+            <div class="an-card-head"><h3>Session duration trend</h3><span class="an-card-sub">{bucketSizeLabel(data.windowHours, series.length)}</span></div>
+            {raw(durationChartSvg(series, data.windowHours, window.avgDurationSeconds))}
+            <div class="viz-legend"><LegendItem color={VIZ.line} label="Average of sessions ending in each bucket" /><span class="chart-note">Empty buckets are left blank</span></div>
           </div>
           <div class="an-card outcome-card">
             <div class="an-card-head"><h3>Outcome split</h3><span class="an-card-sub">deleted vs expired</span></div>

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { renderClientsViewHtml, renderClustersViewHtml, renderShellHtml, type AdminView } from './admin-ui';
+import { renderAnalyticsViewHtml, renderClientsViewHtml, renderClustersViewHtml, renderShellHtml, type AdminView } from './admin-ui';
 
 const views: Array<{ view: AdminView; pagePath: string; fragmentPath: string }> = [
   { view: 'clients', pagePath: '/admin/clients', fragmentPath: '/admin/ui/clients' },
@@ -181,5 +181,67 @@ describe('cluster workspace layout', () => {
     const scopeMarkup = html.slice(scopeStart, html.indexOf('</select>', scopeStart));
     expect((scopeMarkup.match(/<option value="region-/g) || []).length).toBe(24);
     expect(html).not.toContain('class="region-tab');
+  });
+});
+
+describe('analytics duration trend', () => {
+  test('explains bucket size and distinguishes the weighted window average', async () => {
+    const series = Array.from({ length: 15 }, (_, index) => ({
+      bucketStart: new Date(Date.UTC(2026, 6, 6 + index * 2)).toISOString(),
+      created: 10,
+      deleted: index === 5 ? 0 : 8,
+      expired: index === 5 ? 0 : 2,
+      ended: index === 5 ? 0 : 10,
+      avgDurationSeconds: index === 5 ? 0 : 240 + index * 5,
+    }));
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        windowHours: 720,
+        configuredTtlSeconds: 3600,
+        live: { allocated: 2, ready: 3, capacity: 5, activeSessions: 2, staleActiveSessions: 0 },
+        throughput: { sessionsPerMinute: 0.1 },
+        allocation: { measuredSessions: 10, avgLatencyMs: 500, p50LatencyMs: 420, p95LatencyMs: 900 },
+        window: {
+          created: 150,
+          deleted: 112,
+          expired: 28,
+          ended: 140,
+          avgDurationSeconds: 373,
+          p50DurationSeconds: 157,
+          p95DurationSeconds: 904,
+          totalDurationSeconds: 52220,
+        },
+        byRegion: [],
+        topClients: [],
+        series,
+      },
+    });
+
+    expect(html).toContain('Session duration trend');
+    expect(html).toContain('2-day buckets');
+    expect(html).toContain('last 30 days avg · 6m 13s');
+    expect(html).toContain('Average of sessions ending in each bucket');
+    expect(html).toContain('Empty buckets are left blank');
+    expect(html).toContain('stroke-dasharray="5 5"');
+  });
+});
+
+describe('Google sign-in branding', () => {
+  test('uses the approved label, multicolor mark, and accessible button name', async () => {
+    const html = await Bun.file(new URL('../public/admin-login.html', import.meta.url)).text();
+    const css = await Bun.file(new URL('../public/admin.css', import.meta.url)).text();
+
+    expect(html).toContain('aria-label="Sign in with Google"');
+    expect(html).toContain('<span>Sign in with Google</span>');
+    expect(html).not.toContain('Continue with Google');
+    for (const color of ['#4285F4', '#34A853', '#FBBC05', '#EA4335']) {
+      expect(html).toContain(color);
+    }
+    expect(css).toContain('background: #131314;');
+    expect(css).toContain('border: 1px solid #8e918f;');
+    expect(css).toContain('color: #e3e3e3;');
+    expect(css).toContain('font-family: "Google Sans", Roboto, Arial, sans-serif;');
+    expect(css).toContain('font-size: 14px;');
+    expect(css).toContain('line-height: 20px;');
   });
 });
