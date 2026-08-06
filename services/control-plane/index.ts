@@ -53,6 +53,8 @@ import {
   type ActionNotice,
   type AdminRegion,
   type AnalyticsData,
+  type AnalyticsScope,
+  type X402AnalyticsData,
 } from './src/admin-ui';
 
 const app = new Hono();
@@ -722,6 +724,22 @@ function bucketsForWindow(windowHours: number): number {
 
 // Combines live Agones gauges (via pool managers) with cumulative Postgres
 // session stats into a single payload shared by the API and the admin UI.
+// USDC and the other supported x402 settlement assets use 6 decimals; the
+// client flow assumes the same. The atomic ledger stays the source of truth.
+const X402_ASSET_DECIMALS = 6;
+
+async function buildX402AnalyticsPayload(windowHours: number): Promise<X402AnalyticsData | undefined> {
+  if (!ControlPlaneConfig.x402.enabled) return undefined;
+  const analytics = await getX402Analytics(windowHours, ControlPlaneConfig.x402.blockSeconds);
+  return {
+    ...analytics,
+    assetName: ControlPlaneConfig.x402.paymentAssetName,
+    assetDecimals: X402_ASSET_DECIMALS,
+    network: ControlPlaneConfig.x402.network,
+    testnet: ControlPlaneConfig.x402.network === 'eip155:84532',
+  };
+}
+
 async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
   const [regions, windowStats, allocationStats, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
     loadAdminRegions(),
@@ -1210,8 +1228,12 @@ app.get('/admin/ui/clusters', async (c) => {
 
 app.get('/admin/ui/analytics', async (c) => {
   const windowHours = normalizeWindowHours(c.req.query('windowHours') ?? undefined);
-  const data = await buildStatsPayload(windowHours);
-  return c.html(await renderAnalyticsViewHtml({ data }));
+  const scope: AnalyticsScope = c.req.query('scope') === 'x402' ? 'x402' : 'fleet';
+  const [data, x402] = await Promise.all([
+    buildStatsPayload(windowHours),
+    buildX402AnalyticsPayload(windowHours),
+  ]);
+  return c.html(await renderAnalyticsViewHtml({ data, x402, scope }));
 });
 
 app.post('/admin/ui/sessions', async (c) => {

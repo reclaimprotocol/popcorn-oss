@@ -94,6 +94,30 @@ export interface AnalyticsData {
   series: AnalyticsSeriesPoint[];
 }
 
+export type AnalyticsScope = 'fleet' | 'x402';
+
+export interface X402OperationStat {
+  operation: string;
+  payments: number;
+  revenueAtomic: string;
+  paidSeconds: number;
+}
+
+export interface X402AnalyticsData {
+  windowHours: number;
+  liveSessions: number;
+  revenueAtomic: string;
+  settledPayments: number;
+  uniquePayers: number;
+  paidSeconds: number;
+  operations: X402OperationStat[];
+  events: Record<string, number>;
+  assetName: string;
+  assetDecimals: number;
+  network: string;
+  testnet: boolean;
+}
+
 export interface ClientSecretNotice {
   clientId: string;
   clientSecret: string;
@@ -1451,11 +1475,38 @@ const ANALYTICS_STYLE = `
 .bar-fill.green { background: linear-gradient(90deg, #17915a, #35c680); }
 `;
 
-export function AnalyticsView({ data }: { data: AnalyticsData }) {
+function AnalyticsScopeToggle({ scope, windowHours }: { scope: AnalyticsScope; windowHours: number }) {
+  const options: { value: AnalyticsScope; label: string }[] = [
+    { value: 'fleet', label: 'Fleet' },
+    { value: 'x402', label: 'x402' },
+  ];
+  return (
+    <div class="an-scope" role="tablist" aria-label="Analytics scope">
+      {options.map((option) => (
+        <button
+          type="button"
+          role="tab"
+          class={`an-scope-btn${option.value === scope ? ' active' : ''}`}
+          aria-selected={option.value === scope ? 'true' : 'false'}
+          hx-get={`/admin/ui/analytics?scope=${option.value}&windowHours=${windowHours}`}
+          hx-target="#admin-content"
+          hx-swap="innerHTML"
+        >
+          <span class={`an-scope-dot ${option.value}`} aria-hidden="true"></span>
+          <span>{option.label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function AnalyticsView({ data, x402, scope = 'fleet' }: { data: AnalyticsData; x402?: X402AnalyticsData; scope?: AnalyticsScope }) {
   const { live, window, series } = data;
   const utilization = percent(live.allocated, live.capacity);
   const free = Math.max(0, live.capacity - live.allocated - live.ready);
   const hasActivity = series.some((p) => p.ended > 0 || p.created > 0);
+  // The toggle only exists when x402 is enabled; otherwise always show fleet.
+  const activeScope: AnalyticsScope = x402 && scope === 'x402' ? 'x402' : 'fleet';
 
   return (
     <div class="workspace analytics-workspace">
@@ -1463,14 +1514,19 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
         <div class="an-title">
           <span class="eyebrow">Performance</span>
           <h1>Analytics</h1>
-          <p>Fleet allocation and session lifecycle across the {windowLabel(data.windowHours)}.</p>
+          <p>
+            {activeScope === 'x402'
+              ? `Paid x402 sessions across the ${windowLabel(data.windowHours)}.`
+              : `Fleet allocation and session lifecycle across the ${windowLabel(data.windowHours)}.`}
+          </p>
         </div>
         <div class="an-controls">
+          {x402 ? <AnalyticsScopeToggle scope={activeScope} windowHours={data.windowHours} /> : null}
           <select
             class="an-range"
             name="windowHours"
             aria-label="Time range"
-            hx-get="/admin/ui/analytics"
+            hx-get={`/admin/ui/analytics?scope=${activeScope}`}
             hx-target="#admin-content"
             hx-swap="innerHTML"
             hx-trigger="change"
@@ -1482,7 +1538,7 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
           <button
             type="button"
             class="an-refresh"
-            hx-get={`/admin/ui/analytics?windowHours=${data.windowHours}`}
+            hx-get={`/admin/ui/analytics?windowHours=${data.windowHours}&scope=${activeScope}`}
             hx-target="#admin-content"
             hx-swap="innerHTML"
           >
@@ -1491,6 +1547,8 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
         </div>
       </header>
 
+      {activeScope === 'x402' && x402 ? <X402Section x402={x402} /> : (
+      <>
       <div class="an-sublabel">Live fleet</div>
       <div class="an-kpis">
         <AnKpi label="Allocated" value={String(live.allocated)} hint={`of ${live.capacity} · ${utilization}%`} tone="accent" />
@@ -1569,7 +1627,114 @@ export function AnalyticsView({ data }: { data: AnalyticsData }) {
           </div>
         </div>
       )}
+      </>
+      )}
     </div>
+  );
+}
+
+// USDC and most x402 settlement assets use 6 decimals; the client flow assumes
+// the same. Format the atomic ledger amount into a human token value.
+function formatAtomicAmount(atomic: string, decimals: number) {
+  const digits = String(atomic || '0').replace(/[^0-9]/g, '') || '0';
+  if (decimals <= 0) return digits;
+  const padded = digits.padStart(decimals + 1, '0');
+  const whole = padded.slice(0, padded.length - decimals);
+  const fraction = padded.slice(padded.length - decimals).replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+
+function x402EventLabel(eventType: string) {
+  return eventType
+    .replace(/^x402\./, '')
+    .replace(/_/g, ' ')
+    .replace(/^\w/, (ch) => ch.toUpperCase());
+}
+
+function X402Section({ x402 }: { x402: X402AnalyticsData }) {
+  const revenue = formatAtomicAmount(x402.revenueAtomic, x402.assetDecimals);
+  const events = Object.entries(x402.events).sort((a, b) => b[1] - a[1]);
+  const created = x402.events['x402.session_created'] || 0;
+  const challenges = x402.events['x402.challenge_issued'] || 0;
+  const conversion = challenges > 0 ? Math.round((created / challenges) * 100) : 0;
+
+  return (
+    <>
+      <div class="an-sublabel">
+        x402 paid sessions · {windowLabel(x402.windowHours)}
+        {x402.testnet ? ' · testnet' : ''} · {x402.network}
+      </div>
+      <div class="an-kpis">
+        <AnKpi
+          label="Live sessions"
+          value={String(x402.liveSessions)}
+          hint="paid access active now"
+          tone={x402.liveSessions > 0 ? 'success' : undefined}
+        />
+        <AnKpi
+          label="Revenue"
+          value={`${revenue} ${x402.assetName}`}
+          hint={`${x402.settledPayments} settled payment${x402.settledPayments === 1 ? '' : 's'}`}
+          tone="accent"
+        />
+        <AnKpi label="Unique payers" value={String(x402.uniquePayers)} hint="distinct wallets" />
+        <AnKpi label="Paid time sold" value={formatDuration(x402.paidSeconds)} />
+        <AnKpi
+          label="Challenge → session"
+          value={challenges > 0 ? `${conversion}%` : '—'}
+          hint={challenges > 0 ? `${created} of ${challenges} challenges` : 'No challenges issued'}
+          tone={challenges > 0 && conversion >= 50 ? 'success' : undefined}
+        />
+      </div>
+
+      <div class="an-charts">
+        <div class="an-card">
+          <div class="an-card-head"><h3>Revenue by operation</h3><span class="an-card-sub">create vs extend</span></div>
+          {x402.operations.length ? (
+            <div class="bar-list">
+              {x402.operations.map((op) => (
+                <div class="bar-row">
+                  <div class="bar-row-head">
+                    <span class="bar-row-label">{op.operation}</span>
+                    <span class="bar-row-value">
+                      {formatAtomicAmount(op.revenueAtomic, x402.assetDecimals)} {x402.assetName} · {op.payments} payment{op.payments === 1 ? '' : 's'} · {formatDuration(op.paidSeconds)}
+                    </span>
+                  </div>
+                  <div class="bar-track">
+                    <div
+                      class="bar-fill blue"
+                      style={`width:${percent(op.payments, x402.settledPayments)}%`}
+                    ></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div class="viz-empty">No settled payments in this range.</div>
+          )}
+        </div>
+        <div class="an-card">
+          <div class="an-card-head"><h3>Lifecycle events</h3><span class="an-card-sub">count by type</span></div>
+          {events.length ? (
+            <div class="bar-list">
+              {events.map(([type, count]) => (
+                <div class="bar-row">
+                  <div class="bar-row-head">
+                    <span class="bar-row-label">{x402EventLabel(type)}</span>
+                    <span class="bar-row-value">{count}</span>
+                  </div>
+                  <div class="bar-track">
+                    <div class="bar-fill blue" style={`width:${percent(count, events[0][1])}%`}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div class="viz-empty">No x402 events in this range.</div>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 
