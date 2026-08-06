@@ -1,0 +1,75 @@
+# GCP example values for rendering the browser-fleet chart.
+# Replace placeholders before installing into a GKE cluster.
+
+region: us-central1
+gatewayDomain: gateway.example.com
+
+agones:
+  install: false
+
+agonesInstaller:
+  agones:
+    controller:
+      generateTLS: false
+  gameservers:
+    namespaces:
+      - popcorn
+
+externalSecrets:
+  enabled: false
+
+imagePullSecrets: []
+
+ccDevicePlugin:
+  enabled: false
+
+serviceAccount:
+  gcpServiceAccount: ""
+
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime@sha256:REPLACE_WITH_DIGEST
+browserRuntimeImagePullPolicy: IfNotPresent
+
+browserPolicy:
+  variant: neutral
+
+browserRuntimeAttestor:
+  enabled: false
+  imagePullPolicy: IfNotPresent
+
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor@sha256:REPLACE_WITH_DIGEST
+
+imagePrepuller:
+  enabled: false
+  imagePullPolicy: IfNotPresent
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 128Mi
+
+fleet:
+  replicas: 3
+  scheduling: Packed
+  health:
+    initialDelaySeconds: 90
+    periodSeconds: 5
+    failureThreshold: 6
+  browserRuntimeCpuRequest: "1000m"
+  browserRuntimeCpuLimit: "2000m"
+  browserRuntimeMemoryRequest: 2Gi
+  browserRuntimeMemoryLimit: 4Gi
+  browserRuntimeAttestorCpuRequest: "100m"
+  browserRuntimeAttestorCpuLimit: "200m"
+  browserRuntimeAttestorMemoryRequest: 128Mi
+  browserRuntimeAttestorMemoryLimit: 256Mi
+
+autoscaler:
+  bufferSize: 3
+  minReplicas: 3
+  maxReplicas: 30
+  syncSeconds: 30

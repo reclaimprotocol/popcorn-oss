@@ -1,0 +1,242 @@
+{{- if .Values.gateway.enabled }}
+{{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.gateway.jwtSecretName }}
+{{- $gatewayRedisHost := default (printf "redis.%s.svc.cluster.local" .Release.Namespace) .Values.gateway.redisHost }}
+{{- $gatewayPoolManagerHost := default (printf "pool-manager.%s.svc.cluster.local" .Release.Namespace) .Values.gateway.poolManagerHost }}
+{{- $sessionExtensionRoutes := list }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- range $route := dig "routing" "gatewayRoutes" (list) $extension }}
+{{- $sessionExtensionRoutes = append $sessionExtensionRoutes $route }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $sessionExtensionRoutes }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: popcorn-gateway-session-extension-routes
+data:
+  session-extension-routes.conf: |
+{{- range $sessionExtensionRoutes }}
+    {{- $pathPrefix := required "sessionExtensions.*.routing.gatewayRoutes[].pathPrefix is required" .pathPrefix }}
+    {{- $routeKey := required "sessionExtensions.*.routing.gatewayRoutes[].routeKey is required" .routeKey }}
+    {{- $tokenScope := .tokenScope }}
+        location ~ ^/{{ $pathPrefix }}/([^/]+)/([^/]+)(.*) {
+            set $session_id $1;
+            set $token $2;
+            set $rest_uri $3;
+            set $target_ip '';
+
+            access_by_lua_block {
+                local auth = require "auth"
+                auth.check(false, ngx.var.token, {{ if $tokenScope }}{{ $tokenScope | quote }}{{ else }}nil{{ end }}, ngx.var.session_id)
+                local redis = require "resty.redis"
+                local red = redis:new()
+                red:set_timeout(1000)
+
+                local session_id = ngx.var.session_id
+                local cache = ngx.shared.pod_cache
+                local route_key = {{ $routeKey | quote }}
+
+                local ip = cache:get(route_key .. ":" .. session_id)
+                if not ip then
+                    local ok, err = red:connect({{ $gatewayRedisHost | quote }}, 6379)
+                    if not ok then
+                        ngx.log(ngx.ERR, "failed to connect to redis: ", err)
+                        return ngx.exit(500)
+                    end
+
+                    ip, err = red:get("route:" .. route_key .. ":" .. session_id)
+                    if not ip or ip == ngx.null then
+                        ngx.log(ngx.WARN, "No extra route found for session: ", session_id, " route: ", route_key)
+                        return ngx.exit(404)
+                    end
+
+                    cache:set(route_key .. ":" .. session_id, ip, 2)
+                end
+
+                ngx.var.target_ip = ip
+            }
+
+            if ($rest_uri = "") {
+                rewrite ^/{{ $pathPrefix }}/[^/]+/[^/]+$ / break;
+            }
+            if ($rest_uri != "") {
+                rewrite ^/{{ $pathPrefix }}/[^/]+/[^/]+(.*)$ $1 break;
+            }
+
+            proxy_pass http://$target_ip;
+
+            proxy_http_version 1.1;
+            proxy_buffering off;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "Upgrade";
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 3600s;
+            proxy_send_timeout 3600s;
+        }
+{{- end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: popcorn-gateway
+  labels:
+    app: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ .Values.gateway.updateStrategy.maxSurge }}
+      maxUnavailable: {{ .Values.gateway.updateStrategy.maxUnavailable }}
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      annotations:
+        checksum/gateway-route-config: {{ printf "%s|%s" (toJson $sessionExtensionRoutes) $gatewayRedisHost | sha256sum }}
+      labels:
+        app: gateway
+    spec:
+      serviceAccountName: gateway
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+{{- with .Values.gateway.topologySpreadConstraints }}
+      topologySpreadConstraints:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: {{ $gatewayJwtSecret | quote }}
+            items:
+              - key: public.pem
+                path: public.pem
+{{- if $sessionExtensionRoutes }}
+        - name: session-extension-routes
+          configMap:
+            name: popcorn-gateway-session-extension-routes
+{{- end }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.registry }}/gateway:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.gateway.imagePullPolicy }}
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /etc/nginx/certs
+              readOnly: true
+{{- if $sessionExtensionRoutes }}
+            - name: session-extension-routes
+              mountPath: /usr/local/openresty/nginx/conf/session-routes
+              readOnly: true
+{{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 20
+{{- if .Values.gateway.gracefulShutdown.enabled }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - {{ printf "sleep %d; /usr/local/openresty/bin/openresty -s quit || kill -QUIT 1; sleep 10" (int .Values.gateway.gracefulShutdown.delaySeconds) | quote }}
+{{- end }}
+          env:
+            - name: GATEWAY_DOMAIN
+              value: {{ .Values.gateway.domainName | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GATEWAY_REDIS_HOST
+              value: {{ $gatewayRedisHost | quote }}
+            - name: GATEWAY_POOL_MANAGER_HOST
+              value: {{ $gatewayPoolManagerHost | quote }}
+          resources:
+{{ toYaml .Values.gateway.resources | indent 12 }}
+---
+{{- if .Values.gateway.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: popcorn-gateway
+spec:
+  minAvailable: {{ .Values.gateway.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: gateway
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: popcorn-gateway
+{{- if or .Values.gateway.staticIpName .Values.gateway.backendConfig.enabled .Values.gateway.serviceAnnotations }}
+  annotations:
+{{- if .Values.gateway.staticIpName }}
+    cloud.google.com/neg: '{"ingress": true}'
+{{- end }}
+{{- if .Values.gateway.backendConfig.enabled }}
+    cloud.google.com/backend-config: '{"ports":{"http":"popcorn-gateway","https":"popcorn-gateway"}}'
+{{- end }}
+{{- range $key, $value := .Values.gateway.serviceAnnotations }}
+{{- if not (and $.Values.gateway.staticIpName (eq $key "cloud.google.com/neg")) }}
+    {{ $key }}: {{ $value | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+spec:
+  selector:
+    app: gateway
+  type: {{ if .Values.gateway.staticIpName }}ClusterIP{{ else }}{{ .Values.gateway.serviceType }}{{ end }}
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+{{- with .Values.gateway.nodePorts.http }}
+      nodePort: {{ . }}
+{{- end }}
+    - name: https
+      port: 443
+      targetPort: 80
+{{- with .Values.gateway.nodePorts.https }}
+      nodePort: {{ . }}
+{{- end }}
+{{- if .Values.gateway.backendConfig.enabled }}
+---
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: popcorn-gateway
+spec:
+  timeoutSec: {{ .Values.gateway.backendConfig.timeoutSec }}
+  connectionDraining:
+    drainingTimeoutSec: {{ .Values.gateway.backendConfig.connectionDrainingTimeoutSec }}
+  healthCheck:
+    checkIntervalSec: 15
+    healthyThreshold: 1
+    port: 80
+    requestPath: /health
+    timeoutSec: 5
+    type: HTTP
+    unhealthyThreshold: 2
+{{- end }}
+{{- end }}

@@ -1,0 +1,12 @@
+{
+  "name": "minimal-vnc-stealth-tests",
+  "private": true,
+  "type": "module",
+  "description": "Stealth-probe suite for the CloakBrowser minimal-vnc-desktop image (run from the host over the full CDP proxy).",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.59.1"
+  }
+}

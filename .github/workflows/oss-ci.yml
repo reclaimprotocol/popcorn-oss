@@ -1,0 +1,348 @@
+name: OSS CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan new commits
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${EVENT_NAME}" == "pull_request" ]]; then
+            log_opts="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+          elif [[ "${EVENT_NAME}" == "push" ]] \
+            && [[ -n "${BEFORE_SHA}" ]] \
+            && [[ ! "${BEFORE_SHA}" =~ ^0+$ ]] \
+            && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            log_opts="${BEFORE_SHA}..${GITHUB_SHA}"
+          elif git rev-parse "${GITHUB_SHA}^" >/dev/null 2>&1; then
+            log_opts="${GITHUB_SHA}^..${GITHUB_SHA}"
+          else
+            log_opts="${GITHUB_SHA}"
+          fi
+
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/repo:ro" \
+            --workdir /repo \
+            "${GITLEAKS_IMAGE}" \
+            git \
+            --config=/repo/.gitleaks.toml \
+            --log-opts="${log_opts}" \
+            --no-banner \
+            --redact \
+            /repo
+
+  documentation:
+    name: Service documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Require a README for every service
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in services/*; do
+            [[ -d "$service" ]] || continue
+            test -s "$service/README.md" || {
+              echo "Missing $service/README.md" >&2
+              exit 1
+            }
+          done
+
+  third-party-notices:
+    name: Third-party notices
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verify browser redistribution notices
+        shell: bash
+        run: |
+          set -euo pipefail
+          notice_dir=images/minimal-vnc-desktop/third-party/fortress
+          required=(LICENSE NOTICE CHROMIUM-LICENSE OFL-1.1.txt)
+
+          test -s THIRD_PARTY_NOTICES.md
+          for file in "${required[@]}"; do
+            test -s "${notice_dir}/${file}"
+          done
+
+          grep -Fq 'COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress' \
+            images/minimal-vnc-desktop/Dockerfile
+          grep -Fq 'Copyright (c) 2026, arham766' "${notice_dir}/LICENSE"
+          grep -Fq 'Copyright 2015 The Chromium Authors' "${notice_dir}/CHROMIUM-LICENSE"
+          grep -Fq 'SIL OPEN FONT LICENSE Version 1.1' "${notice_dir}/OFL-1.1.txt"
+
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            images/minimal-vnc-desktop/proxy/go.mod
+            services/attestor/go.sum
+            services/ttl-controller/go.sum
+
+      - name: Test Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          modules=(
+            images/minimal-vnc-desktop/proxy
+            services/attestor
+            services/ttl-controller
+          )
+
+          for module in "${modules[@]}"; do
+            echo "::group::${module}"
+            (
+              cd "${module}"
+              mapfile -t packages < <(go list ./...)
+              go test "${packages[@]}"
+            )
+            echo "::endgroup::"
+          done
+
+  bun:
+    name: Bun dependency checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install locked dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          services=(
+            services/control-plane
+            services/pool-manager
+          )
+
+          for service in "${services[@]}"; do
+            echo "::group::${service}"
+            (
+              cd "${service}"
+              if [[ "${service}" == "services/pool-manager" ]]; then
+                mkdir -p keys
+                openssl genpkey -algorithm RSA \
+                  -pkeyopt rsa_keygen_bits:2048 \
+                  -out keys/private.pem \
+                  >/dev/null 2>&1
+                mkdir -p ../gateway/keys
+                openssl pkey -in keys/private.pem \
+                  -pubout \
+                  -out ../gateway/keys/public.pem \
+                  >/dev/null 2>&1
+              fi
+              bun install --frozen-lockfile
+              if node -e "process.exit(require('./package.json').scripts?.typecheck ? 0 : 1)"; then
+                bun run typecheck
+              fi
+              if node -e "process.exit(require('./package.json').scripts?.test ? 0 : 1)"; then
+                bun run test
+              fi
+            )
+            echo "::endgroup::"
+          done
+
+      - name: Verify authenticated LiveView gateway routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash services/gateway/tests/route-bound-access.sh
+
+  helm:
+    name: Helm templates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Render OSS examples
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f examples/helm/platform-values.yaml
+          test -f examples/helm/browser-fleet-values.yaml
+          helm lint charts/platform \
+            --values examples/helm/platform-values.yaml
+          helm lint charts/browser-fleet \
+            --values examples/helm/browser-fleet-values.yaml
+
+          helm template popcorn-platform charts/platform \
+            --values examples/helm/platform-values.yaml \
+            > /tmp/popcorn-platform.yaml
+
+          helm template browser-fleet charts/browser-fleet \
+            --values examples/helm/browser-fleet-values.yaml \
+            > /tmp/browser-fleet.yaml
+
+          for manifest in /tmp/browser-fleet.yaml; do
+            grep -q 'name: novnc' "$manifest"
+            grep -q 'containerPort: 6080' "$manifest"
+            grep -q 'name: POPCORN_BROWSER_STREAMING_MODE' "$manifest"
+            grep -A1 'name: REPLACE_DEFAULT_PAGE' "$manifest" | grep -q 'value: "false"'
+            if grep -Eq 'webrtc-udp|TURN_KEY_ID|TURN_API_TOKEN|POPCORN_WEBRTC|browser-turn-secret' "$manifest"; then
+              echo "Unexpected WebRTC or TURN configuration in $manifest" >&2
+              exit 1
+            fi
+          done
+
+          helm template browser-fleet-reclaim charts/browser-fleet \
+            --set browserPolicy.variant=reclaim-portal \
+            > /tmp/browser-fleet-reclaim.yaml
+          grep -A1 'name: REPLACE_DEFAULT_PAGE' /tmp/browser-fleet-reclaim.yaml \
+            | grep -q 'value: "true"'
+          grep -Fq 'REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-false}"' \
+            images/minimal-vnc-desktop/start-chromium
+
+          grep -Fq 'location ~ ^/liveview/' services/gateway/nginx.conf
+          grep -Fq 'route:liveview:' services/pool-manager/src/services/session-db.ts
+          grep -Fq 'name: "novnc", port: 6080' services/pool-manager/src/services/agones.ts
+
+          for unsupported_mode in webrtc both; do
+            if helm template browser-fleet charts/browser-fleet \
+              --set "streaming.mode=$unsupported_mode" \
+              >"/tmp/browser-fleet-$unsupported_mode.yaml" \
+              2>"/tmp/browser-fleet-$unsupported_mode.err"; then
+              echo "streaming.mode=$unsupported_mode unexpectedly rendered" >&2
+              exit 1
+            fi
+            grep -Eq "streaming.mode only supports 'vnc'|at '/streaming'" \
+              "/tmp/browser-fleet-$unsupported_mode.err"
+          done
+
+          helm template browser-fleet charts/browser-fleet \
+            --set externalSecrets.enabled=true \
+            > /tmp/browser-fleet-external-secrets.yaml
+          if grep -Eq 'TURN_KEY_ID|TURN_API_TOKEN|browser-turn-secret' /tmp/browser-fleet-external-secrets.yaml; then
+            echo "VNC-only external secret render contains TURN configuration" >&2
+            exit 1
+          fi
+
+  docker:
+    name: Docker build smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: pool-manager
+            context: services/pool-manager
+          - service: gateway
+            context: services/gateway
+          - service: ttl-controller
+            context: services/ttl-controller
+          - service: control-plane
+            context: services/control-plane
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' && github.repository == 'reclaimprotocol/popcorn-oss'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY,,}"
+          image="ghcr.io/${repo}/${{ matrix.service }}"
+          refs=("${image}:sha-${GITHUB_SHA}")
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            refs+=("${image}:${GITHUB_REF_NAME}")
+          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            refs+=("${image}:main" "${image}:latest")
+          else
+            refs+=("${image}:ci-${GITHUB_SHA}")
+          fi
+
+          tag_args=()
+          for ref in "${refs[@]}"; do
+            tag_args+=(--tag "$ref")
+          done
+
+          docker build \
+            "${tag_args[@]}" \
+            "${{ matrix.context }}"
+
+          # Runtime images are published, aliased, and signed by the dedicated
+          # reproducible-images workflow.
+          if [[ "${GITHUB_EVENT_NAME}" != "pull_request" && "${GITHUB_REPOSITORY}" == "reclaimprotocol/popcorn-oss" ]]; then
+            for ref in "${refs[@]}"; do
+              docker push "$ref"
+            done
+          fi
+
+  published-images:
+    name: Public GHCR images
+    if: github.event_name != 'pull_request' && github.repository == 'reclaimprotocol/popcorn-oss'
+    needs: docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Verify anonymous image access
+        shell: bash
+        run: |
+          set -euo pipefail
+          for service in pool-manager gateway ttl-controller control-plane; do
+            docker manifest inspect \
+              "ghcr.io/reclaimprotocol/popcorn-oss/${service}:sha-${GITHUB_SHA}" \
+              >/dev/null
+          done

@@ -1,0 +1,16 @@
+Popcorn platform installed in {{ .Release.Namespace }}.
+
+Check enabled services:
+  kubectl -n {{ .Release.Namespace }} get deploy,svc
+
+{{ if .Values.gateway.enabled }}
+Gateway health (use the public gateway address, or port-forward locally):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/popcorn-gateway 8080:80
+  curl --fail http://127.0.0.1:8080/health
+{{ else }}
+The gateway is disabled in this release. Enable gateway.enabled or point clients
+at the separately deployed gateway.
+{{ end }}
+
+The default pool-manager and gateway values include the VNC LiveView route on
+`/liveview/...`; install the browser-fleet chart in the same workload namespace.

@@ -1,0 +1,3 @@
+# arch	github_repo	release_tag
+amd64	reclaimprotocol/popcorn-oss	lock-amd64-240e40efca42f677
+arm64	reclaimprotocol/popcorn-oss	lock-arm64-1f086aad3c3b6b0a

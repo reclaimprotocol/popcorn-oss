@@ -1,0 +1,163 @@
+name: Reproducible Images
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+concurrency:
+  group: reproducible-images-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY_HOST: ghcr.io
+  REGISTRY_PROJECT: reclaimprotocol
+  REGISTRY_REPOSITORY: popcorn-oss
+  IMAGE_PREFIX: ghcr.io/reclaimprotocol/popcorn-oss
+  PLATFORM: linux/amd64
+  GITHUB_ARTIFACT_MIRROR_REPO: reclaimprotocol/popcorn-oss
+  BUILDX_VERSION: v0.35.0
+  BUILDKIT_IMAGE: moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
+
+jobs:
+  publish:
+    name: Build, publish, and sign
+    runs-on: ubuntu-latest
+    if: github.repository == 'reclaimprotocol/popcorn-oss'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: ${{ env.BUILDX_VERSION }}
+          driver-opts: |
+            image=${{ env.BUILDKIT_IMAGE }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Log in to GHCR
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login "${REGISTRY_HOST}" -u "${{ github.actor }}" --password-stdin
+
+      - name: Resolve reproducible inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          source_date_epoch="$(git log -1 --pretty=%ct)"
+          ubuntu_snapshot="$(awk -F '=' '$1 == "UBUNTU_SNAPSHOT" { print $2 }' images/minimal-vnc-desktop/locks/ubuntu-snapshot.lock)"
+          test -n "${ubuntu_snapshot}"
+
+          {
+            echo "COMMIT_SHA=${commit}"
+            echo "SOURCE_DATE_EPOCH=${source_date_epoch}"
+            echo "BROWSER_RUNTIME_UBUNTU_SNAPSHOT=${ubuntu_snapshot}"
+          } >>"${GITHUB_ENV}"
+
+      - name: Prepare browser-runtime artifact context
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/minimal-vnc-artifacts"
+          SOURCE_DATE_EPOCH=0 ./images/minimal-vnc-desktop/prepare-artifacts.sh \
+            "${RUNNER_TEMP}/minimal-vnc-artifacts" \
+            "${PLATFORM}"
+
+      - name: Build and publish browser-runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_args=(--tag "${IMAGE_PREFIX}/browser-runtime:${COMMIT_SHA}")
+          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == "main" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime:main" --tag "${IMAGE_PREFIX}/browser-runtime:latest")
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime:${GITHUB_REF_NAME}")
+          fi
+          docker buildx build \
+            --platform "${PLATFORM}" \
+            --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
+            --build-arg "UBUNTU_SNAPSHOT=${BROWSER_RUNTIME_UBUNTU_SNAPSHOT}" \
+            --build-context "minimal-vnc-artifacts=${RUNNER_TEMP}/minimal-vnc-artifacts" \
+            --metadata-file "${RUNNER_TEMP}/browser-runtime-metadata.json" \
+            --provenance=false \
+            "${tag_args[@]}" \
+            --output "type=registry,oci-mediatypes=true,compression=gzip,compression-level=9,force-compression=true,rewrite-timestamp=true" \
+            images/minimal-vnc-desktop
+
+          digest="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/browser-runtime-metadata.json")"
+          test -n "${digest}" && test "${digest}" != "null"
+          echo "BROWSER_RUNTIME_DIGEST=${digest}" >>"${GITHUB_ENV}"
+
+      - name: Build and publish browser-runtime-attestor
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp -f cosign.pub services/attestor/cosign.pub
+          tag_args=(--tag "${IMAGE_PREFIX}/browser-runtime-attestor:${COMMIT_SHA}")
+          if [[ "${GITHUB_REF_TYPE}" == "branch" && "${GITHUB_REF_NAME}" == "main" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime-attestor:main" --tag "${IMAGE_PREFIX}/browser-runtime-attestor:latest")
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag_args+=(--tag "${IMAGE_PREFIX}/browser-runtime-attestor:${GITHUB_REF_NAME}")
+          fi
+          docker buildx build \
+            --platform "${PLATFORM}" \
+            --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
+            --metadata-file "${RUNNER_TEMP}/browser-runtime-attestor-metadata.json" \
+            --provenance=false \
+            "${tag_args[@]}" \
+            --output "type=registry,oci-mediatypes=true,compression=gzip,compression-level=9,force-compression=true,rewrite-timestamp=true" \
+            services/attestor
+
+          digest="$(jq -r '."containerimage.digest"' "${RUNNER_TEMP}/browser-runtime-attestor-metadata.json")"
+          test -n "${digest}" && test "${digest}" != "null"
+          echo "BROWSER_RUNTIME_ATTESTOR_DIGEST=${digest}" >>"${GITHUB_ENV}"
+
+      - name: Sign image digests with keyless cosign
+        shell: bash
+        run: |
+          set -euo pipefail
+          cosign sign --yes "${IMAGE_PREFIX}/browser-runtime@${BROWSER_RUNTIME_DIGEST}"
+          cosign sign --yes "${IMAGE_PREFIX}/browser-runtime-attestor@${BROWSER_RUNTIME_ATTESTOR_DIGEST}"
+
+      - name: Write reproducibility manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/write-repro-manifest.py \
+            --commit "${COMMIT_SHA}" \
+            --source-date-epoch "${SOURCE_DATE_EPOCH}" \
+            --registry-host "${REGISTRY_HOST}" \
+            --registry-project "${REGISTRY_PROJECT}" \
+            --registry-repository "${REGISTRY_REPOSITORY}" \
+            --browser-runtime-attestor-digest "${BROWSER_RUNTIME_ATTESTOR_DIGEST}" \
+            --browser-runtime-digest "${BROWSER_RUNTIME_DIGEST}" \
+            --ubuntu-snapshot "${BROWSER_RUNTIME_UBUNTU_SNAPSHOT}" \
+            --json-out "dist/reproducible-images-${COMMIT_SHA}.json" \
+            --markdown-out "dist/reproducible-images-${COMMIT_SHA}.md"
+
+          cat "dist/reproducible-images-${COMMIT_SHA}.md" >>"${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload reproducibility manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reproducible-images-${{ github.sha }}
+          path: |
+            dist/reproducible-images-${{ github.sha }}.json
+            dist/reproducible-images-${{ github.sha }}.md

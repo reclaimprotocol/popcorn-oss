@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "region": { "type": "string", "minLength": 1 },
+    "gatewayDomain": { "type": "string" },
+    "browserRuntimeImage": { "type": "string", "minLength": 1 },
+    "browserRuntimeImagePullPolicy": {
+      "type": "string",
+      "enum": ["Always", "IfNotPresent", "Never"]
+    },
+    "browserPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant"],
+      "properties": {
+        "variant": {
+          "type": "string",
+          "enum": ["neutral", "reclaim-portal"]
+        }
+      }
+    },
+    "streaming": { "not": {} },
+    "externalSecrets": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "sessionExtensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "browser": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "ports": { "type": "array" },
+              "containers": { "type": "array" },
+              "prepullInitContainers": { "type": "array" },
+              "prepullContainers": { "type": "array" }
+            }
+          },
+          "routing": { "type": "object" }
+        }
+      }
+    },
+    "imagePrepuller": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "imagePullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
+        "resources": { "type": "object" }
+      }
+    },
+    "fleet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 0 },
+        "scheduling": { "type": "string", "enum": ["Packed", "Distributed"] },
+        "nodeSelector": { "type": "object" },
+        "tolerations": { "type": "array" },
+        "affinity": { "type": "object" },
+        "health": { "type": "object" },
+        "browserRuntimeCpuRequest": { "type": ["string", "number"] },
+        "browserRuntimeCpuLimit": { "type": ["string", "number"] },
+        "browserRuntimeMemoryRequest": { "type": ["string", "number"] },
+        "browserRuntimeMemoryLimit": { "type": ["string", "number"] },
+        "browserRuntimeAttestorCpuRequest": { "type": ["string", "number"] },
+        "browserRuntimeAttestorCpuLimit": { "type": ["string", "number"] },
+        "browserRuntimeAttestorMemoryRequest": { "type": ["string", "number"] },
+        "browserRuntimeAttestorMemoryLimit": { "type": ["string", "number"] }
+      }
+    },
+    "autoscaler": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "bufferSize": { "type": "integer", "minimum": 0 },
+        "minReplicas": { "type": "integer", "minimum": 0 },
+        "maxReplicas": { "type": "integer", "minimum": 0 },
+        "syncSeconds": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,4 @@
+.git
+.env
+.env.*
+main_test.go

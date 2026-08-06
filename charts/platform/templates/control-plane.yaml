@@ -1,0 +1,312 @@
+{{- $controlPlane := .Values.controlPlane }}
+{{- $controlPlaneSecret := default .Values.secrets.controlPlaneName $controlPlane.secretName }}
+{{- $databaseSecret := default .Values.secrets.controlPlaneDatabaseName $controlPlane.databaseSecretName }}
+{{- $regions := list }}
+{{- $hasSecretVolumes := false }}
+{{- range $index, $region := default (list) $controlPlane.regions }}
+{{- $entry := dict "name" $region.name "clusterName" $region.clusterName "poolManagerUrl" $region.poolManagerUrl "publicGatewayUrl" $region.publicGatewayUrl "enabled" (ne $region.enabled false) "x402Only" (get $region "x402Only" | default false) }}
+{{- if $region.serviceAuthToken }}
+{{- $_ := set $entry "serviceAuthToken" $region.serviceAuthToken }}
+{{- end }}
+{{- if $region.serviceAuthTokenFile }}
+{{- $_ := set $entry "serviceAuthTokenFile" $region.serviceAuthTokenFile }}
+{{- end }}
+{{- with $region.poolManagerAuth }}
+{{- if .secretName }}
+{{- $_ := set $entry "serviceAuthTokenFile" (printf "/app/secrets/pool-managers/%s/%s" $region.name (default "POOL_MANAGER_SERVICE_AUTH_TOKEN" .secretKey)) }}
+{{- $hasSecretVolumes = true }}
+{{- end }}
+{{- end }}
+{{- $regions = append $regions $entry }}
+{{- end }}
+{{- if $controlPlane.enabled }}
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+{{- $hasSecretVolumes = true }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-plane
+  labels:
+    app: control-plane
+spec:
+  replicas: {{ $controlPlane.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ $controlPlane.updateStrategy.maxSurge }}
+      maxUnavailable: {{ $controlPlane.updateStrategy.maxUnavailable }}
+  selector:
+    matchLabels:
+      app: control-plane
+  template:
+    metadata:
+      labels:
+        app: control-plane
+    spec:
+      serviceAccountName: control-plane-sa
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+{{- with $controlPlane.topologySpreadConstraints }}
+      topologySpreadConstraints:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- if $hasSecretVolumes }}
+      volumes:
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+        - name: admin-password-file
+          secret:
+            secretName: {{ $controlPlane.adminAuth.passwordFileSecretName | quote }}
+            items:
+              - key: {{ $controlPlane.adminAuth.passwordFileSecretKey | quote }}
+                path: admin.htpasswd
+{{- end }}
+{{- range $index, $region := default (list) $controlPlane.regions }}
+{{- with $region.poolManagerAuth }}
+{{- if .secretName }}
+        - name: pool-manager-auth-{{ $index }}
+          secret:
+            secretName: {{ .secretName | quote }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+      containers:
+        - name: control-plane
+          image: "{{ .Values.registry }}/control-plane:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ $controlPlane.imagePullPolicy }}
+{{- if $hasSecretVolumes }}
+          volumeMounts:
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+            - name: admin-password-file
+              mountPath: /app/auth/admin.htpasswd
+              subPath: admin.htpasswd
+              readOnly: true
+{{- end }}
+{{- range $index, $region := default (list) $controlPlane.regions }}
+{{- with $region.poolManagerAuth }}
+{{- if .secretName }}
+            - name: pool-manager-auth-{{ $index }}
+              mountPath: /app/secrets/pool-managers/{{ $region.name }}
+              readOnly: true
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+          env:
+            - name: NODE_ENV
+              value: {{ $controlPlane.nodeEnv | quote }}
+            - name: DATABASE_SSL
+              value: {{ include "popcorn-platform.controlPlaneDatabaseSsl" . | quote }}
+            {{- if $controlPlane.databaseSslCa }}
+            - name: DATABASE_SSL_CA
+              value: {{ $controlPlane.databaseSslCa | quote }}
+            {{- end }}
+            {{- if $controlPlane.databaseSslCaFile }}
+            - name: DATABASE_SSL_CA_FILE
+              value: {{ $controlPlane.databaseSslCaFile | quote }}
+            {{- end }}
+            - name: CONTROL_PLANE_REGIONS
+              value: {{ toJson $regions | quote }}
+            - name: SESSION_MAX_TTL_SECONDS
+              value: {{ $controlPlane.sessionMaxTtlSeconds | quote }}
+            - name: X402_ENABLED
+              value: {{ $controlPlane.x402.enabled | quote }}
+            - name: X402_TESTNET
+              value: {{ $controlPlane.x402.testnet | quote }}
+            - name: X402_NETWORK
+              value: {{ $controlPlane.x402.network | quote }}
+            - name: X402_PUBLIC_BASE_URL
+              value: {{ $controlPlane.x402.publicBaseUrl | quote }}
+            - name: X402_PAY_TO
+              value: {{ $controlPlane.x402.payTo | quote }}
+            - name: X402_BLOCK_SECONDS
+              value: {{ $controlPlane.x402.blockSeconds | quote }}
+            - name: X402_PRICE_PER_BLOCK_ATOMIC
+              value: {{ $controlPlane.x402.pricePerBlockAtomic | quote }}
+            - name: X402_PAYMENT_ASSET_ADDRESS
+              value: {{ $controlPlane.x402.paymentAssetAddress | quote }}
+            - name: X402_PAYMENT_ASSET_NAME
+              value: {{ $controlPlane.x402.paymentAssetName | quote }}
+            - name: X402_PAYMENT_ASSET_VERSION
+              value: {{ $controlPlane.x402.paymentAssetVersion | quote }}
+            - name: X402_MAX_EXTENSION_BLOCKS
+              value: {{ $controlPlane.x402.maxExtensionBlocks | quote }}
+            - name: X402_MAX_PAID_BLOCKS
+              value: {{ $controlPlane.x402.maxPaidBlocks | quote }}
+            - name: X402_REGION_NAME
+              value: {{ $controlPlane.x402.regionName | quote }}
+            - name: X402_FACILITATOR_URL
+              value: {{ $controlPlane.x402.facilitatorUrl | quote }}
+            - name: X402_FACILITATOR_AUTH_MODE
+              value: {{ $controlPlane.x402.facilitatorAuthMode | quote }}
+            - name: X402_TRUSTED_PROXY_HOPS
+              value: {{ $controlPlane.x402.trustedProxyHops | quote }}
+            - name: X402_RATE_LIMIT_PER_MINUTE
+              value: {{ $controlPlane.x402.rateLimitPerMinute | quote }}
+{{- if $controlPlane.x402.enabled }}
+            - name: X402_SERVER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.serverSecretKey | quote }}
+            - name: X402_BASE_RPC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.baseRpcUrlSecretKey | quote }}
+            - name: CDP_API_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.cdpApiKeyIdKey | quote }}
+                  optional: true
+            - name: CDP_API_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.cdpApiKeySecretKey | quote }}
+                  optional: true
+            - name: X402_FACILITATOR_AUTH_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlane.x402.secretName | quote }}
+                  key: {{ $controlPlane.x402.facilitatorAuthHeadersSecretKey | quote }}
+                  optional: true
+{{- end }}
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: host
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: port
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: database
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: password
+            - name: ADMIN_AUTH_STRATEGIES
+              value: {{ $controlPlane.adminAuth.strategies | quote }}
+            - name: ADMIN_SESSION_TTL_SECONDS
+              value: {{ $controlPlane.adminAuth.sessionTtlSeconds | quote }}
+            - name: ADMIN_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.sessionSecretKey | quote }}
+                  optional: true
+            - name: ADMIN_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.userKey | quote }}
+                  optional: true
+            - name: ADMIN_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.passKey | quote }}
+                  optional: true
+{{- if $controlPlane.adminAuth.passwordFileSecretName }}
+            - name: ADMIN_PASSWORD_FILE
+              value: /app/auth/admin.htpasswd
+{{- end }}
+            - name: ADMIN_GOOGLE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.googleClientIdKey | quote }}
+                  optional: true
+            - name: ADMIN_GOOGLE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.googleClientSecretKey | quote }}
+                  optional: true
+            - name: ADMIN_GOOGLE_REDIRECT_URI
+              value: {{ $controlPlane.adminAuth.googleRedirectUri | quote }}
+            - name: ADMIN_GOOGLE_ALLOWED_EMAILS
+              value: {{ $controlPlane.adminAuth.googleAllowedEmails | quote }}
+            - name: ADMIN_GOOGLE_ALLOWED_DOMAINS
+              value: {{ $controlPlane.adminAuth.googleAllowedDomains | quote }}
+            - name: CONTROL_PLANE_SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.serviceAuthSecretKey | quote }}
+            - name: CONTROL_PLANE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.tokenKey | quote }}
+                  optional: true
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $controlPlaneSecret | quote }}
+                  key: {{ $controlPlane.adminAuth.tokenKey | quote }}
+                  optional: true
+          ports:
+            - containerPort: 3000
+              name: http
+          resources:
+{{ toYaml $controlPlane.resources | indent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+{{- if $controlPlane.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: control-plane
+spec:
+  minAvailable: {{ $controlPlane.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app: control-plane
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-plane
+{{- if $controlPlane.staticIpName }}
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+{{- end }}
+spec:
+  type: {{ if $controlPlane.staticIpName }}ClusterIP{{ else }}{{ $controlPlane.serviceType }}{{ end }}
+  selector:
+    app: control-plane
+  ports:
+    - name: http
+      port: {{ $controlPlane.publicServicePort }}
+      targetPort: 3000
+      protocol: TCP
+{{- with $controlPlane.nodePorts.http }}
+      nodePort: {{ . }}
+{{- end }}
+{{- end }}

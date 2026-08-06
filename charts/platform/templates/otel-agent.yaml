@@ -1,0 +1,85 @@
+{{- if .Values.otel.enabled }}
+{{- include "popcorn-platform.validateOtelHeaders" . }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: otel-agent
+  labels:
+    app: otel-agent
+spec:
+  selector:
+    matchLabels:
+      app: otel-agent
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/otel-configmap.yaml") . | sha256sum }}
+      labels:
+        app: otel-agent
+    spec:
+      serviceAccountName: otel-agent
+{{- if or .Values.otel.agent.nodeSelector .Values.otel.agent.tolerations .Values.otel.agent.affinity }}
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.otel.agent.nodeSelector }}
+      nodeSelector:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.otel.agent.tolerations }}
+      tolerations:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- with .Values.otel.agent.affinity }}
+      affinity:
+{{ toYaml . | nindent 8 }}
+{{- end }}
+{{- else }}
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+{{- end }}
+      containers:
+        - name: otel-agent
+          image: {{ .Values.otel.image | quote }}
+          imagePullPolicy: {{ .Values.otel.imagePullPolicy }}
+          args:
+            - --config=/conf/config.yaml
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+{{- with .Values.otel.exporter.headers }}
+{{- include "popcorn-platform.otelHeaderSecretEnvVars" $ | trim | nindent 12 }}
+{{- end }}
+          securityContext:
+            runAsUser: 0
+          resources:
+{{ toYaml .Values.otel.agent.resources | indent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /conf
+              readOnly: true
+            - name: file-storage
+              mountPath: /var/lib/otelcol/file_storage
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: varlogcontainers
+              mountPath: /var/log/containers
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: otel-agent-config
+        - name: file-storage
+          hostPath:
+            path: /var/lib/popcorn/otel-agent/file-storage
+            type: DirectoryOrCreate
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlogcontainers
+          hostPath:
+            path: /var/log/containers
+{{- end }}

@@ -1,0 +1,66 @@
+{{- if .Values.serviceAccount.create }}
+{{- $nodeReaderClusterRoleName := printf "%s-browser-sa-node-reader" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- $nodeReaderClusterRoleBindingName := printf "%s-browser-sa-node-reader" .Release.Name | trunc 63 | trimSuffix "-" }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: browser-sa
+  namespace: {{ .Release.Namespace }}
+{{- if .Values.serviceAccount.gcpServiceAccount }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ .Values.serviceAccount.gcpServiceAccount | quote }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: browser-sa-role
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["agones.dev"]
+    resources: ["gameservers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: browser-sa-rolebinding
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: browser-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: browser-sa-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $nodeReaderClusterRoleName | quote }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $nodeReaderClusterRoleBindingName | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: browser-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ $nodeReaderClusterRoleName | quote }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -1,0 +1,12 @@
+title = "Popcorn OSS secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Known protocol and identifier strings that are not credentials"
+regexTarget = "match"
+regexes = [
+  '''claimKey: x402OperationClaims\.claimKey''',
+  '''Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==''',
+]

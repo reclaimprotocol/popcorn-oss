@@ -1,0 +1,158 @@
+# GKE production baseline values for the platform chart.
+# Replace placeholders before installing into a GKE cluster.
+
+clusterName: example-gke-cluster
+provider: gcp
+region: us-central1
+registry: ghcr.io/reclaimprotocol/popcorn-oss
+imageTag: REPLACE_WITH_IMMUTABLE_RELEASE
+
+imagePullSecrets: []
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+secrets:
+  gatewayJwtName: gateway-jwt-keys
+  poolManagerServiceAuthName: pool-manager-us-central1-service-auth
+  controlPlaneName: control-plane-secret
+  controlPlaneDatabaseName: analytics-db-secret
+
+poolManager:
+  enabled: true
+  replicas: 1
+  imagePullPolicy: IfNotPresent
+  redisHost: redis-ha-master
+  gameServerNamespace: ""
+  gameServerFleet: browser-fleet
+  serviceAuth:
+    secretName: pool-manager-us-central1-service-auth
+    secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 500m
+
+gateway:
+  enabled: true
+  replicas: 3
+  imagePullPolicy: IfNotPresent
+  domainName: gateway.example.com
+  staticIpName: popcorn-gateway-ip
+  serviceType: ClusterIP
+  nodePorts: {}
+  serviceAnnotations: {}
+  redisHost: redis-ha-master
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: gateway
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          app: gateway
+  backendConfig:
+    enabled: true
+    timeoutSec: 3600
+    connectionDrainingTimeoutSec: 60
+  jwtPrivateKeySecretId: ""
+  jwtPublicKeySecretId: ""
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 100m
+    limits:
+      memory: 256Mi
+      cpu: 500m
+
+redis:
+  enabled: false
+  replicas: 1
+  image: redis:7-alpine
+  imagePullPolicy: IfNotPresent
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 50m
+    limits:
+      memory: 256Mi
+      cpu: 250m
+
+redisHa:
+  enabled: true
+
+controlPlane:
+  enabled: true
+  replicas: 2
+  imagePullPolicy: IfNotPresent
+  nodeEnv: production
+  databaseSsl: false
+  serviceType: ClusterIP
+  domainName: control-plane.example.com
+  staticIpName: popcorn-control-plane-ip
+  publicServicePort: 3000
+  sessionMaxTtlSeconds: 900
+  regions:
+    - name: us-central1
+      clusterName: example-gke-cluster
+      poolManagerUrl: http://pool-manager.popcorn.svc.cluster.local
+      publicGatewayUrl: https://gateway.example.com
+      enabled: true
+      poolManagerAuth:
+        secretName: pool-manager-us-central1-service-auth
+        secretKey: POOL_MANAGER_SERVICE_AUTH_TOKEN
+  resources:
+    requests:
+      memory: 256Mi
+      cpu: 250m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
+ttlController:
+  enabled: true
+  replicas: 2
+  imagePullPolicy: IfNotPresent
+  controlPlaneUrl: ""
+  ttlDuration: 15m
+  resources:
+    requests:
+      memory: 64Mi
+      cpu: 200m
+    limits:
+      memory: 128Mi
+      cpu: 500m
+
+otel:
+  enabled: false
+  image: otel/opentelemetry-collector-contrib:0.149.0
+  imagePullPolicy: IfNotPresent
+  exporter:
+    grpcEndpoint: null
+    httpEndpoint: null
+    headersSecretName: ""
+    headers: {}
+    tls: {}
+  clickhouse:
+    enabled: false
+    database: otel
+    secretName: otel-clickhouse-secret
+  agent:
+    resources:
+      requests:
+        memory: 128Mi
+        cpu: 100m
+      limits:
+        memory: 256Mi
+        cpu: 250m

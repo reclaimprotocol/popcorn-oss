@@ -1,0 +1,164 @@
+{{- if .Values.poolManager.enabled }}
+{{- $poolManagerServiceAuthSecret := default .Values.secrets.poolManagerServiceAuthName .Values.poolManager.serviceAuth.secretName }}
+{{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.poolManager.jwtSecretName }}
+{{- $otelGrpcEndpoint := default "" .Values.otel.exporter.grpcEndpoint }}
+{{- $otelHttpEndpoint := default "" .Values.otel.exporter.httpEndpoint }}
+{{- $otelLogsEnabled := and .Values.otel.enabled (or (ne $otelGrpcEndpoint "") (ne $otelHttpEndpoint "")) }}
+{{- $otelHeaders := .Values.otel.exporter.headers | default dict }}
+{{- $sessionExtensionUrls := dict }}
+{{- $sessionExtensionRoutePorts := dict }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- $routing := dig "routing" (dict) $extension }}
+{{- if $routing }}
+{{- $portName := required (printf "sessionExtensions.%s.routing.portName is required" $extensionName) $routing.portName }}
+{{- $routeKey := required (printf "sessionExtensions.%s.routing.routeKey is required" $extensionName) $routing.routeKey }}
+{{- $port := required (printf "sessionExtensions.%s.routing.port is required" $extensionName) $routing.port }}
+{{- $_ := set $sessionExtensionRoutePorts $portName (dict "routeKey" $routeKey "port" $port) }}
+{{- range $field, $template := ($routing.sessionUrls | default dict) }}
+{{- $_ := set $sessionExtensionUrls $field $template }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $otelLogsEnabled }}
+{{- include "popcorn-platform.validateOtelHeaders" . }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pool-manager
+  labels:
+    app: pool-manager
+spec:
+  replicas: {{ .Values.poolManager.replicas }}
+  selector:
+    matchLabels:
+      app: pool-manager
+  template:
+    metadata:
+      labels:
+        app: pool-manager
+    spec:
+      serviceAccountName: pool-manager
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+      volumes:
+        - name: jwt-keys
+          secret:
+            secretName: {{ $gatewayJwtSecret | quote }}
+            items:
+              - key: private.pem
+                path: private.pem
+      containers:
+        - name: pool-manager
+          image: "{{ .Values.registry }}/pool-manager:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ .Values.poolManager.imagePullPolicy }}
+          ports:
+            - containerPort: 3000
+          volumeMounts:
+            - name: jwt-keys
+              mountPath: /app/keys
+              readOnly: true
+          env:
+            - name: REDIS_HOST
+              value: {{ .Values.poolManager.redisHost | quote }}
+{{- if .Values.poolManager.redisSecondaryHost }}
+            - name: REDIS_SECONDARY_HOST
+              value: {{ .Values.poolManager.redisSecondaryHost | quote }}
+{{- end }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GAME_SERVER_NAMESPACE
+              value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
+            - name: GAME_SERVER_FLEET
+              value: {{ .Values.poolManager.gameServerFleet | quote }}
+{{- with $sessionExtensionUrls }}
+            - name: POOL_MANAGER_SESSION_EXTENSION_URLS
+              value: {{ tpl (toJson .) $ | quote }}
+{{- end }}
+{{- with $sessionExtensionRoutePorts }}
+            - name: POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS
+              value: {{ tpl (toJson .) $ | quote }}
+{{- end }}
+            - name: POPCORN_REGION
+              value: {{ .Values.region | quote }}
+            - name: OTEL_CLICKHOUSE_ENABLED
+              value: {{ ternary "true" "false" (and .Values.otel.enabled .Values.otel.clickhouse.enabled) | quote }}
+            - name: OTEL_LOGS_ENABLED
+              value: {{ ternary "true" "false" $otelLogsEnabled | quote }}
+{{- if $otelLogsEnabled }}
+{{- if gt (len $otelHeaders) 0 }}
+{{- include "popcorn-platform.otelHeaderSecretEnvVars" . | trim | nindent 12 }}
+{{- end }}
+{{- if ne $otelGrpcEndpoint "" }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "grpc"
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ $otelGrpcEndpoint | quote }}
+{{- if .Values.otel.exporter.tls.insecure }}
+            - name: OTEL_EXPORTER_OTLP_LOGS_INSECURE
+              value: "true"
+{{- end }}
+{{- else }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http"
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: {{ printf "%s/v1/logs" (trimSuffix "/" $otelHttpEndpoint) | quote }}
+{{- end }}
+{{- if gt (len $otelHeaders) 0 }}
+            - name: OTEL_EXPORTER_OTLP_HEADERS
+              value: {{ include "popcorn-platform.otelHeadersEnvValue" . | quote }}
+{{- end }}
+{{- end }}
+            - name: POOL_MANAGER_SERVICE_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $poolManagerServiceAuthSecret | quote }}
+                  key: {{ .Values.poolManager.serviceAuth.secretKey | quote }}
+            - name: CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: cluster-config
+                  key: cluster_name
+{{- if and .Values.otel.enabled .Values.otel.clickhouse.enabled }}
+            - name: OTEL_CLICKHOUSE_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_ENDPOINT
+            - name: OTEL_CLICKHOUSE_HTTP_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_HTTP_ENDPOINT
+            - name: OTEL_CLICKHOUSE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_USERNAME
+            - name: OTEL_CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otel.clickhouse.secretName | quote }}
+                  key: CLICKHOUSE_PASSWORD
+            - name: OTEL_CLICKHOUSE_DATABASE
+              value: {{ .Values.otel.clickhouse.database | quote }}
+{{- end }}
+          resources:
+{{ toYaml .Values.poolManager.resources | indent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pool-manager
+spec:
+  selector:
+    app: pool-manager
+  type: ClusterIP
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 3000
+{{- end }}

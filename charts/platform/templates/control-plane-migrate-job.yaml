@@ -1,0 +1,69 @@
+{{- $controlPlane := .Values.controlPlane }}
+{{- $databaseSecret := default .Values.secrets.controlPlaneDatabaseName $controlPlane.databaseSecretName }}
+{{- if $controlPlane.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: control-plane-migrate
+  annotations:
+    argocd.argoproj.io/hook: Sync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-1"
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: control-plane-migrate
+    spec:
+      restartPolicy: Never
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+      containers:
+        - name: control-plane-migrate
+          image: "{{ .Values.registry }}/control-plane:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ $controlPlane.imagePullPolicy }}
+          command: ["bun", "run", "db:migrate"]
+          env:
+            - name: NODE_ENV
+              value: {{ $controlPlane.nodeEnv | quote }}
+            - name: DATABASE_SSL
+              value: {{ include "popcorn-platform.controlPlaneDatabaseSsl" . | quote }}
+            {{- if $controlPlane.databaseSslCa }}
+            - name: DATABASE_SSL_CA
+              value: {{ $controlPlane.databaseSslCa | quote }}
+            {{- end }}
+            {{- if $controlPlane.databaseSslCaFile }}
+            - name: DATABASE_SSL_CA_FILE
+              value: {{ $controlPlane.databaseSslCaFile | quote }}
+            {{- end }}
+            - name: POSTGRES_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: host
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: port
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: database
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $databaseSecret | quote }}
+                  key: password
+          resources:
+{{ toYaml $controlPlane.resources | indent 12 }}
+{{- end }}

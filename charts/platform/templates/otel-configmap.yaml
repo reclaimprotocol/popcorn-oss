@@ -1,0 +1,157 @@
+{{- if .Values.otel.enabled }}
+{{- include "popcorn-platform.validateOtelHeaders" . }}
+{{- $grpcEndpoint := default "" .Values.otel.exporter.grpcEndpoint }}
+{{- $httpEndpoint := default "" .Values.otel.exporter.httpEndpoint }}
+{{- $otelHeaders := .Values.otel.exporter.headers | default dict }}
+{{- if and (eq $grpcEndpoint "") (eq $httpEndpoint "") }}
+{{- fail "otel.enabled=true requires otel.exporter.grpcEndpoint or otel.exporter.httpEndpoint" }}
+{{- end }}
+{{- if and (ne $grpcEndpoint "") (ne $httpEndpoint "") }}
+{{- fail "Set only one of otel.exporter.grpcEndpoint or otel.exporter.httpEndpoint" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-agent-config
+data:
+  config.yaml: |
+    extensions:
+      file_storage:
+        directory: /var/lib/otelcol/file_storage
+        create_directory: true
+
+    receivers:
+      filelog/browser:
+        include:
+          - /var/log/pods/{{ .Release.Namespace }}_browser-fleet-*_*/*/*.log
+        include_file_path: true
+        start_at: beginning
+        storage: file_storage
+        operators:
+          - id: container-parser
+            type: container
+          - id: extract-k8s-path
+            type: regex_parser
+            parse_from: attributes["log.file.path"]
+            regex: '^/var/log/pods/(?P<k8s_namespace_name>[^_]+)_(?P<k8s_pod_name>.+)_(?P<k8s_pod_uid>[0-9a-f-]+)/(?P<k8s_container_name>[^/]+)/(?P<k8s_restart_count>\d+)\.log$'
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 192
+        spike_limit_mib: 64
+      resource/from-filepath:
+        attributes:
+          - action: upsert
+            key: service.name
+            from_attribute: k8s_container_name
+          - action: upsert
+            key: service.namespace
+            value: popcorn
+          - action: upsert
+            key: k8s.namespace.name
+            from_attribute: k8s_namespace_name
+          - action: upsert
+            key: k8s.pod.name
+            from_attribute: k8s_pod_name
+          - action: upsert
+            key: k8s.pod.uid
+            from_attribute: k8s_pod_uid
+          - action: upsert
+            key: k8s.container.name
+            from_attribute: k8s_container_name
+          - action: upsert
+            key: k8s.cluster.name
+            value: {{ .Values.clusterName | quote }}
+      k8sattributes:
+        auth_type: serviceAccount
+        filter:
+          node_from_env_var: KUBE_NODE_NAME
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.uid
+        extract:
+          metadata:
+            - k8s.namespace.name
+            - k8s.pod.name
+            - k8s.pod.uid
+            - k8s.container.name
+            - k8s.node.name
+          labels:
+            - from: pod
+              key: agones.dev/role
+              tag_name: agones.dev.role
+            - from: pod
+              key: agones.dev/fleet
+              tag_name: agones.dev.fleet
+          annotations:
+            - from: pod
+              key: popcorn.dev/session-id
+              tag_name: popcorn.session.id
+            - from: pod
+              key: popcorn.dev/session-bound-at
+              tag_name: popcorn.session.bound_at
+            - from: pod
+              key: popcorn.dev/session-bound-at-unix-nano
+              tag_name: popcorn.session.bound_at_unix_nano
+      transform/session:
+        error_mode: ignore
+        log_statements:
+          - context: log
+            statements:
+              - set(log.attributes["session.id"], resource.attributes["popcorn.session.id"]) where resource.attributes["popcorn.session.id"] != nil and resource.attributes["popcorn.session.bound_at_unix_nano"] != nil and log.time_unix_nano >= Int(resource.attributes["popcorn.session.bound_at_unix_nano"])
+      resource/drop-session-internals:
+        attributes:
+          - action: delete
+            key: popcorn.session.id
+          - action: delete
+            key: popcorn.session.bound_at
+          - action: delete
+            key: popcorn.session.bound_at_unix_nano
+      filter/browser:
+        error_mode: ignore
+        logs:
+          log_record:
+            - resource.attributes["k8s.namespace.name"] != {{ .Release.Namespace | quote }}
+            - resource.attributes["agones.dev.role"] != "gameserver"
+      batch:
+        send_batch_size: 1000
+        timeout: 5s
+
+    exporters:
+{{- if ne $grpcEndpoint "" }}
+      otlp:
+        endpoint: {{ $grpcEndpoint | quote }}
+{{- if gt (len $otelHeaders) 0 }}
+        headers:
+{{- range $headerName, $_ := $otelHeaders }}
+          {{ $headerName | quote }}: {{ printf "${env:%s}" (include "popcorn-platform.otelHeaderEnvName" $headerName) | quote }}
+{{- end }}
+{{- end }}
+{{- with .Values.otel.exporter.tls }}
+        tls:
+{{ toYaml . | nindent 10 }}
+{{- end }}
+{{- else }}
+      otlphttp:
+        endpoint: {{ $httpEndpoint | quote }}
+{{- if gt (len $otelHeaders) 0 }}
+        headers:
+{{- range $headerName, $_ := $otelHeaders }}
+          {{ $headerName | quote }}: {{ printf "${env:%s}" (include "popcorn-platform.otelHeaderEnvName" $headerName) | quote }}
+{{- end }}
+{{- end }}
+{{- with .Values.otel.exporter.tls }}
+        tls:
+{{ toYaml . | nindent 10 }}
+{{- end }}
+{{- end }}
+
+    service:
+      extensions: [file_storage]
+      pipelines:
+        logs/browser:
+          receivers: [filelog/browser]
+          processors: [memory_limiter, resource/from-filepath, k8sattributes, transform/session, resource/drop-session-internals, filter/browser, batch]
+          exporters: [{{ ternary "otlp" "otlphttp" (ne $grpcEndpoint "") }}]
+{{- end }}

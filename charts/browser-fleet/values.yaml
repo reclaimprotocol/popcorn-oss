@@ -1,0 +1,104 @@
+region: asia-south1
+gatewayDomain: ""
+
+agones:
+  install: false
+
+agonesInstaller:
+  agones:
+    controller:
+      generateTLS: false
+  gameservers:
+    namespaces:
+      - default
+
+externalSecrets:
+  enabled: false
+
+imagePullSecrets: []
+
+podSecurityContext:
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+
+# `legacy` preserves the existing customer fleet capability set. `hardened`
+# is intended for untrusted public workloads and must be runtime-tested with
+# the exact pinned browser image before launch.
+browserRuntimeSecurityProfile: legacy
+runtimeClassName: ""
+
+secrets:
+  browserRuntimeProxyName: browser-runtime-proxy-secret
+
+ccDevicePlugin:
+  enabled: false
+
+serviceAccount:
+  create: true
+  gcpServiceAccount: ""
+  automountServiceAccountToken: true
+
+networkPolicy:
+  enabled: false
+  kubernetesApiCidr: ""
+
+browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
+browserRuntimeImagePullPolicy: IfNotPresent
+
+# The OSS default keeps the browser's DuckDuckGo search and new-tab policy.
+# Internal deployments can opt into the bundled Reclaim portal variant.
+browserPolicy:
+  variant: neutral
+
+browserRuntimeAttestor:
+  enabled: false
+  imagePullPolicy: IfNotPresent
+
+browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:latest
+
+extraBrowserRuntimeEnv: []
+
+# Merge-friendly, operator-owned same-pod services. Each named extension may
+# provide browser ports/containers and image-prepuller containers. The matching
+# platform chart consumes the optional `routing` section from the same values
+# document.
+sessionExtensions: {}
+
+imagePrepuller:
+  enabled: false
+  imagePullPolicy: IfNotPresent
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 50m
+      memory: 128Mi
+
+fleet:
+  replicas: 10
+  scheduling: Packed
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  health:
+    initialDelaySeconds: 90
+    periodSeconds: 5
+    failureThreshold: 6
+  browserRuntimeCpuRequest: "1000m"
+  browserRuntimeCpuLimit: "2000m"
+  browserRuntimeMemoryRequest: 2Gi
+  browserRuntimeMemoryLimit: 4Gi
+  browserRuntimeAttestorCpuRequest: "100m"
+  browserRuntimeAttestorCpuLimit: "200m"
+  browserRuntimeAttestorMemoryRequest: 128Mi
+  browserRuntimeAttestorMemoryLimit: 256Mi
+
+autoscaler:
+  bufferSize: 5
+  minReplicas: 10
+  maxReplicas: 50
+  syncSeconds: 30

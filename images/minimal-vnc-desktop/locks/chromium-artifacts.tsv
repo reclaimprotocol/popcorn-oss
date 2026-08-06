@@ -1,0 +1,6 @@
+# Prepared .deb artifacts fetched into the build's artifact context.
+# Chromium itself comes from the CloakBrowser OCI image (see Dockerfile); only
+# libxcvt0 remains here — it ships from Debian (not in jammy) and Xvnc needs it.
+# arch	name	filename	url	sha256
+amd64	libxcvt0	libxcvt0_0.1.2-1_amd64.deb	https://deb.debian.org/debian/pool/main/libx/libxcvt/libxcvt0_0.1.2-1_amd64.deb	7cf887f830748b89c4cd706b8aa8891856127333c96cb5c47e8390fcec263294
+arm64	libxcvt0	libxcvt0_0.1.2-1_arm64.deb	https://deb.debian.org/debian/pool/main/libx/libxcvt/libxcvt0_0.1.2-1_arm64.deb	ad8724b48a1fa79ede417aa33197d1f779d59fcbc1fc232f603531b59988a280

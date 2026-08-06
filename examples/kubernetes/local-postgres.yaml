@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-postgres-config
+data:
+  pg_hba.conf: |
+    local all all trust
+    host all all 127.0.0.1/32 scram-sha-256
+    host all all ::1/128 scram-sha-256
+    host all all 0.0.0.0/0 scram-sha-256
+    host all all ::/0 scram-sha-256
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: local-postgres
+  labels:
+    app: local-postgres
+spec:
+  serviceName: local-postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: local-postgres
+  template:
+    metadata:
+      labels:
+        app: local-postgres
+    spec:
+      volumes:
+        - name: local-postgres-config
+          configMap:
+            name: local-postgres-config
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: IfNotPresent
+          args:
+            - -c
+            - hba_file=/var/lib/postgresql/config/pg_hba.conf
+            - -c
+            - password_encryption=scram-sha-256
+          env:
+            - name: POSTGRES_DB
+              value: analytics
+            - name: POSTGRES_USER
+              value: analytics_admin
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_INITDB_ARGS
+              value: "--auth-host=scram-sha-256 --auth-local=trust"
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: analytics-db-secret
+                  key: password
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: local-postgres-config
+              mountPath: /var/lib/postgresql/config
+              readOnly: true
+            - name: local-postgres-storage
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: local-postgres-storage
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: local-postgres
+spec:
+  selector:
+    app: local-postgres
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432

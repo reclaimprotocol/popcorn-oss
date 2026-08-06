@@ -1,0 +1,55 @@
+{{- if and .Values.gateway.enabled .Values.gateway.staticIpName }}
+{{- if .Values.gateway.domainName }}
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: popcorn-gateway
+spec:
+  redirectToHttps:
+    enabled: true
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: popcorn-gateway
+spec:
+  domains:
+    - {{ .Values.gateway.domainName | quote }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: popcorn-gateway
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.global-static-ip-name: {{ .Values.gateway.staticIpName | quote }}
+{{- if .Values.gateway.domainName }}
+    networking.gke.io/managed-certificates: popcorn-gateway
+    networking.gke.io/v1beta1.FrontendConfig: popcorn-gateway
+{{- end }}
+spec:
+  rules:
+{{- if .Values.gateway.domainName }}
+    - host: {{ .Values.gateway.domainName | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: popcorn-gateway
+                port:
+                  number: 80
+{{- else }}
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: popcorn-gateway
+                port:
+                  number: 80
+{{- end }}
+{{- end }}
