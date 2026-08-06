@@ -6,6 +6,8 @@
 
 Popcorn is a self-hostable browser platform for running isolated, on-demand Chromium sessions in Kubernetes. It gives each session its own ephemeral browser pod, then exposes browser view, Chrome DevTools Protocol, and session APIs through a gateway.
 
+Website: [popcorn.reclaimprotocol.org](https://popcorn.reclaimprotocol.org/)
+
 The repository includes the runtime, control services, Helm charts, local Kind
 workflow, GKE deployment guidance, and optional x402 and GCP attestation paths.
 
