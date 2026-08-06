@@ -106,9 +106,7 @@ client creation, session creation, and a Playwright smoke test.
 
 ## Limitations
 
-- There is no hosted public demo.
 - Production deployment support is GCP/GKE only for now.
-- Local deployment depends on generated local JWT keys and development-only Helm values.
 - Confidential-computing attestation requires compatible GCP infrastructure and signed digest-pinned images.
 - The restricted CDP endpoint applies a command allowlist, but filtering should
   not be treated as the only security boundary; scoped path tokens, ownership,
