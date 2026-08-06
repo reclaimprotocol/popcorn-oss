@@ -3,7 +3,7 @@ import { db } from './db';
 
 export async function getX402Analytics(windowHours = 24, blockSeconds = 300) {
   const safeWindowHours = Math.max(1, Math.min(720, Math.floor(windowHours)));
-  const [totals, operations, events] = await Promise.all([
+  const [totals, operations, events, live] = await Promise.all([
     db.execute(sql`
       select
         count(*)::int as settled_payments,
@@ -31,10 +31,22 @@ export async function getX402Analytics(windowHours = 24, blockSeconds = 300) {
       group by event_type
       order by event_type
     `),
+    // Live now, not window-scoped: paid access still valid and the underlying
+    // browser session is still active (excludes expired and terminated ones).
+    db.execute(sql`
+      select count(*)::int as live_sessions
+      from x402_sessions x
+      join sessions s on s.session_id = x.session_id
+      where x.expires_at > now()
+        and s.status = 'active'
+        and s.ended_at is null
+    `),
   ]);
   const row = totals[0] as Record<string, unknown> | undefined;
+  const liveRow = live[0] as Record<string, unknown> | undefined;
   return {
     windowHours: safeWindowHours,
+    liveSessions: Number(liveRow?.live_sessions || 0),
     // Revenue is deliberately sourced only from status='settled' ledger rows.
     revenueAtomic: String(row?.revenue_atomic || '0'),
     settledPayments: Number(row?.settled_payments || 0),
