@@ -460,7 +460,156 @@
     spoof('outerHeight', 'innerHeight');
   } catch (_) {}
 
-  // ---- display-mode must read as a normal browser window ---------------------
+  // ---- screen metrics must stay with the emulated desktop -------------------
+  //
+  // Fortress spoofs screen.width/screen.height, but screen.availWidth,
+  // screen.availHeight and devicePixelRatio can still leak the host compositor
+  // scale in some frame contexts (observed: 2560x1400 @ 1.5 while the persona and
+  // CDP emulation both say 1920x1080 @ 1). CreepJS records that as a Screen lie,
+  // and Sannysoft's PHANTOM_WINDOW_HEIGHT check reads it from an about:blank
+  // frame. Keep the visible/available desktop and DPR coherent with the
+  // setDeviceMetricsOverride baseline.
+  try {
+    const setAccessor = (obj, name, valueFn) => {
+      const d = Object.getOwnPropertyDescriptor(obj, name);
+      Object.defineProperty(obj, name, {
+        get: valueFn,
+        set: (d && d.set) ? d.set : function () {},
+        enumerable: d ? d.enumerable : true,
+        configurable: true,
+      });
+    };
+    setAccessor(window, 'devicePixelRatio', () => 1);
+    const screenProto = Object.getPrototypeOf(window.screen) || window.screen;
+    setAccessor(screenProto, 'availWidth', () => window.screen.width);
+    setAccessor(screenProto, 'availHeight', () => window.screen.height);
+    setAccessor(window.screen, 'availWidth', () => window.screen.width);
+    setAccessor(window.screen, 'availHeight', () => window.screen.height);
+  } catch (_) {}
+
+  // Dynamic about:blank iframes do not reliably get extension content scripts,
+  // even with match_about_blank. Patch same-origin child windows from the parent
+  // so headless probes cannot read the host compositor metrics through a blank
+  // frame while the top document is coherent.
+  try {
+    const patchGeometry = (w) => {
+      if (!w || w.__pcnGeometryPatched) return;
+      Object.defineProperty(w, '__pcnGeometryPatched', { value: true, configurable: true });
+      const set = (obj, name, valueFn) => {
+        const d = Object.getOwnPropertyDescriptor(obj, name);
+        Object.defineProperty(obj, name, {
+          get: valueFn,
+          set: (d && d.set) ? d.set : function () {},
+          enumerable: d ? d.enumerable : true,
+          configurable: true,
+        });
+      };
+      set(w, 'outerWidth', () => w.innerWidth);
+      set(w, 'outerHeight', () => w.innerHeight);
+      set(w, 'devicePixelRatio', () => 1);
+      const sp = Object.getPrototypeOf(w.screen) || w.screen;
+      set(sp, 'availWidth', () => w.screen.width);
+      set(sp, 'availHeight', () => w.screen.height);
+      set(w.screen, 'availWidth', () => w.screen.width);
+      set(w.screen, 'availHeight', () => w.screen.height);
+    };
+    const patchFrame = (frame) => {
+      try { patchGeometry(frame && frame.contentWindow); } catch (_) {}
+    };
+    try {
+      const d = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+      if (d && d.get) {
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+          get: function () {
+            const w = d.get.call(this);
+            try { patchGeometry(w); } catch (_) {}
+            return w;
+          },
+          enumerable: d.enumerable,
+          configurable: true,
+        });
+      }
+    } catch (_) {}
+    const patchFrames = () => {
+      try { document.querySelectorAll('iframe').forEach(patchFrame); } catch (_) {}
+    };
+    patchFrames();
+    const mo = new MutationObserver((records) => {
+      for (const r of records) {
+        for (const n of r.addedNodes || []) {
+          if (n && n.tagName === 'IFRAME') {
+            patchFrame(n);
+            try { n.addEventListener('load', () => patchFrame(n), { once: false }); } catch (_) {}
+          } else if (n && n.querySelectorAll) {
+            try { n.querySelectorAll('iframe').forEach(patchFrame); } catch (_) {}
+          }
+        }
+      }
+    });
+    mo.observe(document.documentElement || document, { childList: true, subtree: true });
+    window.addEventListener('load', patchFrames);
+  } catch (_) {}
+
+  // ---- small desktop-Chrome API surface gaps --------------------------------
+  //
+  // CreepJS's "like headless" score counts a few APIs that headed Chrome exposes
+  // on desktop but this kiosk build can miss or lock down:
+  //   * navigator.share / canShare
+  //   * navigator.connection.downlinkMax
+  //   * Notification.permission default state
+  //
+  // Keep these conservative. Web Share rejects like a user cancel; canShare is
+  // false unless native support exists; notification state is coherent with
+  // Permissions.query({name:'notifications'}). This avoids adding the much noisier
+  // Contacts/ContentIndex shims just to chase a lower synthetic score.
+  try {
+    if (!('share' in navigator)) {
+      Object.defineProperty(Navigator.prototype, 'share', {
+        get: function () {
+          return function () {
+            return Promise.reject(new DOMException('Share canceled', 'AbortError'));
+          };
+        },
+        configurable: true,
+      });
+    }
+    if (!('canShare' in navigator)) {
+      Object.defineProperty(Navigator.prototype, 'canShare', {
+        get: function () { return function () { return false; }; },
+        configurable: true,
+      });
+    }
+  } catch (_) {}
+
+  try {
+    if (navigator.connection && !('downlinkMax' in navigator.connection)) {
+      const cp = Object.getPrototypeOf(navigator.connection) || navigator.connection;
+      Object.defineProperty(cp, 'downlinkMax', {
+        get: function () { return 10; },
+        configurable: true,
+      });
+    }
+  } catch (_) {}
+
+  try {
+    if (window.Notification && Notification.permission === 'denied') {
+      Object.defineProperty(Notification, 'permission', {
+        get: function () { return 'default'; },
+        configurable: true,
+      });
+      if (navigator.permissions && navigator.permissions.query) {
+        const realQuery = navigator.permissions.query.bind(navigator.permissions);
+        navigator.permissions.query = function (descriptor) {
+          if (descriptor && descriptor.name === 'notifications') {
+            return Promise.resolve(Object.freeze({ state: 'prompt', onchange: null }));
+          }
+          return realQuery(descriptor);
+        };
+      }
+    }
+  } catch (_) {}
+
+  // ---- media features must match a desktop browser window --------------------
   //
   // Chromium runs --kiosk, which makes matchMedia('(display-mode: fullscreen)')
   // match and '(display-mode: browser)' NOT match. A normal desktop Chrome — which
@@ -474,20 +623,32 @@
   // produced a 211-byte block. The server cannot see display-mode, so this is a
   // purely client-side gate — nothing server-side to fight.
   //
-  // Narrow like the outer-size patch above: matchMedia keeps its identity and every
-  // non-display-mode query is untouched (real MediaQueryList, real matches). Only
-  // the display-mode family is rewritten to the browser-window answer, which is the
-  // truthful one for the persona we present.
+  // Kiosk/Xvnc can also report no fine pointer and no hover, which contradicts
+  // maxTouchPoints=0 on a desktop Windows persona. Keep this scoped to the media
+  // features that describe browser shell/input mode; everything else returns the
+  // native MediaQueryList.
   try {
     const realMatchMedia = window.matchMedia.bind(window);
     window.matchMedia = function (q) {
       const mql = realMatchMedia(q);
-      if (typeof q === 'string' && /display-mode/i.test(q)) {
-        // A normal browser window: display-mode:browser is the only match.
-        const wantBrowser = /browser/i.test(q);
-        try {
-          Object.defineProperty(mql, 'matches', { get: () => wantBrowser, configurable: true });
-        } catch (_) {}
+      if (typeof q === 'string') {
+        let override = null;
+        if (/\bdisplay-mode\b/i.test(q)) {
+          override = /\bbrowser\b/i.test(q);
+        } else if (/\bany-pointer\s*:\s*fine\b/i.test(q) || /\bpointer\s*:\s*fine\b/i.test(q)) {
+          override = true;
+        } else if (/\bany-pointer\s*:\s*coarse\b/i.test(q) || /\bpointer\s*:\s*coarse\b/i.test(q)) {
+          override = false;
+        } else if (/\bany-hover\s*:\s*hover\b/i.test(q) || /\bhover\s*:\s*hover\b/i.test(q)) {
+          override = true;
+        } else if (/\bany-hover\s*:\s*none\b/i.test(q) || /\bhover\s*:\s*none\b/i.test(q)) {
+          override = false;
+        }
+        if (override !== null) {
+          try {
+            Object.defineProperty(mql, 'matches', { get: () => override, configurable: true });
+          } catch (_) {}
+        }
       }
       return mql;
     };

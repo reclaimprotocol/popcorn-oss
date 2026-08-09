@@ -235,11 +235,11 @@ elif [[ "$BROWSER" == "fortress" ]]; then
     export TILION_LANG="$CLOAK_LOCALE,${CLOAK_LOCALE%%-*}"
   fi
   # No --fingerprint-* / gpu_flags: Fortress supplies platform/UA/hw via --uxr
-  # defaults and bundles its own SwiftShader ICD. NOTE: this keeps the honest
-  # SwiftShader WebGL renderer (a datacenter/coherence tell for strict keys) —
-  # unchanged from the CloakBrowser path, and not the lever for Netflix/Taj (IP
-  # reputation is). Override persona with CHROMIUM_FLAGS='--uxr-... ' if needed,
-  # or TILION_NO_DEFAULTS=1 for a bare launch.
+  # defaults and bundles its own SwiftShader ICD. GPU_PERSONA below chooses the
+  # reported WebGL/WebGPU identity; the default is Intel integrated because it
+  # clears Sannysoft without lowering the current CreepJS score. Override persona
+  # with CHROMIUM_FLAGS='--uxr-... ' if needed, or TILION_NO_DEFAULTS=1 for a bare
+  # launch.
   # Persona platform. PERSONA=windows restores the wrapper's own Windows default.
   #
   # Linux is expressible only since the 150 image: before it, explicit --uxr-ua-os /
@@ -295,37 +295,21 @@ elif [[ "$BROWSER" == "fortress" ]]; then
       "--uxr-ua-brand=Google Chrome"
     )
   fi
-  # GPU coherence (GPU_PERSONA=swiftshader). Fortress's default persona claims a
+  # GPU coherence (GPU_PERSONA=intel). Fortress's default persona claims a
   # discrete NVIDIA RTX 3060 via --uxr-webgl-vendor/-renderer/-webgpu-description while
   # actually rendering through SwiftShader (--use-angle=swiftshader + its own Vulkan ICD).
   # FORTRESS-INTEGRATION.md flags that hardware-GPU-on-software-renderer pair as exactly
   # what strict detectors cross-check, and recommends overriding it to go coherent.
   #
-  # MEASURED on Fortress 150, same image, only the GPU strings differing:
-  #   nvidia  (RTX 3060 claim, wrapper default) -> CreepJS trust 44%  (flagged)
-  #   intel   (UHD 630, the most common real GPU) -> 44%  (flagged)
-  #   swiftshader (honest, below)               -> 50%  (not flagged)
+  # MEASURED on Fortress 150 in this image, same boot/profile shape:
+  #   swiftshader (honest software renderer) -> Sannysoft 29/30, CreepJS 50%
+  #   intel (UHD 630 integrated GPU claim)   -> Sannysoft 30/30, CreepJS 50%
   #
-  # The lesson is that the SPECIFIC card does not matter: any hardware claim over a
-  # software renderer costs the same 6 points, because what is detected is the
-  # contradiction with the real renderer, not whether the card is plausible. Making the
-  # capabilities believable (Intel integrated, whose limits sit close to SwiftShader's)
-  # changed nothing. So report the truth: ON by default, GPU_PERSONA=nvidia|intel for
-  # comparison.
-  #
-  # The cost is real and unavoidable here: admitting SwiftShader admits software
-  # rendering, which reads as a VM/datacenter box, and FORTRESS-INTEGRATION.md notes
-  # datacenter GL stays detectable by DataDome either way. This container is already
-  # VM-detectable on environmental grounds, so paying that to remove a detectable lie is
-  # the better half of the trade.
-  #
-  # The trade is real in both directions: claiming the RTX is a LIE that cross-checks
-  # expose (it reads as tampering), while reporting SwiftShader honestly admits a
-  # software renderer (it reads as a VM). This container is already flagged as a VM on
-  # environmental grounds — upstream says VM/VPN detection is not something the browser
-  # can spoof away — so removing the contradiction is the cheaper half. Opt-in until the
-  # probe numbers justify making it the default.
-  case "${GPU_PERSONA:-swiftshader}" in
+  # Intel integrated is the default because it removes the visible SwiftShader
+  # software-renderer tell without moving CreepJS. It is still a spoof over a
+  # software backend; GPU_PERSONA=swiftshader remains available when strict
+  # renderer honesty is preferred over consumer-laptop plausibility.
+  case "${GPU_PERSONA:-intel}" in
     swiftshader)
       cloak_flags+=(
         "--uxr-webgl-vendor=Google Inc. (Google)"
@@ -351,7 +335,7 @@ elif [[ "$BROWSER" == "fortress" ]]; then
       ;;
     nvidia) ;; # the wrapper's own default persona (RTX 3060 claim), for comparison
   esac
-  echo "[stealth] browser: Tillion Fortress (stable stealth Chromium 150) — persona=$persona gpu=${GPU_PERSONA:-swiftshader}; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$TILION_LANG"
+  echo "[stealth] browser: Tillion Fortress (stable stealth Chromium 150) — persona=$persona gpu=${GPU_PERSONA:-intel}; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$TILION_LANG"
 else
   # CloakBrowser was removed; only 'fortress' (default) and 'fingerprint' remain.
   echo "[start-chromium] unknown BROWSER='$BROWSER' (valid: fortress [default], fingerprint). CloakBrowser was removed from this image." >&2

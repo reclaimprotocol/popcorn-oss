@@ -42,7 +42,9 @@ const PROXY_SCHEME = process.env.PROXY_SCHEME || '';
 // Proxy-bypassed local page used to bootstrap the __pcn content script (it
 // only injects on http(s) pages, never about:blank). localhost is in the
 // extension's default bypassList, so it loads even if a bad proxy is set.
-const BOOTSTRAP_URL = `http://127.0.0.1:${process.env.NOVNC_PORT || 6080}/liveview.html`;
+const NOVNC_BASE_URL = process.env.NOVNC_BASE_URL || `http://127.0.0.1:${process.env.NOVNC_PORT || 6080}`;
+const BOOTSTRAP_URL = `${NOVNC_BASE_URL}/liveview.html`;
+const RESET_VIEWPORT = process.env.STEALTH_RESET_VIEWPORT !== '0';
 
 // Parse a proxy URL into parts, substituting the {{geoLocation}} template.
 export function parseProxyUrl(raw, geo) {
@@ -73,6 +75,7 @@ async function installProxyAuth(ctx, page, username, password) {
 }
 
 export async function connect({ proxyAuth = false } = {}) {
+  await resetViewportBaseline();
   const browser = await chromium.connectOverCDP(CDP_URL);
   const ctx = browser.contexts()[0];
   const page = ctx.pages()[0] || await ctx.newPage();
@@ -141,6 +144,16 @@ export function parseAbck(cookie) {
 
 export function pass(token)  { return token === '0'; }
 export function fail(token)  { return token === '-1' || token === null; }
+
+async function resetViewportBaseline() {
+  if (!RESET_VIEWPORT) return;
+  try {
+    await fetch(`${NOVNC_BASE_URL}/screen/restore`, { method: 'POST' });
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  } catch (e) {
+    console.warn(`[utils] viewport reset skipped: ${e.message}`);
+  }
+}
 
 export function section(label) {
   const bar = '─'.repeat(Math.max(0, 60 - label.length));

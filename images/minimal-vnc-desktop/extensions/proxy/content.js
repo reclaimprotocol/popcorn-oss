@@ -163,11 +163,18 @@
       // fields: a custom <select>/combobox built on an <input>, or a field that
       // opens its own picker. These shouldn't raise a text keyboard.
       //   - inputmode="none": the page explicitly suppresses the soft keyboard.
-      //   - aria-haspopup: opens a listbox/menu/dialog (combobox trigger).
       const im = (el.getAttribute && el.getAttribute('inputmode') || '').toLowerCase();
       if (im === 'none') return false;
+      // aria-haspopup: only a NON-typeable popup means "picker trigger". The
+      // common case on a text input is an AUTOCOMPLETE combobox — a suggestions
+      // listbox (Google/DuckDuckGo/Amazon search, address autofill: role=combobox
+      // aria-haspopup=listbox) — which you absolutely DO type into and MUST raise
+      // the keyboard. So allow 'listbox' and the legacy 'true'; exclude only the
+      // popup kinds that replace typing (a dialog/menu/date-grid/tree the field
+      // merely opens). Excluding 'listbox' here was why search boxes never raised
+      // the keyboard (DuckDuckGo's `input[name=q]` is role=combobox haspopup=listbox).
       const hp = (el.getAttribute && el.getAttribute('aria-haspopup') || '').toLowerCase();
-      if (hp && hp !== 'false') return false;
+      if (hp === 'dialog' || hp === 'menu' || hp === 'grid' || hp === 'tree') return false;
       return true;
     }
     return false;

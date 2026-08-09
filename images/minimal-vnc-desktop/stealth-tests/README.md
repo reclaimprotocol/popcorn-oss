@@ -13,14 +13,16 @@ commands the probes need — it will not work.
 
 | Probe         | Pass criterion                                                     |
 | ------------- | ------------------------------------------------------------------ |
+| `coherence`   | Local persona/API/frame checks: no webdriver, coherent desktop geometry/input/API |
 | `tls`         | tls.peet.ws JA4 contains the Chrome cipher hash `_8daaf6152771_`    |
 | `sannysoft`   | Zero failed checks on bot.sannysoft.com                            |
-| `creepjs`     | CreepJS trust score ≥ 70%                                          |
+| `creepjs`     | CreepJS headless/stealth = 0; only expected Canvas/DOMRect/Audio noise |
 | `cloudflare`  | chat.openai / discord / cloudflare.com served without a challenge  |
 | `turnstile`   | peet.ws non-interactive Turnstile auto-issues a token within 25s   |
-| `recaptcha`   | reCAPTCHA v3 score ≥ 0.7 via antcpt.com                            |
+| `recaptcha`   | reCAPTCHA v3 score ≥ 0.7 via Google's official backend demo         |
 | `browserscan` | browserscan.net verdict "Normal"/"Human"                          |
 | `akamai`      | `_abck` token == `0` on Delta/Finnair/Hilton/ANA (needs a proxy)   |
+| `realworld`   | Live auth/search/commerce canaries render expected surfaces without hard blocks |
 
 ## Setup (host)
 
@@ -46,6 +48,9 @@ node run.mjs
 
 # subset
 node run.mjs tls sannysoft creepjs
+
+# aggressive live-site canaries (IP/reputation sensitive; failures warn)
+node run.mjs realworld ticketmaster akamai
 
 # different CDP endpoint (e.g. remote host, or inside-container 9223)
 CDP_URL=http://127.0.0.1:9226 node run.mjs
@@ -96,6 +101,9 @@ Same scoreboard as the reference image (see `../STEALTH.md`):
   warn on a cold cookie jar (no google.com history).
 - **akamai** — Delta/Finnair/Hilton tend to pass through residential; ANA
   often stays `-1` on shared proxy ranges (IP reputation, not fingerprint).
+- **realworld / ticketmaster** — canaries for production login/search/commerce
+  pages. Treat blocks as investigation leads and compare across egress IPs
+  before calling them fingerprint regressions.
 
 ## When a probe regresses
 

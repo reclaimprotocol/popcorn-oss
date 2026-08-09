@@ -35,13 +35,48 @@ export async function run({ closeBrowser = true } = {}) {
     // — we must NOT just grep the body for "webdriver"/"headless", because those
     // words always appear as check labels (that's why it falsely read "Headless").
     const body = document.body.innerText;
+    const lines = body.split('\n').map((s) => s.trim()).filter(Boolean);
     const pct = body.match(/([\d.]+)\s*%/);
     const lies = Array.from(document.querySelectorAll('.lies, .rejected, [class*="lie"]'))
       .map((e) => e.innerText.trim()).filter(Boolean).slice(0, 10);
-    return { trust: pct ? parseFloat(pct[1]) : null, lies };
+    const headlessIndex = lines.findIndex((l) => /^Headless/i.test(l));
+    const headlessLines = headlessIndex >= 0 ? lines.slice(headlessIndex, headlessIndex + 10) : [];
+    const gpuIndex = lines.findIndex((l) => l.toLowerCase() === 'gpu:');
+    const gpuLines = gpuIndex >= 0 ? lines.slice(gpuIndex + 1, gpuIndex + 3) : [];
+    const gpuConfidence = (() => {
+      const beforeGpu = gpuIndex > 0 ? lines.slice(Math.max(0, gpuIndex - 4), gpuIndex) : [];
+      const afterGpu = gpuIndex >= 0 ? lines.slice(gpuIndex, gpuIndex + 6) : [];
+      const line = [...beforeGpu, ...afterGpu].find((l) => /^confidence:\s*/i.test(l));
+      return line ? line.replace(/^confidence:\s*/i, '') : null;
+    })();
+    return {
+      trust: pct ? parseFloat(pct[1]) : null,
+      lies,
+      headless: {
+        chromium: headlessLines.some((l) => /^chromium:\s*true/i.test(l)),
+        like: (() => {
+          const line = headlessLines.find((l) => /like headless/i.test(l));
+          const m = line && line.match(/([\d.]+)\s*%/);
+          return m ? Number(m[1]) : null;
+        })(),
+        headless: (() => {
+          const line = headlessLines.find((l) => /^\d+(?:\.\d+)?%\s+headless/i.test(l));
+          const m = line && line.match(/([\d.]+)\s*%/);
+          return m ? Number(m[1]) : null;
+        })(),
+        stealth: (() => {
+          const line = headlessLines.find((l) => /^\d+(?:\.\d+)?%\s+stealth/i.test(l));
+          const m = line && line.match(/([\d.]+)\s*%/);
+          return m ? Number(m[1]) : null;
+        })(),
+      },
+      gpuConfidence,
+      gpu: gpuLines.join(' | '),
+    };
   });
 
   console.log('trust score:', data.trust, ' detected lies:', data.lies);
+  console.log('headless:', data.headless, 'gpu confidence:', data.gpuConfidence || '(not parsed)', 'gpu:', data.gpu || '(not parsed)');
 
   // CreepJS is a fingerprint-consistency tool, not a real-world bot gate, and it
   // scores spoofed browsers harshly — treat it as informational. The load-bearing
@@ -54,7 +89,9 @@ export async function run({ closeBrowser = true } = {}) {
     name: 'CreepJS trust',
     pass: ok,
     warn: trust !== null && trust >= 30 && trust < 50,
-    detail: trust !== null ? `${trust}% headline (informational)` : '(score not parsed)',
+    detail: trust !== null
+      ? `${trust}% headline; headless=${data.headless.headless ?? '?'} stealth=${data.headless.stealth ?? '?'} like=${data.headless.like ?? '?'} gpu=${data.gpuConfidence || '?'}`
+      : '(score not parsed)',
   }];
 }
 

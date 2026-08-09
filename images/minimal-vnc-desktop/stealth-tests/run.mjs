@@ -23,6 +23,7 @@
 import { summary } from './utils.mjs';
 
 const PROBES = {
+  coherence:   () => import('./probes/coherence.mjs'),
   tls:         () => import('./probes/tls-peet.mjs'),
   akamai:      () => import('./probes/akamai.mjs'),
   creepjs:     () => import('./probes/creepjs.mjs'),
@@ -31,6 +32,8 @@ const PROBES = {
   turnstile:   () => import('./probes/turnstile.mjs'),
   recaptcha:   () => import('./probes/recaptcha.mjs'),
   browserscan: () => import('./probes/browserscan.mjs'),
+  ticketmaster: () => import('./probes/ticketmaster.mjs'),
+  realworld:   () => import('./probes/realworld.mjs'),
 };
 
 const args = process.argv.slice(2);
