@@ -200,12 +200,28 @@ export function createViewportTransform({
     const canvas = screen && screen.querySelector && screen.querySelector('canvas');
     const ew = (canvas && canvas.offsetWidth) || (screen && screen.offsetWidth) || window.innerWidth;
     const eh = (canvas && canvas.offsetHeight) || (screen && screen.offsetHeight) || window.innerHeight;
+    // The transform lives on #screen (origin 0,0), but the CANVAS can sit at an
+    // OFFSET inside #screen: when the framebuffer is smaller than #screen it's
+    // centered within it (the capped-framebuffer / scale-to-fill case). Scaling
+    // #screen magnifies that offset too, so the pan must subtract it (offset * zoom)
+    // to keep the CANVAS — not #screen's origin — centered/clamped. offsetLeft/Top
+    // are the untransformed layout offset, 0 whenever the canvas fills #screen (every
+    // non-fill case), so this stays a no-op there.
+    // Only compensate in scale-to-fill mode, which is the ONLY caller that raises
+    // minZoom above 1 (setFillFloor). Gating on minZoom — not zoomScale — keeps this
+    // out of fit-to-width and ordinary pinch-zoom (both minZoom==1), whose canvas may
+    // also be letterboxed inside #screen but must not be re-shifted. Also avoids a
+    // stale-pan read mid-resize (canvas momentarily larger than the shrunk #screen).
+    const filling = minZoom > 1.01;
+    const offX = filling ? ((canvas && canvas.offsetLeft) || 0) : 0;
+    const offY = filling ? ((canvas && canvas.offsetTop) || 0) : 0;
+    const oxz = offX * zoomScale, oyz = offY * zoomScale;
     const dispW = window.innerWidth, dispH = window.innerHeight;
     const cw = ew * zoomScale, ch = eh * zoomScale; // content visual size
-    if (cw <= dispW + 0.5) panX = (dispW - cw) / 2;
-    else { const minX = dispW - cw; if (panX > 0) panX = 0; else if (panX < minX) panX = minX; }
-    if (ch <= dispH + 0.5) panY = (dispH - ch) / 2;
-    else { const minY = dispH - ch; if (panY > 0) panY = 0; else if (panY < minY) panY = minY; }
+    if (cw <= dispW + 0.5) panX = (dispW - cw) / 2 - oxz;
+    else { const minX = dispW - cw - oxz, maxX = -oxz; if (panX > maxX) panX = maxX; else if (panX < minX) panX = minX; }
+    if (ch <= dispH + 0.5) panY = (dispH - ch) / 2 - oyz;
+    else { const minY = dispH - ch - oyz, maxY = -oyz; if (panY > maxY) panY = maxY; else if (panY < minY) panY = minY; }
   }
 
   // Safari-style zoom-into-the-tapped-field for the whole-page desktop-fit view.
@@ -442,6 +458,22 @@ export function createViewportTransform({
     // dismissKeyboard's zoom reset: deliberately does NOT compose — the caller's
     // following clearLift() composes (with its zoom/pan-aware animate choice).
     resetToMinZoom() { zoomScale = minZoom; panX = 0; panY = 0; clampPan(); },
+    // Scale-to-fill floor (magnify ?fill=1, see env.FILL). Raise the minimum zoom
+    // so the CSS transform upscales the (kiosk-capped, 1:1) framebuffer to fill a
+    // window larger than the remote can render. z is the contain ratio the caller
+    // computed (window / framebuffer); z<=1 is the normal no-fill 1:1 view. Snaps
+    // the current zoom to the new floor ONLY when the user is resting at the fit
+    // level, so a resize re-fills without discarding a pinch-zoom. Composing at
+    // zoom>1 freezes resizeSession via noteZoomFreeze (the framebuffer stays at the
+    // cap while the transform fills) — which is exactly what fill wants.
+    setFillFloor(z) {
+      const floor = Math.max(1, Math.min(MAX_ZOOM, z || 1));
+      const wasAtFloor = zoomScale <= minZoom * 1.05;
+      minZoom = floor;
+      zoomScale = wasAtFloor ? floor : Math.max(floor, zoomScale);
+      clampPan();
+      composeScreenTransform(false);
+    },
     // enterFit/exitFit: fresh transform baseline with an instant (no-anim) compose.
     resetTransform() { minZoom = 1; zoomScale = 1; panX = 0; panY = 0; composeScreenTransform(false); },
     // enterFit phase-2: snap to a target zoom instantly.

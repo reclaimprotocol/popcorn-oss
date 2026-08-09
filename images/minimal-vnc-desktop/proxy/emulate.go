@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
@@ -320,6 +321,28 @@ func envInt(name string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+// geometryHTTPHandler serves the container's BOOT framebuffer geometry
+// (WIDTH x FB_HEIGHT) — the advertised desktop size the screen keeper restores
+// and the size the kiosk window starts at. (The window itself is no longer fixed
+// there: window.go re-fits it to whatever screen size viewers ask for.) The
+// viewer reads this to cap its framebuffer-resize requests (viewer.js
+// rfb._screenSize) instead of inferring the cap from the connect-time
+// framebuffer, which is unreliable on a REUSED container: a prior phone-sized
+// session leaves the X screen sticky-small, so a later desktop viewer would
+// otherwise latch onto the tiny size and render a narrow strip. Authoritative
+// (reflects the boot env, matched to defaultEmulation/screen-restore) and
+// dynamic (fetched at runtime, no hardcoding). Cheap constant; no ready gate
+// needed.
+func geometryHTTPHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		width := envInt("WIDTH", 1920)
+		height := envInt("FB_HEIGHT", envInt("HEIGHT", 1080))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte(`{"width":` + strconv.Itoa(width) + `,"height":` + strconv.Itoa(height) + `}`))
+	}
 }
 
 func newEmulator(cdpUpstream string) *emulator {
@@ -1062,15 +1085,26 @@ func (e *emulator) session() error {
 					// version of this handler resized the window with explicit normal
 					// bounds to cover a taller framebuffer, and that is exactly what it
 					// leaked — measured 796px of browser UI inside the window. Do not
-					// reintroduce a normal-state resize here; if a framebuffer can
-					// outgrow the window, fix it by bounding the framebuffer or by the
-					// BOOT geometry (see FB_HEIGHT in entrypoint.sh), never by
-					// un-fullscreening the kiosk.
+					// reintroduce a normal-state resize here; if a window must chase the
+					// screen, the sanctioned path is the X-level fit in window.go
+					// (requestWindowFit below), never un-fullscreening the kiosk.
 					if wid, ok := result["windowId"]; ok {
 						send("Browser.setWindowBounds", map[string]any{
 							"windowId": wid,
 							"bounds":   map[string]any{"windowState": "fullscreen"},
 						}, "")
+						// A window seen OUTSIDE fullscreen is a real transition (a popup just
+						// opened normal+chromed) — the fullscreen size openbox grants it may
+						// reflect a stale monitor geometry, so follow up with an X-level fit
+						// (window.go). Gate on the reported state: this reply also arrives on
+						// every 2s watchdog tick for already-fullscreen windows, and spawning
+						// xdotool that often would spend the Rosetta fd budget the watcher's
+						// slow backstop exists to protect (see window.go header).
+						if b, _ := result["bounds"].(map[string]any); b != nil {
+							if state, _ := b["windowState"].(string); state != "fullscreen" {
+								requestWindowFit(log.Printf)
+							}
+						}
 					}
 					// Target.getTargets reply → attach to existing NON-popup pages, and
 					// seed the page count. Seeding matters: the primary page already

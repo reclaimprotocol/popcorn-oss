@@ -164,7 +164,21 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 		}
 		em.answerDialog(msg.DialogReply.Seq, msg.DialogReply.Accept, msg.DialogReply.Text)
 	}
-	mux.HandleFunc("/emulate", emulateHTTPHandler(em, ready))
+	emulate := emulateHTTPHandler(em, ready)
+	mux.HandleFunc("/emulate", func(w http.ResponseWriter, r *http.Request) {
+		emulate(w, r)
+		// A viewer pushes /emulate whenever it changes the layout — which is also
+		// exactly when it resizes the X screen (fit enter/exit, settle). Follow
+		// each push with a window fit so the kiosk window tracks the screen
+		// without polling for it (see window.go).
+		requestWindowFit(log.Printf)
+	})
+	// Boot framebuffer geometry (WIDTH x FB_HEIGHT) = the advertised desktop size
+	// (the kiosk window starts there; window.go re-fits it as the screen moves).
+	// The viewer reads this to cap its resize requests rather than guessing from
+	// the (sticky-across-sessions) connect-time framebuffer. See
+	// geometryHTTPHandler in emulate.go.
+	mux.HandleFunc("/geometry", geometryHTTPHandler())
 	// Native touch input: the viewer streams touch points here and we dispatch
 	// CDP Input.dispatchTouchEvent, so the remote page handles scroll/drag/
 	// sliders/pinch itself (VNC only carries mouse). See emulate.go.
@@ -176,13 +190,20 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	// Screen-geometry hygiene: a fit/magnify viewer resizes the X screen to its own
 	// layout and nothing put it back, so the next session inherited a phone-shaped
 	// screen. Restore the advertised desktop size once the last viewer leaves.
-	// Restore to the BOOT geometry (FB_HEIGHT), not to HEIGHT. Anything shorter
-	// drags the kiosk window down with it, permanently — and a short window means
-	// fit-to-width exposes the black X root, with no way back that does not
-	// un-fullscreen the kiosk and reveal its tab strip. See entrypoint.sh.
-	keeper := newScreenKeeper(screenRestoreDelay, restoreScreenFunc(
-		envInt("WIDTH", 1920), envInt("FB_HEIGHT", envInt("HEIGHT", 1080)), em, log.Printf))
+	// Restore to the BOOT geometry (WIDTH x FB_HEIGHT); the kiosk window follows
+	// the restored screen at the X level (window.go), in both directions.
+	bootW, bootH := envInt("WIDTH", 1920), envInt("FB_HEIGHT", envInt("HEIGHT", 1080))
+	keeper := newScreenKeeper(screenRestoreDelay, restoreScreenFunc(bootW, bootH, em, log.Printf))
 	keeper.logf = log.Printf
+	// The FIRST viewer of a session must start from boot geometry, not from
+	// whatever the previous session left: connecting inside the restore delay
+	// cancels the pending restore, which is right for a reload but wrong for a
+	// changeover (a plain viewer after a magnify session inherited a phone-shaped
+	// screen forever). See resetScreenOnFirstConnect in screen.go.
+	keeper.resetOnFirst = resetScreenOnFirstConnect(bootW, bootH, em, log.Printf)
+	// Keep the kiosk window covering the screen whatever size viewers make it —
+	// rows the window does not cover stream as the black X root. See window.go.
+	go windowWatcher(log.Printf)
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
 		serveWebsocket(w, r, vnc, ready, keeper)
 	})
@@ -221,8 +242,10 @@ func serveWebsocket(w http.ResponseWriter, r *http.Request, upstream string, rea
 		return
 	}
 	// Bracket the VNC session so the screen geometry a fit/magnify viewer leaves
-	// behind is not inherited by the next one (see screen.go).
-	keeper.connect()
+	// behind is not inherited by the next one (see screen.go). ?keep=1 marks a
+	// viewer that manages its own geometry (magnify) and opts out of the
+	// first-connect boot reset — see screenKeeper.connect.
+	keeper.connect(r.URL.Query().Get("keep") == "1")
 	defer keeper.disconnect()
 	proxyWebsocket(w, r, upstream)
 }

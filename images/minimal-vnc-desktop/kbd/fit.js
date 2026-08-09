@@ -18,7 +18,7 @@
 // updateControlButtons come from controls; onNavChanged pokes the core's rect
 // stickiness (lastNonEmptyRectsAt = 0) on a real navigation.
 
-import { isTouch, FIXEDW, MAGNIFY, nowMs, siblingPath } from './env.js';
+import { isTouch, FIXEDW, MAGNIFY, FILL, nowMs, siblingPath } from './env.js';
 import { dbg } from './diag.js';
 import { MAX_ZOOM } from './viewport-transform.js';
 
@@ -172,7 +172,13 @@ export function createFit({
     if (fitDecisionPending && t < 80) { setTimeout(function () { revealWhenSettled(t + 1); }, 60); return; }
     const screen = getScreenElement();
     const c = screen && screen.querySelector('canvas');
-    const target = (screen && screen.offsetWidth) || window.innerWidth;
+    // Reveal once the framebuffer reaches its EXPECTED size — which in scale-to-fill
+    // is the proportional target (e.g. 1243), NOT #screen.offsetWidth (the window,
+    // 2560). Comparing to the window made the check never match under fill, so the
+    // cover sat until the 4.8s safety cap ("fill takes so long to load").
+    const dw = (screen && screen.offsetWidth) || window.innerWidth;
+    const dh = (screen && screen.offsetHeight) || window.innerHeight;
+    const target = (typeof window !== 'undefined' && window.__pcnFbTarget) ? window.__pcnFbTarget(dw, dh).w : dw;
     if (c && c.width > 0 && Math.abs(c.width - target) <= Math.max(6, target * 0.06)) { dbg('boot mag-reveal fb=' + c.width); hideCover(); return; }
     if (t >= 80) { hideCover(); return; }
     setTimeout(function () { revealWhenSettled(t + 1); }, 60);
@@ -192,6 +198,10 @@ export function createFit({
     const dispW = window.innerWidth, dispH = window.innerHeight;
     if (!(dispW > 0 && dispH > 0 && layoutW > dispW)) return;
     fitMode = true;
+    // Suspend the kiosk-window framebuffer cap (viewer.js rfb._screenSize) for the
+    // duration of the fit dance, which deliberately grows the framebuffer to the
+    // whole page before scaleViewport downscales it.
+    try { window.__pcnFitActive = true; } catch (_) {}
     fitLayoutW = layoutW;
     fitLayoutH = Math.max(1, Math.round(layoutW * dispH / dispW));
     fitDispW = dispW;
@@ -259,6 +269,7 @@ export function createFit({
     hideCover();
     setMagEligible(false); updateControlButtons(); // responsive page → no magnify button
     fitMode = false; fitLayoutW = 0; fitLayoutH = 0; fitDispW = 0; fitWantReadable = true; fitFixed = false;
+    try { window.__pcnFitActive = false; } catch (_) {} // re-arm the framebuffer cap
     vt.resetTransform(); // instant compose; order vs the size reset below is immaterial
     const s = getScreenElement();
     if (s) { s.style.width = ''; s.style.height = ''; }
@@ -342,8 +353,14 @@ export function createFit({
       return { width: fitLayoutW, height: fitLayoutH, deviceScaleFactor: 1 };
     }
     const screen = getScreenElement();
-    const width = Math.max(1, Math.round((screen && screen.offsetWidth) || window.innerWidth));
-    const height = Math.max(1, Math.round((screen && screen.offsetHeight) || window.innerHeight));
+    let width = Math.max(1, Math.round((screen && screen.offsetWidth) || window.innerWidth));
+    let height = Math.max(1, Math.round((screen && screen.offsetHeight) || window.innerHeight));
+    // Emulate at the SAME target rfb._screenSize sizes the framebuffer to (viewer.js
+    // __pcnFbTarget): the kiosk-capped size (default), or the window-aspect rect
+    // fitted in the cap (?fill=1). Sharing the one function keeps CDP layout ==
+    // framebuffer, so the render is never clipped and (in fill) never letterboxed.
+    const t = (typeof window !== 'undefined' && window.__pcnFbTarget) ? window.__pcnFbTarget(width, height) : null;
+    if (t) { width = t.w; height = t.h; }
     return { width, height, deviceScaleFactor: 1 };
   }
   function pushEmulate() {
@@ -538,17 +555,57 @@ export function createFit({
   let magnifyStarted = false;
   let pushTimer = null;
   let rotateTimer = null;
+  let fillReclampTimer = null; // scale-to-fill: deferred re-clamp after an async fb resize
 
   // settle: converge to the FINAL size once. Enabling resizeSession triggers a
   // single SetDesktopSize to the current viewport (and leaves it on, stable
   // since the size has settled), then push the matching CDP emulation.
+  // Scale-to-fill floor (env.FILL): the contain ratio to upscale the capped
+  // framebuffer to fill the window. window/framebuffer, where the framebuffer is
+  // min(window, cap) — so it's 1 while the window fits the cap and >1 only past it.
+  // Computed from the CAP (not the live canvas) so it's correct without waiting for
+  // a framebuffer round-trip.
+  function fillFloorFor() {
+    if (!(typeof window !== 'undefined' && window.__pcnFbTarget)) return 1;
+    const iw = window.innerWidth, ih = window.innerHeight;
+    const t = window.__pcnFbTarget(iw, ih); // the framebuffer we're actually rendering into
+    if (!t || t.w <= 0 || t.h <= 0) return 1;
+    // Upscale the framebuffer to the window. In ?fill=1 the framebuffer already has
+    // the WINDOW's aspect (proportional target), so both ratios are equal -> fills
+    // edge-to-edge with no letterbox and nothing cropped.
+    return Math.max(1, Math.min(iw / t.w, ih / t.h));
+  }
+
   function settle() {
     // In fit-to-width mode the framebuffer is deliberately WIDE (scaleViewport
     // downscales it); re-enabling resizeSession here would shrink it back to the
     // viewport and undo the fit. Leave the resize state to enterFit/exitFit.
     if (fitMode) { pushEmulate(); return; }
-    if (zoomFrozen) { pushEmulate(); return; } // zoomed: see setZoomFreeze
     const rfb = getRfb();
+    if (FILL) {
+      // Scale-to-fill converges in one deterministic order for both grow and shrink:
+      //   1. drop any fill zoom to 1 so #screen's rect is UN-inflated (the capped
+      //      resize request below reads getBoundingClientRect(#screen), which
+      //      includes our transform) — this also unfreezes resizeSession;
+      //   2. resizeSession sizes the framebuffer to min(window, cap);
+      //   3. re-apply the fill floor — >1 re-freezes (framebuffer stays at the cap,
+      //      the transform fills the window), ==1 leaves the plain 1:1 view.
+      // setZoomFreeze is guarded to NOT call settle() under FILL, so this can't recurse.
+      vt.setFillFloor(1);
+      try { if (rfb) rfb.resizeSession = true; } catch (_) {}
+      pushEmulate();
+      vt.setFillFloor(fillFloorFor());
+      // The framebuffer resize above is async (a SetDesktopSize round-trip), so
+      // clampPan just measured the OLD canvas. Re-apply once it lands, or a shrink
+      // leaves the view panned by a stale offset. Cheap (setFillFloor is idempotent).
+      if (fillReclampTimer) clearTimeout(fillReclampTimer);
+      fillReclampTimer = setTimeout(() => {
+        fillReclampTimer = null;
+        if (!fitMode && FILL) vt.setFillFloor(fillFloorFor());
+      }, 320);
+      return;
+    }
+    if (zoomFrozen) { pushEmulate(); return; } // zoomed: see setZoomFreeze
     try { if (rfb) rfb.resizeSession = true; } catch (_) {}
     pushEmulate();
   }
@@ -575,6 +632,10 @@ export function createFit({
     // Back to 1:1 — re-enable and re-push, since the framebuffer may have drifted
     // from the viewport while frozen (a rotate or keyboard resize mid-zoom).
     lastEmulateKey = '';
+    // Under scale-to-fill, settle() OWNS the resizeSession + fill-floor sequence and
+    // calls setFillFloor (which composes → can re-enter here). Returning breaks that
+    // recursion; settle re-enables resizeSession itself.
+    if (FILL) return;
     settle();
   }
 

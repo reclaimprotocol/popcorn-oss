@@ -50,6 +50,16 @@ export const FIXEDW = fixedwMatch ? Math.max(320, Math.min(1440, parseInt(fixedw
 // otherwise be silently inert.
 export const MAGNIFY = /[?&]magnify=1/.test(location.search) || FIXEDW > 0;
 
+// Scale-to-fill — DEFAULT ON whenever magnify is used; ?fill=0 opts out. When the
+// viewer WINDOW is larger than the remote can render (the framebuffer is capped at
+// the kiosk size, viewer.js rfb._screenSize), the whole page is rendered at the
+// window's ASPECT (fitted inside the cap, viewer.js __pcnFbTarget) and upscaled by
+// the viewer-side CSS transform to FILL the window — no crop, no letterbox, only
+// softness. A no-op while the window fits the cap (fill floor == 1), so phone-sized
+// product viewers are unaffected (1:1 sharp). ?fill=0 restores the 1:1-centered,
+// letterbox-past-the-cap view. Gated on MAGNIFY (the transform machinery is there).
+export const FILL = MAGNIFY && !/[?&]fill=0/.test(location.search);
+
 // (There is no ?extentfit flag: fitting the measured content extent was built, shipped
 // behind a flag, and removed — along with the extension's ol/cw measurements that fed it.
 // "Widest element in the document" and "the layout the user is looking at" are different
