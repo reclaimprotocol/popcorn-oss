@@ -4,6 +4,18 @@
 (function() {
   'use strict';
 
+  // Hide the mouse cursor everywhere. This is a touch/kiosk stream: the pointer
+  // is a server-side software cursor baked into the VNC framebuffer, and
+  // unclutter only hides it while idle — it reappears over native popups
+  // (<select>, date pickers). Setting cursor:none on page content makes
+  // Chromium report a blank cursor to X, so nothing is drawn. Re-applies on
+  // every navigation because the content script runs per document.
+  try {
+    const cs = document.createElement('style');
+    cs.textContent = '*,*::before,*::after{cursor:none!important}';
+    (document.head || document.documentElement).appendChild(cs);
+  } catch (_) {}
+
   // Inject the page-level script
   const script = document.createElement('script');
   script.src = chrome.runtime.getURL('injected.js');
@@ -11,6 +23,83 @@
     this.remove();
   };
   (document.head || document.documentElement).appendChild(script);
+
+  // ---- JS dialog bridge (isolated world half) -------------------------------
+  // injected.js overrides alert/confirm/prompt in the PAGE world so Chromium never
+  // opens a dialog of its own — see dialog.go for why the CDP interception alone
+  // isn't enough (duplicate dialog, and an alert() that returns in ~18ms where a
+  // human takes seconds, which is a real anti-automation probe).
+  //
+  // confirm()/prompt() must return SYNCHRONOUSLY, so the override blocks the page's
+  // JS thread on a synchronous XHR performed HERE. It runs in the isolated world on
+  // purpose: the token that authenticates this endpoint must not be readable by page
+  // script, or the page could forge viewer chrome (a fake password sheet that looks
+  // like it came from us). The two worlds talk through string attributes on a shared
+  // DOM node — strings cross worlds safely, unlike object references.
+  //
+  // http://127.0.0.1 is exempt from mixed-content blocking, so this works from an
+  // https page. Kept a SIMPLE request (text/plain) so no CORS preflight is added to
+  // a call that is already blocking the main thread.
+  // OFF until the browser-side half is proven. The SERVER half is verified
+  // end-to-end (token issue -> viewer broadcast -> reply -> HTTP response), but the
+  // synchronous XHR out of the page never reaches the proxy: it hangs instead of
+  // failing, which wedges the renderer for the whole dialogWait window. Leading
+  // suspects are the container's proxy config not bypassing 127.0.0.1 for plain
+  // HTTP (only the WebSocket path is known-bypassed) and Chrome's Private Network
+  // Access preflight, which needs Access-Control-Allow-Private-Network on a
+  // public-page -> localhost request.
+  //
+  // With this false the listener is never registered, so injected.js's ask() finds
+  // no answer and falls straight through to the native dialog — i.e. the shipped
+  // behaviour is exactly the committed CDP path, unchanged.
+  const DIALOG_BRIDGE_ENABLED = false;
+  const DIALOG_URL = 'http://127.0.0.1:6080/dialog';
+  let dialogToken = null;
+  // Fetched AHEAD of any dialog, with retries: the answer path is synchronous, so
+  // there is no chance to fetch on demand. The token exists only once the
+  // background's publisher socket is up, which at document_start it usually isn't
+  // (and an MV3 worker may be asleep). Retry until it lands, then stop. Until then
+  // the override falls through to the native dialog — clipped, but the message is
+  // never silently swallowed, which is the one outcome worse than clipping.
+  (function fetchDialogToken(attempt) {
+    if (!DIALOG_BRIDGE_ENABLED) return;
+    if (dialogToken) return;
+    if (attempt > 20) return; // ~1 minute of trying; a dialog before that uses native
+    try {
+      chrome.runtime.sendMessage({ type: 'PCN_DIALOG_TOKEN' }, (res) => {
+        if (res && res.token) { dialogToken = res.token; return; }
+        setTimeout(() => fetchDialogToken(attempt + 1), attempt < 5 ? 500 : 3000);
+      });
+    } catch (_) {
+      setTimeout(() => fetchDialogToken(attempt + 1), 3000);
+    }
+  })(0);
+
+  document.addEventListener('pcn-dialog-ask', (ev) => {
+    if (!DIALOG_BRIDGE_ENABLED) return; // -> no data-pcn-res -> page uses native
+    const node = ev.target;
+    if (!node || !node.getAttribute) return;
+    if (!dialogToken) return; // no answer attribute -> page falls back to native
+    let req;
+    try { req = JSON.parse(node.getAttribute('data-pcn-req') || 'null'); } catch (_) { return; }
+    if (!req) return;
+    try {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', DIALOG_URL, false); // SYNCHRONOUS: this is what blocks the page
+      xhr.setRequestHeader('Content-Type', 'text/plain;charset=UTF-8');
+      xhr.send(JSON.stringify({
+        token: dialogToken,
+        type: req.type,
+        message: req.message,
+        defaultPrompt: req.defaultPrompt,
+        url: location.href,
+      }));
+      if (xhr.status === 200) node.setAttribute('data-pcn-res', xhr.responseText);
+    } catch (_) {
+      // Endpoint unreachable / blocked: leave data-pcn-res unset so the page uses
+      // the real dialog rather than losing the message entirely.
+    }
+  }, true);
 
   // Listen for messages from the injected script
   window.addEventListener('message', async (event) => {
@@ -46,4 +135,638 @@
       }, '*');
     }
   });
+
+  // --- Soft-keyboard focus detection ---------------------------------------
+  // Report whether an editable element is focused so the mobile viewer can
+  // auto-raise / dismiss the on-screen keyboard. This runs in EVERY frame
+  // (manifest all_frames:true), so a text field inside a same-origin iframe is
+  // covered too. The signal is forwarded to the background worker, which owns
+  // the single WebSocket to the proxy's /kbd hub. Detection stays entirely off
+  // the CDP path — no automation signal.
+
+  // Input types that raise a text soft-keyboard. Excludes pickers (date/time/
+  // color) and non-text controls (button/checkbox/...) which either show a
+  // native picker or no keyboard at all — forcing a keyboard there is wrong.
+  const KEYBOARD_INPUT_TYPES = new Set([
+    'text', 'search', 'email', 'url', 'tel', 'password', 'number', ''
+  ]);
+
+  function isEditable(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.isContentEditable) return true;
+    const tag = el.tagName;
+    if (tag === 'TEXTAREA') return !el.disabled && !el.readOnly;
+    if (tag === 'INPUT') {
+      if (el.disabled || el.readOnly) return false;
+      if (!KEYBOARD_INPUT_TYPES.has((el.type || 'text').toLowerCase())) return false;
+      // Exclude inputs that are actually dropdown/picker TRIGGERS, not text
+      // fields: a custom <select>/combobox built on an <input>, or a field that
+      // opens its own picker. These shouldn't raise a text keyboard.
+      //   - inputmode="none": the page explicitly suppresses the soft keyboard.
+      //   - aria-haspopup: opens a listbox/menu/dialog (combobox trigger).
+      const im = (el.getAttribute && el.getAttribute('inputmode') || '').toLowerCase();
+      if (im === 'none') return false;
+      const hp = (el.getAttribute && el.getAttribute('aria-haspopup') || '').toLowerCase();
+      if (hp && hp !== 'false') return false;
+      return true;
+    }
+    return false;
+  }
+
+  // Accumulate this frame's offset within the top window so a field inside a
+  // same-origin iframe reports a rect in top-window (remote screen) coords —
+  // which the viewer maps to framebuffer pixels for the keyboard lift. A
+  // cross-origin ancestor throws; we stop there and the rect stays frame-local
+  // (lift may be slightly off for cross-origin iframe fields).
+  // Accumulate this frame's offset toward the top window, and report whether we
+  // actually REACHED the top (all ancestors same-origin) or stopped at a cross-
+  // origin boundary. When we stop early, the offset is relative to the nearest
+  // cross-origin ancestor's document (our "segment root"), and emit() bubbles the
+  // rect across that boundary via postMessage instead of reporting frame-local
+  // coords the viewer would misplace (the checkout/OAuth-iframe lift bug).
+  function frameOffset() {
+    let x = 0, y = 0, win = window, reachedTop = true;
+    try {
+      while (win !== win.top) {
+        if (!win.frameElement) { reachedTop = false; break; } // cross-origin parent
+        const r = win.frameElement.getBoundingClientRect();
+        x += r.left;
+        y += r.top;
+        win = win.parent;
+      }
+    } catch (_) { reachedTop = false; /* cross-origin ancestor */ }
+    return { x, y, reachedTop };
+  }
+
+  // Shift a state's rect + rects[] by (dx,dy). Clones the array so a cached/shared
+  // rects list is never mutated in place.
+  function offsetState(state, dx, dy) {
+    if (!dx && !dy) return state;
+    if (state.rect) state.rect = { x: state.rect.x + dx, y: state.rect.y + dy, w: state.rect.w, h: state.rect.h };
+    if (Array.isArray(state.rects)) state.rects = state.rects.map((r) => ({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }));
+    return state;
+  }
+
+  // All editable-element rectangles on this frame, in top-window coords. The
+  // viewer hit-tests a tap against these SYNCHRONOUSLY, so it pops the keyboard
+  // only when a tap actually lands on an input — no per-tap round-trip, so it
+  // behaves the same at 50ms or 5s RTT. (Shadow-DOM inputs in closed roots and
+  // cross-origin iframes are not enumerable here — the viewer falls back to its
+  // optimistic path when it has no rects for an area.)
+  const EDITABLE_SELECTOR = 'input, textarea, [contenteditable=""], [contenteditable="true"]';
+  const MAX_RECTS = 60;
+
+  function collectRects() {
+    const out = [];
+    let els;
+    try { els = document.querySelectorAll(EDITABLE_SELECTOR); } catch (_) { return out; }
+    for (const el of els) {
+      if (!isEditable(el)) continue;
+      let r;
+      try { r = el.getBoundingClientRect(); } catch (_) { continue; }
+      if (r.width <= 0 || r.height <= 0) continue;
+      // Frame-LOCAL here; emit() applies the toward-top offset (or bubbles across a
+      // cross-origin boundary) so cross-origin-iframe fields land in the right place.
+      out.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+      if (out.length >= MAX_RECTS) break;
+    }
+    return out;
+  }
+
+  let cachedRects = [];
+  function refreshRects() { cachedRects = collectRects(); }
+
+  // The top window's CSS viewport size (best-effort). The viewer maps a rect
+  // through cr.height / vh, which is correct regardless of the remote device
+  // pixel ratio or framebuffer size — no DPR assumption needed.
+  function topViewportSize() {
+    try { return { w: window.top.innerWidth, h: window.top.innerHeight }; }
+    catch (_) { return { w: window.innerWidth, h: window.innerHeight }; }
+  }
+
+  // Focus can live inside open shadow roots; walk into them so web-component
+  // inputs are detected (closed roots are opaque and unavoidably missed).
+  function deepActiveElement(root) {
+    let el = (root || document).activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) {
+      el = el.shadowRoot.activeElement;
+    }
+    return el;
+  }
+
+  // Stable per-element focus identity. The viewer keys its focus tracking off
+  // this to tell "a NEW field was focused" from "the same field is still
+  // focused" — which a rect-derived key can't do (the rect shifts on scroll).
+  // A WeakMap hands each element a token on first sight that persists for the
+  // element's lifetime; the per-frame prefix keeps same-origin iframes from
+  // colliding on the same counter. (Math.random here runs in the page, not a
+  // sandbox.) Resets naturally on navigation when this script re-injects.
+  const FOCUS_KEY_FRAME = Math.random().toString(36).slice(2, 8);
+  const focusKeyMap = new WeakMap();
+  let focusKeySeq = 0;
+  function focusKeyFor(el) {
+    if (!el || el.nodeType !== 1) return null;
+    let k = focusKeyMap.get(el);
+    if (!k) { k = FOCUS_KEY_FRAME + ':' + (++focusKeySeq); focusKeyMap.set(el, k); }
+    return k;
+  }
+
+  // A <select> change reflows the form and can reveal a text field right under
+  // the tap that picked the option; the browser then focuses that field, which
+  // would pop the soft keyboard unintentionally (e.g. picking "Checkerboard"
+  // and landing on the revealed "Line Color" input). Record the time of any
+  // <select> change so describe() can suppress the raise for a brief window.
+  let lastSelectChangeAt = 0;
+  document.addEventListener('change', (e) => {
+    const t = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (t && t.tagName === 'SELECT') lastSelectChangeAt = Date.now();
+  }, true);
+
+  // Widest content extent of this document — lets the viewer detect a
+  // non-responsive (fixed-width) page that overflows the mobile viewport and
+  // switch it to fit-to-width.
+  function docScrollWidth() {
+    const d = document.documentElement, b = document.body;
+    return Math.max(d ? d.scrollWidth : 0, b ? b.scrollWidth : 0);
+  }
+
+  // xf — rects of CROSS-ORIGIN iframes in the top document, in CSS px.
+  //
+  // A tap inside one of these needs a compatibility mouse click, because Chrome
+  // synthesizes `click` from a CDP touch tap in the MAIN frame but not inside an
+  // out-of-process iframe. Measured from inside reCAPTCHA's own frame: a tap
+  // delivered pointerdown/touchstart/touchend (all isTrusted) and NO click, so the
+  // checkbox sat there ignoring it; a mouse click at the identical point delivered
+  // pointerdown/mousedown/click and it activated.
+  //
+  // The viewer needs the rects because the compat click cannot be sent
+  // unconditionally: in the main frame the touch ALREADY produces a click, so an
+  // extra one would double-fire — harmless on a checkbox, a double submit on a
+  // button. Reporting where the out-of-process frames are lets the tap path add the
+  // click only where it is missing.
+  //
+  // contentDocument throws (or is null) exactly when the frame is cross-origin,
+  // which is the same condition that makes it out-of-process under site isolation.
+  const XF_TTL_MS = 2000;
+  const XF_MAX = 12;
+  let xfCache = null, xfAt = 0;
+  function crossOriginFrameRects() {
+    const now = Date.now();
+    if (xfCache && now - xfAt < XF_TTL_MS) return xfCache;
+    const out = [];
+    try {
+      const frames = document.querySelectorAll('iframe');
+      for (let i = 0; i < frames.length && out.length < XF_MAX; i++) {
+        const f = frames[i];
+        let cross = true;
+        try { cross = !f.contentDocument; } catch (_) { cross = true; }
+        if (!cross) continue;
+        const r = f.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue; // not laid out / hidden
+        out.push({ x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) });
+      }
+    } catch (_) {}
+    xfCache = out; xfAt = now;
+    return out;
+  }
+
+  // ol — how many px of content hang off the LEFT of the viewport.
+  //
+  // scrollWidth cannot see negative offsets, and that blind spot is the whole reason
+  // this exists. A layout centred for a wider viewport (a fixed-width modal at
+  // left:50%) pushes content to a negative `left`, which no amount of scrolling can
+  // reach — you cannot scroll left of the origin. Measured on Pinterest's login at a
+  // 360px viewport: scrollWidth reported 393 (under the viewer's 414 trigger, so it
+  // read as "fits") while 99 elements sat at a negative left, 48px hung off it, and
+  // the true extent was 579. The user's screenshot showed exactly that — the heading
+  // and "Forgot password?" sliced off at the left edge — on a page the detector had
+  // just called fine.
+  //
+  // DETECTOR ONLY. An earlier version also reported the full extent (cw) and the
+  // viewer fitted to it; that failed, because the widest element in the DOCUMENT is
+  // not the layout the user is looking at — on a login modal over the feed it
+  // measured the masonry grid (1454 at a 393px viewport) and emulated a desktop page.
+  // Here the viewer only asks "is anything unreachable?" and answers with a CONSTANT
+  // width, so this number's magnitude is never trusted.
+  //
+  // getBoundingClientRect forces layout, so: capped at OVERFLOW_SCAN_MAX (a partial
+  // answer on a huge DOM still beats none) and cached for OVERFLOW_TTL_MS, or the
+  // 1.5s heartbeat plus focus events would turn it into per-event layout thrash. The
+  // scan must be WHOLE-TREE: a first version walked `body > *, body > * > *` for
+  // cheapness and reported ol=0 on this very page, because the negatively-positioned
+  // elements are deep while their top-level ancestors sit at left:0.
+  // Set by the MutationObserver at the bottom of this file: the cached overflow
+  // measurement is stale because the DOM changed. Declared HERE, above
+  // leftOverflowStats(), because the initial report() runs before that setup and a
+  // `let` referenced before its declaration executes throws.
+  let overflowDirty = false;
+  const OVERFLOW_SCAN_MAX = 4000;
+  const OVERFLOW_TTL_MS = 2000;
+  let leftOverflowCache = -1, leftOverflowWidthCache = 0, leftOverflowAt = 0;
+  // olw — the WIDTH of the widest clipped piece of real content.
+  //
+  // ol says how far content hangs off the left; olw says how wide the thing
+  // hanging off actually is, and that second number is the one the viewer can act
+  // on. ol cannot drive a fit width because it never converges: measured across a
+  // width sweep of Pinterest's login, ol sat at 34px at EVERY width from 393 to
+  // 600 — one 60px decorative element is permanently at -34 — so "widen until ol
+  // is small" escalates to the cap and re-lays the page out as desktop. olw over
+  // the same sweep went 392 -> 60 the moment the form fit, which is exactly the
+  // signal needed: fit to ~olw and the clipping is gone in ONE step.
+  //
+  // "Real content" = form controls, buttons, links, and text-bearing LEAVES.
+  // Containers are excluded deliberately. An earlier attempt (cw) reported the
+  // widest element in the document and picked up Pinterest's masonry grid — 1454px
+  // at a 393px viewport — so the viewer emulated a desktop page. A leaf cannot
+  // misrepresent the layout that way, and widening does not make a text leaf wider,
+  // which is what stops this from escalating the way scrollWidth did.
+  const INTERACTIVE_SEL = 'input,button,select,textarea,a,label,summary';
+  function meaningfulLeaf(el) {
+    try {
+      if (el.matches(INTERACTIVE_SEL)) return true;
+      return el.children.length === 0 && (el.textContent || '').trim().length > 0;
+    } catch (_) { return false; }
+  }
+
+  // Both numbers come from ONE pass: getBoundingClientRect forces layout, so a
+  // second scan would double the cost of the most expensive thing this file does.
+  function leftOverflowStats() {
+    const now = Date.now();
+    if (!overflowDirty && leftOverflowCache >= 0 && now - leftOverflowAt < OVERFLOW_TTL_MS) {
+      return { ol: leftOverflowCache, olw: leftOverflowWidthCache };
+    }
+    overflowDirty = false;
+    try {
+      let minLeft = 0, widest = 0, n = 0;
+      const els = document.querySelectorAll('body *');
+      for (let i = 0; i < els.length && n < OVERFLOW_SCAN_MAX; i++) {
+        const el = els[i];
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 && r.height <= 0) continue; // not laid out
+        n++;
+        if (r.left < minLeft) minLeft = r.left;
+        // Clipped-content candidate. Needs BOTH dimensions (a 0-height element is
+        // not something the user can read) where ol above tolerates one.
+        if (r.left < -1 && r.width > 0 && r.height > 0 && r.width > widest && meaningfulLeaf(el)) {
+          widest = r.width;
+        }
+      }
+      leftOverflowCache = Math.round(-Math.min(0, minLeft));
+      leftOverflowWidthCache = Math.round(widest);
+      leftOverflowAt = now;
+      return { ol: leftOverflowCache, olw: leftOverflowWidthCache };
+    } catch (_) { return { ol: 0, olw: 0 }; }
+  }
+
+  // Whether the page has NO usable viewport meta. Real mobile browsers lay such
+  // pages out at a ~980px desktop width scaled to fit (not reflowed to the device
+  // width); the viewer replicates that. A responsive page sets width=device-width;
+  // a fixed-width or missing width means the desktop fallback applies.
+  function noViewportMeta() {
+    try {
+      const metas = document.getElementsByTagName('meta');
+      for (let i = 0; i < metas.length; i++) {
+        if ((metas[i].name || '').toLowerCase() === 'viewport') {
+          const c = (metas[i].getAttribute('content') || '').toLowerCase();
+          return !/width\s*=\s*device-width/.test(c);
+        }
+      }
+      return true;
+    } catch (_) { return false; }
+  }
+
+  const IS_TOP = window === window.top;
+
+  function describe(el) {
+    const vp = topViewportSize();
+    // rects/vw/vh ride on every message (even editable:false) so the viewer can
+    // hit-test taps and dismiss reliably regardless of focus state.
+    const base = { vw: vp.w, vh: vp.h, rects: cachedRects };
+    // sw (content width, for fit-to-width) and pid (per-document id, reset
+    // fit-mode on navigation) only make sense from the TOP document — a per-frame
+    // FOCUS_KEY_FRAME from a subframe would otherwise look like a navigation.
+    if (IS_TOP) {
+      base.sw = docScrollWidth(); base.pid = FOCUS_KEY_FRAME; base.novp = noViewportMeta();
+      // ol: px of content hanging off the LEFT — unreachable, and invisible to sw.
+      // olw: how wide the widest clipped piece of real content is — the number the
+      // viewer fits to, because ol alone never converges (see leftOverflowStats).
+      const lo = leftOverflowStats();
+      base.ol = lo.ol;
+      base.olw = lo.olw;
+      // xf: cross-origin iframe rects — where a tap needs a compat mouse click.
+      base.xf = crossOriginFrameRects();
+      // wf: whether this document's WINDOW holds focus. The background uses it to
+      // pick which tab's state to publish. tab.active alone cannot do that job —
+      // it means "active in its own window", so with two windows open two tabs are
+      // both "active" and their heartbeats alternate in the published stream (the
+      // cross-tab bleed bug). document.hasFocus() is browser-global: at most one
+      // top document has it. Consumed by background.js, never forwarded.
+      try { base.wf = document.hasFocus(); } catch (_) {}
+    }
+    // Just picked a <select> option → any editable that gets focused now is a
+    // reveal-under-the-tap side effect, not an intentional focus. Report it as
+    // non-editable so the keyboard stays down; a deliberate tap after the window
+    // focuses and raises normally.
+    if (Date.now() - lastSelectChangeAt < 600) return { editable: false, ...base };
+    if (!isEditable(el)) return { editable: false, ...base };
+    let rect = null;
+    try {
+      const r = el.getBoundingClientRect();
+      // Frame-LOCAL; emit() applies the offset / bubbles it (see frameOffset).
+      rect = { x: r.left, y: r.top, w: r.width, h: r.height };
+    } catch (_) { /* detached node */ }
+    const isInput = el.tagName === 'INPUT';
+    const attr = (name) => (el.getAttribute && el.getAttribute(name)) || '';
+    const type = isInput ? (el.type || 'text').toLowerCase() : 'text';
+    const ac = attr('autocomplete').toLowerCase();
+    // Nearest ancestor [lang]/[dir], falling back to the document — so the proxy
+    // adopts the field's script direction (RTL for Arabic/Hebrew) and language
+    // dictionary. Public attributes, so safe to publish even on sensitive fields.
+    const nearest = (name) => {
+      try { const a = el.closest && el.closest('[' + name + ']'); if (a) return a.getAttribute(name) || ''; } catch (_) {}
+      return '';
+    };
+    const lang = nearest('lang') || (document.documentElement && document.documentElement.lang) || '';
+    const dir = nearest('dir') || document.dir || '';
+    // Never fingerprint secret fields — no length, no hash leaves the page for
+    // passwords / OTP / card numbers. The viewer disables drift detection for
+    // these (sync.sensitive) rather than tracking them.
+    const sensitive = type === 'password' ||
+      /one-time-code|current-password|new-password|cc-number|cc-csc/.test(ac);
+    let value = '';
+    try { value = el.value != null ? el.value : (el.isContentEditable ? (el.textContent || '') : ''); } catch (_) {}
+    return {
+      editable: true,
+      rect,
+      ...base,
+      // Stable identity so the viewer distinguishes a new field from the same
+      // one still focused (see focusKeyFor). Survives scroll/resize/re-report.
+      focusKey: focusKeyFor(el),
+      // Hints let the viewer's proxy input adopt the right keyboard layout
+      // (email/tel/number/decimal), SMS autofill, and Enter-key label.
+      hints: {
+        type: isInput ? (el.type || 'text') : 'text',
+        tag: el.tagName,
+        inputMode: attr('inputmode'),
+        enterKeyHint: attr('enterkeyhint'),
+        autoComplete: attr('autocomplete'),
+        // name/placeholder are the only signals on a field like Kaggle's sign-in
+        // (<input type="text" autocomplete="on" name="email">): type says nothing and
+        // autocomplete="on" carries no information, so without these the viewer cannot
+        // tell an address field from prose — and Gboard then auto-spaces a tapped
+        // suggestion into an invalid email. Metadata only, exactly like type/pattern;
+        // never the field's VALUE, which the sensitive-field rules still govern.
+        name: attr('name'),
+        placeholder: attr('placeholder'),
+        // pattern lets the viewer show a numeric pad on the legacy pattern="[0-9]*"
+        // OTP/PIN/zip idiom (no inputmode). lang/dir drive the proxy's script
+        // direction + dictionary. maxLength is published for reference only — the
+        // viewer must NOT set it on the live proxy (it would truncate the chew buffer).
+        pattern: attr('pattern'),
+        maxLength: (isInput && el.maxLength > 0) ? el.maxLength : undefined,
+        lang,
+        dir,
+        // Shift/correction behaviour the proxy keyboard should mirror so a name
+        // field word-caps, a sentence textarea auto-shifts, and a code field
+        // stays literal — otherwise everything types lowercase (a native tell).
+        autoCapitalize: attr('autocapitalize'),
+        autoCorrect: attr('autocorrect'),
+        spellCheck: attr('spellcheck'),
+      },
+      // Drift-detection fingerprint (never for secret fields) PLUS the full field
+      // text so the viewer can SEED its hidden proxy input with real content. An
+      // empty proxy gives the OS IME no word context, which is exactly why iOS
+      // autocorrect/suggestion picks are eventless and unrecoverable (empty field =
+      // nothing to correct or replace); handing the real text back gives every
+      // keyboard genuine context. Capped so a huge textarea can't bloat the focus
+      // message; secret fields still send neither length nor value.
+      sync: {
+        sensitive,
+        len: sensitive ? undefined : value.length,
+        val: sensitive ? undefined : (value.length > 2048 ? value.slice(0, 2048) : value),
+      },
+    };
+  }
+
+  // --- Cross-origin iframe rect relay ---------------------------------------
+  // background.js aggregates one state PER frame and just needs correct top-window
+  // coords. frameOffset() can't cross a cross-origin boundary, so a field inside
+  // a cross-origin iframe (Stripe/checkout/OAuth) would report frame-local coords
+  // and the viewer's keyboard-lift lands in the wrong place. Fix: a detached frame
+  // (cross-origin ancestor) does NOT report to the background; it BUBBLES its
+  // state up one frame at a time. Each parent adds the child <iframe>'s position
+  // and either reports (if it can now reach the top) or bubbles further. Only
+  // cross-origin boundaries use this path — same-origin/top frames report exactly
+  // as before (byte-for-byte), so this can't regress the common case.
+  const CHILD_STALE_MS = 6000;
+  const childFrames = new Map(); // child Window -> { state (THIS-frame-local), ts }
+
+  // The rect of the child <iframe> whose contentWindow posted to us — this is both
+  // the offset to apply AND the proof the message came from a real child of ours
+  // (spoofed messages from unrelated windows match nothing and are dropped).
+  function childFrameOffset(sourceWin) {
+    let els;
+    try { els = document.querySelectorAll('iframe, frame'); } catch (_) { return null; }
+    for (const f of els) {
+      let cw;
+      try { cw = f.contentWindow; } catch (_) { continue; }
+      if (cw && cw === sourceWin) {
+        try { const r = f.getBoundingClientRect(); return { x: r.left, y: r.top }; } catch (_) { return null; }
+      }
+    }
+    return null;
+  }
+
+  // Fold live cross-origin child states (already in THIS frame's local coords)
+  // into our own: union the rects, and if we don't hold focus but a child does,
+  // adopt the child's focused field. Never touches vw/vh/sw/pid (top owns those).
+  function foldChildren(state) {
+    const now = Date.now();
+    let rects = Array.isArray(state.rects) ? state.rects.slice() : []; // clone: don't mutate cachedRects
+    for (const [win, entry] of childFrames) {
+      if (now - entry.ts > CHILD_STALE_MS) { childFrames.delete(win); continue; }
+      const cs = entry.state;
+      if (Array.isArray(cs.rects)) for (const r of cs.rects) rects.push(r);
+      if (!state.editable && cs.editable) {
+        state.editable = true; state.rect = cs.rect || null; state.hints = cs.hints || null;
+        state.sync = cs.sync || null; state.focusKey = cs.focusKey || null;
+      }
+    }
+    state.rects = rects;
+    return state;
+  }
+
+  // Apply our toward-top offset, then either report to the background (offset
+  // reached the top window → coords are absolute) or bubble across the cross-
+  // origin boundary above us (coords are relative to our segment root; the parent
+  // adds our <iframe>'s position next).
+  function emit(state) {
+    const off = frameOffset();
+    offsetState(state, off.x, off.y);
+    if (off.reachedTop) {
+      try { chrome.runtime.sendMessage({ type: 'PCN_KBD', state }); } catch (_) {
+        // Worker spinning up / context gone; the next report resends absolute state.
+      }
+    } else if (window !== window.top) {
+      try { window.parent.postMessage({ __pcnKbdFrame: 1, state }, '*'); } catch (_) {}
+    }
+  }
+
+  let lastKey = null;
+  // force=true bypasses the dedup for the periodic heartbeat: the background
+  // worker (and each relaying parent frame) expires frames that go silent, so a
+  // live frame must keep re-asserting itself even when its state is unchanged.
+  function report(el, force) {
+    refreshRects(); // keep the hit-test rects current on every emit
+    const state = foldChildren(describe(el)); // own state + any cross-origin children
+    const key = JSON.stringify(state);
+    if (!force && key === lastKey) return; // focus/rect/hints/rects unchanged
+    lastKey = key;
+    emit(state);
+  }
+
+  // A cross-origin child frame bubbled its focus state up. Convert it from the
+  // child document's coords into ours (add the child <iframe>'s position), keep it
+  // keyed by source window, and re-report so the update propagates toward the top.
+  window.addEventListener('message', (e) => {
+    const m = e && e.data;
+    if (!m || m.__pcnKbdFrame !== 1 || !m.state || typeof m.state.editable !== 'boolean') return;
+    const off = childFrameOffset(e.source); // also authenticates: must be our child
+    if (!off) return;
+    childFrames.set(e.source, { state: offsetState(m.state, off.x, off.y), ts: Date.now() });
+    report(deepActiveElement(), true); // propagate promptly (force past dedup)
+  }, false);
+
+  // Chromium selects a filled field's ENTIRE text on a synthetic-touch tap (which
+  // is how the mobile viewer taps), whereas a real phone places a caret. That
+  // makes re-tapping a field you already typed in select-everything, so the next
+  // keystroke replaces it. Collapse that initial select-all to a caret at the end
+  // so a re-tap edits/appends — native-mobile behavior. Only the tap-induced
+  // select-all is collapsed (a brief poll right after focus); a deliberate
+  // long-press select-all happens later and is left alone.
+  function collapseTapSelectAll(el) {
+    if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return;
+    let tries = 0;
+    const tick = () => {
+      if (document.activeElement !== el) return;
+      let v;
+      try { v = el.value; } catch (_) { return; }
+      try {
+        if (v && el.selectionStart === 0 && el.selectionEnd === v.length) {
+          el.setSelectionRange(v.length, v.length);
+          return;
+        }
+      } catch (_) { return; } // selectionStart unsupported (email/number) — skip
+      if (++tries < 6) setTimeout(tick, 25); // the select-all lands async; poll ~150ms
+    };
+    setTimeout(tick, 0);
+  }
+
+  // focusin bubbles, so a single capturing listener sees every editable focus.
+  // composedPath()[0] is the real target even across open shadow boundaries
+  // (plain e.target is retargeted to the shadow host).
+  document.addEventListener('focusin', (e) => {
+    const path = e.composedPath && e.composedPath();
+    const el = (path && path[0]) || e.target;
+    report(el);
+    collapseTapSelectAll(el);
+  }, true);
+
+  // On blur, focus may move synchronously to another editable (field-to-field
+  // tabbing) — defer one tick and read the settled (deep) activeElement so we
+  // don't emit a spurious "false" between two inputs.
+  document.addEventListener('focusout', () => {
+    setTimeout(() => report(deepActiveElement()), 0);
+  }, true);
+
+  // Top document navigating away / being frozen: emit a clean non-editable state
+  // so the hub doesn't cache a stale editable:true (a field from the OLD page)
+  // across the nav. Without this, an already-connected viewer's keyboard can stay
+  // wedged up on a field that no longer exists after the remote page changes.
+  if (IS_TOP) {
+    window.addEventListener('pagehide', () => {
+      try { emit({ editable: false, rects: [] }); } catch (_) {}
+    });
+  }
+
+  // Re-report on value changes so the viewer can detect input drift. Debounced
+  // to avoid a message per keystroke; report() dedupes when the length is
+  // unchanged, so this is quiet unless the field actually grew/shrank.
+  let syncTimer = null;
+  document.addEventListener('input', () => {
+    if (syncTimer !== null) clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => {
+      syncTimer = null;
+      // Only push length updates for an editable field. Never emit "false" from
+      // here (that would spuriously dismiss) — focusout owns the false signal.
+      const el = deepActiveElement();
+      if (isEditable(el)) report(el);
+    }, 350);
+  }, true);
+
+  // Rects shift on scroll / resize / layout; re-report (throttled) so the
+  // viewer's tap hit-test stays accurate. A slow periodic refresh also catches
+  // dynamically added forms (SPA route changes, lazy-rendered fields).
+  let rectsTimer = null;
+  function scheduleReport() {
+    if (rectsTimer !== null) return;
+    rectsTimer = setTimeout(() => { rectsTimer = null; report(deepActiveElement()); }, 250);
+  }
+  window.addEventListener('scroll', scheduleReport, true);
+  window.addEventListener('resize', scheduleReport, true);
+
+  // --- report promptly when the layout changes -----------------------------
+  // The cadence used to be a 1500ms heartbeat plus a 2000ms measurement cache, so a
+  // page that rendered its content late was reported up to ~1s after the fact.
+  // Measured on Pinterest at a 360px viewport: the clipped login form existed in the
+  // DOM at 3.33s and the viewer only heard about it at 4.32s — and it spent that
+  // second showing the clipped layout before jumping to the fit. With this observer
+  // the same measurement arrives at 3.30s, so the fit happens as the content appears
+  // and there is no wrong-layout window to see.
+  //
+  // Cheap by construction: the handler only sets a flag and pokes scheduleReport,
+  // which is already throttled to 250ms. getBoundingClientRect (which forces layout)
+  // still runs at most once per report, not once per mutation — an observer on a page
+  // like Pinterest fires hundreds of times a second.
+  try {
+    const mo = new MutationObserver(() => {
+      overflowDirty = true; // cached rects are stale by definition now
+      scheduleReport();
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+  } catch (_) {}
+
+  // --- Popup close button ---------------------------------------------------
+  // window.open popups (OAuth "Continue with Google", payment windows) are
+  // fullscreened by the emulator to hide the location bar — but a chromeless
+  // fullscreen popup then has NO way to close. If this frame is the top document
+  // of a script-opened popup (window.opener set), overlay a floating ✕ that
+  // closes it. Only the popup gets it; the main tab has no opener.
+  try {
+    if (window.top === window && window.opener) {
+      const addClose = () => {
+        if (!document.body || document.getElementById('__pcn_close')) return;
+        const b = document.createElement('div');
+        b.id = '__pcn_close';
+        b.textContent = '✕';
+        b.setAttribute('role', 'button');
+        b.setAttribute('aria-label', 'Close');
+        b.style.cssText = 'position:fixed;top:10px;right:12px;z-index:2147483647;' +
+          'width:36px;height:36px;box-sizing:border-box;padding:0;margin:0;' +
+          'display:flex;align-items:center;justify-content:center;' +
+          'font:400 18px/1 system-ui,-apple-system,sans-serif;color:#fff;' +
+          'background:rgba(0,0,0,.55);border-radius:50%;cursor:pointer;' +
+          'box-shadow:0 1px 4px rgba(0,0,0,.4)';
+        b.addEventListener('click', () => { try { window.close(); } catch (_) {} });
+        document.body.appendChild(b);
+      };
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', addClose, { once: true });
+      } else {
+        addClose();
+      }
+      // SPA re-renders (Google's login is one) can wipe the overlay — re-add it.
+      setInterval(addClose, 1500);
+    }
+  } catch (_) {}
 })();
