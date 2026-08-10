@@ -472,7 +472,24 @@ export function createFit({
       // nowMs() is still small) — that delayed the first fit by up to FIT_SETTLE_MS.
       if (navChanged && fitMode) { fitLatched = true; dbg('fit latched: reload-on-resize'); }
     } else if (fitMode) {
-      if (navChanged) exitFit();
+      if (navChanged) {
+        // A same-site navigation between legacy pages (such as Hanyang's login
+        // and course-registration pages) used to exit the existing 980px fit,
+        // paint one cropped phone-width frame, then discover the missing viewport
+        // meta and enter the identical fit again. Keep the already-rendered fit
+        // when the replacement document has the same no-viewport signature.
+        // Responsive destinations still leave fit immediately, so the previous
+        // page's desktop layout cannot persist into a normal mobile page.
+        if (state.novp && state.vw > 0 && window.innerWidth < NO_VIEWPORT_W) {
+          if (fitLayoutW !== NO_VIEWPORT_W) {
+            enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false);
+          } else {
+            dbg('fit retained across no-viewport navigation');
+          }
+        } else {
+          exitFit();
+        }
+      }
     } else if (state.novp && state.vw > 0 && window.innerWidth < NO_VIEWPORT_W) {
       // No viewport meta → replicate the browser's ~980px desktop-fallback layout
       // scaled to fit (see NO_VIEWPORT_W). Open ZOOMED OUT (whole page) like mobile
@@ -576,11 +593,20 @@ export function createFit({
     return Math.max(1, Math.min(iw / t.w, ih / t.h));
   }
 
+  // Re-entrancy guard: the FILL branch calls vt.setFillFloor, whose compose can
+  // come back through noteZoomFreeze -> setZoomFreeze -> settle. One pass is
+  // enough — the nested call would only redo work this one is mid-way through.
+  let settling = false;
   function settle() {
     // In fit-to-width mode the framebuffer is deliberately WIDE (scaleViewport
     // downscales it); re-enabling resizeSession here would shrink it back to the
     // viewport and undo the fit. Leave the resize state to enterFit/exitFit.
     if (fitMode) { pushEmulate(); return; }
+    if (settling) return;
+    settling = true;
+    try { settleOnce(); } finally { settling = false; }
+  }
+  function settleOnce() {
     const rfb = getRfb();
     if (FILL) {
       // Scale-to-fill converges in one deterministic order for both grow and shrink:
@@ -590,7 +616,6 @@ export function createFit({
       //   2. resizeSession sizes the framebuffer to min(window, cap);
       //   3. re-apply the fill floor — >1 re-freezes (framebuffer stays at the cap,
       //      the transform fills the window), ==1 leaves the plain 1:1 view.
-      // setZoomFreeze is guarded to NOT call settle() under FILL, so this can't recurse.
       vt.setFillFloor(1);
       try { if (rfb) rfb.resizeSession = true; } catch (_) {}
       pushEmulate();
@@ -632,10 +657,9 @@ export function createFit({
     // Back to 1:1 — re-enable and re-push, since the framebuffer may have drifted
     // from the viewport while frozen (a rotate or keyboard resize mid-zoom).
     lastEmulateKey = '';
-    // Under scale-to-fill, settle() OWNS the resizeSession + fill-floor sequence and
-    // calls setFillFloor (which composes → can re-enter here). Returning breaks that
-    // recursion; settle re-enables resizeSession itself.
-    if (FILL) return;
+    // settle() re-enables resizeSession, including on the FILL path, where it also
+    // re-derives the fill floor. Its own re-entrancy guard absorbs the compose that
+    // comes back through here.
     settle();
   }
 

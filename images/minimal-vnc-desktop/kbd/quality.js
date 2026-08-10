@@ -24,21 +24,13 @@
 import { linkLatency } from './latency.js';
 import { dbg } from './diag.js';
 
-const LOW_QUALITY = 2;          // JPEG quality 0-9 while masking a slow link
+const LOW_QUALITY = 6;          // Preserve legibility while masking a slow link
 const SLOW_RTT_MS = 500;        // only degrade once the link is actually slow
 const MOTION_RESTORE_MS = 300;  // settle delay after the last forwarded scroll frame
 
-// ---- progressive refinement ---------------------------------------------------
-// The configured quality is high because text is the payload (see viewer.js), but
-// paying for it on the FIRST full-page paint delays time-to-first-pixel — the one
-// moment the user is staring at nothing. So connect cheap and sharpen once the
-// stream settles: first pixels arrive at today's speed, the sharp version lands a
-// beat later on a screen still being read, and every update after that is a small
-// dirty rect (RFB is change-only) where high quality costs almost nothing.
-// 5 -> 6 looks like a trivial step but it is exactly TigerVNC's chroma-subsampling
-// threshold (levels 3-5 send half-resolution chroma, 6+ send it in full), so the
-// refinement is what restores correct colour on coloured text — the visible part.
-export const COLD_QUALITY = 5;      // first paint — fast, chroma subsampled
+// Keep first paint at full fidelity. A framebuffer is a bitmap, so any JPEG loss
+// at connect is magnified with the rest of the page and makes browser text soft.
+export const COLD_QUALITY = 9;
 export const REFINE_IDLE_MS = 600;  // settle window before stepping up to sharp
 
 export function createQuality({ getRfb }) {
@@ -95,9 +87,8 @@ export function createQuality({ getRfb }) {
 
   return {
     /**
-     * Called on every RFB 'connect'. Captures the quality the viewer configured as
-     * the sharp target, drops to COLD_QUALITY for the first paint, and schedules the
-     * step back up once the stream has been quiet for REFINE_IDLE_MS.
+     * Called on every RFB 'connect'. Captures the configured sharp target and
+     * keeps the first frame at COLD_QUALITY when the target allows it.
      *
      * If the refine timer fires while a scroll/typing burst still holds quality low,
      * it only marks the target as reached — restoreFor() then lands on `sharp` when

@@ -1094,12 +1094,11 @@ func (e *emulator) session() error {
 							"bounds":   map[string]any{"windowState": "fullscreen"},
 						}, "")
 						// A window seen OUTSIDE fullscreen is a real transition (a popup just
-						// opened normal+chromed) — the fullscreen size openbox grants it may
-						// reflect a stale monitor geometry, so follow up with an X-level fit
-						// (window.go). Gate on the reported state: this reply also arrives on
-						// every 2s watchdog tick for already-fullscreen windows, and spawning
-						// xdotool that often would spend the Rosetta fd budget the watcher's
-						// slow backstop exists to protect (see window.go header).
+						// opened normal+chromed), and the size openbox grants it may reflect a
+						// stale monitor geometry — so follow up with an X-level fit
+						// (window.go). Gate on the state: this reply also arrives on every
+						// watchdog tick for already-fullscreen windows, and spawning xdotool
+						// that often costs fd budget under Rosetta (see window.go).
 						if b, _ := result["bounds"].(map[string]any); b != nil {
 							if state, _ := b["windowState"].(string); state != "fullscreen" {
 								requestWindowFit(log.Printf)

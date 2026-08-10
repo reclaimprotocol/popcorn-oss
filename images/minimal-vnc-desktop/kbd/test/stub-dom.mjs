@@ -130,6 +130,7 @@ export const parentMessages = [];
 // ---- window-level events -----------------------------------------------------
 // Recorded by installGlobals' addEventListener. fireWindow drives them.
 let winListeners = {};
+export function clearWindowListeners() { winListeners = {}; }
 // Returns the dispatched event object so a test can inspect what the listeners did
 // TO it (capture-phase handlers that rewrite coordinates, stopPropagation flags…),
 // not just what they did with it.
@@ -171,6 +172,7 @@ export function fireDoc(type, props) {
     cancelable: true,
     preventDefault() { this.defaultPrevented = true; },
     stopPropagation: noop,
+    stopImmediatePropagation: noop,
   }, props || {});
   for (const fn of (docListeners[type] || []).slice()) fn(e);
   return e;

@@ -743,6 +743,22 @@
     mo.observe(document.documentElement, { childList: true, subtree: true });
   } catch (_) {}
 
+  // A static legacy page may not mutate after its initial parse and may never
+  // focus an editable control. Without an explicit ready report, its viewport
+  // metadata reaches the viewer only on a later heartbeat, leaving a no-viewport
+  // page cropped until the desktop-fit detector eventually runs. Report as soon
+  // as the document's head/body are complete, then once more after resources load
+  // in case the site adds its viewport tag or fixed-width shell late.
+  if (IS_TOP) {
+    const reportInitialLayout = () => report(deepActiveElement(), true);
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', reportInitialLayout, { once: true });
+    } else {
+      reportInitialLayout();
+    }
+    window.addEventListener('load', reportInitialLayout, { once: true });
+  }
+
   // --- Popup close button ---------------------------------------------------
   // window.open popups (OAuth "Continue with Google", payment windows) are
   // fullscreened by the emulator to hide the location bar — but a chromeless

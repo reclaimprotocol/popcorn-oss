@@ -11,8 +11,8 @@
 // the core (the #screen element, the remote viewport, whether a remote touch is
 // active) plus a callback to stamp the last remote-scroll time.
 
-import { TOUCH_INPUT, nowMs, siblingPath } from './env.js';
-import { dbg } from './diag.js';
+import { MAGNIFY, TOUCH_INPUT, nowMs, siblingPath } from './env.js';
+import { dbg, dbgv } from './diag.js';
 import { linkLatency } from './latency.js';
 
 // Coalesce touchmove sends. A fast swipe fires touchmove 60-120x/s; forwarding
@@ -72,10 +72,12 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     try {
       // move -> press -> release, the shape of a human click. The bare move first
       // also lets hover-dependent widgets settle before the button goes down.
+      rfb.__pcnPointerCoordsAreLayout = true;
       rfb._handleMouseButton(ex, ey, 0);
       rfb._handleMouseButton(ex, ey, 1);
       rfb._handleMouseButton(ex, ey, 0);
     } catch (_) { return false; }
+    finally { rfb.__pcnPointerCoordsAreLayout = false; }
     dbg('x11 click ' + Math.round(ex) + ',' + Math.round(ey));
     return true;
   }
@@ -86,7 +88,10 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     inputReconnectTimer = setTimeout(() => { inputReconnectTimer = null; connectInput(); }, 1000);
   }
   function connectInput() {
-    if (!TOUCH_INPUT) return;
+    // Physical mouse clicks in magnify use this channel too. It maps them in
+    // remote CSS pixels (the same coordinate space as verified touch input),
+    // avoiding noVNC's transform-blind mouse conversion.
+    if (!MAGNIFY) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let s;
     try { s = new WebSocket(proto + '//' + location.host + inputPath()); }
@@ -98,8 +103,8 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     s.onerror = down;
   }
   function sendTouch(type, points) {
-    if (!inputSock || inputSock.readyState !== WebSocket.OPEN) return;
-    try { inputSock.send(JSON.stringify({ t: type, points })); } catch (_) {}
+    if (!inputSock || inputSock.readyState !== WebSocket.OPEN) return false;
+    try { inputSock.send(JSON.stringify({ t: type, points })); return true; } catch (_) { return false; }
   }
 
   // Map a screen point to remote framebuffer px (= remote CSS px in magnify,
@@ -119,10 +124,17 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     const viewport = getViewport();
     const remW = (viewport && viewport.w > 0) ? viewport.w : (canvas.width || cr.width);
     const remH = (viewport && viewport.h > 0) ? viewport.h : (canvas.height || cr.height);
-    return {
+    const point = {
       x: Math.round((sx - cr.left) * (remW / cr.width)),
       y: Math.round((sy - cr.top) * (remH / cr.height)),
     };
+    // Verbose tier: this fires per pointer sample, so it is debug-flag only.
+    dbgv('input map raw=' + Math.round(sx) + ',' + Math.round(sy) +
+        ' out=' + point.x + ',' + point.y +
+        ' rect=' + Math.round(cr.left) + ',' + Math.round(cr.top) + ',' + Math.round(cr.width) + 'x' + Math.round(cr.height) +
+        ' vp=' + Math.round(remW) + 'x' + Math.round(remH) +
+        ' canvas=' + (canvas.clientWidth || 0) + 'x' + (canvas.clientHeight || 0));
+    return point;
   }
   // CDP's touch model tracks the CURRENTLY-ACTIVE points and diffs each event
   // against the previous set to decide press/move/RELEASE. So we always map
@@ -183,7 +195,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   // Network-back kick: reconnect the input socket immediately (bypass the 1s
   // reconnect timer). No-op unless the native touch channel is in use.
   function kick() {
-    if (!TOUCH_INPUT) return;
+    if (!MAGNIFY) return;
     if (!inputSock) {
       if (inputReconnectTimer !== null) { clearTimeout(inputReconnectTimer); inputReconnectTimer = null; }
       connectInput();

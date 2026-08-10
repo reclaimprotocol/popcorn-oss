@@ -24,6 +24,7 @@ function makeFit() {
   const rfb = { resizeSession: true, scaleViewport: false };
   const vt = {
     resetTransform() {}, applyZoomSnap() {}, minZoom: () => 1, zoomScale: () => 1,
+    setFillFloor() {}, // scale-to-fill: on by default under ?magnify=1
     composeScreenTransform() {},
   };
   const fit = createFit({

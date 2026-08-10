@@ -167,10 +167,9 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	emulate := emulateHTTPHandler(em, ready)
 	mux.HandleFunc("/emulate", func(w http.ResponseWriter, r *http.Request) {
 		emulate(w, r)
-		// A viewer pushes /emulate whenever it changes the layout — which is also
-		// exactly when it resizes the X screen (fit enter/exit, settle). Follow
-		// each push with a window fit so the kiosk window tracks the screen
-		// without polling for it (see window.go).
+		// A viewer pushes /emulate exactly when it resizes the X screen (fit
+		// enter/exit, settle), so this is the event the kiosk window follows
+		// instead of a poll. See window.go.
 		requestWindowFit(log.Printf)
 	})
 	// Boot framebuffer geometry (WIDTH x FB_HEIGHT) = the advertised desktop size

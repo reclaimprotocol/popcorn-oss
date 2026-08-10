@@ -1,11 +1,8 @@
-// quality-refine.test.mjs — characterization: progressive quality refinement.
+// quality-refine.test.mjs — characterization: connection quality handling.
 //
-// The configured JPEG quality is high because text is the payload, but paying for
-// it on the FIRST full-page paint delays time-to-first-pixel — the one moment the
-// user is looking at nothing. So a connect starts at COLD_QUALITY and steps up once
-// the stream is quiet. These tests pin the cycle AND its interaction with the
-// adaptive lowering, which is where it could plausibly go wrong: a refinement that
-// completes mid-scroll must not be lost, and must not fight the low-quality hold.
+// The configured JPEG quality is high because text is the payload. These tests pin
+// the connection behavior and its interaction with adaptive lowering, ensuring a
+// slow-link motion hold does not prevent restoration to the sharp target.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -19,8 +16,8 @@ installGlobals('ios', { search: '?magnify=1' });
 // after installGlobals.
 const { COLD_QUALITY, REFINE_IDLE_MS } = await import('../quality.js');
 
-// The mock RFB is configured at quality 6 — the "sharp" target these tests refine to.
-const SHARP = 6;
+// The mock RFB is configured at quality 9 — the sharp target used in production.
+const SHARP = 9;
 
 function scroll(screen, fromY, toY) {
   fireDoc('touchstart', { touches: [{ clientX: 100, clientY: fromY }], changedTouches: [{ clientX: 100, clientY: fromY }], target: screen });
@@ -31,9 +28,9 @@ function release(screen, y) {
 }
 
 // Runs FIRST, while linkLatency is still 0 (fast link) so the adaptive path stays out.
-test('connect starts cold, then refines to the configured quality', async () => {
+test('connect starts at the configured sharp quality', async () => {
   const { rfb } = await freshViewer(createMockRfb);
-  assert.equal(rfb.qualityLevel, COLD_QUALITY, 'first paint is cheap');
+  assert.equal(rfb.qualityLevel, COLD_QUALITY, 'first paint stays sharp');
   await sleep(REFINE_IDLE_MS + 80);
   assert.equal(rfb.qualityLevel, SHARP, 'stepped up once the stream settled');
 });

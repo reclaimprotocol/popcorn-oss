@@ -43,7 +43,7 @@ test('fast link: a forwarded scroll does NOT touch quality', async () => {
   await settled();
   const screen = makeScreen();
   scroll(screen, 400, 250);
-  assert.equal(rfb.qualityLevel, 6, 'fast link keeps the configured quality');
+  assert.equal(rfb.qualityLevel, 9, 'fast link keeps the configured quality');
   release(screen, 250);
 });
 
@@ -52,12 +52,12 @@ test('slow link: forwarded scroll lowers quality, restored ~300ms after release'
   const { rfb } = await freshViewer(createMockRfb);
   await settled();
   const screen = makeScreen();
-  assert.equal(rfb.qualityLevel, 6, 'starts at configured quality');
+  assert.equal(rfb.qualityLevel, 9, 'starts at configured quality');
   scroll(screen, 400, 250);
-  assert.equal(rfb.qualityLevel, 2, 'lowered while the forwarded scroll is in flight');
+  assert.equal(rfb.qualityLevel, 6, 'lowered while the forwarded scroll is in flight');
   release(screen, 250);
   await sleep(120);
-  assert.equal(rfb.qualityLevel, 2, 'still low within the settle debounce (fling tail)');
+  assert.equal(rfb.qualityLevel, 6, 'still low within the settle debounce (fling tail)');
   await sleep(300);
-  assert.equal(rfb.qualityLevel, 6, 'restored to configured quality after motion settles');
+  assert.equal(rfb.qualityLevel, 9, 'restored to configured quality after motion settles');
 });

@@ -27,7 +27,7 @@
       var q = new URLSearchParams(location.search);
       var viewerBase = q.get('viewer') || (location.protocol + '//' + location.hostname + ':6080');
       var PASSTHROUGH = ['magnify', 'quality', 'compression', 'resize', 'iosbridge',
-                         'kbddebug', 'stateless', 'mirror', 'mirrorbar',
+                         'kbddebug', 'kbdlog', 'stateless', 'mirror', 'mirrorbar',
                          'smooth'];
       var params = ['parentOrigin=' + encodeURIComponent(location.origin)];
       if (q.get('magnify') === null) params.push('magnify=1'); // default on, like the portal

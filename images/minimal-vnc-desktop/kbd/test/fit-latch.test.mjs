@@ -43,6 +43,21 @@ function makeFit() {
 // fitPhase2Timer on its first line at ~1000ms) so the next reconnect can re-apply.
 const settleDance = () => sleep(1100);
 
+test('a no-viewport navigation retains the current desktop fit', () => {
+  const { fit } = makeFit();
+
+  fit.handleTopDocSignal({ pid: 'hanyang-login', novp: true, vw: 390, sw: 980 });
+  assert.equal(fit.fitMode(), true, 'entered the desktop fallback fit');
+
+  // This is a real same-target navigation, not the reload caused by the initial
+  // fit resize. The next Hanyang document has the same no-viewport signature and
+  // must retain the existing wide framebuffer instead of flashing a narrow frame.
+  advanceClock(6000);
+  fit.handleTopDocSignal({ pid: 'hanyang-courses', novp: true, vw: 980, sw: 980 });
+
+  assert.equal(fit.fitMode(), true, 'retained the desktop fit across navigation');
+});
+
 test('three auto-reconnects do not latch fit; a later navigation still exits', async () => {
   const { fit, magEligible } = makeFit();
 

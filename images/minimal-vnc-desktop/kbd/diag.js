@@ -1,20 +1,23 @@
 // diag.js — keyboard diagnostics (server log + optional on-screen overlay).
 //
 // dbg(line) records a STRUCTURAL keyboard event — state / type / length / flag
-// only, NEVER field text. Each line is:
-//   * shipped (batched) to the proxy's /klog so keyboard issues can be
-//     diagnosed straight from SERVER logs, no on-device screenshots needed.
-//     ON by default; disable with ?kbdlog=0 or localStorage pcnKbdLog=0.
-//   * shown in an on-screen overlay + mirrored to console when ?kbddebug=1
-//     (or localStorage pcnKbdDebug=1) — intrusive, so OFF by default.
-// dbgv(line) is the VERBOSE tier (per-keystroke / per-move): it only fires when
-// the debug flag is on, so it never floods the server in normal operation.
+// only, NEVER field text. dbgv(line) is the VERBOSE tier (per-keystroke /
+// per-move).
+//
+// BOTH TIERS ARE OFF UNLESS EXPLICITLY ENABLED. Shipping was opt-OUT before,
+// which meant every real session streamed a keystroke-by-keystroke trace of
+// itself into the pod log — noise in production and a privacy surface that
+// nobody had asked for. Opt in per session:
+//   ?kbdlog=1   (or localStorage pcnKbdLog=1)    ship to the proxy's /klog
+//   ?kbddebug=1 (or localStorage pcnKbdDebug=1)  on-screen overlay + console,
+//                                                and implies kbdlog
+// Flags are read once at load, so a session cannot start logging halfway.
 
 import { nowMs, siblingPath } from './env.js';
 
 function safeLS(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
 export const KBD_DEBUG = /[?&]kbddebug=1/.test(location.search) || safeLS('pcnKbdDebug') === '1';
-const KBD_LOG = !/[?&]kbdlog=0/.test(location.search) && safeLS('pcnKbdLog') !== '0';
+const KBD_LOG = KBD_DEBUG || /[?&]kbdlog=1/.test(location.search) || safeLS('pcnKbdLog') === '1';
 
 // Per-page-load id so a device's lines group together in the server log.
 const KBD_SID = (Math.floor(Math.random() * 1e9)).toString(36) +
@@ -60,9 +63,9 @@ try {
 let dbgEl = null;
 const dbgLog = [];
 export function dbg(line) {
-  if (!KBD_DEBUG && !KBD_LOG) return;
+  if (!KBD_LOG) return; // KBD_DEBUG implies KBD_LOG, so this covers both tiers
   const entry = Math.round(nowMs()) + ' ' + line;
-  klogEnqueue(entry); // server shipping (default on)
+  klogEnqueue(entry);
   if (!KBD_DEBUG) return; // overlay + console only when explicitly debugging
   dbgLog.push(entry);
   if (dbgLog.length > 200) dbgLog.shift();
@@ -78,8 +81,7 @@ export function dbg(line) {
     dbgEl.textContent = dbgLog.slice(-16).join('\n');
   } catch (_) {}
 }
-// Verbose (high-frequency) tier — suppressed unless debugging, so per-keystroke
-// and per-move lines never flood the server in normal use.
+// Verbose (high-frequency) tier: per-keystroke / per-move, debug flag only.
 export function dbgv(line) { if (KBD_DEBUG) dbg(line); }
 // Never let a typed character reach the logs: named keys (Backspace, Enter,
 // Arrow*, Unidentified, Process…) pass through; a single printable char is

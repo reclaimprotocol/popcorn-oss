@@ -28,13 +28,6 @@ import { nowMs } from './env.js';
 import { hostGeometry, postToHost } from './host-bridge.js';
 
 const MAX_ZOOM = 6;
-// ?smooth=1 keeps the browser's default (bilinear) canvas scaling while zoomed in,
-// for A/B against the nearest-neighbour sharpening in applyCanvasFilter.
-const FORCE_SMOOTH = /[?&]smooth=1/.test(location.search);
-// Settle delay before switching to nearest-neighbour after a transform burst.
-// Longer than the 150ms animated compose so an eased lift/zoom finishes first.
-const FILTER_SETTLE_MS = 180;
-
 // Keep #screen on its own GPU layer only WHILE it's transforming. Left on
 // permanently, will-change:transform wastes GPU memory for a full-page layer,
 // so a debounced timer drops it this long after the last transform write (past
@@ -103,9 +96,7 @@ export function createViewportTransform({
     if (tx !== 0 || ty !== 0) parts.push('translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)');
     if (zoomScale !== 1) parts.push('scale(' + zoomScale.toFixed(4) + ')');
     screen.style.transform = parts.join(' ');
-    // animate=true means a 150ms transition is about to run this transform, so the
-    // scale keeps changing after this call returns — treat it as motion.
-    applyCanvasFilter(screen, animate);
+    restoreCanvasInterpolation();
     // Any zoom away from 1:1 must freeze the remote framebuffer size, because
     // noVNC sizes it from this element's (now transformed) bounding rect. Reported
     // from the single transform writer so no zoom path can forget to.
@@ -113,52 +104,15 @@ export function createViewportTransform({
     promoteLayer(screen);
   }
 
-  // Sharpen magnified text by turning OFF the browser's smoothing while zoomed in.
-  //
-  // At the readable zoom the mapping is an exact integer: readableZoom() is
-  // fitLayoutW/innerWidth, so device-px per framebuffer-px works out to the device
-  // pixel ratio itself (e.g. (393/980) * 2.49 * 3 == 3.0). Magnifying a bitmap by
-  // exactly 3x is the one case where nearest-neighbour is strictly better than
-  // bilinear: it reproduces each framebuffer pixel exactly, where smoothing invents
-  // intermediate pixels and visibly smears glyph edges — the "blurry text" everyone
-  // notices first on a login form. Costs nothing: no extra bytes, no remote work.
-  //
-  // Only while zoomed IN. When zoomed out (the whole-page overview) the canvas is
-  // DOWNSCALED, and nearest-neighbour downsampling drops pixels instead of averaging
-  // them, which aliases thin strokes into a shimmering mess — smoothing is correct
-  // there. Kill-switch for on-device A/B: ?smooth=1 keeps the browser default.
-  //
-  // And only while the transform is AT REST. Nearest-neighbour snaps each output
-  // pixel to whichever source pixel it lands on, so while the scale/translate is
-  // CHANGING (pinch, pan, scroll prediction, the animated lift) that assignment
-  // flips frame to frame and the whole image crawls — reported as a CRT-like buzz
-  // while zooming. Smoothing during the gesture hides it (motion masks softness
-  // anyway); the sharp version snaps in FILTER_SETTLE_MS after the last write,
-  // which is where the user actually reads.
-  let filterTimer = null;
-  function writeCanvasFilter(sharp) {
+  // Fit and fill scale the canvas by non-integer factors, where
+  // nearest-neighbour turns the whole remote desktop blocky — so keep the
+  // browser's own interpolation. Stream sharpness is the RFB encoding's job
+  // (kbd/quality.js), not the compositor's.
+  function restoreCanvasInterpolation() {
     const screen = getScreenElement();
     const canvas = screen && screen.querySelector && screen.querySelector('canvas');
     if (!canvas) return;
-    const want = sharp ? 'pixelated' : '';
-    if (canvas.style.imageRendering !== want) canvas.style.imageRendering = want;
-  }
-  function applyCanvasFilter(screen, animate) {
-    if (FORCE_SMOOTH) return;
-    const moving = !!pinch || !!panning || !!animate;
-    writeCanvasFilter(!moving && zoomScale > 1.05);
-    // Re-evaluate after the burst: the last compose of a gesture is the one that
-    // never gets a follow-up, so without this the view would stay smooth until the
-    // next unrelated transform. The settle callback writes DIRECTLY rather than
-    // recursing — a re-entrant call would re-arm itself for as long as any burst
-    // state stayed set, which is an endless timer chain.
-    if (filterTimer) { clearTimeout(filterTimer); filterTimer = null; }
-    if (moving) {
-      filterTimer = setTimeout(() => {
-        filterTimer = null;
-        writeCanvasFilter(zoomScale > 1.05);
-      }, FILTER_SETTLE_MS);
-    }
+    if (canvas.style.imageRendering !== 'auto') canvas.style.imageRendering = 'auto';
   }
 
   // Promote #screen to a compositor layer for the duration of a transform burst
@@ -418,17 +372,33 @@ export function createViewportTransform({
   // needs no special handling (translate is already inside rect.left) and noVNC's own
   // display.scale never has to be read. Shadowing an own property beats
   // re-dispatching a synthetic event: no recursion guard, no lost event properties.
-  const ZOOM_FIX_TYPES = ['mousedown', 'mouseup', 'mousemove', 'wheel'];
+  // noVNC has used both MouseEvent and PointerEvent input paths across releases
+  // and browsers. Correct both before its listeners run; leaving pointer events
+  // out makes clicks miss entirely whenever fit/fill applies a CSS scale.
+  const ZOOM_FIX_TYPES = [
+    'mousedown', 'mouseup', 'mousemove', 'wheel',
+    'pointerdown', 'pointerup', 'pointermove',
+  ];
   function unzoomEvent(e) {
-    if (zoomScale === 1) return;                 // untransformed: noVNC is already right
     const screen = getScreenElement();
     const canvas = screen && screen.querySelector && screen.querySelector('canvas');
     if (!canvas || !canvas.getBoundingClientRect) return;
     const r = canvas.getBoundingClientRect();
     if (!r.width || !r.height) return;
+    // Do not rely on zoomScale here. Moving the viewer between displays can
+    // change the compositor's rendered canvas size before the fit state has
+    // recalculated, leaving zoomScale at 1 while the canvas is still enlarged.
+    // The layout-to-rendered ratio is the authoritative transform correction.
+    const sx = canvas.clientWidth > 0 ? canvas.clientWidth / r.width : 1;
+    const sy = canvas.clientHeight > 0 ? canvas.clientHeight / r.height : 1;
     try {
-      Object.defineProperty(e, 'clientX', { value: r.left + (e.clientX - r.left) / zoomScale, configurable: true });
-      Object.defineProperty(e, 'clientY', { value: r.top + (e.clientY - r.top) / zoomScale, configurable: true });
+      // tap.js sends its own RFB click for physical pointers in magnify mode.
+      // It must receive the physical coordinate, not this noVNC-only corrected
+      // value, or its transform-aware mapping would undo the scale twice.
+      Object.defineProperty(e, '__pcnRawClientX', { value: e.clientX, configurable: true });
+      Object.defineProperty(e, '__pcnRawClientY', { value: e.clientY, configurable: true });
+      Object.defineProperty(e, 'clientX', { value: r.left + (e.clientX - r.left) * sx, configurable: true });
+      Object.defineProperty(e, 'clientY', { value: r.top + (e.clientY - r.top) * sy, configurable: true });
     } catch (_) {} // a non-configurable clientX would mean no fix, not a broken click
   }
   // Deliberately NOT applied to touch events: our own handlers read clientX from

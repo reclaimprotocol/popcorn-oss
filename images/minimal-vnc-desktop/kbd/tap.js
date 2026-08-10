@@ -464,6 +464,12 @@ export function createTap({
       tapStart = null;
     }, { capture: true, passive: true });
 
+    // Physical mouse input in magnify is owned by noVNC's wrapped pointer entry
+    // points (viewer.js installPointerTransformFix + viewport-transform's
+    // unzoomEvent), NOT by a capture listener here: desktop browsers differ on
+    // whether the event still reaches document, so intercepting by propagation
+    // was unreliable. Correcting the coordinates at noVNC's own boundary is.
+
     // A tap emits BOTH our CDP touch AND the browser's compatibility mouse events
     // (mousedown/mouseup/click), which noVNC would forward as a SECOND VNC click
     // — the "tap registered twice" bug. Swallow the SYNTHETIC (touch-derived)

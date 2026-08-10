@@ -23,7 +23,7 @@ export function createMockRfb() {
   const pointer = []; // RFB pointer events (x, y, buttonMask)
   const rfb = {
     _sock: sock,
-    qualityLevel: 6,
+    qualityLevel: 9,
     resizeSession: false,
     scaleViewport: false,
     clipViewport: false,

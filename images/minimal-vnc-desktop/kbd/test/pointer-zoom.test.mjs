@@ -24,17 +24,17 @@ const { createViewportTransform } = await import('../viewport-transform.js');
 
 const FB_W = 390, FB_H = 844;   // framebuffer / display size at zoom 1
 
-let zoom = 1, pan = { x: 0, y: 0 }, degenerate = false;
+let zoom = 1, renderedScale = 1, pan = { x: 0, y: 0 }, degenerate = false;
 // #screen's canvas, whose getBoundingClientRect reflects the CSS transform exactly
 // as the browser's would: scaled about the top-left origin, then panned.
 const canvas = {
-  width: FB_W, height: FB_H, style: {},
+  width: FB_W, height: FB_H, clientWidth: FB_W, clientHeight: FB_H, style: {},
   getBoundingClientRect: () => (degenerate
     ? { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 }
     : {
       left: pan.x, top: pan.y,
-      width: FB_W * zoom, height: FB_H * zoom,
-      right: pan.x + FB_W * zoom, bottom: pan.y + FB_H * zoom,
+      width: FB_W * renderedScale, height: FB_H * renderedScale,
+      right: pan.x + FB_W * renderedScale, bottom: pan.y + FB_H * renderedScale,
     }),
 };
 const screen = { style: {}, offsetWidth: FB_W, offsetHeight: FB_H, querySelector: () => canvas };
@@ -53,7 +53,7 @@ vt.installPointerZoomFix();
 
 function setView(z, px, py) {
   degenerate = false;
-  zoom = z; pan = { x: px || 0, y: py || 0 };
+  zoom = z; renderedScale = z; pan = { x: px || 0, y: py || 0 };
   vt.applyZoomSnap(z);
   assert.equal(vt.zoomScale(), z, 'precondition: the module took the zoom');
 }
@@ -77,6 +77,17 @@ test('at zoom 1 the coordinates are untouched', () => {
   assert.equal(e.clientX, 100);
   assert.equal(e.clientY, 200);
   assert.deepEqual(novncRemotePoint(e), { x: 100, y: 200 });
+});
+
+test('uses live canvas geometry when a display change leaves fit state stale', () => {
+  setView(1, 0, 0);
+  renderedScale = 1.5; // external display/fill compositor scale; state has not caught up
+  const e = click(150, 300);
+  const p = novncRemotePoint(e);
+  assert.ok(Math.abs(p.x - 100) < 0.01, `remote x ${p.x} == 100`);
+  assert.ok(Math.abs(p.y - 200) < 0.01, `remote y ${p.y} == 200`);
+  assert.equal(e.__pcnRawClientX, 150, 'the direct RFB path can use the physical pointer x');
+  assert.equal(e.__pcnRawClientY, 300, 'the direct RFB path can use the physical pointer y');
 });
 
 test('zoomed in, the click maps to the remote pixel actually under the cursor', () => {

@@ -2,35 +2,23 @@ package main
 
 // Keep every Chromium toplevel sized to the X screen ("window-follows-screen").
 //
-// The X screen is CLIENT-driven: a magnify/fit viewer grows it (RFB
-// SetDesktopSize) to lay the page out taller than the boot geometry, and
-// screen.go restores it when viewers change over. The --kiosk Chromium window,
-// however, is sized once at launch (start-chromium --window-size) and nothing
-// else re-fits it when the screen changes: openbox is running but does not
-// re-fit fullscreen windows on a RandR change, and the CDP path
-// (Browser.setWindowBounds) can only resize a window in state "normal", which
-// draws the tab strip into the stream (entrypoint.sh: 796px of chrome). Any
-// screen rows/cols the window does not cover are painted as the bare X root —
-// the black band under every tall fit.
+// The X screen is client-driven — a magnify/fit viewer grows it past the boot
+// geometry — but a --kiosk window is sized once at launch and nothing re-fits
+// it afterwards: openbox ignores the RandR change, and CDP setWindowBounds can
+// only resize a window in state "normal", which draws the tab strip into the
+// stream. Screen area the window does not cover renders as the bare X root, so
+// every tall fit showed a black band. A raw X-level resize (xdotool windowsize)
+// is the one path that resizes in place and stays chromeless: measured on a
+// live container, Chromium re-lays the page out and neither openbox nor the CDP
+// fullscreen watchdog fights it.
 //
-// MEASURED (2026-08-09, live container): a raw X-level resize does what the CDP
-// path cannot. `xdotool windowsize` grew the kiosk window 1919x1079 -> 1072x2052
-// in place; Chromium re-laid the page out to fill it, no tab strip or omnibox
-// appeared, openbox did not fight it, and emulate.go's 2s CDP fullscreen
-// watchdog left the size alone.
-//
-// The design is EVENT-DRIVEN, not a fast poll, and each check is ONE chained
-// xdotool invocation. Both choices are load-bearing: on a Rosetta-translated
-// dev container (Docker Desktop on Apple silicon) every process spawned
-// anywhere in the container leaks one /proc/<pid>/auxv fd into every
-// translated process's fd table — measured ~6 fds/s in Xvnc under a 400ms
-// three-exec poll, which walked Xvnc into FD_SETSIZE (1024) and a fortify
-// abort (__fdelt_chk) in under five minutes. Real Linux hosts do not leak, but
-// every developer here is on Apple silicon. So: requestWindowFit() runs after
-// the known screen-change events (viewer /emulate pushes, first-connect reset,
-// idle restore, popup fullscreening), and a slow backstop poll catches what
-// events cannot (a raw RFB client resizing the screen directly) — 10s on real
-// Linux, 120s under Rosetta where each spawn spends fd budget.
+// EVENT-DRIVEN, deliberately, with one chained xdotool invocation per check:
+// under Rosetta (Docker Desktop on Apple silicon) every process spawned in the
+// container leaks an fd into Xvnc's table, and a 400ms three-exec poll killed
+// Xvnc on FD_SETSIZE in under five minutes. Real Linux does not leak, but the
+// dev boxes here all do. So requestWindowFit runs after the known screen-change
+// events and the backstop poll only catches what no event announces (a raw RFB
+// client resizing the screen itself).
 
 import (
 	"fmt"
@@ -121,13 +109,11 @@ func parseChainedGeometry(s string) (sw, sh int, wins []windowGeom, ok bool) {
 }
 
 // checkAndFitWindows compares every visible Chromium toplevel against the X
-// screen in ONE xdotool invocation and resizes the ones that disagree (each
-// resize is its own invocation, but a mismatch is a rare event, not a steady
-// state). Idempotent and safe to call from anywhere; returns how many windows
-// it saw so the watcher's boot phase knows when the browser is up. alreadyFit
-// dedupes log lines per window+size across repeated calls (a window that
-// refuses a size must not spam the log); one-shot callers pass nil and always
-// log.
+// screen in one xdotool invocation and resizes the ones that disagree.
+// Idempotent; returns how many windows it saw, which is how the watcher's boot
+// phase knows the browser is up. alreadyFit dedupes the log line per
+// window+size so a window that refuses a size cannot spam it; one-shot callers
+// pass nil and always log.
 func checkAndFitWindows(logf func(string, ...any), alreadyFit map[string]string) (int, error) {
 	out, err := xdo("getdisplaygeometry", "search", "--onlyvisible", "--class", "chromium", "getwindowgeometry", "--shell", "%@")
 	// When search matches nothing (browser still starting) the chain exits
@@ -165,15 +151,12 @@ func checkAndFitWindows(logf func(string, ...any), alreadyFit map[string]string)
 }
 
 // requestWindowFit schedules fit checks shortly after a screen-change event.
-// Two delays because the caller's event races the actual X resize: a viewer's
-// /emulate POST arrives around the same instant as its RFB SetDesktopSize (on
-// separate connections — a lossy uplink can deliver the resize a second late),
-// and a popup's fullscreen transition takes Chromium a beat to act on. The
-// timers RESET on every request, so both delays are measured from the LATEST
-// event: a coalescing design that kept the FIRST event's deadlines was found to
-// fire both checks before a slow client's resize landed, leaving the band up
-// until the backstop poll. A resize slower than the long delay still falls to
-// the backstop — that is the trade against polling fast (see the header).
+// Two delays because the event races the X resize it predicts: an /emulate POST
+// and its RFB SetDesktopSize travel on separate connections, so a lossy uplink
+// can deliver the resize a second late. The timers RESET on each request, so
+// both delays measure from the LATEST event — coalescing onto the FIRST event's
+// deadlines fired both checks before a slow client's resize landed. A resize
+// slower than the long delay falls to the backstop poll.
 var (
 	windowFitMu     sync.Mutex
 	windowFitTimers [2]*time.Timer
@@ -199,11 +182,10 @@ func requestWindowFit(logf func(string, ...any)) {
 }
 
 // windowWatcher fixes the boot geometry once (openbox places the kiosk window
-// at 1919x1079 on a 1920x1080 screen) and then runs the slow backstop poll for
-// screen changes no event announces. Fails open when xdotool is absent (a dev
-// host or an image predating the lock entry): one log line, then the goroutine
-// exits and geometry behaves as before. Transient errors (X still booting) are
-// logged only when they change, not every tick.
+// at 1919x1079 on a 1920x1080 screen) and then runs the backstop poll. Fails
+// open when xdotool is absent: one log line and the goroutine exits, leaving
+// geometry as it was before this file existed. Transient errors (X still
+// booting) are logged only when they change.
 func windowWatcher(logf func(string, ...any)) {
 	if _, err := exec.LookPath("xdotool"); err != nil {
 		logf("window watcher disabled: xdotool not found (window-follows-screen unavailable)")
@@ -211,21 +193,18 @@ func windowWatcher(logf func(string, ...any)) {
 	}
 	backstop := 10 * time.Second
 	// /run/rosetta/rosetta is not stat-able from the container's mount namespace,
-	// but every translated process's exe link points at it — pid 1 has been
-	// translated since boot, so its link is the reliable Rosetta detector.
+	// but a translated process's exe link points at it and pid 1 is always one.
+	// Back right off there: each spawn costs an Xvnc fd (see the header).
 	if exe, err := os.Readlink("/proc/1/exe"); err == nil && strings.Contains(exe, "rosetta") {
-		// Rosetta leaks one Xvnc fd per process spawned in the container (see the
-		// header comment); at 120s the backstop spends ~30 fds/hour of the ~1000
-		// budget instead of crashing Xvnc mid-workday.
 		backstop = 120 * time.Second
 	}
 	logf("window watcher: event-driven window-follows-screen, backstop poll every %v", backstop)
 	fit := map[string]string{}
 	lastErr := ""
 	// Boot phase: tick fast until the browser window exists and has been checked
-	// once — the kiosk window is BORN 1919x1079 on a 1920x1080 screen (openbox
-	// placement) and no /emulate event is guaranteed before a plain viewer
-	// connects. Bounded, so a container without a browser stops spending spawns.
+	// once. The kiosk window is born 1919x1079 on a 1920x1080 screen and no event
+	// is guaranteed before the first plain viewer connects. Bounded, so a
+	// container without a browser stops spending spawns.
 	booted := false
 	bootTicks := 60
 	for {

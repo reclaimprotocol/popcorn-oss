@@ -5,42 +5,12 @@ DISPLAY_NUM="${DISPLAY_NUM:-1}"
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1080}"
 DEPTH="${DEPTH:-24}"
-# Xvnc's boot geometry sets the BROWSER WINDOW's starting size; the proxy's
-# window-follows-screen watcher (proxy/window.go) re-fits the window at the X
-# level whenever the screen changes, so boot height is a default, not a ceiling.
-#
-# Chromium runs --kiosk, so its window is sized to the X screen at startup and
-# NOTHING IN CHROMIUM OR OPENBOX resizes it afterwards: measured live at
-# 1919x1079 while the screen had long since been resized to 360x688 by the
-# viewer. Kiosk CLAMPS --window-size to the screen (a lab instance asking for
-# 1920x2400 on a 1920x1080 screen came up 1920x1080). Any screen rows the window
-# does not cover show the X root as BLACK — keeping window == screen is exactly
-# the watcher's job.
-#
-# That is exactly what fit-to-width does. A no-viewport-meta page (hanyang) is
-# fitted at 980 CSS px wide, and the framebuffer has to be as tall as the phone's
-# aspect implies: 980 * 689/360 = 1873 rows. The top 1079 painted the login page;
-# the remaining 794 were black. Verified by geometry, not by eye — 1079/1873 is
-# the 57.7% white/43.3% black split in the report.
-#
-# Booting the screen tall (FB_HEIGHT=2400) used to be the only defence, because
-# nothing could regrow a too-short window: the only CDP call that resizes one
-# needs windowState "normal", and --kiosk suppresses the tab strip and omnibox
-# ONLY while fullscreen (measured: 796px of real browser chrome inside a session
-# meant to be a locked-down viewer). But the tall boot made every NON-fitting
-# session wrong instead — a plain viewer showed its 1920x1080 page in the top
-# rows of a 1920x2400 framebuffer with ~1300 rows of blank beneath, in a
-# 0.80-aspect portrait box.
-#
-# Neither trade is needed since the proxy grew window-follows-screen
-# (proxy/window.go): a raw X-level resize (xdotool windowsize) DOES regrow the
-# kiosk window — measured live, Chromium re-lays the page out, no chrome
-# appears, openbox and the CDP fullscreen watchdog leave it alone — so the
-# proxy now keeps window == screen whatever size a viewer asks for. The default
-# is therefore HEIGHT: screen, kiosk window and page all boot 1920x1080 (the
-# plain-viewer contract), and a tall fit grows screen AND window together
-# instead of exposing the X root. FB_HEIGHT remains as an override for a
-# deliberately tall boot.
+# Boot geometry for the X screen; start-chromium sizes the kiosk window to match.
+# Screen rows the window does not cover render as the bare X root (black), and
+# neither Chromium nor openbox resizes a --kiosk window after startup — so the
+# proxy keeps window == screen at the X level as viewers resize it
+# (proxy/window.go). Boot height is therefore a starting size, not a ceiling;
+# set FB_HEIGHT only to boot deliberately taller than the advertised desktop.
 FB_HEIGHT="${FB_HEIGHT:-$HEIGHT}"
 if (( FB_HEIGHT < HEIGHT )); then FB_HEIGHT="$HEIGHT"; fi
 export FB_HEIGHT   # start-chromium sizes the kiosk window from it
@@ -300,6 +270,9 @@ pids+=("$!")
 
 wait_for_tcp 127.0.0.1 "$VNC_PORT" Xvnc
 
+vncconfig -nowin > "$(log_file vncconfig)" 2>&1 &
+pids+=("$!")
+
 echo "[entrypoint] Starting noVNC/CDP proxy on :${NOVNC_PORT}, ${CDP_RESTRICTED_LISTEN}, ${CDP_FULL_LISTEN}"
 novnc-proxy \
   --listen "0.0.0.0:${NOVNC_PORT}" \
@@ -341,13 +314,8 @@ pids+=("$app_pid")
 echo "[entrypoint] Waiting for app readiness pattern: ${READY_WINDOW_PATTERN}"
 wait_for_window "$READY_WINDOW_PATTERN" "$READY_TIMEOUT" "$app_pid"
 
-# The screen STAYS at the boot geometry (WIDTH x FB_HEIGHT); no post-boot resize
-# here. Historically that was load-bearing (a shrink dragged the kiosk window
-# down and the CDP path could not regrow it without un-fullscreening the kiosk —
-# 796px of tab strip in the stream). The proxy's window-follows-screen watcher
-# (proxy/window.go) has since made window size a non-issue: it regrows the
-# window at the X level, chromeless. Boot at the advertised geometry and let
-# viewers drive it from there.
+# No post-boot resize here: the screen stays at WIDTH x FB_HEIGHT and viewers
+# drive it from there, with the window following (proxy/window.go).
 touch "$READY_FILE"
 echo "[entrypoint] noVNC is ready"
 agones_ready

@@ -37,6 +37,8 @@ function makeFit() {
     minZoom: () => minZoom,
     zoomScale: () => zoom,
     composeScreenTransform() {},
+    // scale-to-fill raises the zoom floor; the real one clamps zoom up to it.
+    setFillFloor(z) { minZoom = Math.max(1, z || 1); zoom = Math.max(zoom, minZoom); },
   };
   const fit = createFit({
     getRfb: () => rfb,

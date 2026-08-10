@@ -163,12 +163,14 @@ Beyond the usual viewer parameters (`magnify`, `quality`, `compression`, `resize
 | `parentOrigin` | Host origin. **Required** for any host→viewer message to be accepted. |
 | `iosbridge=1` | Use the iOS temp-readonly raise bridge even when embedded. Off by default: the direct-focus branch is what has shipped embedded, and only device evidence should change that. |
 | `stateless=1` | `/kbd` becomes advisory: raise is optimistic and local, dismiss only from real local events. Note it also disables the recovery **re-raise**, so a local dismiss then needs a fresh tap. |
-| `kbddebug=1` | On-screen trace (also mirrored to `/klog`). |
+| `kbdlog=1` | Ship the structural trace to `/klog` (the pod log). Off by default. |
+| `kbddebug=1` | On-screen trace + console, and implies `kbdlog=1`. Off by default. |
 
 ## Diagnosing on a device
 
-The layer ships its structural trace to `/klog`, so it lands in the pod's log —
-no on-device capture:
+Diagnostics are **off unless you ask for them** — a normal session logs nothing.
+Add `kbdlog=1` (or `kbddebug=1` for the on-screen overlay too) to the viewer URL
+and the structural trace lands in the pod's log, with no on-device capture:
 
 ```bash
 docker logs <container> 2>&1 | grep kbd-client

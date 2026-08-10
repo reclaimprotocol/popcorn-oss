@@ -158,11 +158,26 @@
         if (url) { try { location.assign(url); } catch (_) { location.href = url; } }
         return window;
       };
-      // <a target="_blank"> content links → same tab.
-      document.addEventListener('click', function (e) {
-        const a = e.target && e.target.closest && e.target.closest('a[target="_blank"]');
-        if (a) a.target = '_self';
-      }, true);
+      // <a target="_blank"> content links → same tab. Setting target=_self is
+      // enough for an ordinary primary click, but browsers deliberately ignore
+      // it for Ctrl/Cmd-click and the middle button: those create a new target.
+      // That target paints at the narrow bootstrap viewport before CDP can apply
+      // the current fit layout, producing a cropped-frame flash. Treat every
+      // content-link activation the same way and navigate this target directly.
+      function contentLink(event) {
+        const target = event.target;
+        const a = target && target.closest && target.closest('a[target="_blank"]');
+        if (!a) return;
+        a.target = '_self';
+        if (event.type === 'click' && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+          return;
+        }
+        event.preventDefault();
+        const href = a.href;
+        if (href) { try { location.assign(href); } catch (_) { location.href = href; } }
+      }
+      document.addEventListener('click', contentLink, true);
+      document.addEventListener('auxclick', contentLink, true);
     } catch (_) {}
   })();
 
