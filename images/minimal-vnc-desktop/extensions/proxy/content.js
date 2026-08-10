@@ -759,37 +759,4 @@
     window.addEventListener('load', reportInitialLayout, { once: true });
   }
 
-  // --- Popup close button ---------------------------------------------------
-  // window.open popups (OAuth "Continue with Google", payment windows) are
-  // fullscreened by the emulator to hide the location bar — but a chromeless
-  // fullscreen popup then has NO way to close. If this frame is the top document
-  // of a script-opened popup (window.opener set), overlay a floating ✕ that
-  // closes it. Only the popup gets it; the main tab has no opener.
-  try {
-    if (window.top === window && window.opener) {
-      const addClose = () => {
-        if (!document.body || document.getElementById('__pcn_close')) return;
-        const b = document.createElement('div');
-        b.id = '__pcn_close';
-        b.textContent = '✕';
-        b.setAttribute('role', 'button');
-        b.setAttribute('aria-label', 'Close');
-        b.style.cssText = 'position:fixed;top:10px;right:12px;z-index:2147483647;' +
-          'width:36px;height:36px;box-sizing:border-box;padding:0;margin:0;' +
-          'display:flex;align-items:center;justify-content:center;' +
-          'font:400 18px/1 system-ui,-apple-system,sans-serif;color:#fff;' +
-          'background:rgba(0,0,0,.55);border-radius:50%;cursor:pointer;' +
-          'box-shadow:0 1px 4px rgba(0,0,0,.4)';
-        b.addEventListener('click', () => { try { window.close(); } catch (_) {} });
-        document.body.appendChild(b);
-      };
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', addClose, { once: true });
-      } else {
-        addClose();
-      }
-      // SPA re-renders (Google's login is one) can wipe the overlay — re-add it.
-      setInterval(addClose, 1500);
-    }
-  } catch (_) {}
 })();
