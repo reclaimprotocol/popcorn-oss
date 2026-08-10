@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Live View</title>
+
   <style>
     html,
     body,
@@ -13,6 +14,23 @@
       margin: 0;
       overflow: hidden;
       background: #111;
+    }
+
+    /* Kill the browser's own touch gestures so they don't fight the stream:
+       overscroll-behavior stops pull-to-refresh and rubber-band scroll globally
+       (safe everywhere). In magnify mode we forward every touch to the remote
+       ourselves, so touch-action:none disables double-tap-zoom / pan / long-press
+       callout on the canvas declaratively — more reliable than preventDefault,
+       which can't cancel a passive or already-started gesture. Not applied in
+       scale mode, where noVNC drives its own pinch/pan and needs default gestures. */
+    html,
+    body {
+      overscroll-behavior: none;
+    }
+
+    #screen.magnify,
+    #screen.magnify canvas {
+      touch-action: none;
     }
 
     #screen > canvas {
@@ -27,62 +45,128 @@
     #screen canvas {
       cursor: default !important;
     }
+
+    /* Magnify (mobile) view: no pointer. Real touch devices have none, and a
+       stray desktop arrow over the magnified page looks wrong. More specific
+       than the rule above, so it wins. */
+    #screen.nocursor,
+    #screen.nocursor canvas {
+      cursor: none !important;
+    }
   </style>
 </head>
 <body>
+  <!-- STATIC boot/unsupported fallback: plain HTML + table-cell centering, so it
+       renders even in engines that don't run our JS (Opera Mini's server-side
+       render, time-boxed sandboxes). The module REMOVES it on a real RFB connect,
+       so a working browser shows it for a blink then reveals the stream; an engine
+       that never runs the JS just keeps showing this message — which is exactly
+       what those users need. Centering via display:table (not flex/inset). -->
+  <div id="boot-fallback" style="position:fixed;top:0;left:0;right:0;bottom:0;width:100%;height:100%;z-index:2147483640;display:table;background:#111;color:#eee;font:15px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif">
+    <div style="display:table-cell;vertical-align:middle;text-align:center;padding:24px">
+      <div style="font-size:17px;font-weight:600;margin:0 auto 12px;max-width:22em">Loading live view…</div>
+      <div style="margin:0 auto;max-width:26em;opacity:.8">If this message doesn’t disappear in a few seconds, your browser can’t run the live viewer. Please open the link in the latest Chrome or Safari.</div>
+    </div>
+  </div>
+
   <div id="screen"></div>
-  <script type="module">
-    import RFB from './core/rfb.js';
-
-    const params = new URLSearchParams(window.location.search);
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const resize = params.get('resize') || 'scale';
-    const password = params.get('password') || '';
-    const reconnect = params.get('reconnect') !== '0';
-    const reconnectDelay = Number(params.get('reconnect_delay') || 2000);
-    const screen = document.getElementById('screen');
-
-    let rfb;
-    let intentionalDisconnect = false;
-
-    function boolParam(name, fallback) {
-      const value = params.get(name);
-      if (value === null) return fallback;
-      return value === '1' || value === 'true';
-    }
-
-    function websocketPath() {
-      const configuredPath = params.get('path');
-      if (configuredPath) {
-        return configuredPath.startsWith('/') ? configuredPath : `/${configuredPath}`;
-      }
-      return window.location.pathname.replace(/\/[^/]*$/, '/websockify');
-    }
-
-    function connect() {
-      intentionalDisconnect = false;
-      rfb = new RFB(screen, `${protocol}//${window.location.host}${websocketPath()}`, {
-        credentials: { password },
-      });
-      rfb.viewOnly = boolParam('view_only', false);
-      rfb.shared = boolParam('shared', true);
-      rfb.scaleViewport = resize === 'scale';
-      rfb.resizeSession = resize === 'remote';
-      rfb.showDotCursor = boolParam('show_dot', false);
-      rfb.background = '#111';
-      rfb.addEventListener('disconnect', () => {
-        if (reconnect && !intentionalDisconnect) {
-          window.setTimeout(connect, reconnectDelay);
+  <script>
+    // Classic (ES5) pre-flight gate — runs on EVERY browser, including ones too
+    // old to even parse the ES-module viewer below. Two jobs: expose the shared
+    // "can't run here" overlay, and PROACTIVELY block environments where the
+    // WebSocket pixel stream fundamentally can't work, so the user sees WHY
+    // instead of a silent blank #111. Keep this ES5-only (no let/const/arrow/
+    // class) — that's the whole point of it being a separate classic script.
+    (function () {
+      var OVERLAY_ID = 'viewer-overlay';
+      // Shared overlay renderer, reused by the reactive connect-failure path in
+      // the module below. retry: optional fn -> renders a "Try again" button.
+      window.__viewerOverlay = function (title, detail, retry) {
+        var el = document.getElementById(OVERLAY_ID);
+        if (!el) {
+          el = document.createElement('div');
+          el.id = OVERLAY_ID;
+          // Centering with maximum engine compatibility: CSS TABLE, not flexbox.
+          // Opera Mini's server-side renderer (and old WebViews) don't reliably
+          // support flexbox / `inset` / `transform`, but display:table +
+          // table-cell + vertical-align has worked since the IE8 era. The outer
+          // div is the table (fills the viewport with explicit edges), the inner
+          // cell vertical-aligns middle and text-aligns center.
+          el.setAttribute('style', [
+            'position:fixed', 'top:0', 'left:0', 'right:0', 'bottom:0', 'width:100%', 'height:100%',
+            'z-index:2147483647', 'display:table', 'background:#111', 'color:#eee',
+            'font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif'
+          ].join(';'));
+          document.body.appendChild(el);
         }
-      });
-    }
+        el.innerHTML = '';
+        var cell = document.createElement('div');
+        cell.setAttribute('style', 'display:table-cell;vertical-align:middle;text-align:center;padding:24px');
+        el.appendChild(cell);
 
-    window.addEventListener('beforeunload', () => {
-      intentionalDisconnect = true;
-      if (rfb) rfb.disconnect();
-    });
+        var h = document.createElement('div');
+        h.setAttribute('style', 'font-size:17px;font-weight:600;margin:0 auto 12px;max-width:22em');
+        h.textContent = title;
+        cell.appendChild(h);
+        var p = document.createElement('div');
+        p.setAttribute('style', 'margin:0 auto;max-width:26em;opacity:.8');
+        p.textContent = detail;
+        cell.appendChild(p);
+        if (retry) {
+          var b = document.createElement('button');
+          b.textContent = 'Try again';
+          b.setAttribute('style', [
+            'display:inline-block', 'margin-top:16px', 'padding:10px 22px', 'font-size:15px', 'font-weight:600',
+            'border:0', 'border-radius:8px', 'background:#3a7afe', 'color:#fff', 'cursor:pointer'
+          ].join(';'));
+          b.onclick = function () {
+            if (el.parentNode) el.parentNode.removeChild(el);
+            retry();
+          };
+          cell.appendChild(b);
+        }
+        return el;
+      };
+      window.__viewerHideOverlay = function () {
+        var el = document.getElementById(OVERLAY_ID);
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      };
 
-    connect();
+      // Opera Mini (incl. "extreme"/ultra data-saving): pages are rendered on
+      // Opera's servers and shipped as a static snapshot — JS is time-boxed and
+      // WebSockets don't work at all, so the live pixel stream can NEVER connect.
+      var ua = navigator.userAgent || '';
+      var isOperaMini =
+        Object.prototype.toString.call(window.operamini) === '[object OperaMini]' ||
+        / Opera Mini\//.test(ua);
+      // noVNC 1.6 uses modern class syntax (private fields). Old iPadOS/Safari
+      // can't PARSE it, so the module viewer dies with a SyntaxError before
+      // anything renders. Probe parseability WITHOUT executing noVNC.
+      var canParseModern = true;
+      try { new Function('class __C { #x = 1; g(){ return this.#x; } }'); }
+      catch (e) { canParseModern = false; }
+
+      if (isOperaMini) {
+        window.__viewerUnsupported = 'operamini';
+        window.__viewerOverlay(
+          'Live view can’t run in this mode',
+          'Opera’s extreme data-saving (Opera Mini) mode blocks the live connection. Turn off data savings, or open this link in Safari or Chrome.'
+        );
+      } else if (!canParseModern) {
+        window.__viewerUnsupported = 'oldbrowser';
+        window.__viewerOverlay(
+          'Please update your browser',
+          'This browser is too old to run the live viewer. Update your OS/browser, or open this link in the latest Safari or Chrome.'
+        );
+      }
+    })();
   </script>
+
+  <!-- The entire viewer — noVNC core + the kbd/IME layer + this page's
+       controller — is bundled by esbuild at build time into one file (see
+       viewer.js + the Dockerfile bundler step), so it loads in a single request
+       instead of a ~70-module ES-graph waterfall. Served no-store; a module
+       script is deferred, so the classic preflight above runs first. -->
+  <script type="module" src="viewer.bundle.js"></script>
 </body>
 </html>
