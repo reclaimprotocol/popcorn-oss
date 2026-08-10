@@ -3,6 +3,13 @@ set -euo pipefail
 
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1080}"
+# The window must be as tall as the X screen's BOOT height, not the nominal desktop
+# height: under --kiosk the window is never resized again for the life of the session,
+# and any framebuffer taller than it (fit-to-width asks for ~1873 rows) renders the
+# uncovered rows as the black X root. Kept in sync with entrypoint.sh's FB_HEIGHT,
+# which explains the arithmetic.
+WINDOW_HEIGHT="${FB_HEIGHT:-$HEIGHT}"
+if (( WINDOW_HEIGHT < HEIGHT )); then WINDOW_HEIGHT="$HEIGHT"; fi
 RECLAIM_LOADING_PAGE="https://reclaim-portal-loading-page.s3.ap-south-1.amazonaws.com/index.html"
 FALLBACK_PAGE="https://start.duckduckgo.com/"
 REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-false}"
@@ -91,8 +98,11 @@ fi
 # assigned at runtime, the control plane re-aligns tz to the proxy exit via CDP
 # Emulation.setTimezoneOverride (before the session touches a target). Default
 # on; needs curl; fail open. NOTE: reCAPTCHA scoring is IP-driven — this is
-# coherence hygiene, not a reCAPTCHA fix.
+# coherence hygiene, not a reCAPTCHA fix. Leave CLOAK_TIMEZONE/CLOAK_LOCALE empty
+# so geoip can fill them; an explicit -e value still wins (it's non-empty).
 CLOAK_GEOIP="${CLOAK_GEOIP:-true}"
+CLOAK_TIMEZONE="${CLOAK_TIMEZONE:-}"
+CLOAK_LOCALE="${CLOAK_LOCALE:-}"
 CLOAK_TZ_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-timezone"
 CLOAK_LOCALE_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-locale"
 
@@ -100,16 +110,40 @@ if [[ ! -s "$CLOAK_TZ_FILE" || ! -s "$CLOAK_LOCALE_FILE" ]] \
    && [[ "$CLOAK_GEOIP" == "true" ]] \
    && command -v curl >/dev/null 2>&1; then
   echo "[start-chromium] geoip: resolving timezone/locale from exit IP…"
+
+  # Provider 1: ipapi.co (HTTPS; gives timezone AND languages). Its free tier
+  # rate-limits hard (HTTP 429 with an {"error":true} body), and when it does the
+  # timezone silently fell back to America/Los_Angeles below — a US clock on a
+  # non-US exit IP is the textbook timezone<->IP mismatch that trips "VPN
+  # detected". Treat an error body as no answer and fall through.
+  # JSON string extractor that works for BOTH pretty (ipapi.co) and compact
+  # single-line (ip-api.com) bodies — the old awk-by-quote-field logic silently
+  # returned the wrong value on compact JSON.
+  json_str() { sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" | head -n1; }
+
   GEOIP_JSON="$(curl -s --max-time 8 https://ipapi.co/json/ 2>/dev/null || true)"
+  case "$GEOIP_JSON" in *'"error"'*|'') GEOIP_JSON='' ;; esac
   if [[ -n "$GEOIP_JSON" ]]; then
-    GEOIP_TZ="$(printf '%s' "$GEOIP_JSON" | awk -F'"' '/"timezone"[[:space:]]*:/ {print $4; exit}')"
-    GEOIP_LANGS="$(printf '%s' "$GEOIP_JSON" | awk -F'"' '/"languages"[[:space:]]*:/ {print $4; exit}')"
+    GEOIP_TZ="$(printf '%s' "$GEOIP_JSON" | json_str timezone)"
+    GEOIP_LANGS="$(printf '%s' "$GEOIP_JSON" | json_str languages)"
     GEOIP_LOCALE="$(printf '%s' "$GEOIP_LANGS" | awk -F',' '{print $1}')"
-    [[ -n "$GEOIP_TZ" ]]     && CLOAK_TIMEZONE="${CLOAK_TIMEZONE:-$GEOIP_TZ}"
-    [[ -n "$GEOIP_LOCALE" ]] && CLOAK_LOCALE="${CLOAK_LOCALE:-$GEOIP_LOCALE}"
+  fi
+
+  # Provider 2: ip-api.com (no key, reliable) when ipapi.co is rate-limited. It
+  # returns timezone directly; locale falls back to its own default below.
+  if [[ -z "${GEOIP_TZ:-}" ]]; then
+    GEOIP_JSON2="$(curl -s --max-time 8 'http://ip-api.com/json/?fields=status,timezone' 2>/dev/null || true)"
+    case "$GEOIP_JSON2" in *'"success"'*)
+      GEOIP_TZ="$(printf '%s' "$GEOIP_JSON2" | json_str timezone)" ;;
+    esac
+  fi
+
+  [[ -n "${GEOIP_TZ:-}" ]]     && CLOAK_TIMEZONE="${CLOAK_TIMEZONE:-$GEOIP_TZ}"
+  [[ -n "${GEOIP_LOCALE:-}" ]] && CLOAK_LOCALE="${CLOAK_LOCALE:-$GEOIP_LOCALE}"
+  if [[ -n "${GEOIP_TZ:-}" ]]; then
     echo "[start-chromium] geoip: timezone=${CLOAK_TIMEZONE:-?} locale=${CLOAK_LOCALE:-?}"
   else
-    echo "[start-chromium] geoip: lookup failed (offline/rate-limited/no curl); using env/defaults"
+    echo "[start-chromium] geoip: all providers failed (offline/rate-limited); using env/defaults"
   fi
 fi
 
@@ -206,8 +240,118 @@ elif [[ "$BROWSER" == "fortress" ]]; then
   # unchanged from the CloakBrowser path, and not the lever for Netflix/Taj (IP
   # reputation is). Override persona with CHROMIUM_FLAGS='--uxr-... ' if needed,
   # or TILION_NO_DEFAULTS=1 for a bare launch.
+  # Persona platform. PERSONA=windows restores the wrapper's own Windows default.
+  #
+  # Linux is expressible only since the 150 image: before it, explicit --uxr-ua-os /
+  # --uxr-ua-platform were OVERWRITTEN by the generated persona, so the UA stayed
+  # Windows while navigator.platform followed the flag — and that UA-vs-platform
+  # mismatch is itself what read as tampering (tiliondev/fortress#25).
+  #
+  # Passed as ARRAY elements, not through CHROMIUM_FLAGS: two of these values contain
+  # spaces, and the env path is word-split, which turns them into invalid args and
+  # Chromium then fails to start at all.
+  #
+  # ⚠️ COHERENCE DEBT: the Dockerfile bundles Fortress's Windows fonts and rewrites every
+  # Noto face to the Windows family a real Windows box uses (Nirmala UI, Segoe UI,
+  # Microsoft YaHei …). That was built to match the WINDOWS persona; under a Linux one a
+  # font probe sees a "Linux" box enumerating Segoe UI, which is the same class of
+  # cross-property contradiction this change is meant to remove. Switching the font set
+  # to a Linux-plausible one (DejaVu/Liberation/Noto) is the follow-up.
+  #
+  # Upstream also notes a Linux desktop persona is RARER than Windows, and rarity is
+  # itself a signal — so this is a deliberate trade, not a strict improvement.
   cloak_flags=()
-  echo "[stealth] browser: Tilion Fortress (stable stealth Chromium 149) — Windows persona via --uxr defaults; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$TILION_LANG"
+  # Per-profile canvas/audio noise seeds.
+  #
+  # Fortress's defaults are CONSTANTS — verified from /proc/<pid>/cmdline on a running
+  # container: --uxr-canvas-seed=778899 --uxr-audio-seed=445566. So every container
+  # launched with defaults, ours and everyone else's, renders the SAME noised canvas and
+  # audio fingerprint. That is a cross-instance correlation handle: a site that sees two
+  # of our sessions can tell they are the same box, and the value is shared with every
+  # other Fortress user on defaults. (The 150 notes' "per-clone divergence" means the
+  # seed is now applied rather than ignored — the default value is still fixed.)
+  #
+  # CLOAK_SEED is already random on first boot and persisted in the profile
+  # (.cloak-fingerprint-seed), so deriving from it gives what a real device has: a
+  # fingerprint that is STABLE across restarts but UNIQUE per user. Two derivations so
+  # canvas and audio do not move together.
+  cloak_flags+=(
+    "--uxr-canvas-seed=$(( (CLOAK_SEED * 7919) % 8999999 + 1000000 ))"
+    "--uxr-audio-seed=$(( (CLOAK_SEED * 6271) % 8999999 + 1000000 ))"
+  )
+
+  # Default WINDOWS: it is ~70% of desktop Chrome (rarity is a signal, and upstream
+  # says the same), and it is the persona this image is coherent with — the Dockerfile
+  # bundles Windows fonts and renames every Noto face to a Windows family. PERSONA=linux
+  # opts in to the flags below for experimentation, accepting the font mismatch.
+  persona="${PERSONA:-windows}"
+  if [[ "$persona" == "linux" ]]; then
+    cloak_flags+=(
+      "--uxr-platform=Linux x86_64"
+      "--uxr-ua-platform=Linux"
+      "--uxr-ua-os=X11; Linux x86_64"
+      "--uxr-ua-arch=x86"
+      "--uxr-ua-bitness=64"
+      "--uxr-ua-brand=Google Chrome"
+    )
+  fi
+  # GPU coherence (GPU_PERSONA=swiftshader). Fortress's default persona claims a
+  # discrete NVIDIA RTX 3060 via --uxr-webgl-vendor/-renderer/-webgpu-description while
+  # actually rendering through SwiftShader (--use-angle=swiftshader + its own Vulkan ICD).
+  # FORTRESS-INTEGRATION.md flags that hardware-GPU-on-software-renderer pair as exactly
+  # what strict detectors cross-check, and recommends overriding it to go coherent.
+  #
+  # MEASURED on Fortress 150, same image, only the GPU strings differing:
+  #   nvidia  (RTX 3060 claim, wrapper default) -> CreepJS trust 44%  (flagged)
+  #   intel   (UHD 630, the most common real GPU) -> 44%  (flagged)
+  #   swiftshader (honest, below)               -> 50%  (not flagged)
+  #
+  # The lesson is that the SPECIFIC card does not matter: any hardware claim over a
+  # software renderer costs the same 6 points, because what is detected is the
+  # contradiction with the real renderer, not whether the card is plausible. Making the
+  # capabilities believable (Intel integrated, whose limits sit close to SwiftShader's)
+  # changed nothing. So report the truth: ON by default, GPU_PERSONA=nvidia|intel for
+  # comparison.
+  #
+  # The cost is real and unavoidable here: admitting SwiftShader admits software
+  # rendering, which reads as a VM/datacenter box, and FORTRESS-INTEGRATION.md notes
+  # datacenter GL stays detectable by DataDome either way. This container is already
+  # VM-detectable on environmental grounds, so paying that to remove a detectable lie is
+  # the better half of the trade.
+  #
+  # The trade is real in both directions: claiming the RTX is a LIE that cross-checks
+  # expose (it reads as tampering), while reporting SwiftShader honestly admits a
+  # software renderer (it reads as a VM). This container is already flagged as a VM on
+  # environmental grounds — upstream says VM/VPN detection is not something the browser
+  # can spoof away — so removing the contradiction is the cheaper half. Opt-in until the
+  # probe numbers justify making it the default.
+  case "${GPU_PERSONA:-swiftshader}" in
+    swiftshader)
+      cloak_flags+=(
+        "--uxr-webgl-vendor=Google Inc. (Google)"
+        "--uxr-webgl-renderer=ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+        "--uxr-webgpu-vendor=google"
+        "--uxr-webgpu-architecture=swiftshader"
+        "--uxr-webgpu-description=SwiftShader Device (Subzero)"
+      )
+      ;;
+    intel)
+      # Hypothesis: a claim is judged partly on whether the CAPABILITIES match. An RTX
+      # 3060 over a software renderer is a big lie; Intel integrated is the single most
+      # common GPU on real Windows laptops and its limits sit far closer to
+      # SwiftShader's, so the same spoof has less to contradict. D3D11 also matches the
+      # Windows persona.
+      cloak_flags+=(
+        "--uxr-webgl-vendor=Google Inc. (Intel)"
+        "--uxr-webgl-renderer=ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+        "--uxr-webgpu-vendor=intel"
+        "--uxr-webgpu-architecture=gen-9"
+        "--uxr-webgpu-description=Intel(R) UHD Graphics 630"
+      )
+      ;;
+    nvidia) ;; # the wrapper's own default persona (RTX 3060 claim), for comparison
+  esac
+  echo "[stealth] browser: Tillion Fortress (stable stealth Chromium 150) — persona=$persona gpu=${GPU_PERSONA:-swiftshader}; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$TILION_LANG"
 else
   # CloakBrowser was removed; only 'fortress' (default) and 'fingerprint' remain.
   echo "[start-chromium] unknown BROWSER='$BROWSER' (valid: fortress [default], fingerprint). CloakBrowser was removed from this image." >&2
@@ -223,8 +367,23 @@ fi
 # BlockThirdPartyCookies=false + CookiesAllowedForUrls (in policies/*.json);
 # (2) the profile cookie-controls pref forced to "allow all"; (3) disable the
 # 3pc-deprecation feature. Default on; set CLOAK_ALLOW_3P_COOKIES=false to opt out.
+# AutofillReintroduceHybridPasskeyDropdownItem is the Chromium 149 feature that
+# puts the "Use passkey from another device" (hybrid/caBLE) item in the username
+# autofill dropdown — the bubble Google's sign-in shows on the email field.
+# Disabling it removes that item natively (no JS patch = no fingerprint surface)
+# while leaving PublicKeyCredential and modal WebAuthn intact. (The older
+# WebAuthenticationConditionalUI feature was graduated/removed in 149 — verified
+# absent from the binary — so disabling that was a no-op.) Set
+# CLOAK_DISABLE_PASSKEY=false to keep passkeys.
+# NOTE: Chromium honours only the LAST --disable-features on the command line,
+# and cloak_flags is appended last, so the passkey feature is added to BOTH the
+# cloak_flags list here AND the base flags list below to cover either config.
+_passkey_feat=""
+if [[ "${CLOAK_DISABLE_PASSKEY:-true}" == "true" ]]; then
+  _passkey_feat=",AutofillReintroduceHybridPasskeyDropdownItem"
+fi
 if [[ "${CLOAK_ALLOW_3P_COOKIES:-true}" == "true" ]]; then
-  cloak_flags+=("--disable-features=TrackingProtection3pcd")
+  cloak_flags+=("--disable-features=TrackingProtection3pcd${_passkey_feat}")
   # Force the profile cookie-controls pref to "allow all" (cookie_controls_mode=0)
   # so no blocking default stops Google's cross-site reCAPTCHA reputation cookie
   # (NID). Verified with CDP
@@ -279,8 +438,13 @@ flags=(
   "--disable-sync"
   # MediaRouter is intentionally NOT disabled: doing so empties
   # chrome.cast.isAvailable(), which is a bot tell real Chrome never exhibits.
-  "--disable-features=Translate,OptimizationHints"
-  "--window-size=${WIDTH},${HEIGHT}"
+  "--disable-features=Translate,OptimizationHints${_passkey_feat}"
+  "--window-size=${WIDTH},${WINDOW_HEIGHT}"
+  # Allow window.open() popups (OAuth "Continue with X", payment popups, etc.).
+  # Without this the popup blocker returns null from window.open, so popup-based
+  # login flows silently die. Real user clicks are gestures, but kiosk + the
+  # blocker still interfere; disabling the blocker makes popups reliable.
+  "--disable-popup-blocking"
   "--kiosk"
   "${cloak_flags[@]}"
 )

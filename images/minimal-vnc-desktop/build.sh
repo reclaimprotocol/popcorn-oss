@@ -9,15 +9,12 @@ PLATFORM="${PLATFORM:-}"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO_ROOT" log -1 --pretty=%ct)}"
 UBUNTU_SNAPSHOT="${UBUNTU_SNAPSHOT:-$(awk -F '=' '$1 == "UBUNTU_SNAPSHOT" { print $2 }' "$SCRIPT_DIR/locks/ubuntu-snapshot.lock")}"
 
+# Fortress (the browser engine) is amd64-only, so the image is ALWAYS amd64 —
+# an arm64 host builds it under emulation. Defaulting to the host arch here
+# silently produced an arm64 image that tunnel.sh (amd64-pinned) then couldn't
+# run. Pin amd64; override PLATFORM only if you truly know what you're doing.
 if [[ -z "$PLATFORM" ]]; then
-  case "$(uname -m)" in
-    x86_64|amd64) PLATFORM=linux/amd64 ;;
-    arm64|aarch64) PLATFORM=linux/arm64 ;;
-    *)
-      echo "Unsupported host architecture: $(uname -m)" >&2
-      exit 1
-      ;;
-  esac
+  PLATFORM=linux/amd64
 fi
 
 "$SCRIPT_DIR/prepare-artifacts.sh" \

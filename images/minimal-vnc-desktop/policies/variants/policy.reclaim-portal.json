@@ -1,5 +1,7 @@
 {
   "PasswordManagerEnabled": false,
+  "_comment_passkeys": "Chromium draws its own passkey/WebAuthn autofill row (\"Use passkey from another device\", the cross-device hybrid transport) as NATIVE browser UI anchored to the username field. It is not page content, so the viewer cannot restyle or reach it, and on a phone-sized viewport it covers the form. PasswordManagerEnabled=false does not suppress it; this policy is the one that governs passkeys. Verified against this build's policy keys (policy::key::kPasswordManagerPasskeysEnabled).",
+  "PasswordManagerPasskeysEnabled": false,
   "AutofillAddressEnabled": false,
   "AutofillCreditCardEnabled": false,
   "TranslateEnabled": false,

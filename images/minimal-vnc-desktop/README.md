@@ -70,6 +70,16 @@ Open:
 http://localhost:6080/liveview.html?resize=scale&autoconnect=1
 ```
 
+To exercise the **embedded** viewer instead (a host page iframing the live view and
+feeding it keyboard geometry), serve this directory on another port and open one of
+the harnesses in `host/` — see [docs/EMBEDDING.md](docs/EMBEDDING.md):
+
+```bash
+python3 -m http.server 8080   # from images/minimal-vnc-desktop
+# then: http://localhost:8080/host/test-min.html   (bare iframe)
+#       http://localhost:8080/host/test-host.html  (+ debug panel, buttons, ?nest=1)
+```
+
 noVNC HTTP/WebSocket is served on `6080`. Restricted CDP is served on `9222`
 and full CDP is served on `9226` for trusted internal routing. Raw VNC listens
 on `127.0.0.1:5900` inside the container, and Chromium's raw DevTools endpoint
