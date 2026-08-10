@@ -111,8 +111,8 @@ export function createFieldSession({
   // ---- address-field trailing-space repair ----------------------------------
   // Tapping a Gboard suggestion in an email/username field commits the word PLUS a
   // trailing space. The space is invisible in the field and the site rejects a
-  // perfectly good address ("incorrect email or password") — one backspace made
-  // the identical login succeed, which is how this was found.
+  // perfectly good address ("incorrect email or password"); one backspace makes
+  // the identical login succeed.
   //
   // Every send path (EditContext textupdate, the Android value-diff, the iOS
   // beforeinput batch, compositionend) funnels through transport.sendText, which
@@ -340,7 +340,7 @@ export function createFieldSession({
       if (mirrorNeedsSeed && mirrorOn() && !input.composing() && document.activeElement === getProxy()) {
         seedProxyMirror();
       }
-      // Idle drift-repair (follow-up #1): once the user pauses AND the remote is
+      // Idle drift-repair: once the user pauses AND the remote is
       // not behind, adopt the remote's real value if it diverged from ours — the
       // remote field is the source of truth (remote-side autofill / framework
       // mutation, or a same-length substitution the value-diff couldn't see). This

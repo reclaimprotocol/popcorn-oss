@@ -1,4 +1,4 @@
-// motion-quality.test.mjs — characterization: motion-adaptive JPEG quality (#19).
+// motion-quality.test.mjs — characterization: motion-adaptive JPEG quality.
 //
 // A forwarded touch-scroll re-encodes big framebuffer regions every frame; on a
 // thin uplink it's frame SIZE, not RTT, that gates fluidity. While a forwarded

@@ -77,8 +77,8 @@ export const FILL = MAGNIFY && !/[?&]fill=0/.test(location.search);
 // never wedged. Local echo still masks per-keystroke latency.
 export const STATELESS = /[?&]stateless=1/.test(location.search);
 
-// Authoritative local mirror (?mirror=1). EXPERIMENT — the fix for the iOS
-// suggestion/autocorrect dead-end (issues #1/#7): instead of keeping the proxy
+// Authoritative local mirror (?mirror=1). Opt-in — the fix for the iOS
+// suggestion/autocorrect dead-end: instead of keeping the proxy
 // input EMPTY and reverse-engineering keystrokes, SEED it with the remote
 // field's real text (published as sync.val by the extension) and let the OS
 // IME edit it natively. The IME finally has word context, so autocorrect,
@@ -86,7 +86,7 @@ export const STATELESS = /[?&]stateless=1/.test(location.search);
 // populated field. We then diff old→new value and send the delta as keysyms
 // (the proven Android value-diff path), so the transport is unchanged.
 //
-// Scoped to the iOS <input> path for now (the load-bearing experiment). Android
+// Scoped to the iOS <input> path for now — that is where it matters. Android
 // already rides value-diff via EditContext; desktop and sensitive fields are
 // untouched. Sensitive fields never publish val, so they can never be mirrored.
 export const MIRROR = /[?&]mirror=1/.test(location.search);
@@ -110,7 +110,7 @@ export const TOUCH_INPUT = MAGNIFY && isTouch;
 // real proxy on a double-RAF — that's what keeps the keyboard up while the async
 // editable-confirm resolves. It has always been gated to top-level, with embedded
 // iOS taking the simpler direct-focus branch; that split dates from the original
-// port (98c3229), not from a discovered iframe incompatibility. Nothing in the
+// port, not from a discovered iframe incompatibility. Nothing in the
 // bridge needs a top-level document (the temp input lives in OUR document and the
 // gesture is OURS), so this flag ungates it for A/B on a real device. Default off:
 // the direct-focus path is what has shipped embedded, and only device evidence

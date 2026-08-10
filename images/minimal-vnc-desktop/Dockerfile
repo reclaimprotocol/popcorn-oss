@@ -5,19 +5,18 @@ ARG UBUNTU_IMAGE=docker.io/ubuntu:22.04@sha256:962f6cadeae0ea6284001009daa4cc9a8
 # C++ persona patches, distributed as an OCI image. It fully replaces stock
 # chromium (the xtradeb chromium debs are not installed); the chromium
 # runtime-library closure it links against is supplied by the pinned apt
-# packages in locks/apt-packages.txt. Pinned by digest to the STABLE channel —
-# tag "149" (Chromium 149.0.7827.232), which blends in with the mass of real
-# Chrome users, NOT the newer :151 "latest" build. **amd64-only** (no arm64
-# manifest), so this whole image is amd64-only: build on linux/amd64. Chromium
-# SIGTRAPs under QEMU, so it must build & run on a native amd64 host.
-# Tillion Fortress 150.0.7871.114 (stable), up from the 149 pin. Verified via
-# /json/version — do NOT trust /opt/*/README.txt, whose banner says "Chromium 151" on
-# this very image (a stale generic string; tag 150 and :latest are the same digest).
+# packages in locks/apt-packages.txt.
+#
+# Pinned by digest to the STABLE channel (150). **amd64-only** — Fortress
+# publishes no arm64 manifest, so this whole image is amd64-only: build and run
+# it on a native amd64 host, since Chromium SIGTRAPs under QEMU emulation.
+# To confirm the version in a built image read /json/version over CDP; do NOT
+# trust /opt/*/README.txt, whose banner carries a stale generic string.
 #
 # 150 is built from CURRENT STABLE Chrome, which matters on its own: version-database
-# detectors read 149 as out-of-date and a 151 that does not publicly exist as generic
-# "Chromium". This release also carries the fixes from upstream's cycle
-# (tiliondev/fortress#25 and the 150 notes):
+# detectors read an older build as out-of-date, and a version that does not publicly
+# exist as generic "Chromium". This release also carries the fixes from upstream's
+# cycle (tiliondev/fortress#25 and the 150 notes):
 #   - per-clone canvas/audio divergence — the noise seed is applied correctly, so two
 #     instances no longer share one un-noised fingerprint
 #   - explicit --uxr-* flags now WIN over the generated persona (previously --uxr-ua-os /

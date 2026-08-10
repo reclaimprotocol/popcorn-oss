@@ -251,7 +251,7 @@ elif [[ "$BROWSER" == "fortress" ]]; then
   # spaces, and the env path is word-split, which turns them into invalid args and
   # Chromium then fails to start at all.
   #
-  # ⚠️ COHERENCE DEBT: the Dockerfile bundles Fortress's Windows fonts and rewrites every
+  # KNOWN COHERENCE GAP: the Dockerfile bundles Fortress's Windows fonts and rewrites every
   # Noto face to the Windows family a real Windows box uses (Nirmala UI, Segoe UI,
   # Microsoft YaHei …). That was built to match the WINDOWS persona; under a Linux one a
   # font probe sees a "Linux" box enumerating Segoe UI, which is the same class of

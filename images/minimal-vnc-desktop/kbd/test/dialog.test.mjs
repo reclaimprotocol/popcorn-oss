@@ -35,20 +35,20 @@ function labels(d) { return buttons(d._root()).map((b) => b.textContent); }
 
 test('an alert offers only OK — the page never gave a choice to cancel', () => {
   const { d } = harness();
-  d.apply({ open: true, seq: 1, type: 'alert', message: 'Please Enter Valid UAN', url: 'https://passbook.epfindia.gov.in/x?token=secret' });
+  d.apply({ open: true, seq: 1, type: 'alert', message: 'Please enter a valid account number', url: 'https://accounts.example.com/x?token=secret' });
   assert.deepEqual(labels(d), ['OK']);
 });
 
 test('OK answers with accept=true and the dialog seq', () => {
   const { d, sent } = harness();
-  d.apply({ open: true, seq: 7, type: 'alert', message: 'hi', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 7, type: 'alert', message: 'hi', url: 'https://example.com/' });
   buttons(d._root()).find((b) => b.textContent === 'OK').onclick();
   assert.deepEqual(sent, [{ seq: 7, accept: true, text: '', notify: false, bridge: false }]);
 });
 
 test('a confirm offers Cancel, which answers accept=false', () => {
   const { d, sent } = harness();
-  d.apply({ open: true, seq: 2, type: 'confirm', message: 'Sure?', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 2, type: 'confirm', message: 'Sure?', url: 'https://example.com/' });
   assert.deepEqual(labels(d), ['Cancel', 'OK']);
   buttons(d._root()).find((b) => b.textContent === 'Cancel').onclick();
   assert.deepEqual(sent, [{ seq: 2, accept: false, text: '', notify: false, bridge: false }]);
@@ -56,20 +56,20 @@ test('a confirm offers Cancel, which answers accept=false', () => {
 
 test('a prompt returns its text, seeded from defaultPrompt', () => {
   const { d, sent } = harness();
-  d.apply({ open: true, seq: 3, type: 'prompt', message: 'Name?', defaultPrompt: 'abc', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 3, type: 'prompt', message: 'Name?', defaultPrompt: 'abc', url: 'https://example.com/' });
   buttons(d._root()).find((b) => b.textContent === 'OK').onclick();
   assert.deepEqual(sent, [{ seq: 3, accept: true, text: 'abc', notify: false, bridge: false }]);
 });
 
 test('beforeunload says Leave/Stay — OK/Cancel would risk losing form data', () => {
   const { d } = harness();
-  d.apply({ open: true, seq: 4, type: 'beforeunload', message: '', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 4, type: 'beforeunload', message: '', url: 'https://example.com/' });
   assert.deepEqual(labels(d), ['Stay', 'Leave']);
 });
 
 test('open:false takes the sheet down', () => {
   const { d } = harness();
-  d.apply({ open: true, seq: 5, type: 'alert', message: 'x', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 5, type: 'alert', message: 'x', url: 'https://example.com/' });
   assert.equal(d.shown(), true);
   d.apply({ open: false });
   assert.equal(d.shown(), false);
@@ -79,19 +79,19 @@ test('a repeated frame for the SAME dialog does not rebuild the sheet', () => {
   // The hub resyncs late joiners and coalesces, so the same state can arrive
   // twice; rebuilding would wipe half-typed prompt text.
   const { d } = harness();
-  d.apply({ open: true, seq: 6, type: 'prompt', message: 'Name?', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 6, type: 'prompt', message: 'Name?', url: 'https://example.com/' });
   const before = d._root();
-  d.apply({ open: true, seq: 6, type: 'prompt', message: 'Name?', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 6, type: 'prompt', message: 'Name?', url: 'https://example.com/' });
   assert.equal(d._root(), before);
 });
 
 test('the URL query is never rendered — only the origin', () => {
   // Dialog URLs routinely carry tokens, and this text ends up on screen.
   const { d } = harness();
-  d.apply({ open: true, seq: 8, type: 'alert', message: 'x', url: 'https://passbook.epfindia.gov.in/p?token=SECRET' });
+  d.apply({ open: true, seq: 8, type: 'alert', message: 'x', url: 'https://accounts.example.com/p?token=SECRET' });
   const text = allText(d._root()).join(' ');
   assert.equal(/SECRET/.test(text), false, 'no query string on screen');
-  assert.equal(/passbook\.epfindia\.gov\.in says/.test(text), true, 'origin still attributed');
+  assert.equal(/accounts\.example\.com says/.test(text), true, 'origin still attributed');
 });
 
 // ---- notification alerts -----------------------------------------------------
@@ -104,7 +104,7 @@ test('the URL query is never rendered — only the origin', () => {
 
 test('a notify alert still replies, so the hub stops resyncing it', () => {
   const { d, sent } = harness();
-  d.apply({ open: true, seq: 9, type: 'alert', notify: true, message: 'Please Enter Valid UAN', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 9, type: 'alert', notify: true, message: 'Please enter a valid account number', url: 'https://example.com/' });
   buttons(d._root()).find((b) => b.textContent === 'OK').onclick();
   assert.deepEqual(sent, [{ seq: 9, accept: true, text: '', notify: true, bridge: false }]);
   assert.equal(d.shown(), false);
@@ -112,7 +112,7 @@ test('a notify alert still replies, so the hub stops resyncing it', () => {
 
 test('a blocking dialog is not flagged notify — its answer is load-bearing', () => {
   const { d, sent } = harness();
-  d.apply({ open: true, seq: 10, type: 'confirm', message: 'Sure?', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 10, type: 'confirm', message: 'Sure?', url: 'https://example.com/' });
   buttons(d._root()).find((b) => b.textContent === 'OK').onclick();
   assert.deepEqual(sent, [{ seq: 10, accept: true, text: '', notify: false, bridge: false }]);
 });
@@ -128,7 +128,7 @@ test('a blocking dialog is not flagged notify — its answer is load-bearing', (
 
 test('a click dispatched at the OK button reaches it through the wrapper', () => {
   const { d, sent } = harness();
-  d.apply({ open: true, seq: 20, type: 'alert', notify: true, message: 'x', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 20, type: 'alert', notify: true, message: 'x', url: 'https://example.com/' });
   const ok = buttons(d._root()).find((b) => b.textContent === 'OK');
   // Walk the wrapper's own capture listeners the way the DOM would, then fire the
   // target handler. If an ancestor stops propagation, `stopped` flips and the
@@ -145,7 +145,7 @@ test('the sheet claims its own targets so a tap is not ALSO sent to the remote',
   // tap.js consults owns() the way it already consults onMagButton; without it a
   // tap on the sheet would additionally be dispatched as a remote touch.
   const { d } = harness();
-  d.apply({ open: true, seq: 21, type: 'alert', message: 'x', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 21, type: 'alert', message: 'x', url: 'https://example.com/' });
   const ok = buttons(d._root()).find((b) => b.textContent === 'OK');
   assert.equal(d.owns(ok), true);
   assert.equal(d.owns(d._root()), true);
@@ -154,7 +154,7 @@ test('the sheet claims its own targets so a tap is not ALSO sent to the remote',
 
 test('owns() is false once the sheet is down, so taps go back to the stream', () => {
   const { d } = harness();
-  d.apply({ open: true, seq: 22, type: 'alert', message: 'x', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 22, type: 'alert', message: 'x', url: 'https://example.com/' });
   const ok = buttons(d._root()).find((b) => b.textContent === 'OK');
   d.apply({ open: false });
   assert.equal(d.owns(ok), false);
@@ -257,7 +257,7 @@ test('the FedCM chooser hides the stream, since the native chooser is behind it'
 
 test('a blocking confirm hides the stream too', () => {
   const { d } = harness();
-  d.apply({ open: true, seq: 40, type: 'confirm', message: 'Sure?', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 40, type: 'confirm', message: 'Sure?', url: 'https://example.com/' });
   assert.match(backdrop(d), /backdrop-filter:blur/);
 });
 
@@ -290,6 +290,6 @@ test('a wide viewport keeps the centred card', () => {
 
 test('a notification alert stays translucent — nothing to hide', () => {
   const { d } = harness();
-  d.apply({ open: true, seq: 41, type: 'alert', notify: true, message: 'x', url: 'https://e.gov.in/' });
+  d.apply({ open: true, seq: 41, type: 'alert', notify: true, message: 'x', url: 'https://example.com/' });
   assert.match(backdrop(d), /rgba\(0,0,0,\.45\)/);
 });

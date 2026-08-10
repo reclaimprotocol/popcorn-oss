@@ -112,8 +112,8 @@ export function applyImeHints(proxy, hints, { mirrorOn }) {
   // as `type` is concerned. Gboard then treats it as prose too — auto-capitalising
   // the first letter and, when you tap a suggestion, committing the word PLUS a
   // trailing space. That space is invisible in the field and makes the site reject a
-  // perfectly good address ("incorrect email or password"), which is how this was
-  // found. inputmode and autocomplete are the same signals real autofill uses.
+  // perfectly good address ("incorrect email or password"). inputmode and
+  // autocomplete are the same signals real autofill uses.
   const acIsLiteral = /^(email|username|url)$/.test((info.autoComplete || '').toLowerCase());
   const imIsLiteral = remoteInputMode === 'email' || remoteInputMode === 'url';
   // Last resort: the field's NAME. Kaggle's sign-in is

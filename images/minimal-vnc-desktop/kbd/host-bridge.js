@@ -80,8 +80,8 @@ export function hostGeometry() {
 /**
  * True when the embedder is actively feeding geometry, i.e. the local keyboard
  * detectors must stand down. Used as an exclusivity latch: two detectors driving
- * the lift with slightly different heights is what caused the keyboard-open
- * jitter fixed in e3ddeb5, so host geometry must SUPPRESS rather than race them.
+ * the lift with slightly different heights is what causes keyboard-open jitter,
+ * so host geometry must SUPPRESS rather than race them.
  */
 export function hostGeometryActive() {
   return hostGeometry() !== null;

@@ -30,7 +30,7 @@ export async function run({ closeBrowser = true } = {}) {
   const { browser, page } = await connect();
   section('reCAPTCHA v3 score');
 
-  // reCAPTCHA v3 scores CDP traffic as bot-like (per CloakBrowser docs), so we
+  // reCAPTCHA v3 scores CDP traffic as bot-like (per the browser's docs), so we
   // deliberately minimize CDP here: NO humanize() (its mouse/scroll spam is
   // dozens of CDP calls), and a Node-side sleep instead of page.waitForTimeout
   // (which sends CDP commands). The single page.evaluate below is the only read.
@@ -69,7 +69,7 @@ export async function run({ closeBrowser = true } = {}) {
   const score = result.score;
   const ok = !isNaN(score) && score >= 0.7;
   // A low score here is expected: attaching over CDP at all depresses reCAPTCHA
-  // v3 (per CloakBrowser docs), so anything under 0.7 is a WARN, not a hard fail
+  // v3, so anything under 0.7 is a WARN, not a hard fail
   // — the real score is what a human gets in the live view with no CDP attached.
   const warn = score === null || score < 0.7;
 

@@ -78,8 +78,8 @@
     });
   }
 
-  // Use non-obvious property name to avoid detection
-  // Looks like an internal performance/config variable
+  // Short, namespaced, frozen: unlikely to collide with page scripts and cheap
+  // for the host tooling to call.
   Object.defineProperty(window, '__pcn', {
     value: Object.freeze({
       set: function(config) {

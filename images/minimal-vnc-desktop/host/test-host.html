@@ -8,16 +8,16 @@
   <title>Popcorn host harness</title>
   <style>
     /* The layer expects the page around it not to pinch/rubber-band: an outer
-       page zoom shrinks visualViewport and would be misread as a keyboard (see
-       MOBILE_KBD_BACKLOG.md:580). Any real embedder needs these two lines. */
+       page zoom shrinks visualViewport and would be misread as a keyboard.
+       Any real embedder needs these two lines. */
     html, body { margin: 0; height: 100%; overscroll-behavior: none; touch-action: pan-y; }
     body { background: #14161a; color: #e6e6e6;
            font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
 
-    /* LAYOUT RULE, learned the hard way (verified on iOS): the viewer iframe must
-       be a plain full-viewport fixed box, and any chrome must be LAYERED OVER it.
-       The first version of this page made the iframe a flex child sitting next to
-       an `overflow: auto` debug panel — that puts the iframe in a compositing
+    /* LAYOUT RULE (verified on iOS): the viewer iframe must be a plain
+       full-viewport fixed box, and any chrome must be LAYERED OVER it.
+       Making the iframe a flex child sitting next to
+       an `overflow: auto` debug panel puts the iframe in a compositing
        context WebKit rasterises BELOW device scale, and the stream came out visibly
        blurry while every number (framebuffer 980px, canvas 393 CSS px, zoom 1.00)
        was byte-identical to a sharp top-level tab. Same constraint applies to the

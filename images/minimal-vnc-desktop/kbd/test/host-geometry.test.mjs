@@ -7,8 +7,7 @@
 // lock the three properties that make it safe to trust:
 //   1. host geometry drives keyboardActive + the lift (the reported occlusion),
 //   2. it SUPPRESSES the local detectors rather than racing them (two detectors
-//      with slightly different heights is the keyboard-open jitter fixed in
-//      e3ddeb5), and
+//      with slightly different heights is what causes keyboard-open jitter), and
 //   3. it FAILS CLOSED — wrong origin, wrong source, or nonsense numbers are
 //      ignored, and stale samples hand control back to the local detectors.
 //

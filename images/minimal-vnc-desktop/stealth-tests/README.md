@@ -1,6 +1,6 @@
 # Stealth-probe suite (minimal-vnc-desktop)
 
-End-to-end checks for the CloakBrowser stealth surface. Each probe attaches
+End-to-end checks for the Fortress stealth surface. Each probe attaches
 to the **running container's** chromium over CDP and drives it directly, so
 it exercises the real image, not a mock.
 
@@ -75,7 +75,7 @@ never commit it. Rotate if it leaks.
 
 ### Align the fingerprint with the proxy country
 
-CloakBrowser's fingerprint (timezone/locale/WebRTC-IP) is fixed at **launch**,
+The browser's fingerprint (timezone/locale/WebRTC-IP) is fixed at **launch**,
 and its boot-time geoip resolves the *container's* egress, not the proxy. So
 when testing through a country proxy, launch the container with a **matching**
 region, otherwise a mismatched timezone/locale is itself a bot tell:
@@ -96,7 +96,7 @@ in the extension); restart the container or call `__pcn.clear()` to reset.
 Same scoreboard as the reference image (see `../STEALTH.md`):
 
 - **tls / sannysoft / creepjs / browserscan / cloudflare** — should PASS;
-  regressions here indicate a CloakBrowser-side surface change.
+  regressions here indicate a browser-side surface change.
 - **turnstile / recaptcha** — pass on clean residential IPs; recaptcha can
   warn on a cold cookie jar (no google.com history).
 - **akamai** — Delta/Finnair/Hilton tend to pass through residential; ANA

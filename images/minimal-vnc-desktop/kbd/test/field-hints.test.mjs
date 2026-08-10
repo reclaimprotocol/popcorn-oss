@@ -1,4 +1,4 @@
-// field-hints.test.mjs — characterization: applyImeHints (#12 richer hints).
+// field-hints.test.mjs — characterization: applyImeHints.
 // applyImeHints is a pure function of (proxy, remote hints, {mirrorOn}); these
 // unit-test the pattern->numeric derivation, lang/dir propagation, and the OTP
 // autocapitalize exemption directly against a minimal fake proxy.
@@ -102,8 +102,8 @@ test('literal fields stay none regardless of tag', () => {
 // autocomplete=username, so `type` alone can never classify it. Gboard then treats
 // it as prose: it capitalises the first letter AND, when you tap a suggestion,
 // commits the word plus a trailing space. The space is invisible in the field and
-// the site rejects a perfectly good address ("incorrect email or password"), which
-// is exactly how this was found — one backspace made the same login succeed.
+// the site rejects a perfectly good address ("incorrect email or password") —
+// one backspace makes the same login succeed.
 test('type=text + autocomplete=username is treated as an address field', () => {
   const p = fakeProxy();
   applyImeHints(p, { tag: 'INPUT', type: 'text', autoComplete: 'username' }, NO_MIRROR);

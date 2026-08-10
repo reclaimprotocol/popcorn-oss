@@ -72,7 +72,7 @@ http://localhost:6080/liveview.html?resize=scale&autoconnect=1
 
 To exercise the **embedded** viewer instead (a host page iframing the live view and
 feeding it keyboard geometry), serve this directory on another port and open one of
-the harnesses in `host/` — see [docs/EMBEDDING.md](docs/EMBEDDING.md):
+the harnesses in `host/`:
 
 ```bash
 python3 -m http.server 8080   # from images/minimal-vnc-desktop

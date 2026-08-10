@@ -37,7 +37,7 @@ export function createKbdDetect({
   // (see host-bridge.js), it is authoritative and every local detector stands
   // down — hostGeometryActive() guards them. That exclusivity is deliberate:
   // two detectors driving the lift with slightly different heights is exactly
-  // the keyboard-open jitter fixed in e3ddeb5, so this must SUPPRESS the others,
+  // what causes keyboard-open jitter, so this must SUPPRESS the others,
   // never race them. If the host stops posting, its samples age out (8s) and the
   // local detectors resume automatically, so a dead embedder degrades to today's
   // behavior instead of freezing the lift.
