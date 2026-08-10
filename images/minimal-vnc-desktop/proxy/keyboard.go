@@ -1,0 +1,444 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+)
+
+// kbdHub is a tiny fan-out relay for soft-keyboard focus signals. The proxy
+// browser extension (running inside the remote Chromium) publishes the current
+// editable-focus state — {"editable":true} / {"editable":false} — whenever an
+// editable element gains or loses focus. Every connected viewer receives it and
+// raises or dismisses the mobile on-screen keyboard.
+//
+// Design goals, in order:
+//   - Keep focus detection entirely OFF the CDP path (no automation signal).
+//   - Survive lossy / high-latency mobile networks: signals are absolute state
+//     (idempotent), so a dropped or reordered message is self-correcting on the
+//     next event. A freshly (re)connected viewer is resynced immediately from a
+//     cached last-state, so a dropped connection never leaves a wedged keyboard.
+//   - Never let one slow/dead client stall the others: each client has its own
+//     writer goroutine fed by a single-slot coalescing mailbox. Because state is
+//     idempotent, coalescing to "latest" loses nothing meaningful.
+type kbdHub struct {
+	mu         sync.Mutex
+	clients    map[*kbdClient]struct{}
+	lastState  []byte
+	publishers int // connected ?role=pub clients; lastState is only live while > 0
+
+	// Current JS dialog, if the page has one open (see broadcastDialog). Cached
+	// like lastState so a viewer that connects — or reconnects mid-dialog on a
+	// flaky link — is told about a dialog that is already blocking the page.
+	lastDialog []byte
+	// Current foreground popup window, if any (see broadcastPopup). Cached for
+	// the same reason as lastDialog and then some: a popup OUTLIVES the viewer
+	// connection — it is a real window on the remote side — so a viewer that
+	// reloads mid-OAuth must still be told there is a window to close, or the
+	// close button vanishes and the session is stuck on accounts.google.com.
+	lastPopup []byte
+	// onViewerMsg receives the small control frames a VIEWER may send (currently
+	// a dialog reply or a popup-close request). Viewers stay unable to broadcast
+	// to other viewers; this is a server-mediated request, not a relay.
+	onViewerMsg func(payload []byte)
+	// bridgeToken is handed to the PUBLISHER (the extension) the moment it
+	// connects, and to nobody else. It authenticates the extension's dialog
+	// bridge (see dialog.go): the endpoint is reachable by the remote page too, and
+	// without a gate a hostile page could make the viewer draw arbitrary chrome
+	// outside the page area. Delivered on this socket because the extension already
+	// holds it, so no new distribution channel is needed — and it lands in the
+	// extension's isolated world, which page script cannot read.
+	bridgeToken string
+}
+
+func newKbdHub() *kbdHub {
+	return &kbdHub{clients: make(map[*kbdClient]struct{})}
+}
+
+func (h *kbdHub) full() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.clients) >= kbdMaxClients
+}
+
+// kbdWriteDeadline bounds a single frame write so a stalled TCP send on a bad
+// network is detected and torn down instead of pinning the writer goroutine.
+const kbdWriteDeadline = 10 * time.Second
+
+// kbdReadDeadline drops a client that has gone silent (no data, no pong) for
+// this long — catches half-open connections that mobile networks leave behind.
+const kbdReadDeadline = 70 * time.Second
+
+// kbdPingInterval keeps NAT/proxy paths warm and gives us liveness feedback.
+const kbdPingInterval = 30 * time.Second
+
+// kbdMaxClients bounds concurrent connections so a flood can't exhaust memory.
+const kbdMaxClients = 64
+
+// kbdMaxPayload caps a single /kbd frame. Focus signals are tiny JSON; anything
+// larger is rejected (readFrame's own 64MB ceiling is far too permissive here).
+const kbdMaxPayload = 8192
+
+type kbdClient struct {
+	conn    net.Conn
+	writeMu sync.Mutex
+
+	// publisher clients (the browser extension, connecting with ?role=pub) are
+	// the only ones allowed to broadcast focus state. Viewers are receive-only,
+	// so a connected viewer can't inject fake signals to other viewers.
+	publisher bool
+
+	mailMu  sync.Mutex
+	pending []byte // latest focus state awaiting write (coalesced)
+	// Dialogs get their OWN slot. Focus state is idempotent, so coalescing to
+	// "latest" loses nothing — but a dialog arriving just before a focus signal
+	// would be overwritten in a single-slot mailbox and the viewer would never
+	// learn the page is blocked. Two slots, dialog drained first.
+	pendingDialog []byte
+	// Popup state gets a third slot for the same reason. A popup can raise a
+	// dialog (an OAuth window running a confirm()), so the two states genuinely
+	// coexist and sharing a slot would drop whichever arrived first.
+	pendingPopup []byte
+	notify       chan struct{}
+	closed       chan struct{}
+}
+
+func (h *kbdHub) add(c *kbdClient) {
+	h.mu.Lock()
+	h.clients[c] = struct{}{}
+	if c.publisher {
+		h.publishers++
+	}
+	// Resync a VIEWER to the current focus state so a reconnect never leaves the
+	// keyboard stuck up or down — but ONLY while a publisher (the extension) is
+	// actually connected. If the extension died (MV3 worker torn down, tab
+	// closed) with editable:true cached, replaying it would wedge every new
+	// viewer's keyboard up with no live source left to ever dismiss it. With no
+	// publisher, a new viewer just starts keyboard-down; the extension re-publishes
+	// absolute state on reconnect. Already-connected viewers are untouched here,
+	// so a brief publisher gap (MV3 reconnect) causes no flicker.
+	var last, dlg, pop []byte
+	if !c.publisher && h.publishers > 0 {
+		last = h.lastState
+	}
+	// A dialog resync does NOT depend on a live publisher: the dialog comes from
+	// our own CDP connection, not the extension, and it blocks the page whether
+	// or not the extension is up.
+	if !c.publisher {
+		dlg = h.lastDialog
+		pop = h.lastPopup
+	}
+	h.mu.Unlock()
+
+	if last != nil {
+		c.enqueue(last)
+	}
+	if dlg != nil {
+		c.enqueueDialog(dlg)
+	}
+	if pop != nil {
+		c.enqueuePopup(pop)
+	}
+}
+
+func (h *kbdHub) remove(c *kbdClient) {
+	h.mu.Lock()
+	if _, ok := h.clients[c]; ok {
+		delete(h.clients, c)
+		if c.publisher {
+			h.publishers--
+		}
+	}
+	h.mu.Unlock()
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	_ = c.conn.Close()
+}
+
+// publish caches the state and fans it out to every client except the sender
+// (the extension never needs to hear its own signal echoed back).
+func (h *kbdHub) publish(sender *kbdClient, payload []byte) {
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
+
+	h.mu.Lock()
+	h.lastState = buf
+	targets := make([]*kbdClient, 0, len(h.clients))
+	for c := range h.clients {
+		if c != sender {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, c := range targets {
+		c.enqueue(buf)
+	}
+}
+
+// broadcastDialog fans a dialog state out to every viewer and caches it for
+// late joiners. Unlike publish it never touches lastState — a dialog must not
+// overwrite the cached focus signal, or a reconnecting viewer would be resynced
+// with a dialog in place of its keyboard state. An `open:false` state clears the
+// cache so a dismissed dialog is never replayed to the next viewer.
+func (h *kbdHub) broadcastDialog(payload []byte, open bool) {
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
+
+	h.mu.Lock()
+	if open {
+		h.lastDialog = buf
+	} else {
+		h.lastDialog = nil
+	}
+	targets := make([]*kbdClient, 0, len(h.clients))
+	for c := range h.clients {
+		if !c.publisher {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, c := range targets {
+		c.enqueueDialog(buf)
+	}
+}
+
+// broadcastPopup fans the foreground-popup state out to every viewer and caches
+// it for late joiners. Same shape as broadcastDialog, separate slot and cache:
+// the two states are independent and a popup can itself raise a dialog.
+func (h *kbdHub) broadcastPopup(payload []byte, open bool) {
+	buf := make([]byte, len(payload))
+	copy(buf, payload)
+
+	h.mu.Lock()
+	if open {
+		h.lastPopup = buf
+	} else {
+		h.lastPopup = nil
+	}
+	targets := make([]*kbdClient, 0, len(h.clients))
+	for c := range h.clients {
+		if !c.publisher {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, c := range targets {
+		c.enqueuePopup(buf)
+	}
+}
+
+// enqueue stashes the latest payload and pokes the writer. If a write is still
+// in flight, the newer state simply replaces the older queued one.
+func (c *kbdClient) enqueue(payload []byte) {
+	c.mailMu.Lock()
+	c.pending = payload
+	c.mailMu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (c *kbdClient) enqueueDialog(payload []byte) {
+	c.mailMu.Lock()
+	c.pendingDialog = payload
+	c.mailMu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+// takeDialog drains the dialog slot. Drained BEFORE the focus slot so a blocked
+// page is reported even when both are pending.
+func (c *kbdClient) takeDialog() []byte {
+	c.mailMu.Lock()
+	defer c.mailMu.Unlock()
+	p := c.pendingDialog
+	c.pendingDialog = nil
+	return p
+}
+
+func (c *kbdClient) enqueuePopup(payload []byte) {
+	c.mailMu.Lock()
+	c.pendingPopup = payload
+	c.mailMu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (c *kbdClient) takePopup() []byte {
+	c.mailMu.Lock()
+	defer c.mailMu.Unlock()
+	p := c.pendingPopup
+	c.pendingPopup = nil
+	return p
+}
+
+func (c *kbdClient) take() []byte {
+	c.mailMu.Lock()
+	defer c.mailMu.Unlock()
+	p := c.pending
+	c.pending = nil
+	return p
+}
+
+func (c *kbdClient) writeFrame(opcode byte, payload []byte) error {
+	_ = c.conn.SetWriteDeadline(time.Now().Add(kbdWriteDeadline))
+	return writeFrameToConn(c.conn, &c.writeMu, opcode, payload, false, true)
+}
+
+// writeLoop drains the coalescing mailbox and sends server->client pings.
+func (c *kbdClient) writeLoop() {
+	ticker := time.NewTicker(kbdPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.closed:
+			return
+		case <-c.notify:
+			if p := c.takeDialog(); p != nil {
+				if err := c.writeFrame(0x1, p); err != nil {
+					return
+				}
+			}
+			if p := c.takePopup(); p != nil {
+				if err := c.writeFrame(0x1, p); err != nil {
+					return
+				}
+			}
+			if p := c.take(); p != nil {
+				if err := c.writeFrame(0x1, p); err != nil {
+					return
+				}
+			}
+		case <-ticker.C:
+			if err := c.writeFrame(0x9, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (h *kbdHub) serve(w http.ResponseWriter, r *http.Request, ready readyGate) {
+	if !ready.ready() {
+		http.Error(w, "app is not ready", http.StatusServiceUnavailable)
+		return
+	}
+	if !isWebsocketRequest(r) {
+		http.Error(w, "websocket upgrade required", http.StatusBadRequest)
+		return
+	}
+	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
+	if key == "" {
+		http.Error(w, "missing Sec-WebSocket-Key", http.StatusBadRequest)
+		return
+	}
+	if h.full() {
+		http.Error(w, "too many keyboard clients", http.StatusServiceUnavailable)
+		return
+	}
+	publisher := r.URL.Query().Get("role") == "pub"
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijacking unsupported", http.StatusInternalServerError)
+		return
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+
+	_, _ = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\n")
+	_, _ = fmt.Fprintf(rw, "Upgrade: websocket\r\n")
+	_, _ = fmt.Fprintf(rw, "Connection: Upgrade\r\n")
+	_, _ = fmt.Fprintf(rw, "Sec-WebSocket-Accept: %s\r\n", websocketAccept(key))
+	_, _ = fmt.Fprint(rw, "\r\n")
+	if err := rw.Flush(); err != nil {
+		_ = conn.Close()
+		return
+	}
+
+	client := &kbdClient{
+		conn:      conn,
+		publisher: publisher,
+		notify:    make(chan struct{}, 1),
+		closed:    make(chan struct{}),
+	}
+	h.add(client)
+	defer h.remove(client)
+
+	go client.writeLoop()
+	// Hand the extension its dialog-bridge token. Publishers only — a viewer that
+	// learned it could forge dialogs on behalf of the page, which is the very thing
+	// the token exists to prevent.
+	if publisher {
+		h.mu.Lock()
+		tok := h.bridgeToken
+		h.mu.Unlock()
+		if tok != "" {
+			if b, err := json.Marshal(map[string]string{"bridgeToken": tok}); err == nil {
+				client.enqueueDialog(b) // own mailbox slot: must not be coalesced away
+			}
+		}
+	}
+	h.readLoop(client, rw.Reader)
+}
+
+func (h *kbdHub) readLoop(c *kbdClient, reader *bufio.Reader) {
+	for {
+		_ = c.conn.SetReadDeadline(time.Now().Add(kbdReadDeadline))
+		_, opcode, payload, err := readFrame(reader)
+		if err != nil {
+			return
+		}
+		switch opcode {
+		case 0x0, 0x1, 0x2: // (continuation/)text/binary — a focus signal
+			// Only publishers broadcast, and only tiny payloads. Viewer frames
+			// (and anything oversized) are ignored, not relayed.
+			if c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload {
+				h.publish(c, payload)
+			} else if !c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload &&
+				(bytes.Contains(payload, []byte(`"dialogReply"`)) || bytes.Contains(payload, []byte(`"popupClose"`))) {
+				// A viewer answering a JS dialog, or asking to close the foreground
+				// popup window. Both are handled by the server (which owns the CDP
+				// connection) rather than relayed, so the viewer never gets to speak
+				// CDP itself — it sends accept/dismiss + prompt text, or a bare
+				// sequence number, and nothing more.
+				//
+				// This gate is an ALLOWLIST: a viewer frame that matches neither is
+				// dropped, so adding a viewer->server message means adding it here.
+				if h.onViewerMsg != nil {
+					h.onViewerMsg(payload)
+				}
+			} else if !c.publisher && len(payload) > 0 && len(payload) <= 64 && bytes.Contains(payload, []byte(`"ping"`)) {
+				// Viewer RTT probe: echo it straight back to the sender only (not
+				// broadcast) so the viewer can measure tunnel round-trip time and
+				// size its adaptive keyboard timers. Also keeps the NAT path warm.
+				_ = c.writeFrame(0x1, payload)
+			}
+		case 0x8: // close
+			_ = c.writeFrame(0x8, payload)
+			return
+		case 0x9: // ping -> pong
+			_ = c.writeFrame(0xA, payload)
+		case 0xA: // pong — liveness, read deadline already refreshed
+		default:
+			return
+		}
+	}
+}

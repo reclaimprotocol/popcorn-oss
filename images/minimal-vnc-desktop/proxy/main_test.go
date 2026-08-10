@@ -136,7 +136,7 @@ func TestCDPDiscoveryURLsIncludeGatewayPrefix(t *testing.T) {
 
 func TestNoVNCMuxRequiresReadyFile(t *testing.T) {
 	readyFile := filepath.Join(t.TempDir(), "ready")
-	handler := noVNCMux(t.TempDir(), "127.0.0.1:5900", readyGate{file: readyFile})
+	handler := noVNCMux(t.TempDir(), "127.0.0.1:5900", "127.0.0.1:9223", readyGate{file: readyFile})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://proxy.example/liveview.html", nil)

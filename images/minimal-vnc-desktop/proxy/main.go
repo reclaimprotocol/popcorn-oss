@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,7 +41,7 @@ func main() {
 	servers := []*http.Server{
 		{
 			Addr:              *listen,
-			Handler:           noVNCMux(*web, *vnc, ready),
+			Handler:           noVNCMux(*web, *vnc, *cdpUpstream, ready),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
@@ -81,16 +82,115 @@ func main() {
 	log.Fatal(<-errs)
 }
 
-func noVNCMux(web, vnc string, ready readyGate) http.Handler {
+func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	mux := http.NewServeMux()
+	kbd := newKbdHub()
+	mux.HandleFunc("/kbd", func(w http.ResponseWriter, r *http.Request) {
+		kbd.serve(w, r, ready)
+	})
+	// Mobile viewport emulation: the viewer POSTs its own size so the remote
+	// reflows to a real mobile layout (see emulate.go). One persistent CDP
+	// manager applies it to every page target (incl. popups/new tabs). Safe
+	// subset of CDP only.
+	em := newEmulator(cdpUpstream)
+	// JS dialogs (alert/confirm/prompt) are intercepted in emulate.go and drawn by
+	// the viewer instead of by Chromium, which lays them out against the real
+	// window and clips them off a narrow emulated viewport. The hub is the
+	// transport (viewers already hold that socket, and it resyncs late joiners);
+	// the REPLY is executed here, so the viewer sends accept/dismiss + text and
+	// never a CDP method.
+	em.setDialogSink(kbd.broadcastDialog)
+	em.fedcm.setSink(kbd.broadcastDialog)
+	// Popup windows (OAuth "Continue with Google") are fullscreened by emulate.go
+	// so they are usable on a phone, which removes the window's own close button.
+	// The viewer draws a replacement and asks us to close it; see emulator.closePopup.
+	em.setPopupSink(kbd.broadcastPopup)
+	// The extension's dialog bridge (dialog.go) is the PREFERRED path: it overrides
+	// the page's dialog functions so Chromium never opens one, which removes both
+	// the duplicate dialog and the machine-fast alert() return that the CDP path
+	// cannot avoid. emulate.go's CDP interception stays as the fallback for dialogs
+	// the bridge can't reach (beforeunload, and any page the extension didn't
+	// inject into) — the two are naturally exclusive, since a dialog the bridge
+	// handles never reaches Chromium at all.
+	dlg := newDialogBridge(kbd)
+	kbd.bridgeToken = dlg.token
+	mux.HandleFunc("/dialog", dialogBridgeHandler(dlg, ready))
+	kbd.onViewerMsg = func(payload []byte) {
+		var msg struct {
+			DialogReply *struct {
+				Seq    uint64 `json:"seq"`
+				Accept bool   `json:"accept"`
+				Text   string `json:"text"`
+				// Which mechanism raised this dialog. The bridge and the CDP path keep
+				// INDEPENDENT sequence counters, so seq alone is ambiguous — routing on
+				// it would let a reply resolve the wrong mechanism's dialog. The viewer
+				// echoes back the flag it was sent.
+				Bridge bool `json:"bridge"`
+				// FedCM account chooser (fedcm.go). Third mechanism, third flag —
+				// accountIndex is meaningless to the other two.
+				Fedcm        bool `json:"fedcm"`
+				AccountIndex int  `json:"accountIndex"`
+			} `json:"dialogReply"`
+			// Close the foreground popup window. Carries only a sequence number —
+			// the viewer cannot name a target, so it can only ever close the popup
+			// the proxy itself advertised.
+			PopupClose *struct {
+				Seq uint64 `json:"seq"`
+			} `json:"popupClose"`
+		}
+		if err := json.Unmarshal(payload, &msg); err != nil {
+			return
+		}
+		if msg.PopupClose != nil {
+			em.closePopup(msg.PopupClose.Seq)
+			return
+		}
+		if msg.DialogReply == nil {
+			return
+		}
+		// Clear the resync cache first, unconditionally: a notification sheet (an
+		// alert we already accepted) has no dialog left to answer, but its cached
+		// state must still stop being replayed to the next viewer that connects.
+		if b, err := json.Marshal(map[string]any{"dialog": map[string]any{"open": false}}); err == nil {
+			kbd.broadcastDialog(b, false)
+		}
+		if msg.DialogReply.Fedcm {
+			em.answerFedcm(msg.DialogReply.Seq, msg.DialogReply.Accept, msg.DialogReply.AccountIndex)
+			return
+		}
+		if msg.DialogReply.Bridge {
+			dlg.answer(msg.DialogReply.Seq, msg.DialogReply.Accept, msg.DialogReply.Text)
+			return
+		}
+		em.answerDialog(msg.DialogReply.Seq, msg.DialogReply.Accept, msg.DialogReply.Text)
+	}
+	mux.HandleFunc("/emulate", emulateHTTPHandler(em, ready))
+	// Native touch input: the viewer streams touch points here and we dispatch
+	// CDP Input.dispatchTouchEvent, so the remote page handles scroll/drag/
+	// sliders/pinch itself (VNC only carries mouse). See emulate.go.
+	mux.HandleFunc("/input", inputWSHandler(em, ready))
+	// Keyboard diagnostics: the viewer batches structural keyboard events (never
+	// field text) here so mobile keyboard issues show up in the proxy log rather
+	// than requiring on-device screenshots. See klog.go.
+	mux.HandleFunc("/klog", klogHTTPHandler())
+	// Screen-geometry hygiene: a fit/magnify viewer resizes the X screen to its own
+	// layout and nothing put it back, so the next session inherited a phone-shaped
+	// screen. Restore the advertised desktop size once the last viewer leaves.
+	// Restore to the BOOT geometry (FB_HEIGHT), not to HEIGHT. Anything shorter
+	// drags the kiosk window down with it, permanently — and a short window means
+	// fit-to-width exposes the black X root, with no way back that does not
+	// un-fullscreen the kiosk and reveal its tab strip. See entrypoint.sh.
+	keeper := newScreenKeeper(screenRestoreDelay, restoreScreenFunc(
+		envInt("WIDTH", 1920), envInt("FB_HEIGHT", envInt("HEIGHT", 1080)), em, log.Printf))
+	keeper.logf = log.Printf
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
-		serveWebsocket(w, r, vnc, ready)
+		serveWebsocket(w, r, vnc, ready, keeper)
 	})
 	mux.HandleFunc("/vnc-ws/", func(w http.ResponseWriter, r *http.Request) {
-		serveWebsocket(w, r, vnc, ready)
+		serveWebsocket(w, r, vnc, ready, keeper)
 	})
 	mux.HandleFunc("/liveview-ws/", func(w http.ResponseWriter, r *http.Request) {
-		serveWebsocket(w, r, vnc, ready)
+		serveWebsocket(w, r, vnc, ready, keeper)
 	})
 	mux.HandleFunc("/", staticHandler(web, ready))
 	return mux
@@ -115,11 +215,15 @@ func (g readyGate) ready() bool {
 	return err == nil
 }
 
-func serveWebsocket(w http.ResponseWriter, r *http.Request, upstream string, ready readyGate) {
+func serveWebsocket(w http.ResponseWriter, r *http.Request, upstream string, ready readyGate, keeper *screenKeeper) {
 	if !ready.ready() {
 		http.Error(w, "app is not ready", http.StatusServiceUnavailable)
 		return
 	}
+	// Bracket the VNC session so the screen geometry a fit/magnify viewer leaves
+	// behind is not inherited by the next one (see screen.go).
+	keeper.connect()
+	defer keeper.disconnect()
 	proxyWebsocket(w, r, upstream)
 }
 
@@ -139,8 +243,95 @@ func staticHandler(root string, ready readyGate) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		// The content-hashed viewer bundle (viewer-<hash>.bundle.js) is safe to cache
+		// forever: a content change yields a new filename, so the browser can never
+		// serve stale logic. Caching it immutably lets a reconnect/reopen skip the
+		// re-download entirely (the win over plain no-store). The .gz sibling served
+		// below inherits this via the same clean path.
+		//
+		// Everything else in the viewer shell (HTML + the raw input/keyboard logic)
+		// changes constantly and is NOT content-hashed. The Dockerfile pins these
+		// files' mtimes to a fixed epoch for reproducible builds, so their
+		// Last-Modified never changes and a browser would 304 to its stale cached
+		// copy forever — even across rebuilds. Force a fresh fetch so a device always
+		// runs the current logic. In particular liveview.html MUST stay no-store: it
+		// carries the current bundle hash, so it has to be re-read every load.
+		base := path.Base(clean)
+		switch {
+		case strings.HasPrefix(base, "viewer-") && strings.HasSuffix(base, ".bundle.js"):
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		case strings.HasSuffix(clean, "/liveview.html") || strings.HasSuffix(clean, "/kbd-autofocus.js") ||
+			strings.HasPrefix(clean, "/kbd/"):
+			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
+		}
+		// Serve a precompressed sibling (.br/.gz) when the client accepts that
+		// encoding and the file exists on disk. The ~500KB viewer bundle is the
+		// cold-start bottleneck over the tunnel; gzip cuts it ~4.5x. Falls through
+		// to the raw file when there's no matching variant or Accept-Encoding.
+		if enc, suffix := precompressedVariant(root, clean, r.Header.Get("Accept-Encoding")); enc != "" {
+			servePrecompressed(w, r, root, clean, suffix, enc)
+			return
+		}
 		files.ServeHTTP(w, r)
 	}
+}
+
+// precompressedVariant picks the best precompressed sibling of root+clean that
+// the client accepts and that exists on disk. Brotli is preferred over gzip.
+// Returns (encoding, filenameSuffix) or ("","") if none applies.
+func precompressedVariant(root, clean, acceptEncoding string) (string, string) {
+	for _, c := range []struct{ enc, suffix string }{{"br", ".br"}, {"gzip", ".gz"}} {
+		if !acceptsEncoding(acceptEncoding, c.enc) {
+			continue
+		}
+		p := filepath.Join(root, filepath.FromSlash(clean)+c.suffix)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return c.enc, c.suffix
+		}
+	}
+	return "", ""
+}
+
+// acceptsEncoding reports whether the Accept-Encoding header lists enc (ignoring
+// q-values; a client that sends the token at all accepts it here).
+func acceptsEncoding(header, enc string) bool {
+	for _, part := range strings.Split(header, ",") {
+		token := strings.TrimSpace(part)
+		if i := strings.IndexByte(token, ';'); i >= 0 {
+			token = strings.TrimSpace(token[:i])
+		}
+		if strings.EqualFold(token, enc) {
+			return true
+		}
+	}
+	return false
+}
+
+// servePrecompressed streams the precompressed sibling with the ORIGINAL file's
+// content type (not the .gz/.br) plus Content-Encoding/Vary, letting the browser
+// transparently decompress. http.ServeContent handles Content-Length and
+// conditional/range requests; any Cache-Control already set is preserved.
+func servePrecompressed(w http.ResponseWriter, r *http.Request, root, clean, suffix, enc string) {
+	p := filepath.Join(root, filepath.FromSlash(clean)+suffix)
+	f, err := os.Open(p)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	ctype := mime.TypeByExtension(filepath.Ext(clean))
+	if ctype == "" {
+		ctype = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Content-Encoding", enc)
+	w.Header().Set("Vary", "Accept-Encoding")
+	http.ServeContent(w, r, filepath.Base(clean), fi.ModTime(), f)
 }
 
 func cdpMux(upstream string, restricted bool, ready readyGate) http.Handler {
@@ -697,6 +888,15 @@ func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
 		return
 	}
 
+	// TCP keepalive is a second-layer half-open detector beneath the app-level
+	// WS pings below: on mobile the carrier NAT / wss tunnel silently drops an
+	// idle mapping, and without this the next keystroke writes into a black hole
+	// that TCP retries for minutes before erroring.
+	if tcp, ok := clientConn.(*net.TCPConn); ok {
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(wsKeepAlivePeriod)
+	}
+
 	accept := websocketAccept(key)
 	_, _ = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\n")
 	_, _ = fmt.Fprintf(rw, "Upgrade: websocket\r\n")
@@ -732,6 +932,23 @@ func websocketAccept(key string) string {
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
+// Liveness tuning for the /websockify bridge. An idle viewer (reading a static
+// page) generates zero RFB traffic for minutes, so we drive our own keepalive:
+//   - wsPingInterval: server->client WS pings keep both NAT directions and the
+//     wss tunnel warm; browsers auto-pong, which refreshes the read deadline.
+//   - wsClientReadDeadline: reap a half-open client that has gone silent (no
+//     data, no pong) so the VNC side is freed and the client's own reconnect
+//     loop can restore the session. Must exceed wsPingInterval*2 like /kbd.
+//   - wsWriteDeadline: bound a stalled frame write so a dead client can't pin
+//     the VNC->client goroutine.
+//   - wsKeepAlivePeriod: TCP-level keepalive as a second-layer detector.
+const (
+	wsPingInterval       = 25 * time.Second
+	wsClientReadDeadline = 75 * time.Second
+	wsWriteDeadline      = 10 * time.Second
+	wsKeepAlivePeriod    = 30 * time.Second
+)
+
 type wsBridge struct {
 	client net.Conn
 	reader *bufio.Reader
@@ -741,6 +958,7 @@ type wsBridge struct {
 
 func (b *wsBridge) run() {
 	done := make(chan struct{}, 2)
+	stopPing := make(chan struct{})
 
 	go func() {
 		b.copyWebsocketToVNC()
@@ -752,13 +970,37 @@ func (b *wsBridge) run() {
 		done <- struct{}{}
 	}()
 
+	go b.pingLoop(stopPing)
+
 	<-done
+	close(stopPing)
 	_ = b.client.Close()
 	_ = b.vnc.Close()
 }
 
+// pingLoop sends server->client WS pings so idle-but-alive connections stay warm
+// and half-open ones surface as a failed write. Stops when the bridge tears down.
+func (b *wsBridge) pingLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			if err := b.writeFrame(0x9, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
 func (b *wsBridge) copyWebsocketToVNC() {
 	for {
+		// Refresh the read deadline on every frame (client keystrokes AND the
+		// auto-pongs to our pings count as liveness), so a silent half-open
+		// client is torn down within wsClientReadDeadline instead of lingering.
+		_ = b.client.SetReadDeadline(time.Now().Add(wsClientReadDeadline))
 		_, opcode, payload, err := readFrame(b.reader)
 		if err != nil {
 			return
@@ -804,6 +1046,7 @@ func (b *wsBridge) copyVNCToWebsocket() {
 }
 
 func (b *wsBridge) writeFrame(opcode byte, payload []byte) error {
+	_ = b.client.SetWriteDeadline(time.Now().Add(wsWriteDeadline))
 	return writeFrameToConn(b.client, &b.mu, opcode, payload, false, true)
 }
 
