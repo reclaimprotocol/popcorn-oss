@@ -147,6 +147,55 @@ func TestNoVNCMuxRequiresReadyFile(t *testing.T) {
 
 }
 
+// Content negotiation for the precompressed viewer bundle. A client that says it
+// CANNOT take an encoding (q=0) and is served it anyway fails to load the bundle,
+// so the whole session is a blank screen — hence pinning the refusal cases, not
+// just the accept ones.
+func TestAcceptsEncodingHonoursQValues(t *testing.T) {
+	for _, tc := range []struct {
+		header string
+		enc    string
+		want   bool
+	}{
+		{"gzip, deflate, br", "br", true},
+		{"gzip, deflate, br", "gzip", true},
+		{"gzip, deflate", "br", false},
+		{"", "gzip", false},
+		{"gzip;q=0", "gzip", false},
+		{"gzip;q=0, identity", "gzip", false},
+		{"br;q=0.0, gzip", "br", false},
+		{"gzip;q=0.001", "gzip", true},
+		{"GZIP;Q=0", "gzip", false},
+		{"gzip ; q=0.5", "gzip", true},
+		// A wildcard covers what is not named; an explicit entry outranks it.
+		{"*", "br", true},
+		{"*;q=0", "br", false},
+		{"*;q=0, gzip", "gzip", true},
+		{"*, br;q=0", "br", false},
+		// A malformed q must not silently disable an encoding the client asked for.
+		{"gzip;q=abc", "gzip", true},
+	} {
+		if got := acceptsEncoding(tc.header, tc.enc); got != tc.want {
+			t.Errorf("acceptsEncoding(%q, %q) = %v, want %v", tc.header, tc.enc, got, tc.want)
+		}
+	}
+}
+
+func TestPrecompressedVariantSkipsRefusedEncoding(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"viewer.js", "viewer.js.gz", "viewer.js.br"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if enc, _ := precompressedVariant(root, "/viewer.js", "br;q=0, gzip"); enc != "gzip" {
+		t.Fatalf("enc = %q, want gzip (br was refused)", enc)
+	}
+	if enc, _ := precompressedVariant(root, "/viewer.js", "br;q=0, gzip;q=0"); enc != "" {
+		t.Fatalf("enc = %q, want the raw file when every variant is refused", enc)
+	}
+}
+
 func TestRestrictedCDPFilter(t *testing.T) {
 	bridge := &cdpBridge{allowed: allowedCDPCommands()}
 

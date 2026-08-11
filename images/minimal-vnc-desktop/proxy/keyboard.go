@@ -51,6 +51,14 @@ type kbdHub struct {
 	// a dialog reply or a popup-close request). Viewers stay unable to broadcast
 	// to other viewers; this is a server-mediated request, not a relay.
 	onViewerMsg func(payload []byte)
+	// mirrorOn is true while at least one connected viewer has ASKED for field-value
+	// mirroring (?mirror=1). The extension publishes the focused field's text only
+	// while this is set, so by default this channel carries structure — rects,
+	// hints, value LENGTH — and never what the user typed into a search box, an
+	// email field or a recovery answer. State, not a relay: it is recomputed from
+	// the connected clients and pushed to the publisher, so a mirror viewer leaving
+	// turns the value stream back off.
+	mirrorOn bool
 	// bridgeToken is handed to the PUBLISHER (the extension) the moment it
 	// connects, and to nobody else. It authenticates the extension's dialog
 	// bridge (see dialog.go): the endpoint is reachable by the remote page too, and
@@ -144,6 +152,10 @@ type kbdClient struct {
 	// signals to other viewers.
 	publisher bool
 
+	// wantsMirror: this viewer asked for field-value mirroring. Guarded by the
+	// hub's mutex (the hub aggregates it), not by mailMu.
+	wantsMirror bool
+
 	mailMu  sync.Mutex
 	pending []byte // latest focus state awaiting write (coalesced)
 	// Dialogs get their OWN slot. Focus state is idempotent, so coalescing to
@@ -155,9 +167,18 @@ type kbdClient struct {
 	// dialog (an OAuth window running a confirm()), so the two states genuinely
 	// coexist and sharing a slot would drop whichever arrived first.
 	pendingPopup []byte
-	notify       chan struct{}
-	closed       chan struct{}
+	// Control frames for the PUBLISHER (dialog-bridge token, mirror on/off). A
+	// short QUEUE rather than a coalescing slot: these are distinct one-shot
+	// messages, so the newer one must not overwrite an undelivered older one.
+	pendingCtl [][]byte
+	notify     chan struct{}
+	closed     chan struct{}
 }
+
+// kbdMaxCtlQueue bounds the publisher control queue. Only the proxy itself writes
+// to it and there are two message kinds, so this is a leak guard, not a limit
+// anything legitimate reaches.
+const kbdMaxCtlQueue = 8
 
 func (h *kbdHub) add(c *kbdClient) {
 	h.mu.Lock()
@@ -173,9 +194,15 @@ func (h *kbdHub) add(c *kbdClient) {
 	// publisher, a new viewer just starts keyboard-down; the extension re-publishes
 	// absolute state on reconnect. Already-connected viewers are untouched here,
 	// so a brief publisher gap (MV3 reconnect) causes no flicker.
-	var last, dlg, pop []byte
+	var last, dlg, pop, mirror []byte
 	if !c.publisher && h.publishers > 0 {
 		last = h.lastState
+	}
+	// A publisher that (re)connects has to be told the current mirror state — the
+	// MV3 worker is torn down and restarted constantly, and it defaults to OFF, so
+	// without this a mid-session extension restart would silently stop mirroring.
+	if c.publisher {
+		mirror = mirrorPayload(h.mirrorOn)
 	}
 	// A dialog resync does NOT depend on a live publisher: the dialog comes from
 	// our own CDP connection, not the extension, and it blocks the page whether
@@ -195,6 +222,9 @@ func (h *kbdHub) add(c *kbdClient) {
 	if pop != nil {
 		c.enqueuePopup(pop)
 	}
+	if mirror != nil {
+		c.enqueueCtl(mirror)
+	}
 }
 
 func (h *kbdHub) remove(c *kbdClient) {
@@ -205,13 +235,73 @@ func (h *kbdHub) remove(c *kbdClient) {
 			h.publishers--
 		}
 	}
+	// A departing mirror viewer must turn the value stream back off, or the
+	// extension would keep publishing field text to whoever is left.
+	pubs, mirror := h.recomputeMirrorLocked()
 	h.mu.Unlock()
+	for _, p := range pubs {
+		p.enqueueCtl(mirror)
+	}
 	select {
 	case <-c.closed:
 	default:
 		close(c.closed)
 	}
 	_ = c.conn.Close()
+}
+
+func mirrorPayload(on bool) []byte {
+	if on {
+		return []byte(`{"mirror":true}`)
+	}
+	return []byte(`{"mirror":false}`)
+}
+
+// recomputeMirrorLocked re-derives the aggregate mirror state from the connected
+// viewers. Returns the publishers to notify and the payload, or (nil, nil) when
+// nothing changed. Caller holds h.mu.
+func (h *kbdHub) recomputeMirrorLocked() ([]*kbdClient, []byte) {
+	want := false
+	for c := range h.clients {
+		if !c.publisher && c.wantsMirror {
+			want = true
+			break
+		}
+	}
+	if want == h.mirrorOn {
+		return nil, nil
+	}
+	h.mirrorOn = want
+	pubs := make([]*kbdClient, 0, 2)
+	for c := range h.clients {
+		if c.publisher {
+			pubs = append(pubs, c)
+		}
+	}
+	return pubs, mirrorPayload(want)
+}
+
+// setMirror records a viewer's mirroring request and pushes the aggregate to the
+// publisher. This is the ONLY way the extension starts publishing field text: the
+// default channel is structural (rects, hints, value length), so a viewer that
+// never asks — and the hub's resync cache — never sees the contents of a search
+// box, an email field or a recovery answer.
+func (h *kbdHub) setMirror(c *kbdClient, payload []byte) {
+	var msg struct {
+		Mirror *struct {
+			On bool `json:"on"`
+		} `json:"mirror"`
+	}
+	if json.Unmarshal(payload, &msg) != nil || msg.Mirror == nil {
+		return
+	}
+	h.mu.Lock()
+	c.wantsMirror = msg.Mirror.On
+	pubs, mirror := h.recomputeMirrorLocked()
+	h.mu.Unlock()
+	for _, p := range pubs {
+		p.enqueueCtl(mirror)
+	}
 }
 
 // publish caches the state and fans it out to every client except the sender
@@ -339,6 +429,29 @@ func (c *kbdClient) takePopup() []byte {
 	return p
 }
 
+// enqueueCtl queues a publisher control frame. Drops the OLDEST if the queue is
+// somehow full, so the newest state (which is the authoritative one) survives.
+func (c *kbdClient) enqueueCtl(payload []byte) {
+	c.mailMu.Lock()
+	if len(c.pendingCtl) >= kbdMaxCtlQueue {
+		c.pendingCtl = c.pendingCtl[1:]
+	}
+	c.pendingCtl = append(c.pendingCtl, payload)
+	c.mailMu.Unlock()
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
+func (c *kbdClient) takeCtl() [][]byte {
+	c.mailMu.Lock()
+	defer c.mailMu.Unlock()
+	p := c.pendingCtl
+	c.pendingCtl = nil
+	return p
+}
+
 func (c *kbdClient) take() []byte {
 	c.mailMu.Lock()
 	defer c.mailMu.Unlock()
@@ -361,6 +474,11 @@ func (c *kbdClient) writeLoop() {
 		case <-c.closed:
 			return
 		case <-c.notify:
+			for _, p := range c.takeCtl() {
+				if err := c.writeFrame(0x1, p); err != nil {
+					return
+				}
+			}
 			if p := c.takeDialog(); p != nil {
 				if err := c.writeFrame(0x1, p); err != nil {
 					return
@@ -449,7 +567,7 @@ func (h *kbdHub) serve(w http.ResponseWriter, r *http.Request, ready readyGate) 
 		h.mu.Unlock()
 		if tok != "" {
 			if b, err := json.Marshal(map[string]string{"bridgeToken": tok}); err == nil {
-				client.enqueueDialog(b) // own mailbox slot: must not be coalesced away
+				client.enqueueCtl(b) // publisher control queue: never coalesced away
 			}
 		}
 	}
@@ -487,6 +605,12 @@ func (h *kbdHub) readLoop(c *kbdClient, reader *bufio.Reader) {
 				if h.onViewerMsg != nil {
 					h.onViewerMsg(payload)
 				}
+			} else if !c.publisher && len(payload) > 0 && len(payload) <= 256 && bytes.Contains(payload, []byte(`"mirror"`)) {
+				// A viewer opting IN to field-value mirroring (?mirror=1). Handled by
+				// the hub rather than relayed: it is aggregated across viewers and
+				// pushed to the publisher, which is what gates whether field text is
+				// published at all. See setMirror.
+				h.setMirror(c, payload)
 			} else if !c.publisher && len(payload) > 0 && len(payload) <= 64 && bytes.Contains(payload, []byte(`"ping"`)) {
 				// Viewer RTT probe: echo it straight back to the sender only (not
 				// broadcast) so the viewer can measure tunnel round-trip time and

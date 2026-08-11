@@ -239,6 +239,14 @@
     }
 
     function choose(sel, index) {
+      // Re-check selectability at commit time: the row could have been rendered
+      // before script disabled the option (or its group), and firing input/change
+      // for a forbidden value is worse than doing nothing.
+      const opt = index >= 0 && index < sel.options.length ? sel.options[index] : null;
+      if (opt && (opt.disabled || (opt.parentElement && opt.parentElement.tagName === 'OPTGROUP' && opt.parentElement.disabled))) {
+        close();
+        return;
+      }
       if (index >= 0 && index < sel.options.length) {
         sel.selectedIndex = index;
         sel.dispatchEvent(new Event('input', { bubbles: true }));
@@ -277,6 +285,7 @@
       for (let i = 0; i < kids.length; i++) {
         const node = kids[i];
         if (node.tagName === 'OPTGROUP') {
+          if (node.hidden) continue; // hidden group: no header, no options
           const g = document.createElement('div');
           g.className = 'pcn_grp';
           g.textContent = node.label || '';
@@ -288,12 +297,34 @@
         }
       }
 
+      // An option is unselectable if IT is disabled or its <optgroup> is:
+      // HTMLOptionElement.disabled reflects only the option's own attribute, so
+      // reading it alone rendered every child of a disabled group as tappable and
+      // fired input/change for a choice the native control forbids.
+      function optDisabled(opt) {
+        if (opt.disabled) return true;
+        const p = opt.parentElement;
+        return !!(p && p.tagName === 'OPTGROUP' && p.disabled);
+      }
+
+      // Hidden options are absent from the native dropdown, so they must be absent
+      // here too — sites hide the "please choose" placeholder or filter a dependent
+      // list this way. Only the option's OWN hidden/inline display is consulted:
+      // getComputedStyle on every row would cost a full style resolve per option,
+      // and this picker exists for selects with thousands of them.
+      function optHidden(opt) {
+        if (opt.hidden) return true;
+        try { return opt.style && opt.style.display === 'none'; } catch (_) { return false; }
+      }
+
       function addOpt(opt, grouped) {
+        if (optHidden(opt)) return;
         const row = document.createElement('div');
         const text = opt.textContent || opt.label || '';
+        const disabled = optDisabled(opt);
         row.className = 'pcn_opt' + (grouped ? ' pcn_grpitem' : '') +
-          (opt.selected ? ' pcn_sel' : '') + (opt.disabled ? ' pcn_dis' : '');
-        if (!opt.disabled) row.dataset.idx = String(opt.index);
+          (opt.selected ? ' pcn_sel' : '') + (disabled ? ' pcn_dis' : '');
+        if (!disabled) row.dataset.idx = String(opt.index);
         row.dataset.text = text.toLowerCase();
         const label = document.createElement('span');
         label.textContent = text;
@@ -642,29 +673,67 @@
   // maxTouchPoints=0 on a desktop Windows persona. Keep this scoped to the media
   // features that describe browser shell/input mode; everything else returns the
   // native MediaQueryList.
+  // The override REWRITES the feature it owns and lets the engine evaluate the
+  // rest. Forcing `matches` on the whole query instead (the first version) threw
+  // the query's logic away: '(display-mode: browser) and (min-width: 9999px)'
+  // answered true because the text contained "browser", and 'not (display-mode:
+  // browser)' answered true as well — a page combining features got nonsense, and
+  // an inverted query got the exact opposite of the persona. Substituting an
+  // always-true / always-false primitive keeps `not`, `and`, commas, and every
+  // other feature working natively.
   try {
+    const M_TRUE = '(min-width:0px)';   // no viewport is narrower than 0
+    const M_FALSE = '(max-width:0px)';  // and none is 0 wide either
+    const DISPLAY_MODES = /^(browser|standalone|minimal-ui|fullscreen|window-controls-overlay|picture-in-picture)$/;
+    // What this persona — a normal desktop Chrome window with a touch monitor —
+    // reports for the features the kiosk/Xvnc stack answers wrongly. null = leave
+    // the feature to the engine (an unknown or invalid value must keep its native
+    // meaning, which for an invalid query is "no match").
+    function personaMatches(feature, value) {
+      switch (feature) {
+        case 'display-mode':
+          return DISPLAY_MODES.test(value) ? value === 'browser' : null;
+        case 'pointer': case 'any-pointer':
+          if (value === 'fine') return true;
+          if (value === 'coarse' || value === 'none') return false;
+          return null;
+        case 'hover': case 'any-hover':
+          if (value === 'hover') return true;
+          if (value === 'none') return false;
+          return null;
+        default: return null;
+      }
+    }
+    // Case-insensitive: CSS media feature names and keywords both are, so a page
+    // asking '(DISPLAY-MODE: Browser)' must get the same answer.
+    const FEATURE_RE = /\(\s*(display-mode|any-pointer|pointer|any-hover|hover)\s*:\s*([a-zA-Z-]+)\s*\)/gi;
+    // Boolean form: '(pointer)' asks whether the feature is anything but none, and
+    // '(hover)' likewise. A desktop persona answers yes to both. display-mode has
+    // no meaningful boolean form (a value is always present), so it stays native.
+    const BOOL_RE = /\(\s*(any-pointer|pointer|any-hover|hover)\s*\)/gi;
+    function rewrite(q) {
+      return q
+        .replace(FEATURE_RE, function (whole, feature, value) {
+          const m = personaMatches(feature.toLowerCase(), value.toLowerCase());
+          if (m === null) return whole;
+          return m ? M_TRUE : M_FALSE;
+        })
+        .replace(BOOL_RE, M_TRUE);
+    }
     const realMatchMedia = window.matchMedia.bind(window);
     window.matchMedia = function (q) {
-      const mql = realMatchMedia(q);
-      if (typeof q === 'string') {
-        let override = null;
-        if (/\bdisplay-mode\b/i.test(q)) {
-          override = /\bbrowser\b/i.test(q);
-        } else if (/\bany-pointer\s*:\s*fine\b/i.test(q) || /\bpointer\s*:\s*fine\b/i.test(q)) {
-          override = true;
-        } else if (/\bany-pointer\s*:\s*coarse\b/i.test(q) || /\bpointer\s*:\s*coarse\b/i.test(q)) {
-          override = false;
-        } else if (/\bany-hover\s*:\s*hover\b/i.test(q) || /\bhover\s*:\s*hover\b/i.test(q)) {
-          override = true;
-        } else if (/\bany-hover\s*:\s*none\b/i.test(q) || /\bhover\s*:\s*none\b/i.test(q)) {
-          override = false;
-        }
-        if (override !== null) {
-          try {
-            Object.defineProperty(mql, 'matches', { get: () => override, configurable: true });
-          } catch (_) {}
-        }
-      }
+      if (typeof q !== 'string') return realMatchMedia(q);
+      const rewritten = rewrite(q);
+      if (rewritten === q) return realMatchMedia(q);
+      const mql = realMatchMedia(rewritten);
+      // `media` must read back as the ORIGINAL query, not our rewrite: pages echo
+      // it (and compare it) and the substitution would otherwise be visible. Taken
+      // from the engine so it carries the same serialization a native call would.
+      // change events keep working, since they come from the real MediaQueryList.
+      try {
+        const shown = realMatchMedia(q).media;
+        Object.defineProperty(mql, 'media', { get: () => shown, configurable: true });
+      } catch (_) {}
       return mql;
     };
   } catch (_) {}

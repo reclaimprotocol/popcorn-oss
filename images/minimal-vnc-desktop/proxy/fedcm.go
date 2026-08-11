@@ -123,23 +123,25 @@ func (e *emulator) answerFedcm(seq uint64, accept bool, accountIndex int) bool {
 		return false
 	}
 	sid, did := e.fedcm.session, e.fedcm.dialogID
-	e.fedcm.session, e.fedcm.dialogID, e.fedcm.accounts = "", "", 0
 	e.fedcm.mu.Unlock()
 
-	if accept {
-		e.enqueueCmd(cdpCmd{
-			method:  "FedCm.selectAccount",
-			params:  map[string]any{"dialogId": did, "accountIndex": accountIndex},
-			session: sid,
-		})
-	} else {
-		e.enqueueCmd(cdpCmd{
+	// State is held until the command is actually queued. Dropping it first meant a
+	// saturated CDP queue could swallow the selection while the viewer's sheet was
+	// already gone, leaving Chrome's own chooser on screen with nothing able to
+	// answer it. FedCm.dialogClosed clears the state for real.
+	cmd := cdpCmd{
+		method:  "FedCm.selectAccount",
+		params:  map[string]any{"dialogId": did, "accountIndex": accountIndex},
+		session: sid,
+	}
+	if !accept {
+		cmd = cdpCmd{
 			method: "FedCm.dismissDialog",
 			// triggerCooldown:false — see the note above. Cancelling our sheet must not
 			// suppress FedCM for the site.
 			params:  map[string]any{"dialogId": did, "triggerCooldown": false},
 			session: sid,
-		})
+		}
 	}
-	return true
+	return e.enqueueCmdWait(cmd, dialogEnqueueWait)
 }

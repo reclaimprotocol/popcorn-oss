@@ -174,6 +174,8 @@ func TestKbdHubViewerMsgAllowlist(t *testing.T) {
 	}{
 		{"dialog reply", `{"dialogReply":{"seq":1,"accept":true}}`, true},
 		{"popup close", `{"popupClose":{"seq":1}}`, true},
+		// Handled by the hub itself (mirror state), so it must NOT reach onViewerMsg.
+		{"mirror opt-in", `{"mirror":{"on":true}}`, false},
 		{"unknown control frame", `{"somethingElse":{"seq":1}}`, false},
 		{"focus signal from a viewer", `{"editable":true}`, false},
 	} {
@@ -212,6 +214,77 @@ func TestKbdHubViewerMsgAllowlist(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Field-value mirroring is OFF unless a viewer asks, and the extension keys its
+// value publishing off this flag — so a hub that fails to push it either leaks
+// field text by default (flag stuck on) or breaks the iOS mirror seed (stuck off).
+func TestMirrorStateIsPushedToPublisherOnly(t *testing.T) {
+	hub := newKbdHub()
+
+	pub, pubReader, pubConn := newTestClient()
+	pub.publisher = true
+	defer pubConn.Close()
+	hub.add(pub)
+	// A publisher is told the current state as soon as it connects (the MV3 worker
+	// restarts constantly and defaults to off).
+	if got := readText(t, pubReader, pubConn); got != `{"mirror":false}` {
+		t.Fatalf("publisher first frame = %q, want the current mirror state", got)
+	}
+
+	viewer, viewerReader, viewerConn := newTestClient()
+	defer viewerConn.Close()
+	hub.add(viewer)
+
+	hub.setMirror(viewer, []byte(`{"mirror":{"on":true}}`))
+	if got := readText(t, pubReader, pubConn); got != `{"mirror":true}` {
+		t.Fatalf("publisher got %q, want the mirror opt-in", got)
+	}
+	// Viewers never see the control frame; it is not a relay.
+	_ = viewerConn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, opcode, payload, err := readFrame(viewerReader); err == nil && opcode == 0x1 {
+		t.Fatalf("viewer received a publisher control frame: %s", payload)
+	}
+
+	// The last mirror viewer leaving turns the value stream back off.
+	hub.remove(viewer)
+	if got := readText(t, pubReader, pubConn); got != `{"mirror":false}` {
+		t.Fatalf("publisher got %q after the mirror viewer left", got)
+	}
+}
+
+func TestMirrorStateOnlyPushedOnChange(t *testing.T) {
+	hub := newKbdHub()
+	pub, pubReader, pubConn := newTestClient()
+	pub.publisher = true
+	defer pubConn.Close()
+	hub.add(pub)
+	readText(t, pubReader, pubConn) // the connect-time state
+
+	viewerA, _, connA := newTestClient()
+	viewerB, _, connB := newTestClient()
+	defer connA.Close()
+	defer connB.Close()
+	hub.add(viewerA)
+	hub.add(viewerB)
+
+	hub.setMirror(viewerA, []byte(`{"mirror":{"on":true}}`))
+	if got := readText(t, pubReader, pubConn); got != `{"mirror":true}` {
+		t.Fatalf("got %q", got)
+	}
+	hub.setMirror(viewerB, []byte(`{"mirror":{"on":true}}`))
+	// B leaving must NOT turn mirroring off while A still wants it.
+	hub.remove(viewerB)
+	_ = pubConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	for {
+		_, opcode, payload, err := readFrame(pubReader)
+		if err != nil {
+			break // nothing but (at most) pings arrived — correct
+		}
+		if opcode == 0x1 {
+			t.Fatalf("redundant mirror push: %s", payload)
+		}
 	}
 }
 

@@ -140,19 +140,26 @@ export function createFieldSession({
     // val doesn't end in a space (the space isn't in the field at all) or a
     // specific guard is wrong.
     const hasVal = typeof sync.val === 'string';
+    // The text itself only arrives in mirror mode; `tail` is the structural flag the
+    // extension always publishes for exactly this check, so the repair works on the
+    // default value-free channel too.
+    const hasTail = typeof sync.tail === 'boolean';
+    const endsWithSpace = hasTail ? sync.tail : (hasVal && / $/.test(sync.val));
+    const knowsTail = hasTail || hasVal;
     const ours = getKeyboardActive() || document.activeElement === getProxy();
-    if (hasVal && ours) {
-      const shape = 'vlen=' + sync.val.length + ' tail=' + (/ $/.test(sync.val) ? 1 : 0) +
+    if (knowsTail && ours) {
+      const shape = 'vlen=' + (hasVal ? sync.val.length : (typeof sync.len === 'number' ? sync.len : -1)) +
+        ' tail=' + (endsWithSpace ? 1 : 0) +
         ' ns=' + (fieldRejectsSpace() ? 1 : 0) + ' sens=' + (sensitiveField ? 1 : 0) +
         ' comp=' + (input.composing() ? 1 : 0) + ' echo=' + (echo.hasText() ? 1 : 0) +
         ' idle=' + Math.round(nowMs() - input.lastInputAt()) + ' n=' + spaceRepairs;
       // A trailing space that we then DON'T repair is the whole bug, so that case
       // is worth a normal-tier line (rare by construction); everything else is
       // verbose. Lengths and flags only, never content.
-      if (/ $/.test(sync.val)) dbg('sp! ' + shape); else dbgv('sp? ' + shape);
+      if (endsWithSpace) dbg('sp! ' + shape); else dbgv('sp? ' + shape);
     }
     if (sensitiveField || !fieldRejectsSpace()) return;
-    if (!hasVal || !/ $/.test(sync.val)) return;
+    if (!knowsTail || !endsWithSpace) return;
     // Only a field we're actually typing into (touch latches keyboardActive;
     // desktop keeps the proxy focused).
     if (!getKeyboardActive() && document.activeElement !== getProxy()) return;
@@ -165,16 +172,19 @@ export function createFieldSession({
     if (key !== spaceRepairKey) { spaceRepairKey = key; spaceRepairs = 0; }
     if (spaceRepairs >= SPACE_REPAIR_MAX) return;
     spaceRepairs++;
-    dbg('trailing-space repair vlen=' + sync.val.length + ' try=' + spaceRepairs);
+    dbg('trailing-space repair vlen=' + (hasVal ? sync.val.length : sync.len) + ' try=' + spaceRepairs);
     sendSpecialKey('Backspace');
     // Keep our local baseline in step with the remote we just edited, or the next
     // diff re-adds the space (mirror: the proxy holds the whole field, so adopt
     // the trimmed text; otherwise the proxy holds only the current word, and a
     // word-boundary reset is what makes the following keystrokes append cleanly).
-    const trimmed = sync.val.slice(0, -1);
-    remoteValue = trimmed;
-    if (mirrorOn()) input.adoptRemoteValue(trimmed);
-    else input.clearProxy();
+    // Without mirroring there is no text to adopt — and nothing that needs it.
+    if (hasVal) {
+      const trimmed = sync.val.slice(0, -1);
+      remoteValue = trimmed;
+      if (mirrorOn()) { input.adoptRemoteValue(trimmed); return; }
+    }
+    input.clearProxy();
   }
 
   // Grace window for a transient editable:false. Pages that blur field A then

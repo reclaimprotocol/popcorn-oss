@@ -90,6 +90,24 @@ test('bounded: a page that keeps re-adding the space stops being backspaced', as
   assert.deepEqual(rfb.tapped(), [BS, BS, BS], 'SPACE_REPAIR_MAX attempts, then it gives up');
 });
 
+// The DEFAULT channel carries no field text at all (background.js strips sync.val
+// unless a ?mirror=1 viewer asked for it), so the repair runs off the structural
+// `tail` flag. These two pin that path: without them the repair would silently do
+// nothing for every non-mirror session, which is all of them.
+test('the value-free channel still repairs, using the tail flag', async () => {
+  const { rfb } = await raised();
+  rfb.clearKeys();
+  signal({ len: 23, tail: true });
+  assert.deepEqual(rfb.tapped(), [BS]);
+});
+
+test('tail:false on the value-free channel sends nothing', async () => {
+  const { rfb } = await raised();
+  rfb.clearKeys();
+  signal({ len: 22, tail: false });
+  assert.deepEqual(rfb.tapped(), []);
+});
+
 test('the attempt budget resets for a different field', async () => {
   const { rfb } = await raised();
   rfb.clearKeys();

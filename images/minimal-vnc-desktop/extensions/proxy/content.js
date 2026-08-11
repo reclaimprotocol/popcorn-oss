@@ -620,9 +620,15 @@
       // nothing to correct or replace); handing the real text back gives every
       // keyboard genuine context. Capped so a huge textarea can't bloat the focus
       // message; secret fields still send neither length nor value.
+      // val is stripped by background.js unless a viewer explicitly asked for
+      // mirroring, so the default wire state carries only the two DERIVED facts the
+      // keyboard logic needs: the length (drift detection) and whether the text ends
+      // in a space (the trailing-space repair). Both are computed here because only
+      // this frame can see the field.
       sync: {
         sensitive,
         len: sensitive ? undefined : value.length,
+        tail: sensitive ? undefined : / $/.test(value),
         val: sensitive ? undefined : (value.length > 2048 ? value.slice(0, 2048) : value),
       },
     };

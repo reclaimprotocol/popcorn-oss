@@ -76,10 +76,17 @@ type emulator struct {
 	// decision). See fedcm.go.
 	fedcm fedcmState
 
-	dlgMu      sync.Mutex
-	dlgSession string // session whose dialog is open ("" when none)
-	dlgSeq     uint64 // identifies a dialog so a stale reply can't answer a new one
-	onDialog   func(payload []byte, open bool)
+	// One entry per BLOCKED target, keyed by CDP sessionId. Chrome allows at most
+	// one dialog per target but several top-level pages are attached at once (main
+	// tab + content tabs + navigated popups), so a confirm() in each is genuinely
+	// concurrent. A single global slot let the second dialog overwrite the first,
+	// and the first page then stayed blocked with nothing left to answer or resync
+	// it with. dlgSeq is global and monotonic, so a sequence number identifies one
+	// dialog on one target and a reply can never be applied to another target's.
+	dlgMu    sync.Mutex
+	dlgSeq   uint64
+	dialogs  map[string]*openDialog
+	onDialog func(payload []byte, open bool)
 
 	// ---- secondary windows ---------------------------------------------------
 	// A sign-in flow ("Continue with Google", payment flows) puts a SECOND
@@ -115,6 +122,16 @@ type cdpCmd struct {
 	session string
 }
 
+// openDialog is a JS dialog currently blocking one target. The open payload is
+// kept so that closing ONE dialog can restore the sheet/resync cache for another
+// that is still blocking a different page — the viewer and the hub hold a single
+// dialog state, so a close is otherwise read as "no dialog anywhere".
+type openDialog struct {
+	seq     uint64
+	session string
+	payload []byte
+}
+
 // setDialogSink installs the fan-out used to tell viewers about a dialog.
 func (e *emulator) setDialogSink(f func(payload []byte, open bool)) {
 	e.dlgMu.Lock()
@@ -123,18 +140,32 @@ func (e *emulator) setDialogSink(f func(payload []byte, open bool)) {
 }
 
 // noteDialogOpen records the dialog and returns its sequence number. An
-// informational one (alert, already accepted natively) leaves dlgSession empty:
-// there is nothing left to answer, so a later reply must not resolve anything.
+// informational one (alert, already accepted natively) is NOT recorded: there is
+// nothing left to answer, so a later reply must not resolve anything.
 func (e *emulator) noteDialogOpen(sessionID string, informational bool) uint64 {
 	e.dlgMu.Lock()
 	defer e.dlgMu.Unlock()
 	e.dlgSeq++
-	if informational {
-		e.dlgSession = ""
-	} else {
-		e.dlgSession = sessionID
+	if !informational {
+		if e.dialogs == nil {
+			e.dialogs = make(map[string]*openDialog)
+		}
+		e.dialogs[sessionID] = &openDialog{seq: e.dlgSeq, session: sessionID}
 	}
 	return e.dlgSeq
+}
+
+// rememberDialogPayload stores the state broadcast for a dialog so it can be
+// republished when an unrelated dialog closes (see forgetDialog).
+func (e *emulator) rememberDialogPayload(seq uint64, payload []byte) {
+	e.dlgMu.Lock()
+	defer e.dlgMu.Unlock()
+	for _, d := range e.dialogs {
+		if d.seq == seq {
+			d.payload = payload
+			return
+		}
+	}
 }
 
 func (e *emulator) dialogSink() func([]byte, bool) {
@@ -143,39 +174,101 @@ func (e *emulator) dialogSink() func([]byte, bool) {
 	return e.onDialog
 }
 
-// answerDialog resolves the open dialog. `seq` must match the dialog currently
-// open: on a slow link a reply for a DISMISSED dialog can arrive after the page
-// has opened another one (a validation loop fires alert() repeatedly), and
-// answering the new dialog with the old tap would accept something the user never
-// saw. A mismatched or absent dialog is dropped.
+// answerDialog resolves the dialog identified by `seq`. The sequence number must
+// match a dialog that is still open: on a slow link a reply for a DISMISSED
+// dialog can arrive after the page has opened another one (a validation loop
+// fires alert() repeatedly), and answering the new dialog with the old tap would
+// accept something the user never saw. A mismatched or absent dialog is dropped.
+//
+// Reports whether the answer was really dispatched. The dialog is deliberately
+// NOT forgotten here: Chrome's Page.javascriptDialogClosed is the only proof it
+// closed, and clearing state before that (as an earlier version did) meant a
+// command dropped by a saturated CDP queue left Chrome blocked with the viewer's
+// sheet gone and nothing cached to resync. Keeping the entry lets the viewer tap
+// again and a reconnecting viewer see the dialog that is still blocking the page.
 func (e *emulator) answerDialog(seq uint64, accept bool, text string) bool {
 	e.dlgMu.Lock()
-	if e.dlgSession == "" || seq != e.dlgSeq {
+	var target *openDialog
+	for _, d := range e.dialogs {
+		if d.seq == seq {
+			target = d
+			break
+		}
+	}
+	if target == nil {
 		e.dlgMu.Unlock()
 		return false
 	}
-	sid := e.dlgSession
-	e.dlgSession = ""
+	sid := target.session
 	e.dlgMu.Unlock()
 
 	p := map[string]any{"accept": accept}
 	if accept && text != "" {
 		p["promptText"] = text
 	}
-	e.enqueueCmd(cdpCmd{method: "Page.handleJavaScriptDialog", params: p, session: sid})
-	return true
+	return e.enqueueCmdWait(cdpCmd{method: "Page.handleJavaScriptDialog", params: p, session: sid}, dialogEnqueueWait)
 }
 
-// forgetDialog clears dialog state without answering (target detached / the page
-// navigated out from under it), so a later reply can't be applied to nothing.
-func (e *emulator) forgetDialog(sessionID string) bool {
+// resetDialogs drops every tracked dialog when the CDP connection dies. Their
+// sessionIds die with it, so nothing could answer them afterwards; leaving the
+// state would strand a sheet — and the resync cache behind it — on a dialog no
+// reply can ever reach.
+func (e *emulator) resetDialogs() {
+	e.dlgMu.Lock()
+	had := len(e.dialogs) > 0
+	e.dialogs = nil
+	e.dlgMu.Unlock()
+	if !had {
+		return
+	}
+	if sink := e.dialogSink(); sink != nil {
+		if b, err := json.Marshal(map[string]any{"dialog": map[string]any{"open": false}}); err == nil {
+			sink(b, false)
+		}
+	}
+}
+
+// forgetDialog clears one target's dialog state without answering (Chrome
+// reported it closed, the target detached, or the page navigated out from under
+// it), so a later reply can't be applied to nothing. Returns whether anything was
+// forgotten plus the newest dialog STILL blocking another target, whose state has
+// to be republished because the viewer holds only one dialog at a time.
+func (e *emulator) forgetDialog(sessionID string) (bool, []byte) {
 	e.dlgMu.Lock()
 	defer e.dlgMu.Unlock()
-	if e.dlgSession == "" || (sessionID != "" && e.dlgSession != sessionID) {
-		return false
+	if _, ok := e.dialogs[sessionID]; !ok {
+		return false, nil
 	}
-	e.dlgSession = ""
-	return true
+	delete(e.dialogs, sessionID)
+	var newest *openDialog
+	for _, d := range e.dialogs {
+		if newest == nil || d.seq > newest.seq {
+			newest = d
+		}
+	}
+	if newest == nil {
+		return true, nil
+	}
+	return true, newest.payload
+}
+
+// publishDialogClosed tells viewers a target's dialog is gone, then restores any
+// dialog still blocking another target.
+func (e *emulator) publishDialogClosed(sessionID string) {
+	forgotten, remaining := e.forgetDialog(sessionID)
+	if !forgotten {
+		return
+	}
+	sink := e.dialogSink()
+	if sink == nil {
+		return
+	}
+	if b, err := json.Marshal(map[string]any{"dialog": map[string]any{"open": false}}); err == nil {
+		sink(b, false)
+	}
+	if remaining != nil {
+		sink(remaining, true)
+	}
 }
 
 // setPopupSink installs the fan-out used to tell viewers about a popup window.
@@ -405,22 +498,40 @@ func (e *emulator) queueImportant(method string, params map[string]any) {
 	}
 }
 
+// cmdEnqueueWait bounds a generic queued command; dialogEnqueueWait bounds one
+// whose loss WEDGES the page (a dialog answer). The long bound is affordable
+// because a dialog answer is a single human-paced event, and losing it is the
+// expensive outcome: Chrome stays blocked until something else answers.
+const (
+	cmdEnqueueWait    = 200 * time.Millisecond
+	dialogEnqueueWait = 3 * time.Second
+)
+
 // enqueueCmd queues a command for a SPECIFIC session (queueImportant always
 // targets the foreground one). A dialog must be answered on the session that
 // raised it, which may not be the foreground target — a popup can block on its
 // own alert. Bounded wait, then dropped, so a wedged consumer can't pin the
-// caller; the viewer can tap OK again.
-func (e *emulator) enqueueCmd(cmd cdpCmd) {
+// caller.
+func (e *emulator) enqueueCmd(cmd cdpCmd) bool {
+	return e.enqueueCmdWait(cmd, cmdEnqueueWait)
+}
+
+// enqueueCmdWait is enqueueCmd with an explicit bound. Reports whether the
+// command was queued, so a caller whose state depends on it (a dialog answer)
+// can keep that state instead of assuming the command went out.
+func (e *emulator) enqueueCmdWait(cmd cdpCmd, wait time.Duration) bool {
 	select {
 	case e.cmds <- cmd:
-		return
+		return true
 	default:
 	}
-	timer := time.NewTimer(200 * time.Millisecond)
+	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case e.cmds <- cmd:
+		return true
 	case <-timer.C:
+		return false
 	}
 }
 
@@ -743,7 +854,9 @@ func (e *emulator) session() error {
 		send("Emulation.setTouchEmulationEnabled", map[string]any{"enabled": p.Touch, "maxTouchPoints": tp}, sessionID)
 	}
 
-	sessions := map[string]bool{} // page sessionId -> true
+	sessions := map[string]bool{}     // page sessionId -> true
+	sessTarget := map[string]string{} // page sessionId -> targetId
+	attached := map[string]bool{}     // targetIds we have already asked to attach
 
 	// DISCOVER targets without auto-attaching. Auto-attach grabs EVERY new
 	// target, including popups (window.open — OAuth "Continue with Google",
@@ -759,9 +872,59 @@ func (e *emulator) session() error {
 		if op, _ := ti["openerId"].(string); op != "" {
 			return // popup — leave native
 		}
-		if tid, _ := ti["targetId"].(string); tid != "" {
+		if tid, _ := ti["targetId"].(string); tid != "" && !attached[tid] {
+			attached[tid] = true
 			send("Target.attachToTarget", map[string]any{"targetId": tid, "flatten": true}, "")
 		}
+	}
+
+	// A popup that has NAVIGATED is safe to attach, and has to be: input routing
+	// follows attached sessions, so an unattached popup in front of the user sent
+	// every touch to the hidden page underneath — an OAuth/payment window was
+	// unusable on a phone, where /input is the only way to interact at all.
+	//
+	// Still not attached while BLANK: the opener drives that first navigation
+	// (GSI opens about:blank then navigates it cross-origin), and a debugging
+	// session severs it, so the window would open blank and stay blank. Once a real
+	// URL is loaded that navigation has already happened, so attaching here keeps
+	// the flow intact — and the window gets mobile emulation like any other page.
+	//
+	// Gated on touch emulation: that is exactly the mode whose input depends on a
+	// session (a plain desktop viewer drives these windows with real VNC mouse
+	// events, which need no CDP target at all), so a non-magnify session keeps the
+	// previous fully-native popup behaviour.
+	attachNavigatedPopup := func(ti map[string]any) {
+		if t, _ := ti["type"].(string); t != "page" {
+			return
+		}
+		tid, _ := ti["targetId"].(string)
+		if tid == "" || attached[tid] {
+			return
+		}
+		u, _ := ti["url"].(string)
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			return
+		}
+		if p := e.current(); p == nil || !p.Touch {
+			return
+		}
+		attached[tid] = true
+		send("Target.attachToTarget", map[string]any{"targetId": tid, "flatten": true}, "")
+	}
+
+	// foreground picks the session of the NEWEST tracked page, so input falls back
+	// to the window actually in front of the user rather than to whichever map entry
+	// came out first (which could be a background tab).
+	foreground := func() string {
+		pages := e.pageTargets()
+		for i := len(pages) - 1; i >= 0; i-- {
+			for sid, tid := range sessTarget {
+				if tid == pages[i] && sessions[sid] {
+					return sid
+				}
+			}
+		}
+		return ""
 	}
 	send("Target.setDiscoverTargets", map[string]any{"discover": true}, "")
 	send("Target.getTargets", map[string]any{}, "")
@@ -789,8 +952,10 @@ func (e *emulator) session() error {
 		}
 	}()
 
-	// Ensure active session is cleared when this connection dies.
+	// Ensure active session and dialog state are cleared when this connection dies
+	// — both are keyed by sessionIds that do not survive it.
 	defer e.setActive("")
+	defer e.resetDialogs()
 
 	// Kiosk fullscreen watchdog. Chrome's tab strip shows ONLY when a window is in
 	// windowState 'normal' (measured: 'fullscreen' and 'maximized' are chromeless,
@@ -859,7 +1024,8 @@ func (e *emulator) session() error {
 					if t == "page" && op != "" {
 						if tid != "" {
 							send("Browser.getWindowForTarget", map[string]any{"targetId": tid}, "")
-							if url != "" && url != "about:blank" {
+							if url != "" && url != "about:blank" && !attached[tid] {
+								attached[tid] = true
 								send("Target.attachToTarget", map[string]any{"targetId": tid, "flatten": true}, "")
 							}
 						}
@@ -867,15 +1033,27 @@ func (e *emulator) session() error {
 						attachIfMain(ti)
 					}
 				}
+			case "Target.targetInfoChanged":
+				// Discovery reports every url change, which is how we learn that a blank
+				// popup has become a real page — the moment it is safe to attach one.
+				params, _ := m["params"].(map[string]any)
+				if ti, _ := params["targetInfo"].(map[string]any); ti != nil {
+					attachNavigatedPopup(ti)
+				}
 			case "Target.attachedToTarget":
 				params, _ := m["params"].(map[string]any)
 				ti, _ := params["targetInfo"].(map[string]any)
 				sid, _ := params["sessionId"].(string)
-				// attachedToTarget only fires for targets we explicitly attached
-				// (main tab + real-URL content tabs) — OAuth blank popups are never
-				// attached — so emulate whatever arrives here.
+				// attachedToTarget only fires for targets we explicitly attached (main
+				// tab, real-URL content tabs, and a popup once it has NAVIGATED) — never a
+				// blank popup, whose opener-driven navigation a debugging session would
+				// sever — so emulate whatever arrives here.
 				if t, _ := ti["type"].(string); t == "page" && sid != "" {
 					sessions[sid] = true
+					if tid, _ := ti["targetId"].(string); tid != "" {
+						sessTarget[sid] = tid
+						attached[tid] = true
+					}
 					e.setActive(sid) // newest page is the foreground one
 					applyTo(sid)     // apply now for the current document
 					// The override usually persists per target, but a FULL cross-
@@ -921,11 +1099,12 @@ func (e *emulator) session() error {
 					informational := dtype == "alert"
 					seq := e.noteDialogOpen(sid, informational)
 					if informational {
-						e.enqueueCmd(cdpCmd{
-							method:  "Page.handleJavaScriptDialog",
-							params:  map[string]any{"accept": true},
-							session: sid,
-						})
+						// Written STRAIGHT to the socket, not queued. We are on the
+						// connection's own goroutine — the one that drains e.cmds — so a
+						// queued send could be dropped (or block the drain) exactly when
+						// this accept is the only thing that unblocks the page, and the
+						// sheet we show for it has no answer button to retry with.
+						send("Page.handleJavaScriptDialog", map[string]any{"accept": true}, sid)
 					}
 					if sink := e.dialogSink(); sink != nil {
 						// The ORIGIN is part of the payload on purpose: Chromium's own
@@ -941,6 +1120,11 @@ func (e *emulator) session() error {
 							},
 						})
 						if err == nil {
+							// Kept so this dialog can be restored if a dialog on ANOTHER
+							// target closes and clears the viewer's single sheet.
+							if !informational {
+								e.rememberDialogPayload(seq, b)
+							}
 							// A blocking dialog is CACHED for resync (a viewer that
 							// reconnects mid-dialog must learn the page is stuck). A
 							// notification is not: the page is already running, so
@@ -956,15 +1140,12 @@ func (e *emulator) session() error {
 				// Only for a dialog that was really blocking. An alert we accepted
 				// natively closes within milliseconds, and broadcasting a close for it
 				// would tear the notification sheet down before it could be read —
-				// forgetDialog returns false for those, since they hold no session.
+				// forgetDialog returns false for those, since they were never recorded.
+				// This is also the ONLY place a viewer's answer is confirmed: the reply
+				// path dispatches handleJavaScriptDialog and leaves the state alone, so
+				// the sheet comes down when Chrome really closed the dialog.
 				sid, _ := m["sessionId"].(string)
-				if e.forgetDialog(sid) {
-					if sink := e.dialogSink(); sink != nil {
-						if b, err := json.Marshal(map[string]any{"dialog": map[string]any{"open": false}}); err == nil {
-							sink(b, false)
-						}
-					}
-				}
+				e.publishDialogClosed(sid)
 			case "FedCm.dialogShown":
 				params, _ := m["params"].(map[string]any)
 				sid, _ := m["sessionId"].(string)
@@ -1047,6 +1228,12 @@ func (e *emulator) session() error {
 				params, _ := m["params"].(map[string]any)
 				if sid, _ := params["sessionId"].(string); sid != "" {
 					delete(sessions, sid)
+					if tid := sessTarget[sid]; tid != "" {
+						// Re-attachable: a target that detaches without being destroyed
+						// (crash, session teardown) has to be reachable again.
+						delete(attached, tid)
+						delete(sessTarget, sid)
+					}
 					// A closed tab takes its FedCM chooser with it too. forget(), never
 					// dismiss: a dismissal would trigger Chrome's FedCM cooldown for the
 					// site (hours to weeks) for what was really just a closed tab.
@@ -1058,21 +1245,21 @@ func (e *emulator) session() error {
 						}
 					}
 					// A closed tab takes its dialog with it — drop the sheet, or the
-					// viewer would be stuck showing a dialog nothing can answer.
-					if e.forgetDialog(sid) {
-						if sink := e.dialogSink(); sink != nil {
-							if b, err := json.Marshal(map[string]any{"dialog": map[string]any{"open": false}}); err == nil {
-								sink(b, false)
+					// viewer would be stuck showing a dialog nothing can answer. Any
+					// dialog still blocking another tab is republished by this call.
+					e.publishDialogClosed(sid)
+					if e.activeSession() == sid {
+						// Fall back to the page now in FRONT (newest tracked window), not
+						// to an arbitrary remaining session: after a popup closes, input
+						// has to land on the window the user is looking at.
+						next := foreground()
+						if next == "" {
+							for other := range sessions {
+								next = other
+								break
 							}
 						}
-					}
-					if e.activeSession() == sid {
-						// Fall back to any remaining page session.
-						e.setActive("")
-						for other := range sessions {
-							e.setActive(other)
-							break
-						}
+						e.setActive(next)
 					}
 				}
 			}

@@ -81,16 +81,42 @@ fi
 # rasterization, are a deterministic Akamai tell (pixel-readback never matches
 # a real NVIDIA/AMD driver). Pin a seed that resolves to an integrated GPU.
 # We use /dev/urandom (32-bit) not bash $RANDOM (15-bit, collides at fleet scale).
+#
+# Both sources are untrusted text: the env override comes from the deployment and
+# the file from whatever a previous boot (or a partial write) left behind. The seed
+# is fed to arithmetic below (--uxr-canvas-seed=$(( CLOAK_SEED * 7919 ... ))), and
+# under `set -u` a value like "abc" is read as an unset arithmetic variable and
+# ABORTS browser startup; a leading zero would silently be read as octal. So
+# validate first and fall back to a fresh seed rather than failing to boot.
 CLOAK_SEED_FILE="$CLOAK_PROFILE_DIR/.cloak-fingerprint-seed"
+seed_valid() { [[ "${1:-}" =~ ^[0-9]{1,9}$ ]] && (( 10#${1} >= 1 )); }
+CLOAK_SEED=""
 if [[ -n "${CLOAK_FINGERPRINT_SEED:-}" ]]; then
-  CLOAK_SEED="$CLOAK_FINGERPRINT_SEED"
-  echo "$CLOAK_SEED" > "$CLOAK_SEED_FILE"
-elif [[ -s "$CLOAK_SEED_FILE" ]]; then
-  CLOAK_SEED="$(cat "$CLOAK_SEED_FILE")"
-else
-  CLOAK_SEED=$(( $(od -An -N4 -tu4 < /dev/urandom | tr -d ' ') % 9000000 + 1000000 ))
-  echo "$CLOAK_SEED" > "$CLOAK_SEED_FILE"
+  # Whitespace-tolerant: a value mounted from a secret/configmap routinely carries
+  # a trailing newline.
+  CLOAK_SEED_ENV="$(printf '%s' "$CLOAK_FINGERPRINT_SEED" | tr -d '[:space:]')"
+  if seed_valid "$CLOAK_SEED_ENV"; then
+    CLOAK_SEED=$(( 10#$CLOAK_SEED_ENV ))
+  else
+    echo "[stealth] CLOAK_FINGERPRINT_SEED is not a 1-9 digit number; ignoring it" >&2
+  fi
 fi
+if [[ -z "$CLOAK_SEED" && -s "$CLOAK_SEED_FILE" ]]; then
+  CLOAK_SEED_PERSISTED="$(tr -d '[:space:]' < "$CLOAK_SEED_FILE" | head -c 16)"
+  if seed_valid "$CLOAK_SEED_PERSISTED"; then
+    CLOAK_SEED=$(( 10#$CLOAK_SEED_PERSISTED ))
+  else
+    # A corrupt file must not pin the session: regenerating changes the persona
+    # once, which is strictly better than a browser that will not start.
+    echo "[stealth] persisted fingerprint seed is corrupt; regenerating" >&2
+  fi
+fi
+if [[ -z "$CLOAK_SEED" ]]; then
+  CLOAK_SEED=$(( $(od -An -N4 -tu4 < /dev/urandom | tr -d ' ') % 9000000 + 1000000 ))
+fi
+# Write back the NORMALIZED value, so the next boot reads a seed this same check
+# accepts (and the file self-heals from a bad env override or a torn write).
+echo "$CLOAK_SEED" > "$CLOAK_SEED_FILE" || true
 
 # geoip: resolve tz/locale from the egress at boot and persist. During pre-warm
 # there is NO proxy yet, so this reflects the cluster's own egress IP — the

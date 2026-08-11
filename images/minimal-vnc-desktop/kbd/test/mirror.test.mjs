@@ -25,6 +25,17 @@ async function seededViewer(val) {
   return v;
 }
 
+// The extension publishes field text ONLY while a viewer has asked for it, so this
+// opt-in frame is what makes every other test in this file possible on a real
+// session — without it sync.val never arrives and the seed is empty.
+test('a ?mirror=1 viewer opts in on the /kbd socket', async () => {
+  const { kbdSock } = await freshViewer(createMockRfb);
+  assert.ok(kbdSock);
+  kbdSock.onopen({}); // the stub socket opens silently; the real one fires this
+  const asks = kbdSock.sent.filter((s) => String(s).includes('"mirror"'));
+  assert.deepEqual(asks.map((s) => JSON.parse(s)), [{ mirror: { on: true } }]);
+});
+
 test('raise seeds the proxy with the remote value, caret at the end', async () => {
   const { proxy } = await seededViewer('hello');
   assert.equal(proxy.value, 'hello');

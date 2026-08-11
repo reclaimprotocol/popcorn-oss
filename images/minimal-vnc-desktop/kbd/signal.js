@@ -11,7 +11,7 @@
 // native touch channel on a network-back kick; getInputSock is read only for the
 // diagnostic log line.
 
-import { nowMs, siblingPath } from './env.js';
+import { MIRROR, nowMs, siblingPath } from './env.js';
 import { dbg } from './diag.js';
 import { startPinging, handlePong, stopPinging } from './rtt.js';
 
@@ -52,7 +52,18 @@ export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, 
     catch (_) { scheduleReconnect(); return; }
     sock = s;
     dbg('kbd socket connecting');
-    s.onopen = () => { dbg('kbd socket open'); wsBackoff = WS_BACKOFF_MIN; lastKbdMsgAt = nowMs(); startPinging(s); };
+    s.onopen = () => {
+      dbg('kbd socket open');
+      wsBackoff = WS_BACKOFF_MIN; lastKbdMsgAt = nowMs(); startPinging(s);
+      // Opt IN to field-value mirroring. The extension publishes the focused
+      // field's text only while some viewer has asked for it, so ?mirror=1 has to
+      // (re)assert this on every reconnect — otherwise the mirror seed is empty and
+      // iOS autocorrect has no word context. A plain viewer never sends it, and the
+      // channel stays structural-only. See keyboard.go setMirror.
+      if (MIRROR) {
+        try { s.send(JSON.stringify({ mirror: { on: true } })); } catch (_) {}
+      }
+    };
     s.onmessage = (ev) => {
       lastKbdMsgAt = nowMs(); // any frame (signal, deduped, or RTT echo) = liveness
       let msg;

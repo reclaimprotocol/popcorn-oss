@@ -116,6 +116,16 @@ const KBD_URL = 'ws://127.0.0.1:6080/kbd?role=pub'; // 127.0.0.1 is in the proxy
 // after this socket connects. Re-sent on every reconnect, so it survives an MV3
 // service-worker teardown.
 let dialogBridgeToken = null;
+
+// Field-value mirroring. content.js measures the focused field's text (it needs it
+// for the trailing-space repair and the iOS mirror seed), but the WIRE state only
+// carries it while a viewer has explicitly asked for mirroring — the hub pushes
+// this flag when a ?mirror=1 viewer connects and clears it when the last one
+// leaves. Default OFF, so the fan-out channel and the hub's resync cache normally
+// carry field STRUCTURE (rects, hints, value length, trailing-space flag) and
+// never the contents of a search box, an email field or a recovery answer.
+// Re-taught on every (re)connect, which is what makes an MV3 worker restart safe.
+let kbdMirror = false;
 const KBD_PING_MS = 20000;
 const KBD_BACKOFF_MIN_MS = 500;
 const KBD_BACKOFF_MAX_MS = 10000;
@@ -292,13 +302,13 @@ function kbdConnect() {
       // dedupe an unchanged state to a no-op.
       try {
         if (sock.readyState === WebSocket.OPEN && kbdLastState !== null) {
-          sock.send(JSON.stringify(kbdLastState));
+          sock.send(kbdWire(kbdLastState));
         }
       } catch (_) {}
     }, KBD_PING_MS);
     // Resync current focus state to the freshly (re)connected hub.
     if (kbdLastState !== null) {
-      try { sock.send(JSON.stringify(kbdLastState)); } catch (_) {}
+      try { sock.send(kbdWire(kbdLastState)); } catch (_) {}
     }
   };
 
@@ -320,23 +330,49 @@ function kbdConnect() {
   sock.onerror = onDown;
 
   // Viewers are the only consumers; the extension ignores anything inbound.
-  // The hub is a fan-out for viewers, so the publisher normally receives nothing —
-  // except the dialog-bridge token.
+  // The hub is a fan-out for viewers, so the publisher receives only the two
+  // control messages addressed to it: the dialog-bridge token and the mirror flag.
   sock.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
       if (msg && typeof msg.bridgeToken === 'string') dialogBridgeToken = msg.bridgeToken;
+      if (msg && typeof msg.mirror === 'boolean' && msg.mirror !== kbdMirror) {
+        kbdMirror = msg.mirror;
+        // Republish immediately: turning mirroring ON has to deliver the focused
+        // field's text now (the viewer seeds its proxy input from it on the next
+        // raise), and turning it OFF has to overwrite the last state the hub
+        // cached for late joiners.
+        if (kbdLastState !== null && sock.readyState === WebSocket.OPEN) {
+          try { sock.send(kbdWire(kbdLastState)); } catch (_) {}
+        }
+      }
     } catch (_) {}
   };
 }
 
+// kbdWire serializes a focus state for the wire, dropping the field's text unless
+// a viewer has asked for mirroring (see kbdMirror). The structural signals —
+// including sync.len and sync.tail, which the drift detection and trailing-space
+// repair run on — are unaffected, so the keyboard behaves the same with mirroring
+// off; only the seed text is withheld.
+function kbdWire(state) {
+  if (kbdMirror || !state || !state.sync || typeof state.sync.val !== 'string') {
+    return JSON.stringify(state);
+  }
+  const sync = Object.assign({}, state.sync);
+  delete sync.val;
+  return JSON.stringify(Object.assign({}, state, { sync }));
+}
+
 function kbdSend(state) {
   if (!state || typeof state.editable !== 'boolean') return;
+  // Cached UNREDACTED: a mirror flip republishes from here, and the redaction is
+  // applied at every send (kbdWire) rather than baked into the cache.
   kbdLastState = state;
   kbdConnect();
   if (kbdSocket && kbdSocket.readyState === WebSocket.OPEN) {
     try {
-      kbdSocket.send(JSON.stringify(state));
+      kbdSocket.send(kbdWire(state));
     } catch (_) {
       // Delivery failed mid-flight; onopen resync will resend kbdLastState.
     }

@@ -20,6 +20,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -148,12 +149,16 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 		if msg.DialogReply == nil {
 			return
 		}
-		// Clear the resync cache first, unconditionally: a notification sheet (an
-		// alert we already accepted) has no dialog left to answer, but its cached
-		// state must still stop being replayed to the next viewer that connects.
-		if b, err := json.Marshal(map[string]any{"dialog": map[string]any{"open": false}}); err == nil {
-			kbd.broadcastDialog(b, false)
-		}
+		// NOTHING is cleared here. An earlier version broadcast open:false before
+		// validating the reply, so a delayed reply for an already-accepted alert could
+		// arrive after a newer confirm/FedCM sheet had opened, tear that sheet and the
+		// resync cache down, and only then fail validation — leaving Chrome blocked
+		// with no visible way to answer it. Each mechanism instead clears the sheet on
+		// its own confirmed close: Page.javascriptDialogClosed for the CDP path
+		// (emulate.go), the unblocked bridge request (dialog.go), FedCm.dialogClosed
+		// for the chooser (fedcm.go). A notification sheet needs no clear at all — it
+		// is never cached for resync, and the viewer that tapped it already took it
+		// down locally.
 		if msg.DialogReply.Fedcm {
 			em.answerFedcm(msg.DialogReply.Seq, msg.DialogReply.Accept, msg.DialogReply.AccountIndex)
 			return
@@ -314,19 +319,54 @@ func precompressedVariant(root, clean, acceptEncoding string) (string, string) {
 	return "", ""
 }
 
-// acceptsEncoding reports whether the Accept-Encoding header lists enc (ignoring
-// q-values; a client that sends the token at all accepts it here).
+// acceptsEncoding reports whether the Accept-Encoding header actually accepts
+// enc. q-values are honoured: "gzip;q=0" means the client refuses gzip, so
+// treating the bare presence of the token as acceptance (as this did) served a
+// precompressed variant against an explicit refusal — and a client that cannot
+// decode it then fails to load the viewer bundle at all. An explicit entry wins
+// over "*", which stands in for everything not named (RFC 9110 §12.5.3).
 func acceptsEncoding(header, enc string) bool {
+	wildcard := -1.0 // < 0 = no "*" entry seen
 	for _, part := range strings.Split(header, ",") {
-		token := strings.TrimSpace(part)
-		if i := strings.IndexByte(token, ';'); i >= 0 {
-			token = strings.TrimSpace(token[:i])
+		token, q := parseEncodingPref(part)
+		if token == "" {
+			continue
 		}
 		if strings.EqualFold(token, enc) {
-			return true
+			return q > 0
+		}
+		if token == "*" && wildcard < 0 {
+			wildcard = q
 		}
 	}
+	if wildcard >= 0 {
+		return wildcard > 0
+	}
 	return false
+}
+
+// parseEncodingPref splits one Accept-Encoding element into its coding and
+// quality. A missing or unparsable q is 1 (the default), so a malformed
+// parameter never silently disables an encoding the client asked for.
+func parseEncodingPref(part string) (string, float64) {
+	token, params := part, ""
+	if i := strings.IndexByte(part, ';'); i >= 0 {
+		token, params = part[:i], part[i+1:]
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", 0
+	}
+	for _, p := range strings.Split(params, ";") {
+		p = strings.TrimSpace(p)
+		if !strings.HasPrefix(strings.ToLower(p), "q=") {
+			continue
+		}
+		if v, err := strconv.ParseFloat(strings.TrimSpace(p[2:]), 64); err == nil {
+			return token, v
+		}
+	}
+	return token, 1
 }
 
 // servePrecompressed streams the precompressed sibling with the ORIGINAL file's
