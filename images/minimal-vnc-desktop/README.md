@@ -142,6 +142,9 @@ commands the probes need):
 | `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log` (including proxy/TEE events), `xvnc.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |
+| `PROXY_EXTENSION_RUNTIME_DIR` | generated `0700` temporary directory | Optional override for the private runtime extension directory containing the generated container proxy configuration. |
+| `BROWSER_PROXY_URL` | empty | Optional per-container default Chrome proxy URL, including URL-encoded credentials for HTTP(S) proxies when required. Supports `http`, `https`, `socks4`, and `socks5`; Chrome does not support SOCKS authentication. |
+| `BROWSER_PROXY_BYPASS` | `localhost,127.0.0.1` | Optional comma-separated bypass list used with `BROWSER_PROXY_URL`. |
 | `REPLACE_DEFAULT_PAGE` | `false` | When `false`, start on DuckDuckGo and keep the neutral DuckDuckGo managed policy. Set to `true` to opt into the Reclaim portal startup page and managed policy (new-tab page and search). The browser-fleet chart exposes this as `browserPolicy.variant`. |
 | `CHROMIUM_POLICY_DIR` | `/etc/chromium/policies/managed` | Managed Chromium policy directory. |
 | `CHROMIUM_POLICY_VARIANT_DIR` | `/etc/chromium/policy-variants` | Directory containing alternate policy JSON files. |
@@ -165,6 +168,48 @@ commands the probes need):
 | `AGONES_SDK_HOST` | `127.0.0.1` | Agones SDK HTTP sidecar host. |
 | `AGONES_SDK_HTTP_PORT` | `9358` | Agones SDK HTTP sidecar port; `AGONES_SDK_PORT` is also accepted as a fallback. |
 | `AGONES_HEALTH_INTERVAL` | `2` | Seconds between Agones `/health` pings. |
+
+### Browser proxy control
+
+Set a default proxy for the lifetime of a browser container without baking it
+into the image:
+
+```bash
+docker run --rm \
+  -e BROWSER_PROXY_URL='http://user:p%40ss@proxy.example:8080' \
+  -e BROWSER_PROXY_BYPASS='localhost,127.0.0.1,*.svc' \
+  ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
+```
+
+Startup writes the proxy URL to a `0600` file in a fresh `0700` extension
+directory, then removes the credential-bearing variables from Chromium's
+environment. The extension moves credentials into session storage and uses
+them only for matching proxy authentication challenges. Credentials are never
+returned by the status API; the bootstrap file remains readable to the
+container user for the lifetime of the browser process.
+
+When `BROWSER_PROXY_URL` is set, Chromium first opens a loopback bootstrap page.
+It does not navigate to `APP_URL` or signal container readiness until the
+extension confirms that Chrome accepted the default proxy. Invalid defaults
+therefore fail closed on the local page instead of continuing with direct
+egress.
+
+Trusted automation can open
+`http://127.0.0.1:6080/proxy-control.html` inside the browser and use:
+
+```js
+const proxy = await window.PopcornProxy.connect();
+
+await proxy.set('http://user:pass@proxy.example:8080');
+console.log(await proxy.status());
+await proxy.clear();
+```
+
+`set()` overrides the container default and `clear()` selects direct egress.
+Restarting the container reapplies `BROWSER_PROXY_URL`. The friendly API and
+the original `window.__pcn` interface are exposed only on the exact top-level
+loopback control page and port; `__pcn` preserves its original set/clear result
+shapes for compatibility.
 
 Example app override:
 

@@ -10,6 +10,20 @@
       "type": "string",
       "enum": ["Always", "IfNotPresent", "Never"]
     },
+    "browserProxy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "secretName", "secretKey", "bypass"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "secretName": { "type": "string" },
+        "secretKey": { "type": "string", "minLength": 1 },
+        "bypass": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "browserPolicy": {
       "type": "object",
       "additionalProperties": false,

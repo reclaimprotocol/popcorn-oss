@@ -108,6 +108,14 @@ Common groups include:
 - egress: `HTTPS_PROXY_URL`, normally read from
   `browser-runtime-proxy-secret`.
 
+`HTTPS_PROXY_URL` is available to proxy-aware services in the pod. To apply
+that Secret to Chrome itself, enable `browserProxy.enabled`. The chart exposes
+the selected key as `BROWSER_PROXY_URL`, which the bundled extension uses as
+the container's startup default. Runtime automation can replace or clear that
+default through `window.PopcornProxy` on the local proxy-control page.
+With a container default configured, the browser remains on a local bootstrap
+page and does not become ready until Chrome accepts the proxy configuration.
+
 The image-level reference in
 [`images/minimal-vnc-desktop/README.md`](../images/minimal-vnc-desktop/README.md)
 is authoritative for exact runtime variables.

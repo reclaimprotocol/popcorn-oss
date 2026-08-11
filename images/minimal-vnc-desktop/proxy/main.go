@@ -126,7 +126,9 @@ func serveWebsocket(w http.ResponseWriter, r *http.Request, upstream string, rea
 func staticHandler(root string, ready readyGate) http.HandlerFunc {
 	files := http.FileServer(http.Dir(root))
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !ready.ready() {
+		clean := filepath.Clean(r.URL.Path)
+		bootstrapRequest := clean == "/proxy-bootstrap.html" && r.URL.RawQuery == "" && requestIsLoopback(r)
+		if !ready.ready() && !bootstrapRequest {
 			http.Error(w, "app is not ready", http.StatusServiceUnavailable)
 			return
 		}
@@ -134,13 +136,21 @@ func staticHandler(root string, ready readyGate) http.HandlerFunc {
 			http.Redirect(w, r, "/liveview.html", http.StatusFound)
 			return
 		}
-		clean := filepath.Clean(r.URL.Path)
 		if clean == "/websockify" {
 			http.NotFound(w, r)
 			return
 		}
 		files.ServeHTTP(w, r)
 	}
+}
+
+func requestIsLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func cdpMux(upstream string, restricted bool, ready readyGate) http.Handler {

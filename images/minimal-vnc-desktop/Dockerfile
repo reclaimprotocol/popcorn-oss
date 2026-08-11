@@ -217,6 +217,8 @@ COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
 COPY --chmod=0755 start-chromium /usr/local/bin/start-chromium
 COPY liveview.html /usr/share/novnc/liveview.html
+COPY proxy-control.html /usr/share/novnc/proxy-control.html
+COPY proxy-bootstrap.html /usr/share/novnc/proxy-bootstrap.html
 COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress
 COPY --chown=kernel:kernel extensions/proxy /home/kernel/extensions/proxy
 COPY --chown=kernel:kernel policies/managed/policy.json /etc/chromium/policies/managed/policy.json
@@ -228,7 +230,9 @@ RUN set -eux; \
         /usr/local/bin/novnc-proxy \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
-        /usr/share/novnc/liveview.html; \
+        /usr/share/novnc/liveview.html \
+        /usr/share/novnc/proxy-control.html \
+        /usr/share/novnc/proxy-bootstrap.html; \
     find /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 USER kernel

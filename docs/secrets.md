@@ -109,6 +109,12 @@ schema-change permissions.
 An extension may consume its own Secrets from
 `sessionExtensions.<name>.browser.containers`.
 
+To use the same Secret as Chrome's per-container default proxy, set
+`browserProxy.enabled=true` in the browser-fleet values. The chart exposes the
+configured key as `BROWSER_PROXY_URL`; the extension applies it when Chromium
+starts. Keep this opt-in separate from `HTTPS_PROXY_URL`, which may also be
+consumed by proof-network clients in the pod.
+
 ## External Secrets Operator
 
 The repository includes an example in
