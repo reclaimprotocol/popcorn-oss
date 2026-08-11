@@ -143,5 +143,5 @@ func (e *emulator) answerFedcm(seq uint64, accept bool, accountIndex int) bool {
 			session: sid,
 		}
 	}
-	return e.enqueueCmdWait(cmd, dialogEnqueueWait)
+	return e.enqueuePriority(cmd, dialogEnqueueWait)
 }

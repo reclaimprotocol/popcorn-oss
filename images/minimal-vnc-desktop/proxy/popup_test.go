@@ -15,7 +15,7 @@ import "testing"
 
 func TestSinglePageOffersNothingToClose(t *testing.T) {
 	e := &emulator{}
-	_, open, changed := e.notePage("PRIMARY")
+	_, open, changed := e.notePage("PRIMARY", "https://primary.test/")
 	if open {
 		t.Fatal("the only page must never be offered for closing — that is the session")
 	}
@@ -26,8 +26,8 @@ func TestSinglePageOffersNothingToClose(t *testing.T) {
 
 func TestSecondPageBecomesClosable(t *testing.T) {
 	e := &emulator{}
-	e.notePage("PRIMARY")
-	seq, open, changed := e.notePage("SIGNIN")
+	e.notePage("PRIMARY", "https://primary.test/")
+	seq, open, changed := e.notePage("SIGNIN", "https://signin.test/")
 	if !open || !changed || seq == 0 {
 		t.Fatalf("second page should publish a closable state: seq=%d open=%v changed=%v", seq, open, changed)
 	}
@@ -36,8 +36,8 @@ func TestSecondPageBecomesClosable(t *testing.T) {
 // The regression this suite exists for: a FedCM window carries no opener.
 func TestPageWithNoOpenerIsStillClosable(t *testing.T) {
 	e := &emulator{cmds: make(chan cdpCmd, 4)}
-	e.notePage("PRIMARY")
-	seq, open, _ := e.notePage("FEDCM-NO-OPENER")
+	e.notePage("PRIMARY", "https://primary.test/")
+	seq, open, _ := e.notePage("FEDCM-NO-OPENER", "https://fedcmnoopener.test/")
 	if !open {
 		t.Fatal("a page with no openerId must still be closable (FedCM sign-in)")
 	}
@@ -51,9 +51,9 @@ func TestPageWithNoOpenerIsStillClosable(t *testing.T) {
 
 func TestDuplicateTargetCreatedDoesNotBumpSequence(t *testing.T) {
 	e := &emulator{}
-	e.notePage("PRIMARY")
-	seq, _, _ := e.notePage("SIGNIN")
-	if _, _, changed := e.notePage("SIGNIN"); changed {
+	e.notePage("PRIMARY", "https://primary.test/")
+	seq, _, _ := e.notePage("SIGNIN", "https://signin.test/")
+	if _, _, changed := e.notePage("SIGNIN", "https://signin.test/"); changed {
 		t.Fatal("a repeated targetCreated must not republish")
 	}
 	if e.popSeq != seq {
@@ -63,8 +63,8 @@ func TestDuplicateTargetCreatedDoesNotBumpSequence(t *testing.T) {
 
 func TestClosePopupRejectsStaleSequence(t *testing.T) {
 	e := &emulator{cmds: make(chan cdpCmd, 4)}
-	e.notePage("PRIMARY")
-	seq, _, _ := e.notePage("SIGNIN")
+	e.notePage("PRIMARY", "https://primary.test/")
+	seq, _, _ := e.notePage("SIGNIN", "https://signin.test/")
 
 	if e.closePopup(seq + 1) {
 		t.Fatal("a stale sequence must not close the current window")
@@ -91,7 +91,7 @@ func TestClosePopupRejectsStaleSequence(t *testing.T) {
 
 func TestCloseIsRejectedWithOnlyThePrimaryPage(t *testing.T) {
 	e := &emulator{cmds: make(chan cdpCmd, 4)}
-	e.notePage("PRIMARY")
+	e.notePage("PRIMARY", "https://primary.test/")
 	for _, seq := range []uint64{0, 1, 2} {
 		if e.closePopup(seq) {
 			t.Fatalf("seq %d closed the primary page — that would kill the session", seq)
@@ -104,8 +104,8 @@ func TestCloseIsRejectedWithOnlyThePrimaryPage(t *testing.T) {
 
 func TestClosingTheSignInWindowClearsTheButton(t *testing.T) {
 	e := &emulator{}
-	e.notePage("PRIMARY")
-	e.notePage("SIGNIN")
+	e.notePage("PRIMARY", "https://primary.test/")
+	e.notePage("SIGNIN", "https://signin.test/")
 	seq, open, changed := e.forgetPage("SIGNIN")
 	if !changed {
 		t.Fatal("losing the second page is a change")
@@ -117,9 +117,9 @@ func TestClosingTheSignInWindowClearsTheButton(t *testing.T) {
 
 func TestNestedWindowRevealsTheOneUnderneath(t *testing.T) {
 	e := &emulator{cmds: make(chan cdpCmd, 4)}
-	e.notePage("PRIMARY")
-	outerSeq, _, _ := e.notePage("OUTER")
-	innerSeq, _, _ := e.notePage("INNER")
+	e.notePage("PRIMARY", "https://primary.test/")
+	outerSeq, _, _ := e.notePage("OUTER", "https://outer.test/")
+	innerSeq, _, _ := e.notePage("INNER", "https://inner.test/")
 
 	seq, open, changed := e.forgetPage("INNER")
 	if !changed || !open {
@@ -143,8 +143,8 @@ func TestUnrelatedTargetDestroyedDoesNotFlickerTheButton(t *testing.T) {
 	// targetDestroyed fires for iframes, workers and every other target type.
 	// Republishing on those would flicker the button off mid sign-in.
 	e := &emulator{}
-	e.notePage("PRIMARY")
-	e.notePage("SIGNIN")
+	e.notePage("PRIMARY", "https://primary.test/")
+	e.notePage("SIGNIN", "https://signin.test/")
 	_, open, changed := e.forgetPage("SOME-IFRAME")
 	if changed {
 		t.Fatal("an untracked target must not republish")
@@ -158,8 +158,8 @@ func TestPrimaryClosingLeavesNothingClosable(t *testing.T) {
 	// If the ORIGINAL page goes away, the sign-in window is all that is left and
 	// becomes the session — there is nothing to fall back to, so no close button.
 	e := &emulator{cmds: make(chan cdpCmd, 4)}
-	e.notePage("PRIMARY")
-	seq, _, _ := e.notePage("SIGNIN")
+	e.notePage("PRIMARY", "https://primary.test/")
+	seq, _, _ := e.notePage("SIGNIN", "https://signin.test/")
 	_, open, changed := e.forgetPage("PRIMARY")
 	if !changed || open {
 		t.Fatalf("one page left means nothing to close: changed=%v open=%v", changed, open)
@@ -177,5 +177,89 @@ func TestPopupPayloadShape(t *testing.T) {
 	want := `{"popup":{"open":true,"seq":12}}`
 	if string(b) != want {
 		t.Fatalf("payload = %s, want %s", b, want)
+	}
+}
+
+// WHICH window the close button targets. Creation order is only a fallback: a site
+// that refocuses an older popup, or hands focus back to its opener, leaves the
+// newest target invisible — and closing that would destroy a window the user cannot
+// see while the one covering their screen stays. The foreground report comes from
+// the extension (document.hasFocus() on a top frame).
+
+func TestForegroundPopupIsTheOneOffered(t *testing.T) {
+	e := &emulator{}
+	e.notePage("PRIMARY", "https://site.test/")
+	e.notePage("FIRST-POPUP", "https://accounts.test/one")
+	e.notePage("NEWEST-POPUP", "https://accounts.test/two")
+
+	// With no focus report, creation order stands.
+	if got := e.frontLocked(); got != "NEWEST-POPUP" {
+		t.Fatalf("without a focus report, front = %q, want the newest page", got)
+	}
+
+	// The site refocuses the older popup: that is what the user sees now.
+	if _, _, changed := e.setForeground("https://accounts.test/one"); !changed {
+		t.Fatal("a foreground change that moves the front window must republish")
+	}
+	if got := e.frontLocked(); got != "FIRST-POPUP" {
+		t.Fatalf("front = %q, want the focused popup", got)
+	}
+}
+
+func TestFocusBackOnThePrimaryPageWithdrawsTheCloseButton(t *testing.T) {
+	e := &emulator{}
+	e.notePage("PRIMARY", "https://site.test/checkout")
+	e.notePage("POPUP", "https://pay.test/")
+	e.setForeground("https://site.test/checkout")
+	if got := e.frontLocked(); got != "" {
+		t.Fatalf("front = %q, want nothing offered while the primary page has focus", got)
+	}
+	// And it returns when the popup takes focus back.
+	e.setForeground("https://pay.test/")
+	if got := e.frontLocked(); got != "POPUP" {
+		t.Fatalf("front = %q, want the popup again", got)
+	}
+}
+
+// A popup opens blank and navigates; the URL the extension reports only matches
+// after that, so the tracked URL has to follow the navigation — otherwise focus on
+// the popup keeps falling through to the creation-order fallback, and once a THIRD
+// window exists the button points at the wrong one.
+func TestNavigatedPopupBecomesMatchable(t *testing.T) {
+	e := &emulator{}
+	e.notePage("PRIMARY", "https://site.test/")
+	e.notePage("SIGNIN", "") // opens blank
+	e.notePage("NEWEST", "https://ads.test/")
+	e.setForeground("https://accounts.test/signin")
+	if got := e.frontLocked(); got != "NEWEST" {
+		t.Fatalf("front = %q, want the creation-order fallback while nothing matches", got)
+	}
+
+	// The blank popup navigates to what the user is actually looking at.
+	if _, _, changed := e.notePageURL("SIGNIN", "https://accounts.test/signin"); !changed {
+		t.Fatal("the navigation moves the front window, so it must republish")
+	}
+	if got := e.frontLocked(); got != "SIGNIN" {
+		t.Fatalf("front = %q, want the focused popup once its URL is known", got)
+	}
+}
+
+func TestForegroundIgnoresFragmentAndTrailingSlash(t *testing.T) {
+	e := &emulator{}
+	e.notePage("PRIMARY", "https://site.test/")
+	e.notePage("POPUP", "https://pay.test/form")
+	e.setForeground("https://pay.test/form#step2")
+	if got := e.frontLocked(); got != "POPUP" {
+		t.Fatalf("front = %q — an in-page anchor is not a different window", got)
+	}
+}
+
+// A single page is never closable, whatever has focus: it IS the session.
+func TestForegroundNeverOffersTheOnlyPage(t *testing.T) {
+	e := &emulator{}
+	e.notePage("PRIMARY", "https://site.test/")
+	e.setForeground("https://site.test/")
+	if got := e.frontLocked(); got != "" {
+		t.Fatalf("front = %q, want nothing with one page", got)
 	}
 }

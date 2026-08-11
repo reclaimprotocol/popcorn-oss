@@ -426,3 +426,75 @@ func TestKbdHubCoalescesToLatest(t *testing.T) {
 		}
 	}
 }
+
+// The publisher's control frames (currently the focused document's URL) are for the
+// SERVER, not for viewers — a URL routinely carries tokens in its query string. The
+// split is "does it look like a focus state", so a page whose placeholder happens to
+// contain a keyword can never silence the keyboard by being mistaken for control.
+func TestPublisherControlFrameIsNotFannedOut(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		payload   string
+		toServer  bool
+		broadcast bool
+	}{
+		{"foreground report", `{"foreground":"https://accounts.test/x?token=abc"}`, true, false},
+		{"focus state", `{"editable":true,"rects":[]}`, false, true},
+		{"focus state mentioning foreground", `{"editable":true,"hints":{"placeholder":"foreground color"}}`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub := newKbdHub()
+			toServer := make(chan []byte, 1)
+			hub.onPublisherMsg = func(p []byte) {
+				select {
+				case toServer <- p:
+				default:
+				}
+			}
+
+			viewer, viewerReader, viewerConn := newTestClient()
+			defer viewerConn.Close()
+			hub.add(viewer)
+
+			srvEnd, cliEnd := net.Pipe()
+			defer srvEnd.Close()
+			defer cliEnd.Close()
+			pub := &kbdClient{conn: srvEnd, publisher: true, notify: make(chan struct{}, 1), closed: make(chan struct{})}
+			go pub.writeLoop()
+			hub.add(pub)
+			go hub.readLoop(pub, bufio.NewReader(srvEnd))
+
+			var mu sync.Mutex
+			go func() { _ = writeFrameToConn(cliEnd, &mu, 0x1, []byte(tc.payload), true, true) }()
+
+			gotServer := false
+			select {
+			case <-toServer:
+				gotServer = true
+			case <-time.After(250 * time.Millisecond):
+			}
+			if gotServer != tc.toServer {
+				t.Fatalf("reached the server = %v, want %v", gotServer, tc.toServer)
+			}
+
+			_ = viewerConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+			gotBroadcast := false
+			for {
+				_, opcode, payload, err := readFrame(viewerReader)
+				if err != nil {
+					break
+				}
+				if opcode == 0x1 {
+					if string(payload) != tc.payload {
+						t.Fatalf("viewer got an unexpected frame: %s", payload)
+					}
+					gotBroadcast = true
+					break
+				}
+			}
+			if gotBroadcast != tc.broadcast {
+				t.Fatalf("fanned out to viewers = %v, want %v", gotBroadcast, tc.broadcast)
+			}
+		})
+	}
+}

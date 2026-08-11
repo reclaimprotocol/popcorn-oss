@@ -80,10 +80,18 @@ func (k *screenKeeper) note(format string, args ...any) {
 //
 // Every connect passes through geoMu, reset or not, so a handshake never starts
 // while another session's geometry change is in flight.
+//
+// geoMu is taken BEFORE the count is touched, so becoming client 1 and resetting
+// for it are one indivisible step. Counting first and locking after left a window
+// where two simultaneous connects took the slots 1 and 2, the second (no reset to
+// do) walked through geoMu and started its RFB handshake, and only then did the
+// first acquire geoMu and resize the screen underneath it.
 func (k *screenKeeper) connect(keepGeometry bool) {
 	if k == nil {
 		return
 	}
+	k.geoMu.Lock()
+	defer k.geoMu.Unlock()
 	k.mu.Lock()
 	k.clients++
 	k.gen++
@@ -95,11 +103,9 @@ func (k *screenKeeper) connect(keepGeometry bool) {
 	reset := k.resetOnFirst
 	k.mu.Unlock()
 	k.note("vnc client connected (now %d)", n)
-	k.geoMu.Lock()
 	if n == 1 && !keepGeometry && reset != nil {
 		reset()
 	}
-	k.geoMu.Unlock()
 }
 
 // disconnect notes a client leaving and schedules the restore if it was the last.

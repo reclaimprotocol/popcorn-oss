@@ -145,15 +145,40 @@
   // window.open) from an OAuth popup — and content tabs end up desktop-width.
   // Phones don't spawn tabs anyway, so open content links IN PLACE (they stay
   // inside the emulated viewport, and the emulator re-applies on navigation).
-  // Only window.open() called WITH size features (OAuth "Continue with X",
-  // payment windows) gets a real separate window — that's fullscreened + left
-  // native server-side so its flow keeps working.
+  // window.open() calls that are really POPUPS get a real separate window, which is
+  // fullscreened and left native server-side so their flow keeps working.
+  //
+  // Classification cannot rest on width/height alone, which is where the first
+  // version went wrong: OAuth libraries, print views and payment SDKs routinely open
+  // a BLANK window with no features and drive it afterwards — `w.location = authUrl`,
+  // or `w.document.write(receipt)`. Handing those callers the current window meant
+  // they navigated or overwrote the page the user was on. So a call the caller
+  // clearly intends to drive itself is a popup too:
+  //
+  //   - no url (or about:blank): there is nothing to navigate in place TO, and the
+  //     caller is holding the handle precisely to write or navigate it;
+  //   - a NAMED target that isn't one of the reserved names: the caller means a
+  //     specific reusable window ("authWindow"), not "somewhere else";
+  //   - any window feature that describes a popup's chrome or geometry.
+  //
+  // What is left — a real URL, no name or _blank, no features — is the content link
+  // this shim exists for.
   (function () {
     try {
       const nativeOpen = window.open.bind(window);
+      const POPUP_FEATURES = /\b(width|height|popup|left|top|screenx|screeny|menubar|toolbar|location|status|resizable|scrollbars|titlebar)\b/i;
+      const RESERVED_TARGETS = /^(_blank|_self|_top|_parent|_unfencedtop)$/i;
+      function isPopupCall(url, name, features) {
+        if (features && POPUP_FEATURES.test(String(features))) return true;
+        const u = url == null ? '' : String(url).trim();
+        if (u === '' || /^about:blank$/i.test(u)) return true;
+        const n = name == null ? '' : String(name).trim();
+        if (n !== '' && !RESERVED_TARGETS.test(n)) return true;
+        return false;
+      }
       window.open = function (url, name, features) {
-        if (features && /\b(width|height|popup)\b/i.test(String(features))) {
-          return nativeOpen(url, name, features); // real popup (OAuth/payment)
+        if (isPopupCall(url, name, features)) {
+          return nativeOpen(url, name, features); // real popup (OAuth/payment/print)
         }
         if (url) { try { location.assign(url); } catch (_) { location.href = url; } }
         return window;

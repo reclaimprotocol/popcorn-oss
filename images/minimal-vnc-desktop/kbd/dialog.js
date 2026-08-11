@@ -252,9 +252,11 @@ export function createDialog({ sendReply }) {
 
   function show(d) {
     teardown();
-    // notify: an alert the proxy already accepted natively (so Chromium's own
-    // dialog is gone from the stream and the page is running again). There is
-    // nothing to answer — tapping OK just closes our sheet.
+    // notify: an alert the proxy accepted natively because no viewer was attached
+    // when it opened (so Chromium's own dialog is gone from the stream and the page
+    // is running again). There is nothing to answer — tapping OK just closes our
+    // sheet. A normal alert, raised while we are watching, is a BLOCKING sheet like
+    // confirm: the page waits for the tap.
     // bridge: raised by the extension's dialog bridge (a blocked sync XHR) rather
     // than by CDP. Echoed back in the reply because the two mechanisms keep
     // independent sequence counters — seq alone can't say which to resolve.

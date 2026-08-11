@@ -26,9 +26,10 @@
 
   // ---- JS dialog bridge (isolated world half) -------------------------------
   // injected.js overrides alert/confirm/prompt in the PAGE world so Chromium never
-  // opens a dialog of its own — see dialog.go for why the CDP interception alone
-  // isn't enough (duplicate dialog, and an alert() that returns in ~18ms where a
-  // human takes seconds, which is a real anti-automation probe).
+  // opens a dialog of its own — see dialog.go. The remaining advantage over the CDP
+  // path is only the DUPLICATE dialog: CDP cannot suppress Chromium's own clipped
+  // one, so the viewer has to cover the stream to hide it. The timing argument no
+  // longer applies — the CDP path waits for the user's tap on an alert too.
   //
   // confirm()/prompt() must return SYNCHRONOUSLY, so the override blocks the page's
   // JS thread on a synchronous XHR performed HERE. It runs in the isolated world on
@@ -187,10 +188,10 @@
   // (lift may be slightly off for cross-origin iframe fields).
   // Accumulate this frame's offset toward the top window, and report whether we
   // actually REACHED the top (all ancestors same-origin) or stopped at a cross-
-  // origin boundary. When we stop early, the offset is relative to the nearest
-  // cross-origin ancestor's document (our "segment root"), and emit() bubbles the
-  // rect across that boundary via postMessage instead of reporting frame-local
-  // coords the viewer would misplace (the checkout/OAuth-iframe lift bug).
+  // origin boundary. When we stop early the offset is frame-local and useless on its
+  // own; ownOffset() then uses the absolute position our parent published, because
+  // reporting frame-local coords is what misplaced the lift inside a checkout/OAuth
+  // iframe.
   function frameOffset() {
     let x = 0, y = 0, win = window, reachedTop = true;
     try {
@@ -236,8 +237,8 @@
       let r;
       try { r = el.getBoundingClientRect(); } catch (_) { continue; }
       if (r.width <= 0 || r.height <= 0) continue;
-      // Frame-LOCAL here; emit() applies the toward-top offset (or bubbles across a
-      // cross-origin boundary) so cross-origin-iframe fields land in the right place.
+      // Frame-LOCAL here; emit() adds this frame's offset to the top document, so
+      // cross-origin-iframe fields land in the right place.
       out.push(px({ x: r.left, y: r.top, w: r.width, h: r.height }));
       if (out.length >= MAX_RECTS) break;
     }
@@ -550,7 +551,7 @@
     let rect = null;
     try {
       const r = el.getBoundingClientRect();
-      // Frame-LOCAL; emit() applies the offset / bubbles it (see frameOffset).
+      // Frame-LOCAL; emit() adds this frame's offset to the top (see ownOffset).
       rect = px({ x: r.left, y: r.top, w: r.width, h: r.height });
     } catch (_) { /* detached node */ }
     const isInput = el.tagName === 'INPUT';
@@ -634,93 +635,126 @@
     };
   }
 
-  // --- Cross-origin iframe rect relay ---------------------------------------
-  // background.js aggregates one state PER frame and just needs correct top-window
-  // coords. frameOffset() can't cross a cross-origin boundary, so a field inside
-  // a cross-origin iframe (Stripe/checkout/OAuth) would report frame-local coords
-  // and the viewer's keyboard-lift lands in the wrong place. Fix: a detached frame
-  // (cross-origin ancestor) does NOT report to the background; it BUBBLES its
-  // state up one frame at a time. Each parent adds the child <iframe>'s position
-  // and either reports (if it can now reach the top) or bubbles further. Only
-  // cross-origin boundaries use this path — same-origin/top frames report exactly
-  // as before (byte-for-byte), so this can't regress the common case.
-  const CHILD_STALE_MS = 6000;
-  const childFrames = new Map(); // child Window -> { state (THIS-frame-local), ts }
+  // --- Cross-frame positioning: offsets DOWN, state UP ----------------------
+  // background.js aggregates one state PER frame and needs correct top-window
+  // coords. frameOffset() can't cross a cross-origin boundary, so a field inside a
+  // cross-origin iframe (Stripe/checkout/OAuth) would report frame-local coords and
+  // the viewer's keyboard-lift lands in the wrong place.
+  //
+  // An earlier version fixed that by BUBBLING each frame's state up through
+  // postMessage, with the parent folding a child's state into its own. That made the
+  // parent trust data from a window it cannot authenticate: matching event.source to
+  // one of its <iframe>s proves only that the sender is a child browsing context,
+  // NOT that the message came from our content script. Any cross-origin child PAGE
+  // could post the marker with arbitrary editable/hints/sensitive/sync values (page
+  // script and our isolated world share one Window, so event.source is identical)
+  // and the parent would relay it upward as trusted state.
+  //
+  // So the direction is inverted. STATE never crosses a frame boundary: every frame
+  // reports its own state straight to the background over chrome.runtime, which only
+  // content scripts can speak. What crosses is POSITION, and only downward — a
+  // parent tells each child where that child's viewport sits in top coords, which is
+  // information the parent already owns (it lays the iframe out). A child asks for
+  // it on load, so there is no race against the parent's script starting first.
+  //
+  // Worst case for a forged position message is a mispositioned keyboard lift inside
+  // a frame whose parent could move it anyway; a forged FIELD is no longer possible.
+  let absOffset = null;   // our viewport origin in TOP coords, published by our parent
+  let absAsks = 0;
+  const ABS_MAX_ASKS = 8;
+  const publishedAbs = new WeakMap(); // iframe element -> last published "x,y"
 
-  // The rect of the child <iframe> whose contentWindow posted to us — this is both
-  // the offset to apply AND the proof the message came from a real child of ours
-  // (spoofed messages from unrelated windows match nothing and are dropped).
-  function childFrameOffset(sourceWin) {
-    let els;
-    try { els = document.querySelectorAll('iframe, frame'); } catch (_) { return null; }
-    for (const f of els) {
-      let cw;
-      try { cw = f.contentWindow; } catch (_) { continue; }
-      if (cw && cw === sourceWin) {
-        try { const r = f.getBoundingClientRect(); return { x: r.left, y: r.top }; } catch (_) { return null; }
-      }
-    }
+  // Our offset to the top document, or null when we are inside a cross-origin
+  // ancestor and have not been positioned yet. Same-origin chains never wait: the
+  // walk in frameOffset() reaches the top on its own.
+  function ownOffset() {
+    const off = frameOffset();
+    if (off.reachedTop) return { x: off.x, y: off.y };
+    if (absOffset) return { x: absOffset.x, y: absOffset.y };
     return null;
   }
 
-  // Fold live cross-origin child states (already in THIS frame's local coords)
-  // into our own: union the rects, and if we don't hold focus but a child does,
-  // adopt the child's focused field. Never touches vw/vh/sw/pid (top owns those).
-  function foldChildren(state) {
-    const now = Date.now();
-    let rects = Array.isArray(state.rects) ? state.rects.slice() : []; // clone: don't mutate cachedRects
-    for (const [win, entry] of childFrames) {
-      if (now - entry.ts > CHILD_STALE_MS) { childFrames.delete(win); continue; }
-      const cs = entry.state;
-      if (Array.isArray(cs.rects)) for (const r of cs.rects) rects.push(r);
-      if (!state.editable && cs.editable) {
-        state.editable = true; state.rect = cs.rect || null; state.hints = cs.hints || null;
-        state.sync = cs.sync || null; state.focusKey = cs.focusKey || null;
-      }
-    }
-    state.rects = rects;
-    return state;
+  // Ask our parent to position us. Unauthenticated on purpose: the only thing it can
+  // trigger is the parent publishing geometry it already controls.
+  function askForOffset() {
+    if (window === window.top || absOffset || absAsks >= ABS_MAX_ASKS) return;
+    if (frameOffset().reachedTop) return; // same-origin chain positions itself
+    absAsks++;
+    try { window.parent.postMessage({ __pcnKbdAbsReq: 1 }, '*'); } catch (_) {}
+    // Retry: at document_start the parent's content script may not be listening yet.
+    setTimeout(askForOffset, absAsks < 4 ? 300 : 2000);
   }
 
-  // Apply our toward-top offset, then either report to the background (offset
-  // reached the top window → coords are absolute) or bubble across the cross-
-  // origin boundary above us (coords are relative to our segment root; the parent
-  // adds our <iframe>'s position next).
+  // Tell every child frame where it sits. Positions change on scroll/resize/layout,
+  // so this runs on each report; unchanged positions are skipped (an ad-heavy page
+  // has dozens of frames), and `force` re-publishes for a frame that just loaded.
+  function publishChildOffsets(force, only) {
+    const off = ownOffset();
+    if (!off) return; // we don't know where we are, so we can't place anyone else
+    let els;
+    try { els = document.querySelectorAll('iframe, frame'); } catch (_) { return; }
+    for (const f of els) {
+      let cw;
+      try { cw = f.contentWindow; } catch (_) { continue; }
+      if (!cw || (only && cw !== only)) continue;
+      let r;
+      try { r = f.getBoundingClientRect(); } catch (_) { continue; }
+      const x = Math.round(off.x + r.left), y = Math.round(off.y + r.top);
+      const key = x + ',' + y;
+      if (!force && publishedAbs.get(f) === key) continue;
+      publishedAbs.set(f, key);
+      try { cw.postMessage({ __pcnKbdAbs: 1, x, y }, '*'); } catch (_) {}
+    }
+  }
+
+  // Report our own state, in top coords, directly to the background.
   function emit(state) {
-    const off = frameOffset();
+    const off = ownOffset();
+    if (!off) {
+      // Not positioned yet. Reporting frame-local coords would put every rect in the
+      // wrong place, so stay silent and keep asking — the same outcome the previous
+      // relay had when there was nobody above us to relay through.
+      askForOffset();
+      return;
+    }
     offsetState(state, off.x, off.y);
-    if (off.reachedTop) {
-      try { chrome.runtime.sendMessage({ type: 'PCN_KBD', state }); } catch (_) {
-        // Worker spinning up / context gone; the next report resends absolute state.
-      }
-    } else if (window !== window.top) {
-      try { window.parent.postMessage({ __pcnKbdFrame: 1, state }, '*'); } catch (_) {}
+    try { chrome.runtime.sendMessage({ type: 'PCN_KBD', state }); } catch (_) {
+      // Worker spinning up / context gone; the next report resends absolute state.
     }
   }
 
   let lastKey = null;
-  // force=true bypasses the dedup for the periodic heartbeat: the background
-  // worker (and each relaying parent frame) expires frames that go silent, so a
-  // live frame must keep re-asserting itself even when its state is unchanged.
+  // force=true bypasses the dedup: the background worker expires frames that go
+  // silent, so a live frame must be able to re-assert itself unchanged.
   function report(el, force) {
     refreshRects(); // keep the hit-test rects current on every emit
-    const state = foldChildren(describe(el)); // own state + any cross-origin children
+    const state = describe(el);
+    publishChildOffsets(force); // our children move with us
     const key = JSON.stringify(state);
     if (!force && key === lastKey) return; // focus/rect/hints/rects unchanged
     lastKey = key;
     emit(state);
   }
 
-  // A cross-origin child frame bubbled its focus state up. Convert it from the
-  // child document's coords into ours (add the child <iframe>'s position), keep it
-  // keyed by source window, and re-report so the update propagates toward the top.
   window.addEventListener('message', (e) => {
     const m = e && e.data;
-    if (!m || m.__pcnKbdFrame !== 1 || !m.state || typeof m.state.editable !== 'boolean') return;
-    const off = childFrameOffset(e.source); // also authenticates: must be our child
-    if (!off) return;
-    childFrames.set(e.source, { state: offsetState(m.state, off.x, off.y), ts: Date.now() });
-    report(deepActiveElement(), true); // propagate promptly (force past dedup)
+    if (!m) return;
+    // A child asking to be positioned. Answer only for a window that really is one
+    // of our child frames — this carries no privilege, but there is no reason to
+    // reply to an unrelated window.
+    if (m.__pcnKbdAbsReq === 1 && e.source) {
+      publishChildOffsets(true, e.source);
+      return;
+    }
+    if (m.__pcnKbdAbs !== 1) return;
+    // ONLY our own parent may position us, and only with finite numbers.
+    if (e.source !== window.parent) return;
+    if (typeof m.x !== 'number' || typeof m.y !== 'number' || !isFinite(m.x) || !isFinite(m.y)) return;
+    const moved = !absOffset || absOffset.x !== m.x || absOffset.y !== m.y;
+    absOffset = { x: m.x, y: m.y };
+    if (!moved) return;
+    publishChildOffsets(true);            // pass the correction down the chain
+    report(deepActiveElement(), true);    // and re-report our own rects at the new origin
   }, false);
 
   // Chromium selects a filled field's ENTIRE text on a synthetic-touch tap (which
@@ -828,6 +862,11 @@
   // page cropped until the desktop-fit detector eventually runs. Report as soon
   // as the document's head/body are complete, then once more after resources load
   // in case the site adds its viewport tag or fixed-width shell late.
+  // A frame inside a cross-origin ancestor cannot report anything until its parent
+  // has positioned it, so ask immediately rather than waiting for the parent's next
+  // layout change (an iframe that loads into a static page would wait forever).
+  if (!IS_TOP) askForOffset();
+
   if (IS_TOP) {
     const reportInitialLayout = () => report(deepActiveElement(), true);
     if (document.readyState === 'loading') {

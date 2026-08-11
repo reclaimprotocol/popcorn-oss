@@ -51,6 +51,9 @@ type kbdHub struct {
 	// a dialog reply or a popup-close request). Viewers stay unable to broadcast
 	// to other viewers; this is a server-mediated request, not a relay.
 	onViewerMsg func(payload []byte)
+	// onPublisherMsg receives control frames from the PUBLISHER that are for the
+	// server rather than for viewers (see readLoop). Never fanned out.
+	onPublisherMsg func(payload []byte)
 	// mirrorOn is true while at least one connected viewer has ASKED for field-value
 	// mirroring (?mirror=1). The extension publishes the focused field's text only
 	// while this is set, so by default this channel carries structure — rects,
@@ -71,6 +74,22 @@ type kbdHub struct {
 
 func newKbdHub() *kbdHub {
 	return &kbdHub{clients: make(map[*kbdClient]struct{})}
+}
+
+// viewers counts the connected non-publisher clients. The dialog path consults it:
+// an alert with nobody watching has to be accepted immediately (no one can ever
+// acknowledge it), while an alert with a viewer attached stays blocking until the
+// user taps OK. See the javascriptDialogOpening handler in emulate.go.
+func (h *kbdHub) viewers() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for c := range h.clients {
+		if !c.publisher {
+			n++
+		}
+	}
+	return n
 }
 
 func (h *kbdHub) full() bool {
@@ -590,7 +609,19 @@ func (h *kbdHub) readLoop(c *kbdClient, reader *bufio.Reader) {
 		case 0x0, 0x1, 0x2: // (continuation/)text/binary — a focus signal
 			// Only publishers broadcast, and only tiny payloads. Viewer frames
 			// (and anything oversized) are ignored, not relayed.
-			if c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload {
+			if c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload &&
+				!bytes.Contains(payload, []byte(`"editable"`)) {
+				// A publisher CONTROL frame (currently: which window is in front).
+				// Consumed here, never fanned out — it can carry a URL, and viewers
+				// have no business receiving one. Distinguished by the absence of
+				// "editable", which every focus state has by construction (background.js
+				// refuses to send one without it); anything that looks like a state is
+				// still broadcast, so a page whose placeholder happens to contain a
+				// keyword can't silence the keyboard.
+				if h.onPublisherMsg != nil {
+					h.onPublisherMsg(payload)
+				}
+			} else if c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload {
 				h.publish(c, payload)
 			} else if !c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload &&
 				(bytes.Contains(payload, []byte(`"dialogReply"`)) || bytes.Contains(payload, []byte(`"popupClose"`))) {

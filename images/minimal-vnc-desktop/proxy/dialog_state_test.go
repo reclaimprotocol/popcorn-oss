@@ -12,7 +12,8 @@ import (
 
 func newDialogEmulator(t *testing.T) (*emulator, *[][]byte) {
 	t.Helper()
-	e := &emulator{cmds: make(chan cdpCmd, 8)}
+	// prio is the reserved queue dialog answers go on (see emulator.prio).
+	e := &emulator{cmds: make(chan cdpCmd, 8), prio: make(chan cdpCmd, 8)}
 	var sent [][]byte
 	e.setDialogSink(func(payload []byte, open bool) {
 		sent = append(sent, payload)
@@ -50,7 +51,7 @@ func TestBlockingDialogIsAnsweredOnItsOwnSession(t *testing.T) {
 	if !e.answerDialog(seq, true, "hello") {
 		t.Fatal("answer rejected")
 	}
-	cmd := <-e.cmds
+	cmd := <-e.prio
 	if cmd.method != "Page.handleJavaScriptDialog" || cmd.session != "S1" {
 		t.Fatalf("wrong command: %+v", cmd)
 	}
@@ -79,13 +80,13 @@ func TestConcurrentDialogsAreTrackedPerTarget(t *testing.T) {
 	if !e.answerDialog(second, true, "") {
 		t.Fatal("second target's dialog rejected")
 	}
-	if cmd := <-e.cmds; cmd.session != "S2" {
+	if cmd := <-e.prio; cmd.session != "S2" {
 		t.Fatalf("answered session %q, want S2", cmd.session)
 	}
 	if !e.answerDialog(first, false, "") {
 		t.Fatal("the FIRST target's dialog is still open and must remain answerable")
 	}
-	if cmd := <-e.cmds; cmd.session != "S1" {
+	if cmd := <-e.prio; cmd.session != "S1" {
 		t.Fatalf("answered session %q, want S1", cmd.session)
 	}
 }
@@ -128,7 +129,7 @@ func TestClosingTheLastDialogPublishesOnlyAClose(t *testing.T) {
 // can tap again, and a reconnecting viewer is still told the page is blocked.
 func TestUnqueuedAnswerKeepsTheDialogAnswerable(t *testing.T) {
 	e, _ := newDialogEmulator(t)
-	e.cmds = make(chan cdpCmd) // unbuffered, nothing reading: enqueue times out
+	e.prio = make(chan cdpCmd) // unbuffered, nothing reading: enqueue times out
 	seq := e.noteDialogOpen("S1", false)
 
 	if e.answerDialog(seq, true, "") {
@@ -137,7 +138,7 @@ func TestUnqueuedAnswerKeepsTheDialogAnswerable(t *testing.T) {
 
 	// Now drain, as a live CDP connection would, and retry.
 	done := make(chan cdpCmd, 1)
-	go func() { done <- <-e.cmds }()
+	go func() { done <- <-e.prio }()
 	if !e.answerDialog(seq, true, "") {
 		t.Fatal("the dialog must still be answerable after a dropped attempt")
 	}
@@ -157,5 +158,55 @@ func TestConnectionLossClearsDialogs(t *testing.T) {
 	}
 	if e.answerDialog(seq, true, "") {
 		t.Fatal("a dialog from a dead connection must not be answerable")
+	}
+}
+
+// alert() is answered by the USER, not instantly by us: accepting it the moment it
+// opens made the page resume before the message was read and returned in ~18ms,
+// which is itself an automation probe. The exception is an unattended session —
+// there, a dialog nobody can see would freeze the page forever.
+func TestAlertBlocksOnlyWhileSomeoneIsWatching(t *testing.T) {
+	e, _ := newDialogEmulator(t)
+	viewers := 0
+	e.setViewerCounter(func() int { return viewers })
+
+	for _, dtype := range []string{"alert", "confirm", "prompt", "beforeunload"} {
+		if dtype == "alert" {
+			if !e.dialogIsInformational(dtype) {
+				t.Fatal("with no viewer attached, an alert must be accepted immediately")
+			}
+		} else if e.dialogIsInformational(dtype) {
+			t.Fatalf("%s must never be auto-accepted: the page acts on its result", dtype)
+		}
+	}
+
+	viewers = 1
+	if e.dialogIsInformational("alert") {
+		t.Fatal("with a viewer attached, an alert must stay blocked until it is acknowledged")
+	}
+	// And it is then a real, answerable dialog.
+	seq := e.noteDialogOpen("S1", e.dialogIsInformational("alert"))
+	if !e.dialogStillOpen(seq) {
+		t.Fatal("an acknowledged-by-user alert must be tracked")
+	}
+	if !e.answerDialog(seq, true, "") {
+		t.Fatal("the alert must be answerable by the viewer's tap")
+	}
+	if cmd := <-e.prio; cmd.params["accept"] != true {
+		t.Fatalf("alert answered with %+v, want accept", cmd.params)
+	}
+}
+
+func TestViewerCounterIgnoresThePublisher(t *testing.T) {
+	hub := newKbdHub()
+	pub := &kbdClient{publisher: true, notify: make(chan struct{}, 1), closed: make(chan struct{})}
+	hub.add(pub)
+	if got := hub.viewers(); got != 0 {
+		t.Fatalf("viewers = %d with only the extension connected, want 0", got)
+	}
+	viewer := &kbdClient{notify: make(chan struct{}, 1), closed: make(chan struct{})}
+	hub.add(viewer)
+	if got := hub.viewers(); got != 1 {
+		t.Fatalf("viewers = %d, want 1", got)
 	}
 }

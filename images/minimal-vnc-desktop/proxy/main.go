@@ -101,6 +101,11 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	// the REPLY is executed here, so the viewer sends accept/dismiss + text and
 	// never a CDP method.
 	em.setDialogSink(kbd.broadcastDialog)
+	// An alert() stays BLOCKED until the user acknowledges it (human timing, and the
+	// message can't vanish before it is read) — but only when there is somebody to
+	// acknowledge it. With no viewer attached the emulator accepts immediately, so an
+	// unattended session is never frozen by a dialog nobody can see.
+	em.setViewerCounter(kbd.viewers)
 	em.fedcm.setSink(kbd.broadcastDialog)
 	// Popup windows (OAuth "Continue with Google") are fullscreened by emulate.go
 	// so they are usable on a phone, which removes the window's own close button.
@@ -116,6 +121,21 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	dlg := newDialogBridge(kbd)
 	kbd.bridgeToken = dlg.token
 	mux.HandleFunc("/dialog", dialogBridgeHandler(dlg, ready))
+	// The extension tells us which document is FOCUSED (document.hasFocus() on a top
+	// frame is browser-global). CDP has no equivalent for a target, and without it the
+	// close affordance can only guess "newest window", which is wrong as soon as a
+	// site refocuses an older one. Consumed here and never relayed: it carries a URL.
+	kbd.onPublisherMsg = func(payload []byte) {
+		var msg struct {
+			Foreground *string `json:"foreground"`
+		}
+		if err := json.Unmarshal(payload, &msg); err != nil || msg.Foreground == nil {
+			return
+		}
+		if seq, open, changed := em.setForeground(*msg.Foreground); changed {
+			em.publishPopup(seq, open)
+		}
+	}
 	kbd.onViewerMsg = func(payload []byte) {
 		var msg struct {
 			DialogReply *struct {

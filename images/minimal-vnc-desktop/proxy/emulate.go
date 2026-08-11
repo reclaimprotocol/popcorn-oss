@@ -53,6 +53,16 @@ type emulator struct {
 	params      *emulateRequest
 	dirty       chan struct{}
 	cmds        chan cdpCmd // input/other commands to send on the live session
+	// prio carries the commands that must NOT be dropped: the terminal half of an
+	// input gesture (touchEnd/Cancel, mouse release) and a dialog answer. They share
+	// the connection but not the queue — a high-frequency touchMove flood filling
+	// cmds used to be able to crowd out the touchEnd behind it, and a lost touchEnd
+	// leaves the remote page with a finger that never lifts.
+	prio chan cdpCmd
+	// inputDesync is set when a terminal input event was lost anyway (a wedged CDP
+	// consumer). The next gesture starts with a touchCancel so the remote's stuck
+	// finger is cleared instead of being combined with the new touch.
+	inputDesync atomic.Bool
 
 	sessMu sync.Mutex
 	active string // page sessionId that receives input (newest/foreground)
@@ -87,6 +97,9 @@ type emulator struct {
 	dlgSeq   uint64
 	dialogs  map[string]*openDialog
 	onDialog func(payload []byte, open bool)
+	// viewerCount reports how many viewers are attached. An alert() is only worth
+	// keeping the page blocked for if somebody can actually read it.
+	viewerCount func() int
 
 	// ---- secondary windows ---------------------------------------------------
 	// A sign-in flow ("Continue with Google", payment flows) puts a SECOND
@@ -107,11 +120,27 @@ type emulator struct {
 	//
 	// The rule also protects the session for free: with one page there is nothing
 	// to close, so the primary page can never be the thing we offer to destroy.
-	popMu    sync.Mutex
-	pages    []string // top-level page targetIds, creation order (newest last)
-	popFront string   // targetId currently advertised as closable ("" = none)
-	popSeq   uint64   // identifies that window; stale taps are dropped
-	onPopup  func(payload []byte, open bool)
+	//
+	// WHICH page is offered is the focused one, not simply the newest. Creation order
+	// alone was wrong: once a site refocuses an older popup — or hands focus back to
+	// the opener — the newest target is a window the user cannot see, and the close
+	// button would destroy that instead of what is in front of them. CDP has no focus
+	// signal for a target, so the foreground URL comes from the extension, whose top
+	// frames report document.hasFocus() (browser-global: at most one wins). With no
+	// such report yet, creation order is still the fallback.
+	popMu      sync.Mutex
+	pages      []pageEntry // top-level pages, creation order (newest last)
+	popFront   string      // targetId currently advertised as closable ("" = none)
+	popSeq     uint64      // identifies that window; stale taps are dropped
+	foreground string      // URL of the focused top document ("" = unknown)
+	onPopup    func(payload []byte, open bool)
+}
+
+// pageEntry is a tracked top-level page. The URL is what the foreground report is
+// matched against — CDP identifies targets, the extension only knows documents.
+type pageEntry struct {
+	targetID string
+	url      string
 }
 
 // cdpCmd is a command queued from another goroutine (e.g. the /input handler)
@@ -132,6 +161,47 @@ type openDialog struct {
 	payload []byte
 }
 
+// alertAckWait bounds how long an alert() stays blocked waiting for the user to
+// acknowledge it. Long enough to read a sentence and tap, short enough that a viewer
+// which went away mid-alert cannot wedge the page for the rest of the session.
+const alertAckWait = 15 * time.Second
+
+// setViewerCounter installs the "is anyone watching" probe (the /kbd hub).
+func (e *emulator) setViewerCounter(f func() int) {
+	e.dlgMu.Lock()
+	e.viewerCount = f
+	e.dlgMu.Unlock()
+}
+
+// dialogIsInformational reports whether a dialog can be accepted the moment it
+// opens, making our sheet a message to read rather than a question to answer. Only
+// an alert with NOBODY watching qualifies: alert() has no return value, so accepting
+// it invents nothing — but doing so while a viewer is attached is what used to make
+// the message vanish before it was read and hand the page a machine-fast return.
+func (e *emulator) dialogIsInformational(dialogType string) bool {
+	return dialogType == "alert" && !e.hasViewer()
+}
+
+func (e *emulator) hasViewer() bool {
+	e.dlgMu.Lock()
+	f := e.viewerCount
+	e.dlgMu.Unlock()
+	return f != nil && f() > 0
+}
+
+// dialogStillOpen reports whether the dialog with this sequence number is still
+// waiting for an answer.
+func (e *emulator) dialogStillOpen(seq uint64) bool {
+	e.dlgMu.Lock()
+	defer e.dlgMu.Unlock()
+	for _, d := range e.dialogs {
+		if d.seq == seq {
+			return true
+		}
+	}
+	return false
+}
+
 // setDialogSink installs the fan-out used to tell viewers about a dialog.
 func (e *emulator) setDialogSink(f func(payload []byte, open bool)) {
 	e.dlgMu.Lock()
@@ -140,8 +210,9 @@ func (e *emulator) setDialogSink(f func(payload []byte, open bool)) {
 }
 
 // noteDialogOpen records the dialog and returns its sequence number. An
-// informational one (alert, already accepted natively) is NOT recorded: there is
-// nothing left to answer, so a later reply must not resolve anything.
+// informational one (an alert accepted natively because no viewer is attached) is
+// NOT recorded: there is nothing left to answer, so a later reply must not resolve
+// anything. See dialogIsInformational.
 func (e *emulator) noteDialogOpen(sessionID string, informational bool) uint64 {
 	e.dlgMu.Lock()
 	defer e.dlgMu.Unlock()
@@ -206,7 +277,7 @@ func (e *emulator) answerDialog(seq uint64, accept bool, text string) bool {
 	if accept && text != "" {
 		p["promptText"] = text
 	}
-	return e.enqueueCmdWait(cdpCmd{method: "Page.handleJavaScriptDialog", params: p, session: sid}, dialogEnqueueWait)
+	return e.enqueuePriority(cdpCmd{method: "Page.handleJavaScriptDialog", params: p, session: sid}, dialogEnqueueWait)
 }
 
 // resetDialogs drops every tracked dialog when the CDP connection dies. Their
@@ -289,18 +360,83 @@ func (e *emulator) popupSink() func([]byte, bool) {
 func (e *emulator) pageTargets() []string {
 	e.popMu.Lock()
 	defer e.popMu.Unlock()
-	out := make([]string, len(e.pages))
-	copy(out, e.pages)
+	out := make([]string, 0, len(e.pages))
+	for _, p := range e.pages {
+		out = append(out, p.targetID)
+	}
 	return out
 }
 
-// frontLocked is the window we offer to close: the newest top-level page, and
-// only when there is more than one (never the last page standing).
+// frontLocked is the window we offer to close. Never with fewer than two pages
+// (the last page standing IS the session). Otherwise:
+//
+//   - the page the extension reports as FOCUSED, when that is not the first page
+//     tracked — that is the window actually in front of the user;
+//   - nothing, when the focused page is the first one: the user is looking at the
+//     page they started from, so there is nothing covering it to dismiss (the
+//     affordance comes back the moment a popup takes focus again);
+//   - the newest page, when we have no focus report to go on (extension not up
+//     yet, or a window with no content script) — the old creation-order rule as
+//     the fallback.
 func (e *emulator) frontLocked() string {
 	if len(e.pages) < 2 {
 		return ""
 	}
-	return e.pages[len(e.pages)-1]
+	if e.foreground != "" {
+		for i, p := range e.pages {
+			if p.url != "" && sameDocument(p.url, e.foreground) {
+				if i == 0 {
+					return ""
+				}
+				return p.targetID
+			}
+		}
+	}
+	return e.pages[len(e.pages)-1].targetID
+}
+
+// sameDocument compares a CDP target URL with the URL the extension reported for
+// the focused document. Fragments are ignored: an in-page anchor is not a different
+// window, and the two sources can disagree about one.
+func sameDocument(targetURL, reported string) bool {
+	return strings.TrimSuffix(trimFragment(targetURL), "/") == strings.TrimSuffix(trimFragment(reported), "/")
+}
+
+func trimFragment(u string) string {
+	if i := strings.IndexByte(u, '#'); i >= 0 {
+		return u[:i]
+	}
+	return u
+}
+
+// setForeground records which document the user is looking at (from the extension's
+// document.hasFocus() report — see keyboard.go's publisher control frames) and
+// republishes the close affordance if that changed which window it points at.
+func (e *emulator) setForeground(url string) (seq uint64, open bool, changed bool) {
+	e.popMu.Lock()
+	defer e.popMu.Unlock()
+	if url == e.foreground {
+		return e.popSeq, e.popFront != "", false
+	}
+	e.foreground = url
+	return e.republishLocked()
+}
+
+// notePageURL keeps a tracked page's URL current (targetInfoChanged fires on every
+// navigation), so the foreground report keeps matching after the popup navigates.
+func (e *emulator) notePageURL(targetID, url string) (seq uint64, open bool, changed bool) {
+	e.popMu.Lock()
+	defer e.popMu.Unlock()
+	for i := range e.pages {
+		if e.pages[i].targetID == targetID {
+			if e.pages[i].url == url || url == "" {
+				return e.popSeq, e.popFront != "", false
+			}
+			e.pages[i].url = url
+			return e.republishLocked()
+		}
+	}
+	return e.popSeq, e.popFront != "", false
 }
 
 // republishLocked recomputes the advertised window. The sequence is bumped only
@@ -324,15 +460,21 @@ func (e *emulator) republishLocked() (seq uint64, open bool, changed bool) {
 // notePage records a top-level page. Every page counts, including the primary
 // one — "closable" is derived from the COUNT, so the primary must be tracked or
 // the second page would look like the only one.
-func (e *emulator) notePage(targetID string) (seq uint64, open bool, changed bool) {
+func (e *emulator) notePage(targetID, url string) (seq uint64, open bool, changed bool) {
 	e.popMu.Lock()
 	defer e.popMu.Unlock()
-	for _, t := range e.pages {
-		if t == targetID {
-			return e.popSeq, e.popFront != "", false // already tracked; targetCreated can repeat
+	for i, p := range e.pages {
+		if p.targetID == targetID {
+			// targetCreated can repeat; a later report may carry the url the first
+			// one lacked (a popup opens blank, then navigates).
+			if url != "" && p.url != url {
+				e.pages[i].url = url
+				return e.republishLocked()
+			}
+			return e.popSeq, e.popFront != "", false
 		}
 	}
-	e.pages = append(e.pages, targetID)
+	e.pages = append(e.pages, pageEntry{targetID: targetID, url: url})
 	return e.republishLocked()
 }
 
@@ -343,8 +485,8 @@ func (e *emulator) forgetPage(targetID string) (seq uint64, open bool, changed b
 	e.popMu.Lock()
 	defer e.popMu.Unlock()
 	idx := -1
-	for i, t := range e.pages {
-		if t == targetID {
+	for i, p := range e.pages {
+		if p.targetID == targetID {
 			idx = i
 			break
 		}
@@ -440,7 +582,12 @@ func geometryHTTPHandler() http.HandlerFunc {
 }
 
 func newEmulator(cdpUpstream string) *emulator {
-	e := &emulator{cdpUpstream: cdpUpstream, dirty: make(chan struct{}, 1), cmds: make(chan cdpCmd, 512)}
+	e := &emulator{
+		cdpUpstream: cdpUpstream,
+		dirty:       make(chan struct{}, 1),
+		cmds:        make(chan cdpCmd, 512),
+		prio:        make(chan cdpCmd, 64),
+	}
 	if os.Getenv("MVD_EMULATOR_OFF") == "1" {
 		return e // diagnostic: no CDP auto-attach / emulation at all
 	}
@@ -476,25 +623,18 @@ func (e *emulator) queue(method string, params map[string]any) {
 
 // queueImportant enqueues a command that MUST NOT be silently dropped. A dropped
 // touchStart/End/Cancel leaves the remote page with a stuck finger (the touch
-// sequence never balances), so — unlike a move — we wait briefly for a queue
-// slot instead of dropping on a full channel. Bounded so a wedged consumer can't
-// stall the /input read loop forever.
+// sequence never balances), so it goes on the RESERVED queue (e.prio), which
+// moves are never written to — a burst of touchMoves can fill e.cmds without
+// costing the touchEnd behind it a single slot. Bounded so a wedged consumer can't
+// stall the /input read loop forever; if it does expire, the gesture is marked
+// desynced and the next one opens with a cancel.
 func (e *emulator) queueImportant(method string, params map[string]any) {
 	sid := e.activeSession()
 	if sid == "" {
 		return
 	}
-	cmd := cdpCmd{method: method, params: params, session: sid}
-	select {
-	case e.cmds <- cmd:
-		return
-	default:
-	}
-	timer := time.NewTimer(200 * time.Millisecond)
-	defer timer.Stop()
-	select {
-	case e.cmds <- cmd:
-	case <-timer.C: // consumer wedged; drop rather than block input indefinitely
+	if !e.enqueuePriority(cdpCmd{method: method, params: params, session: sid}, inputEnqueueWait) {
+		e.inputDesync.Store(true)
 	}
 }
 
@@ -504,8 +644,28 @@ func (e *emulator) queueImportant(method string, params map[string]any) {
 // expensive outcome: Chrome stays blocked until something else answers.
 const (
 	cmdEnqueueWait    = 200 * time.Millisecond
+	inputEnqueueWait  = 200 * time.Millisecond
 	dialogEnqueueWait = 3 * time.Second
 )
+
+// enqueuePriority queues on the reserved channel (see emulator.prio). Same bounded
+// wait as enqueueCmd, but the queue it competes for carries only never-drop
+// commands, so the bound is reached only when the CDP consumer itself is wedged.
+func (e *emulator) enqueuePriority(cmd cdpCmd, wait time.Duration) bool {
+	select {
+	case e.prio <- cmd:
+		return true
+	default:
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case e.prio <- cmd:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 // enqueueCmd queues a command for a SPECIFIC session (queueImportant always
 // targets the foreground one). A dialog must be answered on the session that
@@ -556,6 +716,19 @@ func (e *emulator) dispatchTouch(evType string, points []touchPoint) {
 			"force":   force,
 			"radiusX": radius, "radiusY": radius,
 		})
+	}
+	// A gesture that lost its terminal event left the remote holding a finger down.
+	// Clear it before starting a new one, or the two touches combine into a pinch /
+	// drag the user never made. Sent on the reserved queue like any other terminal
+	// event; if even this is lost the flag stays set and the next start retries.
+	if evType == "touchStart" && e.inputDesync.Load() {
+		if e.enqueuePriority(cdpCmd{
+			method:  "Input.dispatchTouchEvent",
+			params:  map[string]any{"type": "touchCancel", "touchPoints": []map[string]any{}},
+			session: e.activeSession(),
+		}, inputEnqueueWait) {
+			e.inputDesync.Store(false)
+		}
 	}
 	params := map[string]any{"type": evType, "touchPoints": tp}
 	if evType == "touchMove" {
@@ -983,6 +1156,14 @@ func (e *emulator) session() error {
 			for sid := range sessions {
 				applyTo(sid)
 			}
+		case c := <-e.prio:
+			// The reserved queue is selected alongside cmds, so a never-drop command
+			// never waits behind a backlog of moves.
+			if c.session == "" {
+				send(c.method, c.params, "")
+			} else if sessions[c.session] {
+				send(c.method, c.params, c.session)
+			}
 		case c := <-e.cmds:
 			// A browser-level command (empty session) addresses a target by id —
 			// closing an unattached OAuth popup is the case that needs it, since
@@ -1017,7 +1198,7 @@ func (e *emulator) session() error {
 					// affordance is derived from how many exist, because the flow it
 					// exists for (FedCM sign-in) reports no opener at all.
 					if t == "page" && tid != "" {
-						if seq, open, changed := e.notePage(tid); changed {
+						if seq, open, changed := e.notePage(tid, url); changed {
 							e.publishPopup(seq, open)
 						}
 					}
@@ -1035,9 +1216,19 @@ func (e *emulator) session() error {
 				}
 			case "Target.targetInfoChanged":
 				// Discovery reports every url change, which is how we learn that a blank
-				// popup has become a real page — the moment it is safe to attach one.
+				// popup has become a real page — the moment it is safe to attach one, and
+				// the moment its URL can start matching the extension's foreground report.
 				params, _ := m["params"].(map[string]any)
 				if ti, _ := params["targetInfo"].(map[string]any); ti != nil {
+					if t, _ := ti["type"].(string); t == "page" {
+						tid, _ := ti["targetId"].(string)
+						u, _ := ti["url"].(string)
+						if tid != "" {
+							if seq, open, changed := e.notePageURL(tid, u); changed {
+								e.publishPopup(seq, open)
+							}
+						}
+					}
 					attachNavigatedPopup(ti)
 				}
 			case "Target.attachedToTarget":
@@ -1087,16 +1278,21 @@ func (e *emulator) session() error {
 					// dialog, so a dialog we merely forward is drawn TWICE: the native
 					// one (clipped, window-relative) plus our sheet.
 					//
-					// alert() has no return value, so we can accept it natively at
-					// once — that removes it from the stream and unblocks the page
-					// immediately — and show our sheet purely as a notification. The
-					// message still reaches the user, which is the whole point.
+					// alert() is BLOCKING here, like every other dialog. An earlier version
+					// accepted it natively the instant it opened and showed the sheet as a
+					// mere notification — so the page resumed before the user had read
+					// anything (breaking any flow that waits for the acknowledgement), and
+					// alert() returned in ~18ms where a human takes seconds. That timing is
+					// a published anti-automation probe: t=now(); alert(x); now()-t. So the
+					// answer waits for the tap now, exactly like confirm.
 					//
-					// confirm/prompt/beforeunload cannot do this: their RESULT is what
-					// the page acts on, so we must keep the page blocked until the user
-					// chooses, and Chromium's dialog stays visible underneath until
-					// then. Answering early to hide it would mean guessing the answer.
-					informational := dtype == "alert"
+					// Two exceptions keep an unattended session alive, because a dialog
+					// nobody can answer would otherwise freeze the page for good:
+					//   - no viewer attached: accept at once (nobody can ever read it);
+					//   - a viewer attached but silent for alertAckWait: accept then.
+					// Neither applies to confirm/prompt/beforeunload, whose RESULT the page
+					// acts on — guessing that is worse than staying blocked.
+					informational := e.dialogIsInformational(dtype)
 					seq := e.noteDialogOpen(sid, informational)
 					if informational {
 						// Written STRAIGHT to the socket, not queued. We are on the
@@ -1105,6 +1301,19 @@ func (e *emulator) session() error {
 						// this accept is the only thing that unblocks the page, and the
 						// sheet we show for it has no answer button to retry with.
 						send("Page.handleJavaScriptDialog", map[string]any{"accept": true}, sid)
+					} else if dtype == "alert" {
+						// Liveness backstop for an alert the user never acknowledges (the viewer
+						// went away mid-dialog, or the page fires them in a loop). Off the event
+						// loop, and it re-checks the sequence number so it can only ever answer
+						// the dialog it was armed for.
+						go func(seq uint64) {
+							time.Sleep(alertAckWait)
+							if !e.dialogStillOpen(seq) {
+								return
+							}
+							log.Printf("dialog: alert unacknowledged for %s, accepting so the page can continue", alertAckWait)
+							e.answerDialog(seq, true, "")
+						}(seq)
 					}
 					if sink := e.dialogSink(); sink != nil {
 						// The ORIGIN is part of the payload on purpose: Chromium's own
@@ -1308,7 +1517,8 @@ func (e *emulator) session() error {
 							if ti, _ := x.(map[string]any); ti != nil {
 								if t, _ := ti["type"].(string); t == "page" {
 									if tid, _ := ti["targetId"].(string); tid != "" {
-										if seq, open, changed := e.notePage(tid); changed {
+										u, _ := ti["url"].(string)
+										if seq, open, changed := e.notePage(tid, u); changed {
 											e.publishPopup(seq, open)
 										}
 									}

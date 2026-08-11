@@ -19,8 +19,10 @@ import (
 // sheet. The only way to accept the native one early is to answer it, and for
 // confirm/prompt that means guessing the answer.
 //
-// Worse, answering alert() immediately makes it return in ~18ms where a human
-// takes 1-3s, and `t=now(); alert(x); now()-t` is a real anti-automation probe.
+// The CDP path no longer answers alert() early — it waits for the user's tap like
+// any other dialog (see emulate.go), so `t=now(); alert(x); now()-t` reads as human
+// there too. What the bridge still buys is the absence of a SECOND, clipped native
+// dialog behind our sheet, which CDP interception cannot suppress.
 //
 // So the extension overrides the three page-level dialog functions instead
 // (injected.js), and Chromium never opens a dialog at all: no duplicate, no

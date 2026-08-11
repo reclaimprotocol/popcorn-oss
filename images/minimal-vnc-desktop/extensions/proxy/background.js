@@ -91,6 +91,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sender && typeof sender.frameId === 'number' ? sender.frameId : 0,
       !!(sender && sender.tab && sender.tab.active),
       message.state,
+      // sender.url is the reporting FRAME's url and needs no "tabs" permission.
+      sender && typeof sender.url === 'string' ? sender.url : '',
     );
     return false;
   }
@@ -175,16 +177,38 @@ const kbdFrames = new Map(); // "tabId:frameId" -> { tabId, state, ts }
 // the first claiming report after a wake re-teaches it. -1 = not yet known.
 let kbdActiveTab = -1;
 
-function kbdReport(tabId, frameId, tabActive, state) {
+function kbdReport(tabId, frameId, tabActive, state, senderUrl) {
   if (!state || typeof state.editable !== 'boolean') return;
   kbdFrames.set(tabId + ':' + frameId, { tabId, state, ts: Date.now() });
   if (frameId === 0 && state.wf === true) {
     kbdActiveTab = tabId; // this document's window holds focus — it owns the stream
+    // document.hasFocus() on a TOP frame is browser-global, so this is the one
+    // document the user is actually looking at — including when that is a popup
+    // window rather than the page that opened it. The proxy has no equivalent
+    // signal (CDP reports targets, not focus) and needs it to decide WHICH window
+    // its close affordance should close. See kbdSendForeground.
+    kbdSendForeground(senderUrl);
   } else if (kbdActiveTab === -1 && tabActive) {
     kbdActiveTab = tabId; // no focus claim yet (browser chrome holds it) — seed
   }
   if (tabId !== kbdActiveTab) return; // background tab: kept fresh in the map, never published
   kbdSend(mergeFrames());
+}
+
+// The focused top document's URL, sent to the proxy on change. Deliberately NOT
+// part of the focus state: that state is fanned out to every viewer, and a URL
+// routinely carries tokens in its query string. This is a publisher->server
+// control frame, which the hub consumes and never relays (see keyboard.go).
+let kbdForegroundUrl = null;
+
+function kbdSendForeground(url) {
+  if (typeof url !== 'string' || !url) return;
+  if (url === kbdForegroundUrl) return;
+  kbdForegroundUrl = url;
+  kbdConnect();
+  if (kbdSocket && kbdSocket.readyState === WebSocket.OPEN) {
+    try { kbdSocket.send(JSON.stringify({ foreground: url })); } catch (_) {}
+  }
 }
 
 // Without this listener a tab switch is only noticed when the new tab next
@@ -310,6 +334,11 @@ function kbdConnect() {
     if (kbdLastState !== null) {
       try { sock.send(kbdWire(kbdLastState)); } catch (_) {}
     }
+    // And which window is in front: the proxy drops this with the connection, and
+    // an MV3 worker restart must not leave it guessing.
+    if (kbdForegroundUrl) {
+      try { sock.send(JSON.stringify({ foreground: kbdForegroundUrl })); } catch (_) {}
+    }
   };
 
   const onDown = () => {
@@ -350,18 +379,65 @@ function kbdConnect() {
   };
 }
 
-// kbdWire serializes a focus state for the wire, dropping the field's text unless
-// a viewer has asked for mirroring (see kbdMirror). The structural signals —
-// including sync.len and sync.tail, which the drift detection and trailing-space
-// repair run on — are unaffected, so the keyboard behaves the same with mirroring
-// off; only the seed text is withheld.
+// The hub rejects a frame over kbdMaxPayload (32 KiB) — and it rejects the WHOLE
+// frame, so an oversized state doesn't degrade, it disappears: the viewer keeps
+// stale focus geometry and taps land on the wrong fields with nothing in any log to
+// say why. The per-frame rect caps don't bound this, because the merge unions every
+// frame's rects, so the budget has to be enforced here, on the merged result.
+// Measured in UTF-8 bytes (the wire unit): a CJK placeholder is 3 bytes per char
+// where String.length counts 1. Sized well under the hub's limit so the envelope
+// and any future field still fit.
+const MERGED_MAX_BYTES = 24000;
+
+function wireBytes(s) {
+  try { return new TextEncoder().encode(s).length; } catch (_) { return s.length * 3; }
+}
+
+// kbdWire serializes a focus state for the wire. Two jobs: drop the field's text
+// unless a viewer asked for mirroring (see kbdMirror), and keep the result inside
+// the hub's frame limit. The structural signals — sync.len and sync.tail, which the
+// drift detection and trailing-space repair run on — are never dropped, so the
+// keyboard behaves the same either way.
 function kbdWire(state) {
-  if (kbdMirror || !state || !state.sync || typeof state.sync.val !== 'string') {
-    return JSON.stringify(state);
+  let out = state;
+  if (!kbdMirror && state && state.sync && typeof state.sync.val === 'string') {
+    const sync = Object.assign({}, state.sync);
+    delete sync.val;
+    out = Object.assign({}, state, { sync });
   }
-  const sync = Object.assign({}, state.sync);
-  delete sync.val;
-  return JSON.stringify(Object.assign({}, state, { sync }));
+  let s = JSON.stringify(out);
+  if (wireBytes(s) <= MERGED_MAX_BYTES) return s;
+
+  // Over budget. Shed in order of what the viewer can most afford to lose.
+  out = Object.assign({}, out);
+  // 1. Rects are a tap hit-test OPTIMIZATION with a documented fallback (the
+  //    viewer's optimistic raise), so halve them until it fits. rtrunc tells the
+  //    viewer a miss must not be read as "not a field".
+  if (Array.isArray(out.rects)) {
+    while (out.rects.length > 0 && wireBytes(s) > MERGED_MAX_BYTES) {
+      out.rects = out.rects.slice(0, Math.floor(out.rects.length / 2));
+      out.rtrunc = true;
+      s = JSON.stringify(out);
+    }
+  }
+  // 2. Then the mirror seed text. DROPPED, never truncated: the viewer diffs edits
+  //    against this value, and a silently shortened one would desync every keystroke.
+  //    Without it mirroring just doesn't seed, and the next report can seed again.
+  if (wireBytes(s) > MERGED_MAX_BYTES && out.sync && typeof out.sync.val === 'string') {
+    const sync = Object.assign({}, out.sync);
+    delete sync.val;
+    out.sync = sync;
+    s = JSON.stringify(out);
+  }
+  // 3. Still over: the remaining bulk is page-controlled hint strings on the focused
+  //    field. Losing the state entirely is worse than losing the hints, so send the
+  //    field without them rather than let the hub drop the frame.
+  if (wireBytes(s) > MERGED_MAX_BYTES && out.hints) {
+    out.hints = { type: out.hints.type, tag: out.hints.tag };
+    out.xf = undefined;
+    s = JSON.stringify(out);
+  }
+  return s;
 }
 
 function kbdSend(state) {
