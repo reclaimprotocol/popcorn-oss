@@ -4,11 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -81,17 +85,63 @@ const kbdPingInterval = 30 * time.Second
 // kbdMaxClients bounds concurrent connections so a flood can't exhaust memory.
 const kbdMaxClients = 64
 
-// kbdMaxPayload caps a single /kbd frame. Focus signals are tiny JSON; anything
-// larger is rejected (readFrame's own 64MB ceiling is far too permissive here).
-const kbdMaxPayload = 8192
+// kbdMaxPayload caps a /kbd frame, rejected from the length header so an oversized claim costs no allocation.
+// Measured worst case is ~12 KiB (60 rects + a 2048-char CJK val); 8 KiB silently dropped those states.
+// Still bounds the flood: kbdMaxClients * 32 KiB is 2 MB, against the 4 GiB the 64MB ceiling allowed.
+const kbdMaxPayload = 32768
+
+// kbdPubOriginEnv pins the publisher origin to one exact value, e.g. the extension's
+// chrome-extension://ankpocoakajannlnbiahpdjfkieigoff. Unset, any chrome-extension origin is accepted.
+const kbdPubOriginEnv = "KBD_PUB_ORIGIN"
+
+// publisherAllowed gates ?role=pub, which is a TRUST level (fan-out to every viewer + the dialog-bridge
+// token) and was previously self-asserted. Loopback excludes viewers, which reach :6080 from outside the pod;
+// the browser-stamped Origin excludes the page, which can reach loopback but cannot forge that header.
+// An absent Origin passes: page script always has one, so it can only be a local non-browser client.
+func publisherAllowed(r *http.Request) bool {
+	if !loopbackAddr(r.RemoteAddr) {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if pinned := strings.TrimSpace(os.Getenv(kbdPubOriginEnv)); pinned != "" {
+		return origin == pinned
+	}
+	return origin == "" || strings.HasPrefix(origin, "chrome-extension://")
+}
+
+func loopbackAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	// Strip an IPv6 zone ("fe80::1%eth0") before parsing.
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
+// Log the first few rejections only — enough to diagnose a broken extension, not a disk-fill lever.
+// A wrong KBD_PUB_ORIGIN makes the extension retry hard: it hit this limit in seconds during testing.
+var kbdPubRejects int32
+
+const kbdPubRejectLogLimit = 10
+
+func logPublisherReject(r *http.Request) {
+	if n := atomic.AddInt32(&kbdPubRejects, 1); n <= kbdPubRejectLogLimit {
+		log.Printf("kbd: rejected role=pub from %s (origin %q)", r.RemoteAddr, r.Header.Get("Origin"))
+	}
+}
 
 type kbdClient struct {
 	conn    net.Conn
 	writeMu sync.Mutex
 
-	// publisher clients (the browser extension, connecting with ?role=pub) are
-	// the only ones allowed to broadcast focus state. Viewers are receive-only,
-	// so a connected viewer can't inject fake signals to other viewers.
+	// publisher clients (the browser extension, connecting with ?role=pub AND
+	// passing publisherAllowed) are the only ones allowed to broadcast focus
+	// state. Viewers are receive-only, so a connected viewer can't inject fake
+	// signals to other viewers.
 	publisher bool
 
 	mailMu  sync.Mutex
@@ -353,6 +403,13 @@ func (h *kbdHub) serve(w http.ResponseWriter, r *http.Request, ready readyGate) 
 		return
 	}
 	publisher := r.URL.Query().Get("role") == "pub"
+	if publisher && !publisherAllowed(r) {
+		// Refuse outright rather than silently downgrade to viewer: a quietly demoted publisher looks exactly
+		// like a keyboard that stopped working for no reason.
+		logPublisherReject(r)
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "hijacking unsupported", http.StatusInternalServerError)
@@ -402,7 +459,12 @@ func (h *kbdHub) serve(w http.ResponseWriter, r *http.Request, ready readyGate) 
 func (h *kbdHub) readLoop(c *kbdClient, reader *bufio.Reader) {
 	for {
 		_ = c.conn.SetReadDeadline(time.Now().Add(kbdReadDeadline))
-		_, opcode, payload, err := readFrame(reader)
+		// Capped at the length header: the len(payload) checks below only run once the frame is already in
+		// memory, so decoding at the 64 MiB ceiling let any client force huge throwaway allocations.
+		_, opcode, payload, err := readFrameLimit(reader, kbdMaxPayload)
+		if errors.Is(err, errFrameTooLarge) {
+			continue // body already drained; dropping one frame beats tearing down the publisher
+		}
 		if err != nil {
 			return
 		}

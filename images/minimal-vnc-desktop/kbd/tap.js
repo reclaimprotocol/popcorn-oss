@@ -30,7 +30,7 @@ export function createTap({
   flushLocalClipboard,              // clipboard
   raiseKeyboard, dismissKeyboard, armDismiss, parkProxyOffscreen, // core (hoisted)
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
-  getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt,
+  getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
   getProxy, getScreenElement,
 }) {
   let remoteTouchActive = false; // a touch 'start' is currently forwarded to the remote
@@ -351,6 +351,9 @@ export function createTap({
     // Downgrade the miss to 'unknown' so a tap on a now-visible field isn't read
     // as an off-field dismiss; self-clears the moment a post-scroll rect lands.
     if (getLastNonEmptyRectsAt() < lastRemoteScrollAt && nowMs() - lastRemoteScrollAt < DISMISS_MAX_MS) return 'unknown';
+    // The rect list was capped, so the field under this tap may simply not be in it.
+    // 'unknown' keeps the optimistic path (no dismiss); a real miss still needs a full list.
+    if (getRectsTruncated && getRectsTruncated()) return 'unknown';
     return 'miss';
   }
 

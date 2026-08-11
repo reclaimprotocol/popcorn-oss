@@ -19,6 +19,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -590,7 +591,12 @@ func inputWSHandler(em *emulator, ready readyGate) http.HandlerFunc {
 
 		for {
 			_ = conn.SetReadDeadline(time.Now().Add(inputReadDeadline))
-			fin, opcode, payload, err := readFrame(rw.Reader)
+			// Capped at the length header: a touch message is a few hundred bytes, and decoding at the
+			// transport ceiling let a client force a 64 MiB allocation per frame before we checked the size.
+			fin, opcode, payload, err := readFrameLimit(rw.Reader, inputMaxPayload)
+			if errors.Is(err, errFrameTooLarge) {
+				continue // matches the pre-existing len(payload) > inputMaxPayload skip
+			}
 			if err != nil {
 				return
 			}

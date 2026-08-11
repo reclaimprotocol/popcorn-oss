@@ -39,6 +39,7 @@ export function createFieldSession({
   // kbd/tap.js and the xf note in extensions/proxy/content.js.
   let currentXFrames = [];
   let lastNonEmptyRectsAt = 0;   // when we last got a populated rect set (flap stickiness)
+  let rectsTruncated = false;    // rects[] was capped by the extension merge (background.js)
   const RECTS_STICKY_MS = 3000;  // ignore a transient rects=[] this long after real rects
 
   // The focusKey (stable per-element identity, from content.js) of the remote's
@@ -228,11 +229,15 @@ export function createFieldSession({
     // RECTS_STICKY_MS (a genuinely input-less page) or after a navigation (the
     // pid block below zeroes lastNonEmptyRectsAt so the new page's empty sticks).
     if (Array.isArray(state.rects)) {
+      // rectsTruncated is set ONLY where currentInputRects is, so it always describes the list actually in
+      // use — during a transient flap we keep the old rects, and must keep their flag too.
       if (state.rects.length > 0) {
         currentInputRects = state.rects;
+        rectsTruncated = !!state.rtrunc; // capped list → a tap matching nothing proves nothing
         lastNonEmptyRectsAt = nowMs();
       } else if (nowMs() - lastNonEmptyRectsAt >= RECTS_STICKY_MS) {
         currentInputRects = state.rects; // sustained empty → accept the clear
+        rectsTruncated = false;
       } // else: keep the last non-empty rects through the transient flap
     }
     if (Array.isArray(state.xf)) currentXFrames = state.xf;
@@ -456,6 +461,7 @@ export function createFieldSession({
     inputRects: () => currentInputRects,
     xframes: () => currentXFrames,
     lastNonEmptyRectsAt: () => lastNonEmptyRectsAt,
+    rectsTruncated: () => rectsTruncated,
     focusKey: () => remoteFocusKey,
     sensitive: () => sensitiveField,
     remoteValue: () => remoteValue,

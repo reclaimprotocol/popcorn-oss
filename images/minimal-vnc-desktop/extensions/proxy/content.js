@@ -205,12 +205,16 @@
     return { x, y, reachedTop };
   }
 
+  // Whole pixels. getBoundingClientRect's sub-pixel floats serialise at ~18 chars each ("629.4931030273438"),
+  // which is most of a focus message on a long form — and the viewer only hit-tests taps with them.
+  const px = (r) => ({ x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) });
+
   // Shift a state's rect + rects[] by (dx,dy). Clones the array so a cached/shared
   // rects list is never mutated in place.
   function offsetState(state, dx, dy) {
     if (!dx && !dy) return state;
-    if (state.rect) state.rect = { x: state.rect.x + dx, y: state.rect.y + dy, w: state.rect.w, h: state.rect.h };
-    if (Array.isArray(state.rects)) state.rects = state.rects.map((r) => ({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }));
+    if (state.rect) state.rect = px({ x: state.rect.x + dx, y: state.rect.y + dy, w: state.rect.w, h: state.rect.h });
+    if (Array.isArray(state.rects)) state.rects = state.rects.map((r) => px({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }));
     return state;
   }
 
@@ -234,7 +238,7 @@
       if (r.width <= 0 || r.height <= 0) continue;
       // Frame-LOCAL here; emit() applies the toward-top offset (or bubbles across a
       // cross-origin boundary) so cross-origin-iframe fields land in the right place.
-      out.push({ x: r.left, y: r.top, w: r.width, h: r.height });
+      out.push(px({ x: r.left, y: r.top, w: r.width, h: r.height }));
       if (out.length >= MAX_RECTS) break;
     }
     return out;
@@ -442,6 +446,73 @@
     } catch (_) { return false; }
   }
 
+  // --- Sensitive-field detection --------------------------------------------
+  // Sensitive = plausibly a secret: password, OTP/2FA, PIN, card, bank account, SSN, token, seed phrase.
+  // type=password + a few autocomplete tokens missed both `<input type="tel" name="otp" maxlength="6">` and
+  // card fields with autocomplete="off", so these rules read every public signal and lean over-inclusive.
+
+  // Secret-naming words, matched against name/id/placeholder/aria-label/title/<label>.
+  const SENSITIVE_WORDS = new RegExp([
+    'passw', 'passcode', 'pass[\\s_-]*phrase', 'secret', '\\btoken\\b', 'api[\\s_-]*key', 'private[\\s_-]*key',
+    'otp', 'one[\\s_-]*time', '\\btotp\\b', '\\b2fa\\b', '\\bmfa\\b', '\\bpin\\b',
+    '(verification|confirmation|security|auth|authenticator|access|sms|login)[\\s_-]*code',
+    '\\bcvv\\b', '\\bcvc\\b', '\\bcsc\\b', 'card[\\s_-]*(number|code|verification)', 'cardnum', '\\bccnum',
+    'credit[\\s_-]*card', '\\bcc[\\s_-]*(num|number|exp|csc)', 'account[\\s_-]*number', 'routing[\\s_-]*number',
+    'sort[\\s_-]*code', '\\biban\\b', '\\bssn\\b', 'social[\\s_-]*security', 'tax[\\s_-]*id',
+    'seed[\\s_-]*phrase', 'mnemonic', 'recovery[\\s_-]*(code|phrase|key)',
+  ].join('|'), 'i');
+
+  // Short numeric fields that are NOT secrets. Exempts the shape rule only — an explicit secret word or
+  // autocomplete token still wins, so "PIN code" (a postcode in India) stays exempt but "card PIN" does not.
+  const BENIGN_SHORT = /zip|postal|post[\s_-]*code|pincode|pin[\s_-]*code|area[\s_-]*code|country[\s_-]*code|dial[\s_-]*code|\bage\b|quantity|\bqty\b|house|flat|floor|\broom\b|extension|\bext\b/i;
+
+  // Only useful when the page bothers to set them; the word/shape rules carry the rest.
+  const SENSITIVE_AUTOCOMPLETE = /one-time-code|password|cc-number|cc-csc|cc-exp|cc-name/;
+
+  // Luhn — recognises a card number by SHAPE, for the card field with no honest name or autocomplete token.
+  function looksLikeCardNumber(value) {
+    const digits = String(value).replace(/[\s-]/g, '');
+    if (!/^\d{12,19}$/.test(digits)) return false;
+    let sum = 0, dbl = false;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let d = digits.charCodeAt(i) - 48;
+      if (dbl) { d *= 2; if (d > 9) d -= 9; }
+      sum += d; dbl = !dbl;
+    }
+    return sum % 10 === 0;
+  }
+
+  // Often the ONLY honest signal — "Enter the 6-digit code" next to an <input name="c">.
+  function labelText(el) {
+    try {
+      if (el.labels && el.labels.length) return (el.labels[0].textContent || '').slice(0, 200);
+      const by = el.getAttribute && el.getAttribute('aria-labelledby');
+      if (by) {
+        const n = document.getElementById(by.split(/\s+/)[0]);
+        if (n) return (n.textContent || '').slice(0, 200);
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  function isSensitiveField(el, type, ac, attr, value) {
+    if (type === 'password' || SENSITIVE_AUTOCOMPLETE.test(ac)) return true;
+    const text = ['name', 'id', 'placeholder', 'aria-label', 'title', 'data-testid']
+      .map((n) => attr(n).slice(0, 256)).concat(labelText(el)).join(' ');
+    if (SENSITIVE_WORDS.test(text)) return true;
+
+    // Shape rule for the field that names itself nothing: OTP/PIN/CVV are numeric and a few chars long
+    // (maxlength=1 for the split six-box idiom). Only a postcode collides, and losing its echo is cheap.
+    // Numeric = any of type/inputmode/pattern, since the legacy OTP idiom is pattern="[0-9]*" on type=text.
+    const numeric = type === 'tel' || type === 'number' || /numeric|tel|decimal/i.test(attr('inputmode')) || /\[0-9\]|\\d/.test(attr('pattern'));
+    let maxLen = -1;
+    try { if (el.maxLength > 0) maxLen = el.maxLength; } catch (_) {}
+    if (numeric && maxLen >= 1 && maxLen <= 8 && !BENIGN_SHORT.test(text) && !/postal-code/.test(ac)) return true;
+
+    // Last resort: the value is itself a card number.
+    return looksLikeCardNumber(value);
+  }
+
   const IS_TOP = window === window.top;
 
   function describe(el) {
@@ -480,10 +551,14 @@
     try {
       const r = el.getBoundingClientRect();
       // Frame-LOCAL; emit() applies the offset / bubbles it (see frameOffset).
-      rect = { x: r.left, y: r.top, w: r.width, h: r.height };
+      rect = px({ x: r.left, y: r.top, w: r.width, h: r.height });
     } catch (_) { /* detached node */ }
     const isInput = el.tagName === 'INPUT';
     const attr = (name) => (el.getAttribute && el.getAttribute(name)) || '';
+    // Hints are page-controlled strings. Cap them: a huge placeholder would push the focus message past the
+    // hub's frame limit, and since background.js resends the cached state on every reconnect, one oversized
+    // state would loop (send -> socket torn down -> reconnect -> resend). No hint needs 256+ chars.
+    const hint = (name) => attr(name).slice(0, 256);
     const type = isInput ? (el.type || 'text').toLowerCase() : 'text';
     const ac = attr('autocomplete').toLowerCase();
     // Nearest ancestor [lang]/[dir], falling back to the document — so the proxy
@@ -493,15 +568,13 @@
       try { const a = el.closest && el.closest('[' + name + ']'); if (a) return a.getAttribute(name) || ''; } catch (_) {}
       return '';
     };
-    const lang = nearest('lang') || (document.documentElement && document.documentElement.lang) || '';
-    const dir = nearest('dir') || document.dir || '';
-    // Never fingerprint secret fields — no length, no hash leaves the page for
-    // passwords / OTP / card numbers. The viewer disables drift detection for
-    // these (sync.sensitive) rather than tracking them.
-    const sensitive = type === 'password' ||
-      /one-time-code|current-password|new-password|cc-number|cc-csc/.test(ac);
+    const lang = (nearest('lang') || (document.documentElement && document.documentElement.lang) || '').slice(0, 64);
+    const dir = (nearest('dir') || document.dir || '').slice(0, 64);
     let value = '';
     try { value = el.value != null ? el.value : (el.isContentEditable ? (el.textContent || '') : ''); } catch (_) {}
+    // Never fingerprint secret fields — no length, no value, no hash leaves the page. The viewer disables
+    // drift detection and local echo for these (sync.sensitive) rather than tracking them.
+    const sensitive = isSensitiveField(el, type, ac, attr, value);
     return {
       editable: true,
       rect,
@@ -514,31 +587,31 @@
       hints: {
         type: isInput ? (el.type || 'text') : 'text',
         tag: el.tagName,
-        inputMode: attr('inputmode'),
-        enterKeyHint: attr('enterkeyhint'),
-        autoComplete: attr('autocomplete'),
+        inputMode: hint('inputmode'),
+        enterKeyHint: hint('enterkeyhint'),
+        autoComplete: hint('autocomplete'),
         // name/placeholder are the only signals on a field like Kaggle's sign-in
         // (<input type="text" autocomplete="on" name="email">): type says nothing and
         // autocomplete="on" carries no information, so without these the viewer cannot
         // tell an address field from prose — and Gboard then auto-spaces a tapped
         // suggestion into an invalid email. Metadata only, exactly like type/pattern;
         // never the field's VALUE, which the sensitive-field rules still govern.
-        name: attr('name'),
-        placeholder: attr('placeholder'),
+        name: hint('name'),
+        placeholder: hint('placeholder'),
         // pattern lets the viewer show a numeric pad on the legacy pattern="[0-9]*"
         // OTP/PIN/zip idiom (no inputmode). lang/dir drive the proxy's script
         // direction + dictionary. maxLength is published for reference only — the
         // viewer must NOT set it on the live proxy (it would truncate the chew buffer).
-        pattern: attr('pattern'),
+        pattern: hint('pattern'),
         maxLength: (isInput && el.maxLength > 0) ? el.maxLength : undefined,
         lang,
         dir,
         // Shift/correction behaviour the proxy keyboard should mirror so a name
         // field word-caps, a sentence textarea auto-shifts, and a code field
         // stays literal — otherwise everything types lowercase (a native tell).
-        autoCapitalize: attr('autocapitalize'),
-        autoCorrect: attr('autocorrect'),
-        spellCheck: attr('spellcheck'),
+        autoCapitalize: hint('autocapitalize'),
+        autoCorrect: hint('autocorrect'),
+        spellCheck: hint('spellcheck'),
       },
       // Drift-detection fingerprint (never for secret fields) PLUS the full field
       // text so the viewer can SEED its hidden proxy input with real content. An

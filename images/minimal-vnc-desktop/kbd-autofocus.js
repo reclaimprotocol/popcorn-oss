@@ -599,6 +599,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getXFrames: () => session.xframes(),
     getViewport: () => session.viewport(),
     getLastNonEmptyRectsAt: () => session.lastNonEmptyRectsAt(),
+    getRectsTruncated: () => session.rectsTruncated(),
     getProxy: () => proxy,
     getScreenElement: () => screenElement(),
   });

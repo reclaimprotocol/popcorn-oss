@@ -149,6 +149,9 @@ let kbdBackoff = KBD_BACKOFF_MIN_MS;
 // heartbeats keep them fresh) so a tab SWITCH can publish the newly active
 // tab's state immediately instead of waiting out a heartbeat.
 const FRAME_STALE_MS = 6000;
+// Ceiling on the MERGED rect list (content.js MAX_RECTS is per frame). Keeps the focus message well inside
+// the hub's per-frame limit; a tap outside these falls back to the viewer's optimistic path.
+const MERGED_MAX_RECTS = 120;
 const kbdFrames = new Map(); // "tabId:frameId" -> { tabId, state, ts }
 
 // The tab whose frames we publish. Ownership is claimed by a top-frame report
@@ -198,13 +201,19 @@ function mergeFrames() {
   let editable = false, rect = null, hints = null, sync = null, focusKey = null;
   let vw = 0, vh = 0, sw = 0, pid = null, novp = false, ol = 0, olw = 0, xf = null;
   const rects = [];
+  let rtrunc = false; // merged list hit MERGED_MAX_RECTS -> the viewer must not read a miss as off-field
   for (const [key, entry] of kbdFrames) {
     if (now - entry.ts > FRAME_STALE_MS) { kbdFrames.delete(key); continue; }
     if (entry.tabId !== kbdActiveTab) continue; // background tabs are kept fresh, never published
     const frameId = Number(key.slice(key.indexOf(':') + 1));
     const s = entry.state;
+    // content.js caps rects PER FRAME, so a page full of same-origin iframes multiplies that cap. Bound the
+    // merged list too, or the focus message outgrows the hub's frame limit and the whole state is dropped.
     if (Array.isArray(s.rects)) {
-      for (const r of s.rects) rects.push(r);
+      for (const r of s.rects) {
+        if (rects.length >= MERGED_MAX_RECTS) { rtrunc = true; break; }
+        rects.push(r);
+      }
     }
     // The focused field comes from the one frame reporting editable:true. Only
     // the frame containing the focused element reports true (others see their
@@ -241,6 +250,7 @@ function mergeFrames() {
     }
   }
   const merged = { editable, rects, vw, vh };
+  if (rtrunc) merged.rtrunc = true; // whitelist field, like every other one below
   if (sw > 0) merged.sw = sw;
   if (pid) merged.pid = pid;
   if (novp) merged.novp = true;

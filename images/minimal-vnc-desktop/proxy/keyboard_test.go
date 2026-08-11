@@ -2,7 +2,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -206,6 +212,123 @@ func TestKbdHubViewerMsgAllowlist(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// role=pub is a trust level (fan-out + the dialog-bridge token), so it must not
+// be self-assertable. Remote clients are excluded by the loopback gate; the
+// remote page — which CAN reach loopback — by the browser-stamped Origin.
+func TestPublisherAllowed(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remote string
+		origin string
+		pinned string
+		want   bool
+	}{
+		{"extension on loopback", "127.0.0.1:51234", "chrome-extension://abc", "", true},
+		{"extension on ipv6 loopback", "[::1]:51234", "chrome-extension://abc", "", true},
+		{"no origin on loopback", "127.0.0.1:51234", "", "", true},
+		{"page on loopback", "127.0.0.1:51234", "https://evil.example", "", false},
+		{"opaque origin on loopback", "127.0.0.1:51234", "null", "", false},
+		{"remote viewer forging the origin", "10.1.2.3:44444", "chrome-extension://abc", "", false},
+		{"remote viewer", "10.1.2.3:44444", "https://app.example", "", false},
+		{"pinned origin matches", "127.0.0.1:51234", "chrome-extension://abc", "chrome-extension://abc", true},
+		{"pinned origin mismatch", "127.0.0.1:51234", "chrome-extension://xyz", "chrome-extension://abc", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(kbdPubOriginEnv, tc.pinned)
+			r := httptest.NewRequest(http.MethodGet, "/kbd?role=pub", nil)
+			r.RemoteAddr = tc.remote
+			if tc.origin != "" {
+				r.Header.Set("Origin", tc.origin)
+			}
+			if got := publisherAllowed(r); got != tc.want {
+				t.Fatalf("publisherAllowed = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A rejected publisher must be refused outright — never downgraded to a viewer,
+// which would leave it silently unable to publish and impossible to diagnose.
+func TestKbdServeRejectsUnauthenticatedPublisher(t *testing.T) {
+	hub := newKbdHub()
+	r := httptest.NewRequest(http.MethodGet, "/kbd?role=pub", nil)
+	r.RemoteAddr = "10.1.2.3:44444"
+	r.Header.Set("Origin", "chrome-extension://abc")
+	r.Header.Set("Connection", "Upgrade")
+	r.Header.Set("Upgrade", "websocket")
+	r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	w := httptest.NewRecorder()
+	hub.serve(w, r, readyGate{})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+	}
+	if len(hub.clients) != 0 {
+		t.Fatalf("rejected publisher was still added to the hub")
+	}
+}
+
+// An oversized frame must be DRAINED, not just refused: /kbd, /input and the RFB bridge continue reading
+// after one, so a body left in the buffer would desync every following frame on that connection.
+func TestReadFrameLimitDrainsAndStaysFramed(t *testing.T) {
+	var buf bytes.Buffer
+	var mu sync.Mutex
+	// An oversized text frame, then a normal one the caller must still be able to read.
+	if err := writeFrameToConn(&nopConn{&buf}, &mu, 0x1, bytes.Repeat([]byte("x"), 5000), true, true); err != nil {
+		t.Fatalf("write oversized: %v", err)
+	}
+	if err := writeFrameToConn(&nopConn{&buf}, &mu, 0x1, []byte(`{"editable":true}`), true, true); err != nil {
+		t.Fatalf("write normal: %v", err)
+	}
+
+	r := bufio.NewReader(&buf)
+	if _, _, _, err := readFrameLimit(r, 1024); !errors.Is(err, errFrameTooLarge) {
+		t.Fatalf("first frame: err = %v, want errFrameTooLarge", err)
+	}
+	_, opcode, payload, err := readFrameLimit(r, 1024)
+	if err != nil {
+		t.Fatalf("second frame after a skip: %v", err)
+	}
+	if opcode != 0x1 || string(payload) != `{"editable":true}` {
+		t.Fatalf("stream desynced: opcode=%x payload=%q", opcode, payload)
+	}
+}
+
+// nopConn adapts a buffer to net.Conn so writeFrameToConn can build test frames.
+type nopConn struct{ w *bytes.Buffer }
+
+func (c *nopConn) Write(p []byte) (int, error)      { return c.w.Write(p) }
+func (c *nopConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (c *nopConn) Close() error                     { return nil }
+func (c *nopConn) LocalAddr() net.Addr              { return nil }
+func (c *nopConn) RemoteAddr() net.Addr             { return nil }
+func (c *nopConn) SetDeadline(time.Time) error      { return nil }
+func (c *nopConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *nopConn) SetWriteDeadline(time.Time) error { return nil }
+
+// The size cap has to be enforced from the length header: decoding first and
+// checking len(payload) afterwards is what let a client force the allocation.
+func TestReadFrameLimitRejectsBeforeAllocating(t *testing.T) {
+	// Header only: FIN|text, unmasked, 64 KiB claimed, and NO payload follows. A
+	// decoder that allocates first would block in io.ReadFull instead of erroring.
+	var hdr [4]byte
+	hdr[0], hdr[1] = 0x81, 126
+	binary.BigEndian.PutUint16(hdr[2:], 65535)
+	r := bufio.NewReader(bytes.NewReader(hdr[:]))
+	// No body follows, so the drain hits EOF — the point is that it never allocated the claimed 64 KiB.
+	if _, _, _, err := readFrameLimit(r, kbdMaxPayload); err == nil {
+		t.Fatal("oversized frame was accepted")
+	}
+	// The same frame is fine under the transport-wide ceiling (it would then block
+	// on the missing body), so the rejection is the limit, not a malformed header.
+	if _, _, _, err := readFrameLimit(bufio.NewReader(bytes.NewReader(hdr[:])), maxWSFrame); err == nil {
+		t.Fatal("expected a short-read error, not a length rejection")
+	} else if err == io.ErrUnexpectedEOF || err == io.EOF {
+		return
+	} else {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

@@ -708,7 +708,13 @@ func (b *cdpBridge) run() {
 
 func (b *cdpBridge) copyClientToUpstream() {
 	for {
-		fin, opcode, payload, err := readFrame(b.clientReader)
+		// The restricted port is the client-reachable one, so it gets the tight cap; the full port is internal
+		// and may legitimately carry a large command (an intercepted-request body, a big injected script).
+		max := uint64(maxWSFrame)
+		if b.restricted {
+			max = maxRestrictedCDPFrame
+		}
+		fin, opcode, payload, err := readFrameLimit(b.clientReader, max)
 		if err != nil {
 			return
 		}
@@ -746,7 +752,8 @@ func (b *cdpBridge) copyClientToUpstream() {
 
 func (b *cdpBridge) copyUpstreamToClient() {
 	for {
-		fin, opcode, payload, err := readFrame(b.upstreamReader)
+		// Chromium's own responses — the one direction that is genuinely large (screenshots, response bodies).
+		fin, opcode, payload, err := readFrameLimit(b.upstreamReader, maxWSFrame)
 		if err != nil {
 			return
 		}
@@ -1023,7 +1030,10 @@ func (b *wsBridge) copyWebsocketToVNC() {
 		// auto-pongs to our pings count as liveness), so a silent half-open
 		// client is torn down within wsClientReadDeadline instead of lingering.
 		_ = b.client.SetReadDeadline(time.Now().Add(wsClientReadDeadline))
-		_, opcode, payload, err := readFrame(b.reader)
+		_, opcode, payload, err := readFrameLimit(b.reader, maxRFBClientFrame)
+		if errors.Is(err, errFrameTooLarge) {
+			continue // e.g. an enormous clipboard paste: drop the message, keep the session
+		}
 		if err != nil {
 			return
 		}
@@ -1121,7 +1131,30 @@ func writeFrameToConn(conn net.Conn, mu *sync.Mutex, opcode byte, payload []byte
 	return err
 }
 
+// Per-direction frame ceilings: only trusted peers get the big one.
+const (
+	// Chromium's CDP responses (screenshots, response bodies) and the internal-only full-CDP port.
+	maxWSFrame = 64 * 1024 * 1024
+	// Client->server RFB is keys and pointer moves; only ClientCutText (a paste) varies. The framebuffer
+	// travels the other way and never passes through readFrame at all.
+	maxRFBClientFrame = 1024 * 1024
+	// Restricted CDP is the client-reachable port; its allowlist tops out at Input.insertText.
+	maxRestrictedCDPFrame = 1024 * 1024
+)
+
+// errFrameTooLarge means the frame exceeded the caller's limit and its body was drained. The connection is
+// still usable — callers that treat an oversized frame as noise (see /kbd, /input, RFB) skip and read on.
+var errFrameTooLarge = errors.New("websocket frame too large")
+
+// readFrame decodes at the transport ceiling; production readers pass their own limit instead.
 func readFrame(r *bufio.Reader) (bool, byte, []byte, error) {
+	return readFrameLimit(r, maxWSFrame)
+}
+
+// readFrameLimit rejects an over-max frame from the LENGTH HEADER, before allocating. That ordering is the
+// point: /kbd and /input used to allocate at the 64 MiB ceiling and only then check their own limit, so a
+// few concurrent clients could each make us allocate 64 MiB on a lie.
+func readFrameLimit(r *bufio.Reader, max uint64) (bool, byte, []byte, error) {
 	first, err := r.ReadByte()
 	if err != nil {
 		return false, 0, nil, err
@@ -1151,15 +1184,21 @@ func readFrame(r *bufio.Reader) (bool, byte, []byte, error) {
 		length = binary.BigEndian.Uint64(buf[:])
 	}
 
-	if length > 64*1024*1024 {
-		return false, 0, nil, fmt.Errorf("websocket frame too large: %d", length)
-	}
-
 	var mask [4]byte
 	if masked {
 		if _, err := io.ReadFull(r, mask[:]); err != nil {
 			return false, 0, nil, err
 		}
+	}
+
+	// Over the limit: DISCARD the body by streaming it to io.Discard (constant memory, no allocation on a
+	// lie) and report errFrameTooLarge. Draining keeps the stream framed, so a caller that wants the old
+	// "ignore this frame" behaviour can continue reading instead of dropping the connection.
+	if length > max {
+		if _, err := io.CopyN(io.Discard, r, int64(length)); err != nil {
+			return false, 0, nil, err
+		}
+		return false, 0, nil, fmt.Errorf("%w: %d (max %d)", errFrameTooLarge, length, max)
 	}
 
 	payload := make([]byte, int(length))
