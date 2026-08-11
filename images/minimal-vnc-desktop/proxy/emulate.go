@@ -65,7 +65,11 @@ type emulator struct {
 	inputDesync atomic.Bool
 
 	sessMu sync.Mutex
-	active string // page sessionId that receives input (newest/foreground)
+	active string // page sessionId that receives input (the foreground window)
+	// sessTarget maps an attached page session to its targetId. Input routing needs
+	// it: the focused WINDOW arrives as a targetId (from the foreground report), while
+	// input is dispatched on a session.
+	sessTarget map[string]string
 
 	// ---- JS dialog interception ---------------------------------------------
 	// Chromium lays alert()/confirm()/prompt() out against the real browser
@@ -280,6 +284,14 @@ func (e *emulator) answerDialog(seq uint64, accept bool, text string) bool {
 	return e.enqueuePriority(cdpCmd{method: "Page.handleJavaScriptDialog", params: p, session: sid}, dialogEnqueueWait)
 }
 
+// resetSessions forgets the session->target map when the connection dies: those
+// sessionIds are gone, and a stale one would route input nowhere.
+func (e *emulator) resetSessions() {
+	e.sessMu.Lock()
+	e.sessTarget = nil
+	e.sessMu.Unlock()
+}
+
 // resetDialogs drops every tracked dialog when the CDP connection dies. Their
 // sessionIds die with it, so nothing could answer them afterwards; leaving the
 // state would strand a sheet — and the resync cache behind it — on a dialog no
@@ -419,6 +431,19 @@ func (e *emulator) setForeground(url string) (seq uint64, open bool, changed boo
 		return e.popSeq, e.popFront != "", false
 	}
 	e.foreground = url
+	// Route input to the window the user is looking at. Attach order was the only
+	// signal before, so a site that refocused an older window (or its opener) kept
+	// receiving touches on the newest target instead — the same class of bug as the
+	// close button pointing at the wrong window, and invisible to the user because
+	// the stream still moves.
+	for _, p := range e.pages {
+		if p.url != "" && sameDocument(p.url, url) {
+			if sid := e.sessionForTarget(p.targetID); sid != "" {
+				e.setActive(sid)
+			}
+			break
+		}
+	}
 	return e.republishLocked()
 }
 
@@ -600,6 +625,43 @@ func (e *emulator) setActive(sid string) {
 	e.sessMu.Lock()
 	e.active = sid
 	e.sessMu.Unlock()
+}
+
+// noteSession records an attached page session and makes it active (a freshly
+// attached page is in front). forgetSession drops it.
+func (e *emulator) noteSession(sid, targetID string) {
+	e.sessMu.Lock()
+	if e.sessTarget == nil {
+		e.sessTarget = make(map[string]string)
+	}
+	e.sessTarget[sid] = targetID
+	e.active = sid
+	e.sessMu.Unlock()
+}
+
+func (e *emulator) forgetSession(sid string) {
+	e.sessMu.Lock()
+	delete(e.sessTarget, sid)
+	e.sessMu.Unlock()
+}
+
+// sessTargetOf returns the targetId an attached session belongs to.
+func (e *emulator) sessTargetOf(sid string) string {
+	e.sessMu.Lock()
+	defer e.sessMu.Unlock()
+	return e.sessTarget[sid]
+}
+
+// sessionForTarget returns the attached session for a targetId, if we have one.
+func (e *emulator) sessionForTarget(targetID string) string {
+	e.sessMu.Lock()
+	defer e.sessMu.Unlock()
+	for sid, tid := range e.sessTarget {
+		if tid == targetID {
+			return sid
+		}
+	}
+	return ""
 }
 
 func (e *emulator) activeSession() string {
@@ -1027,9 +1089,8 @@ func (e *emulator) session() error {
 		send("Emulation.setTouchEmulationEnabled", map[string]any{"enabled": p.Touch, "maxTouchPoints": tp}, sessionID)
 	}
 
-	sessions := map[string]bool{}     // page sessionId -> true
-	sessTarget := map[string]string{} // page sessionId -> targetId
-	attached := map[string]bool{}     // targetIds we have already asked to attach
+	sessions := map[string]bool{} // page sessionId -> true
+	attached := map[string]bool{} // targetIds we have already asked to attach
 
 	// DISCOVER targets without auto-attaching. Auto-attach grabs EVERY new
 	// target, including popups (window.open — OAuth "Continue with Google",
@@ -1091,10 +1152,8 @@ func (e *emulator) session() error {
 	foreground := func() string {
 		pages := e.pageTargets()
 		for i := len(pages) - 1; i >= 0; i-- {
-			for sid, tid := range sessTarget {
-				if tid == pages[i] && sessions[sid] {
-					return sid
-				}
+			if sid := e.sessionForTarget(pages[i]); sid != "" && sessions[sid] {
+				return sid
 			}
 		}
 		return ""
@@ -1128,6 +1187,7 @@ func (e *emulator) session() error {
 	// Ensure active session and dialog state are cleared when this connection dies
 	// — both are keyed by sessionIds that do not survive it.
 	defer e.setActive("")
+	defer e.resetSessions()
 	defer e.resetDialogs()
 
 	// Kiosk fullscreen watchdog. Chrome's tab strip shows ONLY when a window is in
@@ -1242,11 +1302,12 @@ func (e *emulator) session() error {
 				if t, _ := ti["type"].(string); t == "page" && sid != "" {
 					sessions[sid] = true
 					if tid, _ := ti["targetId"].(string); tid != "" {
-						sessTarget[sid] = tid
 						attached[tid] = true
+						e.noteSession(sid, tid) // and it becomes the input target
+					} else {
+						e.setActive(sid)
 					}
-					e.setActive(sid) // newest page is the foreground one
-					applyTo(sid)     // apply now for the current document
+					applyTo(sid) // apply now for the current document
 					// The override usually persists per target, but a FULL cross-
 					// document navigation (clicking to another page in magnify) can
 					// drop it, leaving the next page desktop-width. Enable Page so we
@@ -1437,12 +1498,12 @@ func (e *emulator) session() error {
 				params, _ := m["params"].(map[string]any)
 				if sid, _ := params["sessionId"].(string); sid != "" {
 					delete(sessions, sid)
-					if tid := sessTarget[sid]; tid != "" {
+					if tid := e.sessTargetOf(sid); tid != "" {
 						// Re-attachable: a target that detaches without being destroyed
 						// (crash, session teardown) has to be reachable again.
 						delete(attached, tid)
-						delete(sessTarget, sid)
 					}
+					e.forgetSession(sid)
 					// A closed tab takes its FedCM chooser with it too. forget(), never
 					// dismiss: a dismissal would trigger Chrome's FedCM cooldown for the
 					// site (hours to weeks) for what was really just a closed tab.

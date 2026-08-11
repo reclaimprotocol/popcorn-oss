@@ -263,3 +263,39 @@ func TestForegroundNeverOffersTheOnlyPage(t *testing.T) {
 		t.Fatalf("front = %q, want nothing with one page", got)
 	}
 }
+
+// Input follows FOCUS too, not just the close button. Attach order was the only
+// signal before, so once a site refocused an older window every touch still went to
+// the newest target — invisible from the stream, which keeps moving either way.
+func TestForegroundRoutesInput(t *testing.T) {
+	e := &emulator{}
+	e.notePage("PRIMARY", "https://site.test/")
+	e.notePage("POPUP", "https://pay.test/")
+	e.noteSession("S-PRIMARY", "PRIMARY")
+	e.noteSession("S-POPUP", "POPUP") // newest attach wins initially
+	if got := e.activeSession(); got != "S-POPUP" {
+		t.Fatalf("active = %q right after attach, want the newest", got)
+	}
+
+	e.setForeground("https://site.test/")
+	if got := e.activeSession(); got != "S-PRIMARY" {
+		t.Fatalf("active = %q after the opener regained focus, want its session", got)
+	}
+	e.setForeground("https://pay.test/")
+	if got := e.activeSession(); got != "S-POPUP" {
+		t.Fatalf("active = %q after the popup regained focus", got)
+	}
+}
+
+// A focused window we have no session for (a blank popup is deliberately never
+// attached) must leave routing alone rather than blanking it.
+func TestForegroundWithoutASessionKeepsRouting(t *testing.T) {
+	e := &emulator{}
+	e.notePage("PRIMARY", "https://site.test/")
+	e.notePage("BLANK", "")
+	e.noteSession("S-PRIMARY", "PRIMARY")
+	e.setForeground("https://unknown.test/")
+	if got := e.activeSession(); got != "S-PRIMARY" {
+		t.Fatalf("active = %q, want routing untouched", got)
+	}
+}
