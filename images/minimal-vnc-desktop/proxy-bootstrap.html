@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Popcorn Proxy Initializing</title>
+  </head>
+  <body>
+    <main>
+      <h1>Initializing browser proxy</h1>
+      <p id="status">Waiting for the proxy extension.</p>
+    </main>
+    <script>
+      (async () => {
+        const statusElement = document.getElementById('status');
+        try {
+          const encodedTarget = location.hash.slice(1);
+          if (!encodedTarget) throw new Error('Missing startup target');
+          const targetBytes = Uint8Array.from(atob(encodedTarget), (character) => character.charCodeAt(0));
+          const target = new TextDecoder().decode(targetBytes);
+          const targetUrl = new URL(target);
+          if (!['http:', 'https:'].includes(targetUrl.protocol)) {
+            throw new Error('Unsupported startup target');
+          }
+
+          if (!window.PopcornProxy) {
+            await new Promise((resolve, reject) => {
+              const timeout = setTimeout(() => reject(new Error('Proxy extension unavailable')), 10000);
+              window.addEventListener('PopcornProxyReady', () => {
+                clearTimeout(timeout);
+                resolve();
+              }, { once: true });
+            });
+          }
+
+          const proxy = await window.PopcornProxy.connect();
+          const status = await proxy.status();
+          if (!status.enabled || status.mode !== 'default') {
+            throw new Error(status.error?.message || 'Default proxy was not applied');
+          }
+
+          document.title = 'Popcorn Proxy Ready';
+          statusElement.textContent = 'Proxy ready. Continuing to the startup page.';
+          location.replace(targetUrl.href);
+        } catch (error) {
+          document.title = 'Popcorn Proxy Error';
+          statusElement.textContent = `Proxy initialization failed: ${error.message}`;
+        }
+      })();
+    </script>
+  </body>
+</html>

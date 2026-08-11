@@ -1,4 +1,5 @@
 {{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
+{{- $browserProxySecret := default $browserRuntimeProxySecret .Values.browserProxy.secretName }}
 {{- $securityProfile := default "legacy" .Values.browserRuntimeSecurityProfile }}
 {{- if not (has $securityProfile (list "legacy" "hardened")) }}
 {{- fail "browserRuntimeSecurityProfile must be one of 'legacy' or 'hardened'" }}
@@ -119,6 +120,17 @@ spec:
                       name: {{ $browserRuntimeProxySecret | quote }}
                       key: HTTPS_PROXY_URL
                       optional: true
+{{- if .Values.browserProxy.enabled }}
+                - name: BROWSER_PROXY_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $browserProxySecret | quote }}
+                      key: {{ .Values.browserProxy.secretKey | quote }}
+{{- with .Values.browserProxy.bypass }}
+                - name: BROWSER_PROXY_BYPASS
+                  value: {{ join "," . | quote }}
+{{- end }}
+{{- end }}
                 - name: REPLACE_DEFAULT_PAGE
                   value: {{ eq .Values.browserPolicy.variant "reclaim-portal" | quote }}
                 - name: POPCORN_BROWSER_STREAMING_MODE

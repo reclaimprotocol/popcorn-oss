@@ -21,6 +21,13 @@ ENABLE_AGONES="${ENABLE_AGONES:-auto}"
 AGONES_SDK_HOST="${AGONES_SDK_HOST:-127.0.0.1}"
 AGONES_SDK_HTTP_PORT="${AGONES_SDK_HTTP_PORT:-${AGONES_SDK_PORT:-9358}}"
 AGONES_HEALTH_INTERVAL="${AGONES_HEALTH_INTERVAL:-2}"
+BROWSER_PROXY_URL_VALUE="${BROWSER_PROXY_URL:-}"
+BROWSER_PROXY_BYPASS_VALUE="${BROWSER_PROXY_BYPASS:-}"
+BROWSER_PROXY_DEFAULT_REQUESTED=false
+if [[ -n "$BROWSER_PROXY_URL_VALUE" ]]; then
+  BROWSER_PROXY_DEFAULT_REQUESTED=true
+fi
+unset BROWSER_PROXY_URL BROWSER_PROXY_BYPASS
 
 export DISPLAY=":${DISPLAY_NUM}"
 export HOME="${HOME:-/home/kernel}"
@@ -194,6 +201,7 @@ wait_for_window() {
   local timeout_secs="$2"
   local app_pid="$3"
   local attempts
+  local cdp_pages
   local window_tree
 
   if ! command -v xwininfo >/dev/null 2>&1; then
@@ -214,6 +222,13 @@ wait_for_window() {
 
     window_tree="$(xwininfo -root -tree 2>/dev/null || true)"
     if grep -Eiq "$pattern" <<<"$window_tree"; then
+      if [[ "$BROWSER_PROXY_DEFAULT_REQUESTED" == "true" ]]; then
+        cdp_pages="$(curl -fsS --max-time 1 "http://127.0.0.1:${CDP_INTERNAL_PORT}/json/list" 2>/dev/null || true)"
+        if [[ -z "$cdp_pages" || "$cdp_pages" == *"\"url\": \"http://127.0.0.1:${NOVNC_PORT}/proxy-bootstrap.html"* ]]; then
+          sleep 0.1
+          continue
+        fi
+      fi
       echo "[entrypoint] app window matched readiness pattern: ${pattern}"
       return 0
     fi
@@ -279,9 +294,12 @@ if [[ "${HIDE_CURSOR:-true}" == "true" ]] && command -v unclutter >/dev/null 2>&
 fi
 
 echo "[entrypoint] Starting app: ${APP_COMMAND}"
-bash -lc "exec ${APP_COMMAND}" > "$(log_file app)" 2>&1 &
+BROWSER_PROXY_URL="$BROWSER_PROXY_URL_VALUE" \
+BROWSER_PROXY_BYPASS="$BROWSER_PROXY_BYPASS_VALUE" \
+  bash -lc "exec ${APP_COMMAND}" > "$(log_file app)" 2>&1 &
 app_pid="$!"
 pids+=("$app_pid")
+unset BROWSER_PROXY_URL_VALUE BROWSER_PROXY_BYPASS_VALUE
 
 echo "[entrypoint] Waiting for app readiness pattern: ${READY_WINDOW_PATTERN}"
 wait_for_window "$READY_WINDOW_PATTERN" "$READY_TIMEOUT" "$app_pid"

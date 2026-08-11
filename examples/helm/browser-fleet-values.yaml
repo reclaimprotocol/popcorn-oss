@@ -18,6 +18,14 @@ agonesInstaller:
 externalSecrets:
   enabled: false
 
+browserProxy:
+  enabled: false
+  secretName: browser-runtime-proxy-secret
+  secretKey: HTTPS_PROXY_URL
+  bypass:
+    - localhost
+    - 127.0.0.1
+
 imagePullSecrets: []
 
 ccDevicePlugin:

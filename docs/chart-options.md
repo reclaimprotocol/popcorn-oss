@@ -252,6 +252,10 @@ before enabling it.
 | `browserRuntimeSecurityProfile` | `legacy` | `legacy` or `hardened` container security profile. |
 | `runtimeClassName` | `""` | Optional runtime class, such as `gvisor`. |
 | `secrets.browserRuntimeProxyName` | `browser-runtime-proxy-secret` | Optional browser proxy Secret. |
+| `browserProxy.enabled` | `false` | Read a default Chrome proxy URL into each browser container. |
+| `browserProxy.secretName` | `""` | Secret containing the default Chrome proxy URL; empty uses `secrets.browserRuntimeProxyName`. |
+| `browserProxy.secretKey` | `HTTPS_PROXY_URL` | Key exposed to the container as `BROWSER_PROXY_URL`. |
+| `browserProxy.bypass` | `[]` | Optional Chrome proxy bypass entries. |
 | `ccDevicePlugin.enabled` | `false` | Deploy the confidential-computing device plugin. |
 | `serviceAccount.create` | `true` | Create and select `browser-sa`. |
 | `serviceAccount.gcpServiceAccount` | `""` | Workload Identity service-account annotation. |

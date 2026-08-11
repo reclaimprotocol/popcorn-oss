@@ -15,6 +15,43 @@ import (
 	"time"
 )
 
+func TestStaticReadyGateAllowsOnlyLoopbackBootstrap(t *testing.T) {
+	root := t.TempDir()
+	readyFile := filepath.Join(t.TempDir(), "ready")
+	if err := os.WriteFile(filepath.Join(root, "proxy-bootstrap.html"), []byte("bootstrap"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "liveview.html"), []byte("liveview"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handler := staticHandler(root, readyGate{file: readyFile})
+
+	tests := []struct {
+		name       string
+		path       string
+		remoteAddr string
+		wantStatus int
+	}{
+		{name: "loopback bootstrap", path: "/proxy-bootstrap.html", remoteAddr: "127.0.0.1:12345", wantStatus: http.StatusOK},
+		{name: "IPv6 loopback bootstrap", path: "/proxy-bootstrap.html", remoteAddr: "[::1]:12345", wantStatus: http.StatusOK},
+		{name: "external bootstrap", path: "/proxy-bootstrap.html", remoteAddr: "192.0.2.1:12345", wantStatus: http.StatusServiceUnavailable},
+		{name: "bootstrap query", path: "/proxy-bootstrap.html?unexpected=1", remoteAddr: "127.0.0.1:12345", wantStatus: http.StatusServiceUnavailable},
+		{name: "loopback liveview", path: "/liveview.html", remoteAddr: "127.0.0.1:12345", wantStatus: http.StatusServiceUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://proxy.example"+tt.path, nil)
+			req.RemoteAddr = tt.remoteAddr
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestCDPReadyGate(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json/version" {

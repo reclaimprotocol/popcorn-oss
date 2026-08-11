@@ -14,13 +14,82 @@ fi
 APP_URL="${APP_URL:-${POPCORN_BROWSER_STARTUP_URL:-${CHROMIUM_STARTUP_URL:-$DEFAULT_PAGE}}}"
 CDP_INTERNAL_PORT="${CDP_INTERNAL_PORT:-${CHROME_REMOTE_DEBUGGING_PORT:-9223}}"
 CHROME_REMOTE_DEBUGGING_ADDRESS="${CHROME_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
 PROXY_EXTENSION_DIR="${PROXY_EXTENSION_DIR:-/home/kernel/extensions/proxy}"
+PROXY_EXTENSION_RUNTIME_DIR="${PROXY_EXTENSION_RUNTIME_DIR:-}"
 ENABLE_PROXY_EXTENSION="${ENABLE_PROXY_EXTENSION:-true}"
 CHROMIUM_POLICY_DIR="${CHROMIUM_POLICY_DIR:-/etc/chromium/policies/managed}"
 CHROMIUM_POLICY_VARIANT_DIR="${CHROMIUM_POLICY_VARIANT_DIR:-/etc/chromium/policy-variants}"
 
 mkdir -p "$HOME/user-data"
 rm -f "$HOME/user-data/SingletonLock" "$HOME/user-data/SingletonSocket" "$HOME/user-data/SingletonCookie"
+
+if [[ ! "$NOVNC_PORT" =~ ^[0-9]+$ ]] || (( NOVNC_PORT < 1 || NOVNC_PORT > 65535 )); then
+  echo "[start-chromium] NOVNC_PORT must be an integer between 1 and 65535" >&2
+  exit 1
+fi
+
+BROWSER_PROXY_DEFAULT_CONFIGURED=false
+PROXY_BOOTSTRAP_TARGET_BASE64=""
+
+prepare_proxy_extension() {
+  local source_dir="$PROXY_EXTENSION_DIR"
+  local proxy_url_base64=""
+  local bypass_base64=""
+
+  if [[ ! -f "$source_dir/manifest.json" ]]; then
+    echo "[start-chromium] proxy extension not found at ${source_dir}" >&2
+    return 1
+  fi
+
+  if [[ -z "$PROXY_EXTENSION_RUNTIME_DIR" ]]; then
+    PROXY_EXTENSION_RUNTIME_DIR="$(mktemp -d "${XDG_RUNTIME_DIR:-/tmp}/popcorn-proxy-extension.XXXXXX")"
+  else
+    if [[ -L "$PROXY_EXTENSION_RUNTIME_DIR" || ( -e "$PROXY_EXTENSION_RUNTIME_DIR" && ! -d "$PROXY_EXTENSION_RUNTIME_DIR" ) ]]; then
+      echo "[start-chromium] unsafe proxy extension runtime path: ${PROXY_EXTENSION_RUNTIME_DIR}" >&2
+      return 1
+    fi
+    install -d -m 0700 "$PROXY_EXTENSION_RUNTIME_DIR"
+    if [[ ! -O "$PROXY_EXTENSION_RUNTIME_DIR" ]]; then
+      echo "[start-chromium] proxy extension runtime path is not owned by the current user" >&2
+      return 1
+    fi
+  fi
+  chmod 0700 "$PROXY_EXTENSION_RUNTIME_DIR"
+  if [[ "$source_dir" != "$PROXY_EXTENSION_RUNTIME_DIR" ]]; then
+    cp -R "$source_dir/." "$PROXY_EXTENSION_RUNTIME_DIR/"
+  fi
+
+  if [[ -n "${BROWSER_PROXY_URL:-}" ]]; then
+    proxy_url_base64="$(printf '%s' "$BROWSER_PROXY_URL" | base64 | tr -d '\n')"
+  fi
+  if [[ -n "${BROWSER_PROXY_BYPASS:-}" ]]; then
+    bypass_base64="$(printf '%s' "$BROWSER_PROXY_BYPASS" | base64 | tr -d '\n')"
+  fi
+
+  printf '%s\n' \
+    "globalThis.POPCORN_PROXY_RUNTIME_CONFIG = Object.freeze({ urlBase64: \"${proxy_url_base64}\", bypassBase64: \"${bypass_base64}\", controlPort: \"${NOVNC_PORT}\" });" \
+    > "$PROXY_EXTENSION_RUNTIME_DIR/runtime-config.js"
+  chmod 0600 "$PROXY_EXTENSION_RUNTIME_DIR/runtime-config.js"
+  PROXY_EXTENSION_DIR="$PROXY_EXTENSION_RUNTIME_DIR"
+
+  if [[ -n "${BROWSER_PROXY_URL:-}" ]]; then
+    BROWSER_PROXY_DEFAULT_CONFIGURED=true
+    PROXY_BOOTSTRAP_TARGET_BASE64="$(printf '%s' "$APP_URL" | base64 | tr -d '\n')"
+    echo "[start-chromium] browser proxy default configured from BROWSER_PROXY_URL"
+  fi
+
+  # Chromium and its renderer children must not inherit credential-bearing
+  # proxy variables. The private extension config is the one-time handoff.
+  unset BROWSER_PROXY_URL BROWSER_PROXY_BYPASS
+}
+
+if [[ "$ENABLE_PROXY_EXTENSION" == "true" ]]; then
+  prepare_proxy_extension
+elif [[ -n "${BROWSER_PROXY_URL:-}" ]]; then
+  echo "[start-chromium] BROWSER_PROXY_URL requires ENABLE_PROXY_EXTENSION=true" >&2
+  exit 1
+fi
 
 if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
   reclaim_policy="${CHROMIUM_POLICY_VARIANT_DIR}/policy.reclaim-portal.json"
@@ -297,4 +366,11 @@ if [[ "${CHROMIUM_FLAGS:-}" != "" ]]; then
   flags+=("${extra_flags[@]}")
 fi
 
-exec "$CHROME_BIN" "${flags[@]}" "$APP_URL"
+LAUNCH_URL="$APP_URL"
+if [[ "$BROWSER_PROXY_DEFAULT_CONFIGURED" == "true" ]]; then
+  # Keep the first page local until the extension confirms Chrome accepted the
+  # default proxy. The bootstrap page navigates to APP_URL only after success.
+  LAUNCH_URL="http://127.0.0.1:${NOVNC_PORT}/proxy-bootstrap.html#${PROXY_BOOTSTRAP_TARGET_BASE64}"
+fi
+
+exec "$CHROME_BIN" "${flags[@]}" "$LAUNCH_URL"

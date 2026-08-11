@@ -30,6 +30,15 @@ runtimeClassName: ""
 secrets:
   browserRuntimeProxyName: browser-runtime-proxy-secret
 
+# Apply a default Chrome proxy inside each browser container. The proxy URL is
+# read from a Kubernetes Secret and can still be replaced or cleared at runtime
+# through the bundled extension API.
+browserProxy:
+  enabled: false
+  secretName: ""
+  secretKey: HTTPS_PROXY_URL
+  bypass: []
+
 ccDevicePlugin:
   enabled: false
 

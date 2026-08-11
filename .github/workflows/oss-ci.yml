@@ -243,6 +243,18 @@ jobs:
           grep -Fq 'REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-false}"' \
             images/minimal-vnc-desktop/start-chromium
 
+          helm template browser-fleet-proxy charts/browser-fleet \
+            --set browserProxy.enabled=true \
+            --set browserProxy.secretName=oss-browser-proxy \
+            --set 'browserProxy.bypass[0]=localhost' \
+            > /tmp/browser-fleet-proxy.yaml
+          grep -A5 'name: BROWSER_PROXY_URL' /tmp/browser-fleet-proxy.yaml \
+            | grep -q 'name: "oss-browser-proxy"'
+          grep -A1 'name: BROWSER_PROXY_BYPASS' /tmp/browser-fleet-proxy.yaml \
+            | grep -q 'value: "localhost"'
+
+          node --test images/minimal-vnc-desktop/extensions/proxy/*.test.js
+
           grep -Fq 'location ~ ^/liveview/' services/gateway/nginx.conf
           grep -Fq 'route:liveview:' services/pool-manager/src/services/session-db.ts
           grep -Fq 'name: "novnc", port: 6080' services/pool-manager/src/services/agones.ts
