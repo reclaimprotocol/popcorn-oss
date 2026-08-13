@@ -46,6 +46,13 @@ export async function presetExtensionProxy(sessionId: string, address: string, c
     try {
         let id = 1;
         let authHandled = false;
+        const initialPage = await cdpCommand(socket, id++, "Runtime.evaluate", {
+            expression: "location.href",
+            returnByValue: true,
+        });
+        const initialUrl = typeof initialPage?.result?.value === "string"
+            ? initialPage.result.value
+            : "about:blank";
         socket.addEventListener("message", (event) => {
             const message = JSON.parse(String(event.data));
             if (message.method === "Fetch.requestPaused") {
@@ -86,7 +93,7 @@ export async function presetExtensionProxy(sessionId: string, address: string, c
         }))()`;
         const result = await cdpCommand(socket, id++, "Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
         if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || "__pcn.set failed");
-        await cdpCommand(socket, id++, "Page.navigate", { url: "about:blank" });
+        await cdpCommand(socket, id++, "Page.navigate", { url: initialUrl });
         // Fetch interception must survive this call: Chrome raises the proxy auth
         // challenge on the caller's first real navigation, not on __pcn.set().
         if (config.username && config.password) {
