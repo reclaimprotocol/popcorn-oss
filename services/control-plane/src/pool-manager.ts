@@ -14,6 +14,7 @@ export interface RoutedSessionRequest {
   expiresAt?: string;
   tokenExpiresAt?: string;
   accessPolicy?: RoutedSessionAccessPolicy;
+  proxy?: { country: string };
 }
 
 export interface PoolManagerSessionResponse {

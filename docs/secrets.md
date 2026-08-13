@@ -100,7 +100,7 @@ schema-change permissions.
 
 | Secret | Keys | Feature |
 | --- | --- | --- |
-| `browser-runtime-proxy-secret` | `HTTPS_PROXY_URL` | browser HTTPS proxy |
+| `browser-runtime-proxy-secret` | `HTTPS_PROXY_URL` | deployment-owned proxy preset for country-routed browser sessions |
 | `otel-exporter-headers` | operator-defined | OTLP authentication headers |
 | `otel-clickhouse-secret` | `CLICKHOUSE_ENDPOINT`, `CLICKHOUSE_HTTP_ENDPOINT`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD` | legacy ClickHouse export |
 | `control-plane-x402-secret` | x402 server/RPC keys; optional CDP and facilitator keys | x402 API |
@@ -108,6 +108,18 @@ schema-change permissions.
 
 An extension may consume its own Secrets from
 `sessionExtensions.<name>.browser.containers`.
+
+## Country-routed browser proxy
+
+To use the optional proxy preset on `POST /v1/sessions`, set
+`HTTPS_PROXY_URL` in `browser-runtime-proxy-secret`. The URL must include
+`{{country}}` or the existing `{{geoLocation}}` placeholder. The pool manager
+reads this secret and only derives a configuration for the allocated browser;
+callers never provide an upstream URL or credentials.
+
+
+Make `HTTPS_PROXY_URL` available to the pool-manager process in deployments
+that use country-routed sessions.
 
 ## External Secrets Operator
 

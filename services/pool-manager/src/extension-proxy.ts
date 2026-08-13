@@ -1,0 +1,81 @@
+import type { ExtensionProxyConfig } from "./session-proxy";
+
+const CDP_PORT = 9226;
+const activeProxyCdpSessions = new Map<string, WebSocket>();
+
+function cdpCommand(socket: WebSocket, id: number, method: string, params: Record<string, unknown> = {}) {
+    return new Promise<any>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`CDP ${method} timed out`)), 10_000);
+        const listener = (event: MessageEvent) => {
+            const message = JSON.parse(String(event.data));
+            if (message.id !== id) return;
+            socket.removeEventListener("message", listener);
+            clearTimeout(timeout);
+            message.error ? reject(new Error(message.error.message || `CDP ${method} failed`)) : resolve(message.result);
+        };
+        socket.addEventListener("message", listener);
+        socket.send(JSON.stringify({ id, method, params }));
+    });
+}
+
+/** Configure the bundled extension before returning a proxied session to callers. */
+export async function presetExtensionProxy(sessionId: string, address: string, config: ExtensionProxyConfig): Promise<void> {
+    const targets = await fetch(`http://${address}:${CDP_PORT}/json/list`).then((response) => {
+        if (!response.ok) throw new Error(`full CDP returned ${response.status}`);
+        return response.json() as Promise<Array<{ type: string; webSocketDebuggerUrl?: string }>>;
+    });
+    const target = targets.find((candidate) => candidate.type === "page" && candidate.webSocketDebuggerUrl);
+    if (!target?.webSocketDebuggerUrl) throw new Error("full CDP did not expose a page target");
+
+    const socket = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("CDP WebSocket connection timed out")), 10_000);
+        socket.addEventListener("open", () => { clearTimeout(timeout); resolve(); }, { once: true });
+        socket.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("CDP WebSocket connection failed")); }, { once: true });
+    });
+    try {
+        let id = 1;
+        let authHandled = false;
+        socket.addEventListener("message", (event) => {
+            const message = JSON.parse(String(event.data));
+            if (message.method === "Fetch.requestPaused") {
+                socket.send(JSON.stringify({ id: id++, method: "Fetch.continueRequest", params: { requestId: message.params.requestId } }));
+                return;
+            }
+            if (message.method === "Fetch.authRequired") {
+                socket.send(JSON.stringify({
+                    id: id++, method: "Fetch.continueWithAuth", params: {
+                        requestId: message.params.requestId,
+                        authChallengeResponse: { response: "ProvideCredentials", username: config.username, password: config.password },
+                    },
+                }));
+                if (!authHandled) {
+                    authHandled = true;
+                    socket.send(JSON.stringify({ id: id++, method: "Fetch.disable" }));
+                }
+            }
+        });
+        // This is the same bootstrap used by portal callers: match_about_blank
+        // lets the extension inject without navigating the user to another page.
+        await cdpCommand(socket, id++, "Page.navigate", { url: "about:blank" });
+        if (config.username && config.password) {
+            await cdpCommand(socket, id++, "Fetch.enable", { handleAuthRequests: true });
+        }
+        const expression = `(() => new Promise((resolve, reject) => {
+          const started = Date.now();
+          const apply = () => window.__pcn?.ready
+            ? window.__pcn.set(${JSON.stringify(config)}).then(resolve, reject)
+            : Date.now() - started > 5000 ? reject(new Error('__pcn unavailable')) : setTimeout(apply, 50);
+          apply();
+        }))()`;
+        const result = await cdpCommand(socket, id++, "Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+        if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || "__pcn.set failed");
+        // Fetch interception must survive this call: Chrome raises the proxy auth
+        // challenge on the caller's first real navigation, not on __pcn.set().
+        activeProxyCdpSessions.get(sessionId)?.close();
+        activeProxyCdpSessions.set(sessionId, socket);
+    } catch (error) {
+        socket.close();
+        throw error;
+    }
+}
