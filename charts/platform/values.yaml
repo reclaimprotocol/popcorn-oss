@@ -12,6 +12,7 @@ affinity: {}
 secrets:
   gatewayJwtName: gateway-jwt-keys
   poolManagerServiceAuthName: pool-manager-service-auth
+  browserRuntimeProxyName: browser-runtime-proxy-secret
   controlPlaneName: control-plane-secret
   controlPlaneDatabaseName: analytics-db-secret
 

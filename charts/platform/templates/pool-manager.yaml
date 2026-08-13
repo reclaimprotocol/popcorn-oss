@@ -1,6 +1,7 @@
 {{- if .Values.poolManager.enabled }}
 {{- $poolManagerServiceAuthSecret := default .Values.secrets.poolManagerServiceAuthName .Values.poolManager.serviceAuth.secretName }}
 {{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.poolManager.jwtSecretName }}
+{{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
 {{- $otelGrpcEndpoint := default "" .Values.otel.exporter.grpcEndpoint }}
 {{- $otelHttpEndpoint := default "" .Values.otel.exporter.httpEndpoint }}
 {{- $otelLogsEnabled := and .Values.otel.enabled (or (ne $otelGrpcEndpoint "") (ne $otelHttpEndpoint "")) }}
@@ -74,6 +75,12 @@ spec:
               value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
             - name: GAME_SERVER_FLEET
               value: {{ .Values.poolManager.gameServerFleet | quote }}
+            - name: HTTPS_PROXY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $browserRuntimeProxySecret | quote }}
+                  key: HTTPS_PROXY_URL
+                  optional: true
 {{- with $sessionExtensionUrls }}
             - name: POOL_MANAGER_SESSION_EXTENSION_URLS
               value: {{ tpl (toJson .) $ | quote }}

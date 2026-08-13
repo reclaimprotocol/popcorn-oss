@@ -107,7 +107,10 @@ If platform and browser workloads use different namespaces:
 ## Browser egress
 
 Browsers need DNS and outbound web access. Direct egress is the default. An
-optional `browser-runtime-proxy-secret` supplies `HTTPS_PROXY_URL`.
+optional `browser-runtime-proxy-secret` supplies `HTTPS_PROXY_URL`. When a
+session requests `proxy.country`, the pool manager uses this deployment-owned
+value to configure browser egress for that session; see
+[country-routed proxy presets](popcorn-browser.md#country-routed-proxy-presets).
 
 When `networkPolicy.enabled=true`, the chart allows:
 

@@ -108,6 +108,30 @@ Common groups include:
 - egress: `HTTPS_PROXY_URL`, normally read from
   `browser-runtime-proxy-secret`.
 
+## Country-routed proxy presets
+
+Create a country-routed session by sending an uppercase ISO 3166-1 alpha-2
+code in the standard session request:
+
+```json
+{
+  "sessionId": "browser-42",
+  "proxy": { "country": "IN" }
+}
+```
+
+The pool manager expands the deployment-owned `HTTPS_PROXY_URL` template (both
+`{{country}}` and `{{geoLocation}}` are supported), lowercases the country for
+the upstream proxy, and appends `-session-<sessionId>` to the proxy username
+before returning the session URL. Credentials and provider URLs are never
+accepted from API callers.
+
+For the request above and a template ending in `-country-{{geoLocation}}`, the
+derived username includes `-country-in-session-` followed by the first 32 hex
+characters of a SHA-256 digest of the complete session ID. This keeps the
+provider's sticky-session token alphanumeric without collapsing distinct IDs
+that differ only by punctuation or a long suffix.
+
 The image-level reference in
 [`images/minimal-vnc-desktop/README.md`](../images/minimal-vnc-desktop/README.md)
 is authoritative for exact runtime variables.

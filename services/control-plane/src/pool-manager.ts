@@ -14,6 +14,7 @@ export interface RoutedSessionRequest {
   expiresAt?: string;
   tokenExpiresAt?: string;
   accessPolicy?: RoutedSessionAccessPolicy;
+  proxy?: { country: string };
 }
 
 export interface PoolManagerSessionResponse {
@@ -247,7 +248,7 @@ export async function reallocateExpiredRegionalSession(
   expiresAt: string,
   serviceAuthToken: string,
   request?: Pick<RoutedSessionRequest,
-    'clientId' | 'clientName' | 'tokenExpiresAt' | 'accessPolicy'>,
+    'clientId' | 'clientName' | 'tokenExpiresAt' | 'accessPolicy' | 'proxy'>,
 ) {
   const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/reallocate-expired`, {
     method: 'POST',

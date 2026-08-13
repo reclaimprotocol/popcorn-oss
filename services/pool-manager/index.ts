@@ -19,6 +19,8 @@ import {
     type SessionAccessPolicy,
 } from "./src/session-access";
 import { buildSessionUrls, websocketBaseUrl } from "./src/session-urls";
+import { closeProxyCdpSession, presetExtensionProxy } from "./src/extension-proxy";
+import { proxyPreset, readSessionProxy, type SessionProxy } from "./src/session-proxy";
 
 const app = new Hono();
 const PORT = 3000;
@@ -233,6 +235,7 @@ async function allocateSessionLocally(
     expiresAt?: string,
     tokenExpiresAt?: string,
     accessPolicy: SessionAccessPolicy = { tokenMode: "expiring", cdpScope: "restricted" },
+    proxy: SessionProxy = null,
 ) {
     const allocationRequestedAt = new Date();
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
@@ -278,6 +281,12 @@ async function allocateSessionLocally(
             ...(expiresAt ? { expiresAt } : {}),
             ...sessionAccessFields(tokenExpiresAt, accessPolicy),
         };
+
+        if (proxy) {
+            const preset = proxyPreset(proxy.country, sessionId);
+            if ("error" in preset) throw new Error(preset.error);
+            await presetExtensionProxy(sessionId, allocation.address, preset.value);
+        }
 
         const sessionAnnotations = {
             ...bound.annotations,
@@ -332,6 +341,7 @@ async function allocateSessionLocally(
 
         return { sessionId, podData };
     } catch (e) {
+        closeProxyCdpSession(sessionId);
         if (allocatedGameServerName) {
             if (sessionCreated) {
                 try {
@@ -390,6 +400,8 @@ async function createControlPlaneSession(c: any): Promise<Response> {
         if (access.error || !access.value?.accessPolicy) {
             return c.json({ error: access.error || "Invalid session access policy" }, 400);
         }
+        const proxy = readSessionProxy(body);
+        if ("error" in proxy) return c.json({ error: proxy.error }, 400);
 
         if (expiresAt && access.value.tokenExpiresAt
             && Date.parse(access.value.tokenExpiresAt) < Date.parse(expiresAt)) {
@@ -402,6 +414,7 @@ async function createControlPlaneSession(c: any): Promise<Response> {
             expiresAt,
             access.value.tokenExpiresAt,
             access.value.accessPolicy,
+            proxy.value,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (e) {
@@ -519,6 +532,8 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
         if (access.error || !access.value?.accessPolicy) {
             return c.json({ success: false, error: access.error || "Invalid session access policy" }, 400);
         }
+        const proxy = readSessionProxy(body);
+        if ("error" in proxy) return c.json({ success: false, error: proxy.error }, 400);
 
         const clientId = typeof body?.clientId === "string" && body.clientId.trim()
             ? body.clientId.trim()
@@ -548,6 +563,7 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
             expiresAt,
             access.value.tokenExpiresAt,
             access.value.accessPolicy,
+            proxy.value,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (error) {
@@ -581,6 +597,9 @@ async function deleteLocalSession(sessionId: string) {
         const podMetadata = await K8s.getPodMetadata(session.name, namespace);
         podUid = podMetadata.uid;
     }
+
+    // Stop holding a privileged CDP connection even if workload shutdown fails.
+    closeProxyCdpSession(sessionId);
 
     if (session.name) {
         await Agones.shutdownGameServer(session.name, namespace);

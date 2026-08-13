@@ -43,6 +43,7 @@ import { getX402Analytics } from './src/x402-analytics';
 import { X402Store } from './src/x402-store';
 import { selectTrustedClientAddress } from './src/x402-utils';
 import { readBoundedJsonBody } from './src/http-body';
+import { readCountryProxy } from './src/proxy-country';
 import {
   renderClientSessionsPanelHtml,
   renderAnalyticsViewHtml,
@@ -470,6 +471,8 @@ async function routeSession(
     return { status: 400, body: { error: ttlError } };
   }
   const expiresAt = ttlSeconds ? expiresAtFromTtlSeconds(ttlSeconds) : undefined;
+  const proxy = readCountryProxy(body);
+  if ('error' in proxy) return { status: 400, body: { error: proxy.error } };
 
   const selection = selectRegions(ControlPlaneConfig.regions, body?.regions, identity.allowedClusters);
   if (selection.error) {
@@ -497,6 +500,7 @@ async function routeSession(
       clientId: identity.clientId,
       clientName: identity.clientName,
       expiresAt,
+      ...(proxy.value ? { proxy: proxy.value } : {}),
     }, ControlPlaneConfig.serviceAuthToken);
     attempts.push(result.attempt);
 
