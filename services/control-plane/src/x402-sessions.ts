@@ -29,6 +29,7 @@ import {
   inspectAuthorizationOutcome,
   type AuthorizationChainReader,
 } from './x402-chain';
+import { readCountryProxy, type CountryProxy } from './proxy-country';
 
 const PUBLIC_X402_CLIENT_ID = 'x402-public';
 const PUBLIC_X402_CLIENT_NAME = 'Public x402';
@@ -126,6 +127,10 @@ interface ExtensionRecoveryState {
   previousPaidBlocks: number;
   previousMetadata: Record<string, unknown>;
   previousEndpoints: PublicX402Endpoints;
+}
+
+function metadataProxy(metadata: Record<string, unknown>): CountryProxy {
+  return typeof metadata.proxyCountry === 'string' ? { country: metadata.proxyCountry } : null;
 }
 
 function hasPublicSessionEndpoints(endpoints: PublicX402Endpoints): boolean {
@@ -535,6 +540,7 @@ export class X402SessionController {
       // payment is positively proven, recreate the expired workload under the
       // same session ID/token and grant the full purchased duration from now.
       expiresAt = new Date(Date.now() + additionalSeconds * 1000).toISOString();
+      const proxy = metadataProxy(recovery.previousMetadata);
       remote = await reallocateExpiredRegionalSession(
         region,
         row.sessionId,
@@ -549,6 +555,7 @@ export class X402SessionController {
             cdpScope: 'automation',
             accessExpiresAt: expiresAt,
           },
+          ...(proxy ? { proxy } : {}),
         },
       );
     } else {
@@ -856,13 +863,15 @@ export class X402SessionController {
   async create(input: X402RequestInput, body: unknown): Promise<X402HttpResult> {
     const available = this.availability();
     if (!('name' in available)) return available;
+    const proxy = readCountryProxy(body);
+    if ('error' in proxy) return { status: 400, body: { error: proxy.error } };
     if (body && typeof body === 'object' && !Array.isArray(body)) {
       const keys = Object.keys(body as Record<string, unknown>);
-      if (keys.length) return { status: 400, body: { error: 'This endpoint does not accept session IDs, regions, or TTL options' } };
+      if (keys.some((key) => key !== 'proxy')) return { status: 400, body: { error: 'This endpoint accepts only proxy.country' } };
     }
     const key = readIdempotencyKey(input.idempotencyKey);
     if (!key.value) return { status: 400, body: { error: key.error! } };
-    const hash = requestHash({ operation: 'create', blocks: 1, region: available.name, network: this.deps.config.network });
+    const hash = requestHash({ operation: 'create', blocks: 1, region: available.name, network: this.deps.config.network, proxy: proxy.value });
 
     return await withX402Claims(key.value, undefined, async (lease) => {
       const prepared = await reserveAndOffer({
@@ -929,6 +938,7 @@ export class X402SessionController {
           cdpScope: 'automation',
           accessExpiresAt: expiresAt.toISOString(),
         },
+        ...(proxy.value ? { proxy: proxy.value } : {}),
       }, this.deps.serviceAuthToken);
       if (!allocation.session) {
         await X402Store.updatePayment(prepared.payment.id, {
@@ -972,6 +982,7 @@ export class X402SessionController {
             browserPodId: allocation.session.browserPodId,
             x402PublicEndpoints: endpoints,
             billing: { type: 'x402', paidBlocks: 1, amountAtomic: prepared.payment.amountAtomic },
+            ...(proxy.value ? { proxyCountry: proxy.value.country } : {}),
           },
         );
         await X402Store.createSessionAccess({

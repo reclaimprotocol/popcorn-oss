@@ -531,6 +531,8 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
         if (access.error || !access.value?.accessPolicy) {
             return c.json({ success: false, error: access.error || "Invalid session access policy" }, 400);
         }
+        const proxy = readSessionProxy(body);
+        if ("error" in proxy) return c.json({ success: false, error: proxy.error }, 400);
 
         const clientId = typeof body?.clientId === "string" && body.clientId.trim()
             ? body.clientId.trim()
@@ -560,6 +562,7 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
             expiresAt,
             access.value.tokenExpiresAt,
             access.value.accessPolicy,
+            proxy.value,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (error) {
