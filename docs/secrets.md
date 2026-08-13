@@ -113,13 +113,9 @@ An extension may consume its own Secrets from
 
 To use the optional proxy preset on `POST /v1/sessions`, set
 `HTTPS_PROXY_URL` in `browser-runtime-proxy-secret`. The URL must include
-`{{country}}` or the existing `{{geoLocation}}` placeholder. The pool manager
-reads this secret and only derives a configuration for the allocated browser;
-callers never provide an upstream URL or credentials.
-
-
-Make `HTTPS_PROXY_URL` available to the pool-manager process in deployments
-that use country-routed sessions.
+`{{country}}` or the existing `{{geoLocation}}` placeholder. The platform
+chart injects this optional Secret into the pool manager by default; callers
+never provide an upstream URL or credentials.
 
 ## External Secrets Operator
 

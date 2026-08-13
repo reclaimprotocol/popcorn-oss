@@ -19,7 +19,7 @@ import {
     type SessionAccessPolicy,
 } from "./src/session-access";
 import { buildSessionUrls, websocketBaseUrl } from "./src/session-urls";
-import { presetExtensionProxy } from "./src/extension-proxy";
+import { closeProxyCdpSession, presetExtensionProxy } from "./src/extension-proxy";
 import { proxyPreset, readSessionProxy, type SessionProxy } from "./src/session-proxy";
 
 const app = new Hono();
@@ -341,6 +341,7 @@ async function allocateSessionLocally(
 
         return { sessionId, podData };
     } catch (e) {
+        closeProxyCdpSession(sessionId);
         if (allocatedGameServerName) {
             if (sessionCreated) {
                 try {
@@ -596,6 +597,9 @@ async function deleteLocalSession(sessionId: string) {
         const podMetadata = await K8s.getPodMetadata(session.name, namespace);
         podUid = podMetadata.uid;
     }
+
+    // Stop holding a privileged CDP connection even if workload shutdown fails.
+    closeProxyCdpSession(sessionId);
 
     if (session.name) {
         await Agones.shutdownGameServer(session.name, namespace);

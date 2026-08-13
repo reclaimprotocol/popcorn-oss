@@ -2,6 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { proxyPreset, readSessionProxy } from "./session-proxy";
 
 describe("session proxy request", () => {
+    test("treats an omitted, null, or false proxy as direct egress", () => {
+        expect(readSessionProxy({})).toEqual({ value: null });
+        expect(readSessionProxy({ proxy: null })).toEqual({ value: null });
+        expect(readSessionProxy({ proxy: false })).toEqual({ value: null });
+    });
+
     test("accepts only an uppercase ISO country selection", () => {
         expect(readSessionProxy({ proxy: { country: "IN" } })).toEqual({ value: { country: "IN" } });
         expect(readSessionProxy({ proxy: { country: "in" } })).toEqual({ error: "proxy.country must be an uppercase ISO 3166-1 alpha-2 country code" });

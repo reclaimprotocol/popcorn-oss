@@ -74,6 +74,12 @@ spec:
               value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
             - name: GAME_SERVER_FLEET
               value: {{ .Values.poolManager.gameServerFleet | quote }}
+            - name: HTTPS_PROXY_URL
+              valueFrom:
+                secretKeyRef:
+                  name: browser-runtime-proxy-secret
+                  key: HTTPS_PROXY_URL
+                  optional: true
 {{- with $sessionExtensionUrls }}
             - name: POOL_MANAGER_SESSION_EXTENSION_URLS
               value: {{ tpl (toJson .) $ | quote }}

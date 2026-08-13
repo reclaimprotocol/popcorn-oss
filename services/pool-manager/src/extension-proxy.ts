@@ -3,6 +3,13 @@ import type { ExtensionProxyConfig } from "./session-proxy";
 const CDP_PORT = 9226;
 const activeProxyCdpSessions = new Map<string, WebSocket>();
 
+/** Release the internal CDP connection held while proxy auth is pending. */
+export function closeProxyCdpSession(sessionId: string): void {
+    const socket = activeProxyCdpSessions.get(sessionId);
+    activeProxyCdpSessions.delete(sessionId);
+    socket?.close();
+}
+
 function cdpCommand(socket: WebSocket, id: number, method: string, params: Record<string, unknown> = {}) {
     return new Promise<any>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error(`CDP ${method} timed out`)), 10_000);
@@ -43,16 +50,21 @@ export async function presetExtensionProxy(sessionId: string, address: string, c
                 return;
             }
             if (message.method === "Fetch.authRequired") {
-                socket.send(JSON.stringify({
-                    id: id++, method: "Fetch.continueWithAuth", params: {
+                if (authHandled) return;
+                authHandled = true;
+                void (async () => {
+                    await cdpCommand(socket, id++, "Fetch.continueWithAuth", {
                         requestId: message.params.requestId,
                         authChallengeResponse: { response: "ProvideCredentials", username: config.username, password: config.password },
-                    },
-                }));
-                if (!authHandled) {
-                    authHandled = true;
-                    socket.send(JSON.stringify({ id: id++, method: "Fetch.disable" }));
-                }
+                    });
+                    // Wait until Chrome acknowledges the credentials. Disabling
+                    // Fetch earlier can race the auth response.
+                    await cdpCommand(socket, id++, "Fetch.disable");
+                    closeProxyCdpSession(sessionId);
+                })().catch((error) => {
+                    console.error(`Failed to establish proxy auth for ${sessionId}:`, error);
+                    closeProxyCdpSession(sessionId);
+                });
             }
         });
         // This is the same bootstrap used by portal callers: match_about_blank
@@ -72,8 +84,12 @@ export async function presetExtensionProxy(sessionId: string, address: string, c
         if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || "__pcn.set failed");
         // Fetch interception must survive this call: Chrome raises the proxy auth
         // challenge on the caller's first real navigation, not on __pcn.set().
-        activeProxyCdpSessions.get(sessionId)?.close();
-        activeProxyCdpSessions.set(sessionId, socket);
+        if (config.username && config.password) {
+            closeProxyCdpSession(sessionId);
+            activeProxyCdpSessions.set(sessionId, socket);
+        } else {
+            socket.close();
+        }
     } catch (error) {
         socket.close();
         throw error;

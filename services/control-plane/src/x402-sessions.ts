@@ -130,7 +130,12 @@ interface ExtensionRecoveryState {
 }
 
 function metadataProxy(metadata: Record<string, unknown>): CountryProxy {
-  return typeof metadata.proxyCountry === 'string' ? { country: metadata.proxyCountry } : null;
+  const parsed = readCountryProxy(
+    typeof metadata.proxyCountry === 'string'
+      ? { proxy: { country: metadata.proxyCountry } }
+      : {},
+  );
+  return 'value' in parsed ? parsed.value : null;
 }
 
 function hasPublicSessionEndpoints(endpoints: PublicX402Endpoints): boolean {
