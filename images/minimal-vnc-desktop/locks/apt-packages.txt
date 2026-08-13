@@ -51,5 +51,14 @@ unclutter=8-25
 # readiness. Without it the readiness gate fails and (under set -e) the
 # container exits before marking noVNC ready.
 x11-utils=7.7+5build2
+# Provides xrandr, which entrypoint.sh uses to shrink the X screen from the tall
+# boot geometry (WIDTHxFB_HEIGHT) back to the advertised desktop (WIDTHxHEIGHT)
+# once the kiosk window has latched onto the tall size.
+x11-xserver-utils=7.7+9build1
+# The proxy's window-follows-screen watcher (proxy/window.go): resizes the kiosk
+# Chromium window to match the X screen whenever a fit/magnify viewer resizes it
+# — the only resize path that keeps the window chromeless (CDP needs windowState
+# "normal", which draws the tab strip into the stream).
+xdotool=1:3.20160805.1-4
 xterm=372-1ubuntu1
 xz-utils=5.2.5-2ubuntu1.1

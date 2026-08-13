@@ -4,7 +4,7 @@
 // colors the cell green (pass) or red (fail).
 //
 // We scrape the table and count fails. Anything >0 fails is a real signal
-// to fix in CloakBrowser.
+// to fix in the browser's stealth surface.
 
 import { connect, humanize, section, summary } from '../utils.mjs';
 

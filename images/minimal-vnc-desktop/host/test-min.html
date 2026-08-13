@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-visual">
+  <title>Popcorn host (minimal)</title>
+  <style>
+    /* Deliberately the MINIMUM viable embedder: one full-viewport iframe and
+       nothing else. No flex container, no sibling panel, no overflow:auto, no
+       transforms — every one of which can put the iframe into a compositing
+       context that WebKit rasterises at reduced scale, which blurs the canvas
+       bitmap no matter what resolution the framebuffer is. test-host.html has a
+       debug panel in a flex column and is the control to compare against; if THIS
+       page is sharp and that one is not, the blur is the embedder's layout and the
+       portal must avoid the same shape. */
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #111;
+                 overscroll-behavior: none; }
+    iframe { position: fixed; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
+  </style>
+</head>
+<body>
+  <iframe id="viewer" title="Popcorn live view"
+    allow="virtual-keyboard; clipboard-read; clipboard-write"></iframe>
+  <script src="popcorn-host.js"></script>
+  <script>
+    (function () {
+      var q = new URLSearchParams(location.search);
+      var viewerBase = q.get('viewer') || (location.protocol + '//' + location.hostname + ':6080');
+      var PASSTHROUGH = ['magnify', 'quality', 'compression', 'resize', 'iosbridge',
+                         'kbddebug', 'kbdlog', 'stateless', 'mirror', 'mirrorbar',
+                         'smooth'];
+      var params = ['parentOrigin=' + encodeURIComponent(location.origin)];
+      if (q.get('magnify') === null) params.push('magnify=1'); // default on, like the portal
+      for (var i = 0; i < PASSTHROUGH.length; i++) {
+        var v = q.get(PASSTHROUGH[i]);
+        if (v !== null) params.push(PASSTHROUGH[i] + '=' + encodeURIComponent(v));
+      }
+      var el = document.getElementById('viewer');
+      el.src = viewerBase.replace(/\/+$/, '') + '/liveview.html?' + params.join('&');
+      // Geometry + events still flow; results go to the console and /klog rather
+      // than to on-screen chrome, so the page stays visually empty by design.
+      var host = PopcornHost.attach(el, { childOrigin: new URL(viewerBase).origin });
+      ['hello', 'connect', 'frame', 'disconnect', 'error', 'kbdstate'].forEach(function (n) {
+        host.on(n, function (d) { try { console.log('[host] ' + n, d); } catch (_) {} });
+      });
+    })();
+  </script>
+</body>
+</html>

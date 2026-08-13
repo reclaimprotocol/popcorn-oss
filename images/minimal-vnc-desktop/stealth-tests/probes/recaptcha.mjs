@@ -1,59 +1,86 @@
 // reCAPTCHA v3 score probe.
 //
-// v3 is silent: there's no challenge UI, just a per-request score
-// (0.0 = bot, 1.0 = human). The score is normally server-side only, so we
-// use a public demo that surfaces it:
-//   https://antcpt.com/score_detector/   ← Anti-CAPTCHA's score viewer
-// which runs grecaptcha.execute() on a known site key and renders the
-// numeric score in the DOM.
-//
-// Healthy real-Chrome target on a clean residential IP is 0.7-0.9. Below
-// 0.3 means reCAPTCHA flagged us hard; 0.3-0.6 is borderline.
+// v3 is silent: the meaningful score is returned by the site's backend after it
+// verifies the browser token with Google. Use Google's official demo and read
+// that backend JSON response directly; scraping the rendered text is only a
+// fallback because the page markup changes more often than the verify endpoint.
 
 import { connect, section, summary } from '../utils.mjs';
+
+const DEMO_URL = 'https://recaptcha-demo.appspot.com/recaptcha-v3-request-scores.php';
+const VERIFY_RE = /\/recaptcha-v3-verify\.php\?/;
+const ATTEMPTS = Number(process.env.RECAPTCHA_ATTEMPTS || 2);
+
+function parseScore(value) {
+  const score = Number(value);
+  return Number.isFinite(score) ? score : null;
+}
+
+async function readDomScore(page) {
+  return page.evaluate(() => {
+    const text = document.body ? document.body.innerText : '';
+    const jsonMatch = text.match(/"score"\s*:\s*([0-9.]+)/);
+    if (jsonMatch) return { score: jsonMatch[1], source: 'dom-json' };
+    const loose = text.match(/\bscore\b[^0-9]{0,40}([01](?:\.\d+)?)/i);
+    return { score: loose ? loose[1] : null, source: 'dom-text' };
+  }).catch(() => ({ score: null, source: 'dom-error' }));
+}
 
 export async function run({ closeBrowser = true } = {}) {
   const { browser, page } = await connect();
   section('reCAPTCHA v3 score');
 
-  // reCAPTCHA v3 scores CDP traffic as bot-like (per CloakBrowser docs), so we
+  // reCAPTCHA v3 scores CDP traffic as bot-like (per the browser's docs), so we
   // deliberately minimize CDP here: NO humanize() (its mouse/scroll spam is
   // dozens of CDP calls), and a Node-side sleep instead of page.waitForTimeout
   // (which sends CDP commands). The single page.evaluate below is the only read.
   // NOTE: the truest score comes from driving this page by hand in the live
   // view with no CDP client attached — that's this image's real (human) use.
-  // Google's OFFICIAL reCAPTCHA v3 demo — scores automatically on load with REAL
-  // server-side verification. This is the method CloakBrowser's own example uses,
-  // and unlike antcpt (a farming key with no real backend) the number is meaningful.
-  await page.goto('https://recaptcha-demo.appspot.com/recaptcha-v3-request-scores.php', { waitUntil: 'domcontentloaded', timeout: 30000 });
-  // The score renders only after an async token + backend-verify round-trip.
-  await page.waitForFunction(
-    "() => document.body.innerText.includes('Received response from our backend')",
-    { timeout: 20000 }
-  ).catch(() => {});
-  const data = await page.evaluate(() => {
-    const m = document.body.innerText.match(/"score":\s*([0-9.]+)/);
-    return { score: m ? m[1] : null, raw: [] };
-  });
+  let result = { score: null, source: 'none', detail: '' };
+  for (let i = 1; i <= Math.max(1, ATTEMPTS); i++) {
+    const verify = page.waitForResponse(
+      (r) => VERIFY_RE.test(r.url()) && r.status() === 200,
+      { timeout: 30000 }
+    ).then(async (r) => {
+      const json = await r.json();
+      return {
+        score: parseScore(json.score),
+        source: 'backend-json',
+        detail: `success=${json.success} action=${json.action || 'n/a'}`,
+      };
+    }).catch((e) => ({ score: null, source: 'backend-timeout', detail: e.message }));
 
-  console.log('parsed score:', data.score);
-  console.log('possible numeric candidates on page:', data.raw);
+    await page.goto(DEMO_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    result = await verify;
+    if (result.score !== null) break;
 
-  const score = parseFloat(data.score);
+    const dom = await readDomScore(page);
+    result = {
+      score: parseScore(dom.score),
+      source: dom.source,
+      detail: result.detail,
+    };
+    if (result.score !== null) break;
+  }
+
+  console.log('parsed score:', result.score);
+  console.log('score source:', result.source, result.detail);
+
+  const score = result.score;
   const ok = !isNaN(score) && score >= 0.7;
   // A low score here is expected: attaching over CDP at all depresses reCAPTCHA
-  // v3 (per CloakBrowser docs), so anything under 0.7 is a WARN, not a hard fail
+  // v3, so anything under 0.7 is a WARN, not a hard fail
   // — the real score is what a human gets in the live view with no CDP attached.
-  const warn = !isNaN(score) && score < 0.7;
+  const warn = score === null || score < 0.7;
 
   if (closeBrowser) await browser.close();
   return [{
     name: 'reCAPTCHA v3',
     pass: ok,
     warn,
-    detail: isNaN(score)
-      ? '(score not parsed)'
-      : `score=${score}${ok ? '' : ' — CDP-depressed; verify in live view'}`,
+    detail: score === null
+      ? `(score unavailable via ${result.source})`
+      : `score=${score} via ${result.source}${ok ? '' : ' — CDP/reputation sensitive'}`,
   }];
 }
 

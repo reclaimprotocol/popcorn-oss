@@ -179,8 +179,8 @@ while IFS=$'\t' read -r arch name filename url expected_sha; do
   mv "$tmp_path" "$out_path"
 done < <(awk -F '\t' '$0 !~ /^[[:space:]]*(#|$)/ { print }' "$CHROMIUM_LOCK")
 
-# Prune debs left over from a previous lock (e.g. the chromium debs that used to
-# live here before CloakBrowser replaced them) so a stale cache dir doesn't
+# Prune debs left over from a previous lock (e.g. chromium debs from an earlier
+# browser base) so a stale cache dir doesn't
 # poison the count check below.
 expected_debs="$(awk -F '\t' -v arch="$TARGET_ARCH" \
   '$0 !~ /^[[:space:]]*(#|$)/ && $1 == arch { print $3 }' "$CHROMIUM_LOCK")"

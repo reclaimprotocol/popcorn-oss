@@ -11,7 +11,7 @@ Probes:
   fingerprint  identity coherence + automation tells (webdriver/cdc/plugins/UA)
   sannysoft    bot.sannysoft.com — zero failed rows
   creepjs      CreepJS — reports the "lies" count (canvas/audio noise is expected)
-  recaptcha    reCAPTCHA v3 score via antcpt.com  (pass >= 0.7)
+  recaptcha    reCAPTCHA v3 score via Google's official backend demo (pass >= 0.7)
   cloudflare   nowsecure.nl (CF bot management) — content served, no challenge
 
 Usage:
@@ -167,12 +167,18 @@ def probe_creepjs(cdp):
 
 
 def probe_recaptcha(cdp):
-    cdp.navigate("https://antcpt.com/score_detector/", 12)
-    txt = cdp.evaluate(r"""(function(){var m=(document.body.innerText||'').match(/[\d.]+/g);var s=(document.body.innerText||'').match(/score is:?\s*([\d.]+)/i);return s?s[1]:(m?m[0]:'');})()""")
+    cdp.navigate("https://recaptcha-demo.appspot.com/recaptcha-v3-request-scores.php", 20)
+    txt = cdp.evaluate(r"""(function(){
+      var text = document.body ? document.body.innerText || '' : '';
+      var json = text.match(/"score"\s*:\s*([0-9.]+)/);
+      if (json) return json[1];
+      var loose = text.match(/\bscore\b[^0-9]{0,40}([01](?:\.\d+)?)/i);
+      return loose ? loose[1] : '';
+    })()""")
     try:
         score = float(txt)
     except (TypeError, ValueError):
-        return "INFO", "could not read score (site layout changed?)"
+        return "INFO", "could not read score from official demo"
     return ("PASS" if score >= 0.7 else "FAIL"), f"reCAPTCHA v3 score = {score}"
 
 

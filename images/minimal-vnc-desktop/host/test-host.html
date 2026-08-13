@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- interactive-widget=resizes-visual is Chrome Android's default; state it so
+       the measured geometry here matches what a real embedder sees. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-visual">
+  <title>Popcorn host harness</title>
+  <style>
+    /* The layer expects the page around it not to pinch/rubber-band: an outer
+       page zoom shrinks visualViewport and would be misread as a keyboard.
+       Any real embedder needs these two lines. */
+    html, body { margin: 0; height: 100%; overscroll-behavior: none; touch-action: pan-y; }
+    body { background: #14161a; color: #e6e6e6;
+           font: 13px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+
+    /* LAYOUT RULE (verified on iOS): the viewer iframe must be a plain
+       full-viewport fixed box, and any chrome must be LAYERED OVER it.
+       Making the iframe a flex child sitting next to
+       an `overflow: auto` debug panel puts the iframe in a compositing
+       context WebKit rasterises BELOW device scale, and the stream came out visibly
+       blurry while every number (framebuffer 980px, canvas 393 CSS px, zoom 1.00)
+       was byte-identical to a sharp top-level tab. Same constraint applies to the
+       portal: do not shrink the iframe with flex/grid siblings; overlay instead. */
+    /* Direct child of body, no wrapper — every extra layer around the iframe is a
+       chance for the compositor to rasterise it at the wrong scale. */
+    iframe { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+             border: 0; background: #111; }
+    /* Overlay, NOT a sibling that resizes the iframe. Its own layer, so scrolling it
+       cannot force a re-raster of the stream beneath. */
+    #panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+             max-height: 38vh; overflow: auto; padding: 8px 10px;
+             border-top: 1px solid #2a2f37; background: rgba(15,17,20,0.92); }
+    #row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
+    button { flex: 0 0 auto; padding: 8px 12px; font-size: 13px; font-weight: 600; border: 0;
+             border-radius: 6px; background: #2f6df6; color: #fff; }
+    #geom { font-family: ui-monospace, Menlo, monospace; color: #7ee787; margin-bottom: 4px; }
+    #log { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap;
+           color: #9aa4b2; margin: 0; }
+    .warn { color: #f0883e; }
+  </style>
+</head>
+<body>
+  <!-- HARNESS for the embedded-viewer contract (host/popcorn-host.js).
+       It is the middle frame of the real deployment shape:
+
+         this page (measures)  ->  liveview iframe (applies the lift)
+
+       With ?nest=1 it instead loads ITSELF one level deeper, giving the full
+       three-level chain that the SDK deployment actually has:
+
+         this page (measures)  ->  this page as relay  ->  liveview
+
+       Run (two different ports = two different origins, so this exercises the
+       real cross-origin path rather than a same-origin shortcut):
+
+         docker run --rm -it --tmpfs /dev/shm:size=1g -p 6080:6080 -p 9222:9222 \
+           popcorn/minimal-vnc-desktop:local
+         cd images/minimal-vnc-desktop && python3 -m http.server 8080
+
+       Then open http://localhost:8080/host/test-host.html   (add &nest=1 for the
+       three-level chain). On a phone, replace localhost with your machine's LAN
+       IP in BOTH the address bar and ?viewer=. -->
+  <iframe id="viewer" title="Popcorn live view"
+    allow="virtual-keyboard; clipboard-read; clipboard-write"></iframe>
+  <div id="panel">
+    <div id="row">
+      <button id="mag">Magnify</button>
+      <button id="kbd">Keyboard</button>
+      <button id="paste">Paste</button>
+      <button id="sync">Re-sync geom</button>
+    </div>
+    <div id="geom">geometry: (none sent yet)</div>
+    <pre id="log"></pre>
+  </div>
+
+  <script src="popcorn-host.js"></script>
+  <script>
+    (function () {
+      var q = new URLSearchParams(location.search);
+      var logEl = document.getElementById('log');
+      var geomEl = document.getElementById('geom');
+      var lines = [];
+      function log(s, cls) {
+        lines.push((cls === 'warn' ? '! ' : '  ') + new Date().toISOString().slice(11, 23) + ' ' + s);
+        if (lines.length > 120) lines.shift();
+        logEl.textContent = lines.join('\n');
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      // Where the pod serves liveview.html. Default assumes the docker run above
+      // on the same host; override with ?viewer= for a LAN IP or a real gateway.
+      var viewerBase = q.get('viewer') || (location.protocol + '//' + location.hostname + ':6080');
+      var relayMode = q.get('relay') === '1';
+      var nest = q.get('nest') === '1';
+
+      var iframeEl = document.getElementById('viewer');
+      var childUrl;
+
+      // Viewer-side knobs, forwarded verbatim to liveview.html so tuning on a device
+      // is just editing this page's URL. Everything else (viewer/nest/relay/
+      // forcerelay/noorigin) is harness-only and stays here. In nested mode these
+      // ride down to the middle frame too, or the chain would silently drop them —
+      // which is exactly the bug that made the first quality=9 test a no-op.
+      var PASSTHROUGH = [
+        'quality', 'compression', 'resize', 'view_only', 'shared', 'show_dot',
+        'password', 'path', 'reconnect', 'reconnect_delay',
+        'iosbridge', 'kbddebug', 'kbdlog', 'stateless', 'mirror', 'mirrorbar',
+        'smooth',
+      ];
+      var pass = [];
+      for (var pi = 0; pi < PASSTHROUGH.length; pi++) {
+        var pv = q.get(PASSTHROUGH[pi]);
+        if (pv !== null) pass.push(PASSTHROUGH[pi] + '=' + encodeURIComponent(pv));
+      }
+
+      if (nest && !relayMode) {
+        // Level 1 of 3: load ourselves as the middle (relay) frame. It carries the
+        // same viewer target down, plus relay=1 so it forwards instead of measuring.
+        childUrl = location.pathname + '?relay=1&nest=1&viewer=' + encodeURIComponent(viewerBase) +
+                   (pass.length ? '&' + pass.join('&') : '');
+        log('nested mode: child is this page in relay mode');
+      } else {
+        // parentOrigin is what arms the viewer's inbound bridge. Without it the
+        // viewer ignores geometry and commands entirely (fail-closed) — the exact
+        // misconfiguration this harness should be able to reproduce on purpose,
+        // so ?noorigin=1 omits it.
+        // magnify=1 by default (the mobile pipeline: CDP reflow to a phone/980px
+        // layout + fit + native touch). ?magnify=0 turns it OFF for an apples-to-
+        // apples comparison with opening liveview.html directly: no /emulate, no fit
+        // dance, so the page shows 1:1 and CROPPED — sharp, but desktop-width and
+        // pan-to-read, with noVNC's touch->mouse instead of the /input channel.
+        var params = ['magnify=' + (q.get('magnify') === '0' ? '0' : '1')];
+        if (q.get('noorigin') !== '1') params.push('parentOrigin=' + encodeURIComponent(location.origin));
+        childUrl = viewerBase.replace(/\/+$/, '') + '/liveview.html?' +
+                   params.concat(pass).join('&');
+      }
+      iframeEl.src = childUrl;
+      log('child: ' + childUrl);
+
+      // childOrigin: for the nested relay the child is same-origin as us; otherwise
+      // it's the pod. Pinning it (rather than '*') is what production should do.
+      var childOrigin = nest && !relayMode ? location.origin : new URL(viewerBase).origin;
+
+      // Let the mode RESOLVE (?forcerelay=1 pins it, to test forwarding in
+      // isolation). The middle frame of the nested chain should land on 'relay' on
+      // its own because the top frame measures — that self-resolution is the thing
+      // worth exercising here, since it's what the portal will rely on.
+      var host = PopcornHost.attach(iframeEl, {
+        childOrigin: childOrigin,
+        relay: q.get('forcerelay') === '1',
+      });
+      log('attached -> child ' + childOrigin + ', initial mode=' + host.mode());
+      setTimeout(function () { log('mode after upstream grace: ' + host.mode()); }, 2500);
+
+      host.on('hello', function (d) {
+        log('HELLO proto=' + d.protocol + ' vk=' + (d.vk ? 1 : 0) + ' vv=' + (d.vv ? 1 : 0) +
+            ' magnify=' + (d.magnify ? 1 : 0) + (d.unsupported ? ' unsupported=' + d.unsupported : ''));
+        if (!d.vk) log('viewer has no usable VirtualKeyboard API -> host geometry is load-bearing', 'warn');
+      });
+      host.on('connect', function () { log('CONNECT (rfb handshake)'); });
+      host.on('frame', function (d) { log('FRAME first paint fb=' + d.width + 'x' + d.height); });
+      host.on('disconnect', function (d) { log('DISCONNECT willReconnect=' + (d.willReconnect ? 1 : 0)); });
+      host.on('error', function (d) { log('ERROR ' + d.reason, 'warn'); });
+      host.on('kbdstate', function (d) { log('KBD_STATE active=' + (d.active ? 1 : 0) + (d.reason ? ' (' + d.reason + ')' : '')); });
+      host.on('viewport', function (d) { log('VIEWPORT back: visible=' + Math.round(d.visibleHeight) + ' occluded=' + Math.round(d.occludedBottom)); });
+
+      // Show what we're measuring, so a device test can see at a glance whether
+      // THIS frame can see the keyboard at all (the whole question on iOS).
+      function renderGeom() {
+        var vv = window.visualViewport;
+        var vk = navigator.virtualKeyboard;
+        var occluded = vv ? Math.max(0, window.innerHeight - vv.height - (vv.offsetTop || 0)) : 0;
+        geomEl.textContent =
+          'innerH=' + window.innerHeight +
+          (vv ? '  vv.h=' + Math.round(vv.height) + ' vv.top=' + Math.round(vv.offsetTop || 0) : '  vv=none') +
+          (vk && vk.boundingRect ? '  vk.h=' + Math.round(vk.boundingRect.height) : '  vk=' + (vk ? 'mute' : 'none')) +
+          '  => occluded=' + Math.round(occluded) +
+          '  top=' + (window === window.top ? 1 : 0) + (relayMode ? '  [relay]' : '');
+      }
+      renderGeom();
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', renderGeom);
+        window.visualViewport.addEventListener('scroll', renderGeom);
+      }
+      window.addEventListener('resize', renderGeom);
+      setInterval(renderGeom, 1000);
+
+      document.getElementById('mag').onclick = function () { host.toggleMagnify(); log('-> toggleMagnify'); };
+      document.getElementById('kbd').onclick = function () { host.toggleKeyboard(); log('-> toggleKeyboard'); };
+      document.getElementById('sync').onclick = function () { host.syncGeometry(); log('-> syncGeometry'); };
+      // Read the clipboard HERE, inside the gesture: this page usually has the
+      // permission, whereas a nested cross-origin frame is the most restricted
+      // place to ask for it (iOS especially).
+      document.getElementById('paste').onclick = function () {
+        if (!navigator.clipboard || !navigator.clipboard.readText) { log('no clipboard API here', 'warn'); return; }
+        navigator.clipboard.readText().then(function (t) {
+          if (!t) { log('clipboard empty', 'warn'); return; }
+          host.paste(t); log('-> paste len=' + t.length);
+        }).catch(function (e) { log('clipboard read refused: ' + e.name, 'warn'); });
+      };
+    })();
+  </script>
+</body>
+</html>

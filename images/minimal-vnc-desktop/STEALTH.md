@@ -110,12 +110,12 @@ proxy (9222) filters the Runtime/Page commands the probes need. See
 
 - **IP reputation matters.** Fortress improves browser coherence but cannot
   compensate for an exit address with poor reputation.
-- **Incoherent GPU persona (stable-149).** The default persona claims an RTX 3060
-  (`--uxr-webgl-renderer="ANGLE (NVIDIA … RTX 3060 …, D3D11)"`) while rendering
-  through SwiftShader — the hardware-GPU-on-software-renderer tell strict
-  detectors (DataDome) cross-check. For strict flows override the GPU `--uxr`
-  flags via `CHROMIUM_FLAGS` to match SwiftShader, or launch
-  `TILION_NO_DEFAULTS=1` with a hand-built coherent persona.
+- **Software graphics backend.** The image renders through SwiftShader. The
+  default `GPU_PERSONA=intel` reports a common Intel integrated GPU because it
+  clears the visible Sannysoft SwiftShader row without lowering the current
+  CreepJS score. Set `GPU_PERSONA=swiftshader` when strict renderer honesty is
+  preferred over consumer-laptop plausibility, or `GPU_PERSONA=nvidia` to compare
+  against Fortress's own default.
 - **Full CDP (9226) is internal-only.** It is an unauthenticated, fully
   controllable browser — never expose it publicly; never enter real credentials
   on a public tunnel.

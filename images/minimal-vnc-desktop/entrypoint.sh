@@ -5,6 +5,16 @@ DISPLAY_NUM="${DISPLAY_NUM:-1}"
 WIDTH="${WIDTH:-1920}"
 HEIGHT="${HEIGHT:-1080}"
 DEPTH="${DEPTH:-24}"
+# Boot geometry for the X screen; start-chromium sizes the kiosk window to match.
+# Screen rows the window does not cover render as the bare X root (black), and
+# neither Chromium nor openbox resizes a --kiosk window after startup — so the
+# proxy keeps window == screen at the X level as viewers resize it
+# (proxy/window.go). Boot height is therefore a starting size, not a ceiling;
+# set FB_HEIGHT only to boot deliberately taller than the advertised desktop.
+FB_HEIGHT="${FB_HEIGHT:-$HEIGHT}"
+if (( FB_HEIGHT < HEIGHT )); then FB_HEIGHT="$HEIGHT"; fi
+export FB_HEIGHT   # start-chromium sizes the kiosk window from it
+export WIDTH HEIGHT # novnc-proxy reads them for the default viewport emulation
 VNC_PORT="${VNC_PORT:-5900}"
 NOVNC_PORT="${NOVNC_PORT:-6080}"
 CDP_INTERNAL_PORT="${CDP_INTERNAL_PORT:-${CHROME_REMOTE_DEBUGGING_PORT:-9223}}"
@@ -231,19 +241,37 @@ setup_logging
 configure_agones
 start_agones_health
 
-echo "[entrypoint] Starting Xvnc on ${DISPLAY} (${WIDTH}x${HEIGHT}x${DEPTH})"
+echo "[entrypoint] Starting Xvnc on ${DISPLAY} (${WIDTH}x${FB_HEIGHT}x${DEPTH}, desktop ${WIDTH}x${HEIGHT})"
+# -SendPrimary=0: do NOT forward the X PRIMARY selection to the client. PRIMARY is
+# claimed by merely SELECTING text, and TigerVNC forwards it by default
+# (SendPrimary=1) — where the viewer mirrors any incoming clipboard into the
+# DEVICE's real clipboard (kbd/clipboard.js onRemoteClipboard). So a plain Ctrl+A
+# in the remote page pushed the selection to the client with no copy at all;
+# verified with a canary string over raw RFB. Two consequences, both bad: remote
+# content lands in the user's OS clipboard unasked, and whatever they had copied
+# locally (a password they were about to paste) is destroyed — which reads as
+# "paste is broken".
+#
+# -SetPrimary=0 is the same story inbound: without it a client cut-text also
+# overwrites the remote PRIMARY. Only the real CLIPBOARD selection — a deliberate
+# Ctrl+C — should cross, in either direction.
 Xvnc "$DISPLAY" \
-  -geometry "${WIDTH}x${HEIGHT}" \
+  -geometry "${WIDTH}x${FB_HEIGHT}" \
   -depth "$DEPTH" \
   -rfbport "$VNC_PORT" \
   -localhost=1 \
   -SecurityTypes None \
   -AlwaysShared=1 \
+  -SendPrimary=0 \
+  -SetPrimary=0 \
   -Log '*:stderr:30' \
   > "$(log_file xvnc)" 2>&1 &
 pids+=("$!")
 
 wait_for_tcp 127.0.0.1 "$VNC_PORT" Xvnc
+
+vncconfig -nowin > "$(log_file vncconfig)" 2>&1 &
+pids+=("$!")
 
 echo "[entrypoint] Starting noVNC/CDP proxy on :${NOVNC_PORT}, ${CDP_RESTRICTED_LISTEN}, ${CDP_FULL_LISTEN}"
 novnc-proxy \
@@ -285,6 +313,9 @@ pids+=("$app_pid")
 
 echo "[entrypoint] Waiting for app readiness pattern: ${READY_WINDOW_PATTERN}"
 wait_for_window "$READY_WINDOW_PATTERN" "$READY_TIMEOUT" "$app_pid"
+
+# No post-boot resize here: the screen stays at WIDTH x FB_HEIGHT and viewers
+# drive it from there, with the window following (proxy/window.go).
 touch "$READY_FILE"
 echo "[entrypoint] noVNC is ready"
 agones_ready

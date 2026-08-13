@@ -1,0 +1,162 @@
+// clipboard.js — copy/paste in both directions + the remote key-chords/field-nav
+// that ride the same RFB path.
+//
+//   Local -> remote (PASTE): the user pastes their phone's clipboard into the
+//     proxy; we inject it into the focused remote field. On the <input> path a
+//     paste would ALSO surface via onProxyInput, so we preventDefault and own it
+//     once. The EditContext path gets no automatic paste at all, so this is the
+//     only path there.
+//   Remote -> local (COPY): when the remote page copies text, noVNC fires a
+//     'clipboard' event; we mirror it to the device clipboard.
+//
+// Also home to sendActionKey (Return-glyph semantics) and navRemoteField (the iOS
+// accessory-bar prev/next), which are pure remote-keysym helpers used by the IME
+// handlers and the sentinel inputs.
+//
+// createClipboard(deps) closes over live accessors + the core's send helpers.
+// Own state (remoteClipboardText / pendingLocalWrite) lives here.
+
+import { dbg } from './diag.js';
+
+export function createClipboard({
+  getRfb, getProxy, getHints, sendText, sendSpecialKey,
+  clearProxy, setAllowBlur, setKeyboardActive,
+}) {
+  let remoteClipboardText = null; // latest text the remote copied
+  let pendingLocalWrite = false;  // remote text awaiting a user-gesture write
+
+  // Ctrl+V on the remote — used to paste a long insert we staged on the remote
+  // clipboard in one shot instead of N per-char keysym round-trips.
+  function remoteCtrlV() {
+    const rfb = getRfb();
+    if (!rfb) return;
+    // Keysym-only (code=null): with QEMUExtendedKeyEvent negotiated, passing a
+    // code string ('KeyV') sends a SCANCODE the server maps through ITS keyboard
+    // layout, so on a non-US remote layout the V-position key may not produce
+    // 'v' and the paste chord silently does the wrong thing. Sending the bare
+    // keysym lets Xvnc pick a keycode that actually yields 'v' — deterministic,
+    // layout-independent, and consistent with the rest of the text-injection path.
+    try {
+      rfb.sendKey(0xffe3, null, true);  // Control down
+      rfb.sendKey(0x0076, null, true);  // v down
+      rfb.sendKey(0x0076, null, false); // v up
+      rfb.sendKey(0xffe3, null, false); // Control up
+    } catch (_) {}
+  }
+
+  // Shift+Tab on the remote — moves to the PREVIOUS focusable field (plain Tab
+  // via sendSpecialKey moves to the next). Used by the iOS accessory-bar arrows.
+  function sendShiftTab() {
+    const rfb = getRfb();
+    if (!rfb) return;
+    try {
+      rfb.sendKey(0xffe1, 'ShiftLeft', true);  // Shift down
+      rfb.sendKey(0xff09, 'Tab', true);        // Tab down
+      rfb.sendKey(0xff09, 'Tab', false);       // Tab up
+      rfb.sendKey(0xffe1, 'ShiftLeft', false); // Shift up
+    } catch (_) {}
+  }
+
+  // The action key (Return glyph) means different things per field: a form with
+  // enterkeyhint="next"/"previous" wants field navigation, not a submit. Honor
+  // that so multi-field forms advance instead of prematurely firing Enter; every
+  // other hint (search/go/send/done/none) is a real Enter the remote interprets.
+  function sendActionKey() {
+    const hints = getHints();
+    const ekh = ((hints && hints.enterKeyHint) || '').toLowerCase();
+    if (ekh === 'next') { sendSpecialKey('Tab'); return; }
+    if (ekh === 'previous') { sendShiftTab(); return; }
+    sendSpecialKey('Enter');
+  }
+
+  // iOS Safari renders a prev/next (^ v) accessory bar above the keyboard for a
+  // focused <input>. Its arrows navigate the LOCAL viewer page, where our proxy
+  // is the only field, so they're useless (and would blur→dismiss). We bracket
+  // the proxy with two off-screen "sentinel" inputs in tab order; the accessory
+  // arrows focus a sentinel, which we translate to Tab / Shift+Tab on the REMOTE
+  // form, then hand focus back to the proxy so the keyboard stays up.
+  function navRemoteField(dir) {
+    if (dir > 0) sendSpecialKey('Tab'); else sendShiftTab();
+    // The proxy already blurred (dismissing) when the sentinel took focus; guard
+    // the re-focus and restore the up state so the keyboard never actually hides.
+    setAllowBlur(true);
+    clearProxy();
+    const proxy = getProxy();
+    try { proxy.focus(); } catch (_) {}
+    setKeyboardActive(true);
+    setTimeout(() => { setAllowBlur(false); }, 120);
+  }
+
+  // True when the server negotiated the Extended Clipboard pseudo-encoding
+  // (UTF-8 + zlib Provide). clipboardPasteFrom then transfers text losslessly
+  // instead of the legacy ISO-8859-1 clientCutText that maps every codepoint
+  // >0xff to '?'. The map keys mirror noVNC's own constants (rfb.js): format
+  // Text = 1, action Notify = 1<<27 — exactly what clipboardPasteFrom checks.
+  function serverExtendedClipboard() {
+    const rfb = getRfb();
+    try {
+      return !!(rfb && rfb._clipboardServerCapabilitiesFormats &&
+        rfb._clipboardServerCapabilitiesFormats[1] &&
+        rfb._clipboardServerCapabilitiesActions &&
+        rfb._clipboardServerCapabilitiesActions[1 << 27]);
+    } catch (_) { return false; }
+  }
+
+  function insertPastedText(text) {
+    const rfb = getRfb();
+    if (!text || !rfb) return;
+    // Single-line field: strip newlines so a pasted trailing \n doesn't fire
+    // Enter and instantly submit/navigate. INPUT is the positive test — TEXTAREA
+    // and contenteditable report other tags and legitimately keep their newlines.
+    const hints = getHints();
+    if (hints && hints.tag === 'INPUT') text = text.replace(/[\r\n]+/g, '');
+    if (!text) return;
+    // Long inserts: stage on the remote clipboard + Ctrl+V (one round-trip) — a
+    // big win over per-char keysyms on a 3G link. Safe for pure Latin-1 always,
+    // and for ANY text (CJK/emoji) when the server negotiated Extended Clipboard,
+    // since clipboardPasteFrom then uses the lossless UTF-8 path instead of the
+    // '?'-corrupting ISO-8859-1 fallback. Otherwise fall back to per-char sendText.
+    if (text.length > 32 && typeof rfb.clipboardPasteFrom === 'function' &&
+        (/^[\x00-\xff]*$/.test(text) || serverExtendedClipboard())) {
+      try { rfb.clipboardPasteFrom(text); remoteCtrlV(); return; } catch (_) {}
+    }
+    sendText(text);
+  }
+
+  function onProxyPaste(e) {
+    if (!getRfb()) return;
+    let text = '';
+    try { text = (e.clipboardData || window.clipboardData).getData('text/plain') || ''; } catch (_) {}
+    if (!text) return;
+    e.preventDefault();
+    dbg('paste chars=' + text.length);
+    insertPastedText(text);
+    clearProxy();
+  }
+
+  // writeText needs transient activation on iOS Safari, so a write triggered by
+  // the remote's copy (no local gesture) can reject — buffer it and retry on the
+  // next tap (onTouchEnd calls flushLocalClipboard).
+  function tryWriteLocalClipboard(text) {
+    if (!text) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => { pendingLocalWrite = false; })
+          .catch(() => {});
+      }
+    } catch (_) {}
+  }
+  function flushLocalClipboard() {
+    if (pendingLocalWrite && remoteClipboardText) tryWriteLocalClipboard(remoteClipboardText);
+  }
+  function onRemoteClipboard(e) {
+    const text = e && e.detail && e.detail.text;
+    if (!text) return;
+    remoteClipboardText = text;
+    pendingLocalWrite = true;
+    tryWriteLocalClipboard(text); // best-effort now; retried on next gesture
+  }
+
+  return { sendActionKey, insertPastedText, navRemoteField, onProxyPaste, flushLocalClipboard, onRemoteClipboard };
+}

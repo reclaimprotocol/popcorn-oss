@@ -5,12 +5,28 @@ ARG UBUNTU_IMAGE=docker.io/ubuntu:22.04@sha256:962f6cadeae0ea6284001009daa4cc9a8
 # C++ persona patches, distributed as an OCI image. It fully replaces stock
 # chromium (the xtradeb chromium debs are not installed); the chromium
 # runtime-library closure it links against is supplied by the pinned apt
-# packages in locks/apt-packages.txt. Pinned by digest to the STABLE channel —
-# tag "149" (Chromium 149.0.7827.232), which blends in with the mass of real
-# Chrome users, NOT the newer :151 "latest" build. **amd64-only** (no arm64
-# manifest), so this whole image is amd64-only: build on linux/amd64. Chromium
-# SIGTRAPs under QEMU, so it must build & run on a native amd64 host.
-ARG FORTRESS_IMAGE=docker.io/tilion/fortress@sha256:a5e31e67b53c11f5992fb74e4acc4c6c5313cc960def5c5898d198713a58b72a
+# packages in locks/apt-packages.txt.
+#
+# Pinned by digest to the STABLE channel (150). **amd64-only** — Fortress
+# publishes no arm64 manifest, so this whole image is amd64-only: build and run
+# it on a native amd64 host, since Chromium SIGTRAPs under QEMU emulation.
+# To confirm the version in a built image read /json/version over CDP; do NOT
+# trust /opt/*/README.txt, whose banner carries a stale generic string.
+#
+# 150 is built from CURRENT STABLE Chrome, which matters on its own: version-database
+# detectors read an older build as out-of-date, and a version that does not publicly
+# exist as generic "Chromium". This release also carries the fixes from upstream's
+# cycle (tiliondev/fortress#25 and the 150 notes):
+#   - per-clone canvas/audio divergence — the noise seed is applied correctly, so two
+#     instances no longer share one un-noised fingerprint
+#   - explicit --uxr-* flags now WIN over the generated persona (previously --uxr-ua-os /
+#     --uxr-ua-platform were overwritten, so a UA override silently stayed Windows and
+#     the resulting UA-vs-platform mismatch read as tampering)
+#   - the launcher honours the documented TILION_* env names, not only TILLION_*
+#   - geo-matched persona: timezone/locale derived from the egress IP, since a timezone
+#     disagreeing with the IP reads as VPN
+#   - coherent OS voices, and the completed WebGL parameter spoof under software render
+ARG FORTRESS_IMAGE=docker.io/tilion/fortress@sha256:b4f331693d3db25d70d814a99ed0da6be433d884e18d5af1cf3e6f3a2969569b
 
 FROM ${GOLANG_IMAGE} AS proxy-builder
 WORKDIR /src
@@ -104,7 +120,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     novnc_url="$(awk -F '=' '$1 == "url" { print $2 }' /tmp/novnc.lock)"; \
     novnc_sha256="$(awk -F '=' '$1 == "sha256" { print $2 }' /tmp/novnc.lock)"; \
     mkdir -p /tmp/novnc-src /usr/share/novnc; \
-    curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 --output /tmp/novnc.tar.gz "$novnc_url"; \
+    curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+         --connect-timeout 15 --speed-limit 4096 --speed-time 20 --max-time 300 \
+         --ipv4 --output /tmp/novnc.tar.gz "$novnc_url"; \
     echo "${novnc_sha256}  /tmp/novnc.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/novnc.tar.gz --strip-components=1 -C /tmp/novnc-src; \
     cp -a /tmp/novnc-src/core /tmp/novnc-src/vendor /usr/share/novnc/; \
@@ -144,7 +162,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
         -newerct "$touch_start" \
         -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
-# Tilion Fortress (stable stealth Chromium 149) — the only browser in the image.
+# Tillion Fortress (stable stealth Chromium 150) — the only browser in the image.
 # /opt/tilion/tilion is a bash launcher that applies a Windows persona + bundled
 # fonts + its own SwiftShader ICD around /opt/tilion/chrome (the patched Chromium
 # whose C++-level patches produce a real-Chrome TLS/JS fingerprint). The shared
@@ -152,9 +170,16 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
 # locks/apt-packages.txt. `chromium`/`chromium-browser` are symlinked to the
 # launcher so anything invoking `chromium` gets the persona-wrapped browser.
 # Own layer so the ~326MB copy caches independently.
-COPY --from=fortress /opt/tilion /opt/tilion
+# Copy /opt wholesale rather than a fixed subdirectory: the 151 image renamed
+# /opt/tilion/tilion to /opt/tillion/tillion (double L). Normalising to a stable
+# /opt/tilion/tilion below means the rest of the image — the symlinks, start-chromium's
+# CHROME_BIN, the fonts template patch — is unaffected by upstream renaming, and the
+# build fails loudly rather than silently launching nothing if the layout changes again.
+COPY --from=fortress /opt /opt
 RUN set -eux; \
     touch_start="$(date -u +'%Y-%m-%d %H:%M:%S')"; \
+    if [ -d /opt/tillion ] && [ ! -e /opt/tilion ]; then ln -s tillion /opt/tilion; fi; \
+    if [ -x /opt/tilion/tillion ] && [ ! -e /opt/tilion/tilion ]; then ln -s tillion /opt/tilion/tilion; fi; \
     test -x /opt/tilion/tilion; test -x /opt/tilion/chrome; \
     ln -sf /opt/tilion/tilion /usr/bin/chromium; \
     ln -sf /opt/tilion/tilion /usr/bin/chromium-browser; \
@@ -217,6 +242,49 @@ COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
 COPY --chmod=0755 start-chromium /usr/local/bin/start-chromium
 COPY liveview.html /usr/share/novnc/liveview.html
+COPY kbd-autofocus.js /usr/share/novnc/kbd-autofocus.js
+COPY kbd /usr/share/novnc/kbd
+COPY viewer.js /usr/share/novnc/viewer.js
+COPY locks/esbuild.lock /tmp/esbuild.lock
+
+# Bundle the viewer (noVNC core/* + the kbd/* IME layer + viewer.js) into a single
+# viewer.bundle.js so the page loads in ONE request instead of a ~70-module ES
+# graph that the browser discovers level-by-level over the tunnel (measured
+# multi-second cold start on 3G). esbuild is a standalone Go binary — no Node —
+# pinned by sha256 exactly like noVNC. --format=esm keeps module semantics.
+# --minify-whitespace/--minify-syntax strip whitespace + fold dead code (~-22% on
+# the wire after gzip) WITHOUT mangling identifiers, so function names stay in
+# stack traces and the BUILD_TAG string stays greppable — the bundle stays
+# debuggable. (Full --minify would mangle names; deliberately not used.) esbuild's
+# output is deterministic (no embedded timestamps), preserving reproducibility.
+RUN set -eux; \
+    esb_url="$(awk -F '=' '$1 == "url" { print $2 }' /tmp/esbuild.lock)"; \
+    esb_sha256="$(awk -F '=' '$1 == "sha256" { print $2 }' /tmp/esbuild.lock)"; \
+    curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+         --connect-timeout 15 --speed-limit 4096 --speed-time 20 --max-time 300 \
+         --ipv4 --output /tmp/esbuild.tgz "$esb_url"; \
+    echo "${esb_sha256}  /tmp/esbuild.tgz" | sha256sum -c -; \
+    mkdir -p /tmp/esbuild-src; \
+    tar -xzf /tmp/esbuild.tgz --strip-components=1 -C /tmp/esbuild-src package/bin/esbuild; \
+    /tmp/esbuild-src/bin/esbuild /usr/share/novnc/viewer.js --bundle --format=esm \
+        --minify-whitespace --minify-syntax \
+        --outfile=/usr/share/novnc/viewer.bundle.js; \
+    rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock; \
+    # Content-hash the bundle so novnc-proxy can serve it immutably (max-age=1y):
+    # a content change yields a NEW url, so a reconnect/reopen skips re-downloading
+    # it entirely — with zero staleness risk (the reason liveview.html itself stays
+    # no-store, pointing at whatever hash is current). Deterministic: the hash is of
+    # esbuild's deterministic output. Rewrite the <script src> to the hashed name.
+    bundle_hash="$(sha256sum /usr/share/novnc/viewer.bundle.js | cut -c1-12)"; \
+    mv /usr/share/novnc/viewer.bundle.js "/usr/share/novnc/viewer-${bundle_hash}.bundle.js"; \
+    sed -i "s#src=\"viewer\.bundle\.js\"#src=\"viewer-${bundle_hash}.bundle.js\"#" \
+        /usr/share/novnc/liveview.html; \
+    # Precompress the (hashed) bundle: it's the cold-start bottleneck over the
+    # tunnel and novnc-proxy serves the .gz via Accept-Encoding negotiation. -n
+    # drops the name/mtime from the gzip header so the output is deterministic;
+    # -k keeps the raw file for clients without gzip.
+    gzip -9 -n -k -f "/usr/share/novnc/viewer-${bundle_hash}.bundle.js"
+
 COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress
 COPY --chown=kernel:kernel extensions/proxy /home/kernel/extensions/proxy
 COPY --chown=kernel:kernel policies/managed/policy.json /etc/chromium/policies/managed/policy.json
@@ -228,8 +296,12 @@ RUN set -eux; \
         /usr/local/bin/novnc-proxy \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
-        /usr/share/novnc/liveview.html; \
-    find /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+        /usr/share/novnc/liveview.html \
+        /usr/share/novnc/kbd-autofocus.js \
+        /usr/share/novnc/viewer.js \
+        /usr/share/novnc/viewer-*.bundle.js \
+        /usr/share/novnc/viewer-*.bundle.js.gz; \
+    find /usr/share/novnc/kbd /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 USER kernel
 EXPOSE 6080 9222 9226
