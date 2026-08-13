@@ -44,12 +44,14 @@ fi
 # Stealth fingerprint / persona
 # -----------------------------------------------------------------------------
 # The `chromium` command is Tilion Fortress (a stealth stock-Chromium fork); its
-# launcher applies the Windows persona itself via --uxr-* + TILION_TZ/LANG. The
-# seed/timezone/locale machinery below feeds that (TZ/locale) and the opt-in
-# BROWSER=fingerprint path (fingerprint-chromium, which consumes CLOAK_SEED). The
-# goal either way is to present as a regular *Windows Chrome* session to bot
-# classifiers (Akamai BMP, Cloudflare Bot Management, reCAPTCHA Enterprise)
-# rather than headless-Chrome-on-Linux.
+# launcher applies a persona via --uxr-* + TILION_TZ/LANG. The seed/timezone/locale
+# machinery below feeds that (TZ/locale) and the opt-in BROWSER=fingerprint path
+# (fingerprint-chromium, which consumes CLOAK_SEED). The goal is to present as a
+# regular, COHERENT desktop Chrome session to bot classifiers (Akamai BMP, Cloudflare
+# Bot Management, reCAPTCHA Enterprise, Kasada) rather than headless-Chrome-on-Linux.
+# The default persona is LINUX (PERSONA below): this box's real substrate — TLS/JA4
+# shape, DejaVu-only fonts, SwiftShader/Vulkan renderer — is Linux, so a Linux persona
+# has nothing to contradict; a Windows persona over it is the tell classifiers catch.
 #
 # --fingerprint-platform=windows spoofs navigator.platform, userAgentData,
 # the User-Agent string, and Sec-CH-UA-Platform to Windows. That alone is a
@@ -306,11 +308,7 @@ elif [[ "$BROWSER" == "fortress" ]]; then
     "--uxr-audio-seed=$(( (CLOAK_SEED * 6271) % 8999999 + 1000000 ))"
   )
 
-  # Default WINDOWS: it is ~70% of desktop Chrome (rarity is a signal, and upstream
-  # says the same), and it is the persona this image is coherent with — the Dockerfile
-  # bundles Windows fonts and renames every Noto face to a Windows family. PERSONA=linux
-  # opts in to the flags below for experimentation, accepting the font mismatch.
-  persona="${PERSONA:-windows}"
+  persona="${PERSONA:-linux}"
   if [[ "$persona" == "linux" ]]; then
     cloak_flags+=(
       "--uxr-platform=Linux x86_64"
@@ -319,23 +317,10 @@ elif [[ "$BROWSER" == "fortress" ]]; then
       "--uxr-ua-arch=x86"
       "--uxr-ua-bitness=64"
       "--uxr-ua-brand=Google Chrome"
+      "--uxr-ua-platform-version=${CLOAK_KERNEL_VERSION:-6.8.0}"
     )
   fi
-  # GPU coherence (GPU_PERSONA=intel). Fortress's default persona claims a
-  # discrete NVIDIA RTX 3060 via --uxr-webgl-vendor/-renderer/-webgpu-description while
-  # actually rendering through SwiftShader (--use-angle=swiftshader + its own Vulkan ICD).
-  # FORTRESS-INTEGRATION.md flags that hardware-GPU-on-software-renderer pair as exactly
-  # what strict detectors cross-check, and recommends overriding it to go coherent.
-  #
-  # MEASURED on Fortress 150 in this image, same boot/profile shape:
-  #   swiftshader (honest software renderer) -> Sannysoft 29/30, CreepJS 50%
-  #   intel (UHD 630 integrated GPU claim)   -> Sannysoft 30/30, CreepJS 50%
-  #
-  # Intel integrated is the default because it removes the visible SwiftShader
-  # software-renderer tell without moving CreepJS. It is still a spoof over a
-  # software backend; GPU_PERSONA=swiftshader remains available when strict
-  # renderer honesty is preferred over consumer-laptop plausibility.
-  case "${GPU_PERSONA:-intel}" in
+  case "${GPU_PERSONA:-swiftshader}" in
     swiftshader)
       cloak_flags+=(
         "--uxr-webgl-vendor=Google Inc. (Google)"
@@ -346,11 +331,6 @@ elif [[ "$BROWSER" == "fortress" ]]; then
       )
       ;;
     intel)
-      # Hypothesis: a claim is judged partly on whether the CAPABILITIES match. An RTX
-      # 3060 over a software renderer is a big lie; Intel integrated is the single most
-      # common GPU on real Windows laptops and its limits sit far closer to
-      # SwiftShader's, so the same spoof has less to contradict. D3D11 also matches the
-      # Windows persona.
       cloak_flags+=(
         "--uxr-webgl-vendor=Google Inc. (Intel)"
         "--uxr-webgl-renderer=ANGLE (Intel, Intel(R) UHD Graphics 630 (0x00003E9B) Direct3D11 vs_5_0 ps_5_0, D3D11)"
@@ -361,7 +341,7 @@ elif [[ "$BROWSER" == "fortress" ]]; then
       ;;
     nvidia) ;; # the wrapper's own default persona (RTX 3060 claim), for comparison
   esac
-  echo "[stealth] browser: Tillion Fortress (stable stealth Chromium 150) — persona=$persona gpu=${GPU_PERSONA:-intel}; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$TILION_LANG"
+  echo "[stealth] browser: Tillion Fortress (stable stealth Chromium 150) — persona=$persona gpu=${GPU_PERSONA:-swiftshader}; TILION_TZ=$CLOAK_TIMEZONE TILION_LANG=$TILION_LANG"
 else
   # CloakBrowser was removed; only 'fortress' (default) and 'fingerprint' remain.
   echo "[start-chromium] unknown BROWSER='$BROWSER' (valid: fortress [default], fingerprint). CloakBrowser was removed from this image." >&2
