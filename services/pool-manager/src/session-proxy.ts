@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type SessionProxy = { country: string } | null;
 
 const ISO_COUNTRY_CODES = new Set((
@@ -31,6 +33,7 @@ export function readSessionProxy(body: unknown): { value: SessionProxy } | { err
 export type ExtensionProxyConfig = {
     host: string;
     port: number;
+    scheme: "http" | "https";
     username?: string;
     password?: string;
     bypassList: string[];
@@ -55,12 +58,12 @@ export function proxyPreset(country: string, sessionId: string, raw = process.en
     const password = decodeURIComponent(url.password);
     if ((username && !password) || (!username && password)) return { error: "HTTPS_PROXY_URL must include both username and password" };
     // Keep the selected upstream exit sticky for this browser session.
-    const stickyId = sessionId.replace(/[^A-Za-z0-9]/g, "").toLowerCase().slice(0, 32);
-    if (!stickyId) return { error: "session ID cannot be used for proxy stickiness" };
+    const stickyId = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
     return {
         value: {
             host: url.hostname,
             port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+            scheme: url.protocol === "https:" ? "https" : "http",
             ...(username ? { username: `${username}-session-${stickyId}`, password } : {}),
             bypassList: ["localhost", "127.0.0.1", "[::1]"],
         },

@@ -1,6 +1,7 @@
 {{- if .Values.poolManager.enabled }}
 {{- $poolManagerServiceAuthSecret := default .Values.secrets.poolManagerServiceAuthName .Values.poolManager.serviceAuth.secretName }}
 {{- $gatewayJwtSecret := default .Values.secrets.gatewayJwtName .Values.poolManager.jwtSecretName }}
+{{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
 {{- $otelGrpcEndpoint := default "" .Values.otel.exporter.grpcEndpoint }}
 {{- $otelHttpEndpoint := default "" .Values.otel.exporter.httpEndpoint }}
 {{- $otelLogsEnabled := and .Values.otel.enabled (or (ne $otelGrpcEndpoint "") (ne $otelHttpEndpoint "")) }}
@@ -77,7 +78,7 @@ spec:
             - name: HTTPS_PROXY_URL
               valueFrom:
                 secretKeyRef:
-                  name: browser-runtime-proxy-secret
+                  name: {{ $browserRuntimeProxySecret | quote }}
                   key: HTTPS_PROXY_URL
                   optional: true
 {{- with $sessionExtensionUrls }}

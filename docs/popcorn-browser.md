@@ -127,8 +127,10 @@ before returning the session URL. Credentials and provider URLs are never
 accepted from API callers.
 
 For the request above and a template ending in `-country-{{geoLocation}}`, the
-derived username ends in `-country-in-session-browser42`. Session IDs are
-sanitized to alphanumerics for the sticky-session token.
+derived username includes `-country-in-session-` followed by the first 32 hex
+characters of a SHA-256 digest of the complete session ID. This keeps the
+provider's sticky-session token alphanumeric without collapsing distinct IDs
+that differ only by punctuation or a long suffix.
 
 The image-level reference in
 [`images/minimal-vnc-desktop/README.md`](../images/minimal-vnc-desktop/README.md)
