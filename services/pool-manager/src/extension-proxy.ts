@@ -2,6 +2,9 @@ import type { ExtensionProxyConfig } from "./session-proxy";
 
 const CDP_PORT = 9226;
 const activeProxyCdpSessions = new Map<string, WebSocket>();
+// This local page bypasses the proxy and is always served by the browser
+// container. It gives the extension a normal HTTP document to inject into.
+const LOCAL_PCN_URL = process.env.POPCORN_LOCAL_NOVNC_URL || "http://127.0.0.1:6080/liveview.html";
 
 /** Release the internal CDP connection held while proxy auth is pending. */
 export function closeProxyCdpSession(sessionId: string): void {
@@ -67,9 +70,10 @@ export async function presetExtensionProxy(sessionId: string, address: string, c
                 });
             }
         });
-        // This is the same bootstrap used by portal callers: match_about_blank
-        // lets the extension inject without navigating the user to another page.
-        await cdpCommand(socket, id++, "Page.navigate", { url: "about:blank" });
+        // The browser has not yet been returned to a user, so use its local
+        // noVNC document to reliably trigger the extension content script.
+        // Localhost is in the proxy bypass list, including after configuration.
+        await cdpCommand(socket, id++, "Page.navigate", { url: LOCAL_PCN_URL });
         if (config.username && config.password) {
             await cdpCommand(socket, id++, "Fetch.enable", { handleAuthRequests: true });
         }
