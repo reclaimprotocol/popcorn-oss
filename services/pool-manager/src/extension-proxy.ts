@@ -86,6 +86,7 @@ export async function presetExtensionProxy(sessionId: string, address: string, c
         }))()`;
         const result = await cdpCommand(socket, id++, "Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
         if (result.exceptionDetails) throw new Error(result.exceptionDetails.text || "__pcn.set failed");
+        await cdpCommand(socket, id++, "Page.navigate", { url: "about:blank" });
         // Fetch interception must survive this call: Chrome raises the proxy auth
         // challenge on the caller's first real navigation, not on __pcn.set().
         if (config.username && config.password) {
