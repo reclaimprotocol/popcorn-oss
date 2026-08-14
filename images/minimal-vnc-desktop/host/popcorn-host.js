@@ -214,6 +214,7 @@
           case 'POPCORN_ERROR': emit('error', d); break;
           case 'POPCORN_KBD_STATE': emit('kbdstate', d); break;
           case 'POPCORN_INPUT_DRIFT': emit('inputdrift', d); break;
+          case 'POPCORN_INTERACTION': emit('interaction', d); break;
           default: return;
         }
         if (relay) {
