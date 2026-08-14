@@ -4,25 +4,24 @@
 (function() {
   'use strict';
 
-  // Hide the mouse cursor everywhere. This is a touch/kiosk stream: the pointer
-  // is a server-side software cursor baked into the VNC framebuffer, and
-  // unclutter only hides it while idle — it reappears over native popups
-  // (<select>, date pickers). Setting cursor:none on page content makes
-  // Chromium report a blank cursor to X, so nothing is drawn. Re-applies on
-  // every navigation because the content script runs per document.
+  // A global cursor rule, injected at document_start on every document:
+  //
+  // 1. cursor:none — this is a touch/kiosk stream; the pointer is a server-side
+  //    software cursor baked into the VNC framebuffer, and unclutter only hides
+  //    it while idle (it reappears over native <select>/date pickers). cursor:none
+  //    on page content makes Chromium report a blank cursor to X, so none is drawn.
+  //
+  //
+  // Re-applies on every navigation because the content script runs per document.
   try {
     const cs = document.createElement('style');
     cs.textContent = '*,*::before,*::after{cursor:none!important}';
     (document.head || document.documentElement).appendChild(cs);
   } catch (_) {}
 
-  // Inject the page-level script
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('injected.js');
-  script.onload = function() {
-    this.remove();
-  };
-  (document.head || document.documentElement).appendChild(script);
+  // injected.js runs as a MAIN-world content script (see manifest) so its
+  // stealth patches install synchronously at document_start, before any page
+  // script.
 
   // ---- JS dialog bridge (isolated world half) -------------------------------
   // injected.js overrides alert/confirm/prompt in the PAGE world so Chromium never
