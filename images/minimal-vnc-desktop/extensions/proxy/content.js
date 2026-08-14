@@ -4,25 +4,35 @@
 (function() {
   'use strict';
 
-  // Hide the mouse cursor everywhere. This is a touch/kiosk stream: the pointer
-  // is a server-side software cursor baked into the VNC framebuffer, and
-  // unclutter only hides it while idle — it reappears over native popups
-  // (<select>, date pickers). Setting cursor:none on page content makes
-  // Chromium report a blank cursor to X, so nothing is drawn. Re-applies on
-  // every navigation because the content script runs per document.
+  // Two global stylesheet rules, injected at document_start on every document:
+  //
+  // 1. cursor:none — this is a touch/kiosk stream; the pointer is a server-side
+  //    software cursor baked into the VNC framebuffer, and unclutter only hides
+  //    it while idle (it reappears over native <select>/date pickers). cursor:none
+  //    on page content makes Chromium report a blank cursor to X, so none is drawn.
+  //
+  // 2. Reduce motion — the pod renders on the CPU (SwiftShader, --disable-gpu), so
+  //    a page with many infinite CSS animations (e.g. sms.ndmu.edu.ph login: ~70
+  //    infinite animations) saturates the compositor, dropping the browser to
+  //    ~11fps and flooding the VNC framebuffer with repaints — a laggy stream.
+  //    Collapsing duration to ~0 and forcing one iteration stops the continuous
+  //    repaints (measured 14fps -> 57fps) while STILL reaching each animation's
+  //    end state and firing animationend/transitionend, so entrance animations
+  //    and JS flows that await those events keep working. Effect is cosmetic:
+  //    spinners freeze, fades/slides become instant.
+  //
+  // Re-applies on every navigation because the content script runs per document.
   try {
     const cs = document.createElement('style');
-    cs.textContent = '*,*::before,*::after{cursor:none!important}';
+    cs.textContent =
+      '*,*::before,*::after{cursor:none!important}' +
+      '*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}';
     (document.head || document.documentElement).appendChild(cs);
   } catch (_) {}
 
-  // Inject the page-level script
-  const script = document.createElement('script');
-  script.src = chrome.runtime.getURL('injected.js');
-  script.onload = function() {
-    this.remove();
-  };
-  (document.head || document.documentElement).appendChild(script);
+  // injected.js runs as a MAIN-world content script (see manifest) so its
+  // stealth patches install synchronously at document_start, before any page
+  // script.
 
   // ---- JS dialog bridge (isolated world half) -------------------------------
   // injected.js overrides alert/confirm/prompt in the PAGE world so Chromium never
