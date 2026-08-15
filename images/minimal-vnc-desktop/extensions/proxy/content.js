@@ -301,6 +301,42 @@
     return Math.max(d ? d.scrollWidth : 0, b ? b.scrollWidth : 0);
   }
 
+  // sb — px left until the top document's scroll BOTTOM (0 = at the bottom, or
+  // no vertical scroll at all). The viewer's keyboard-occlusion pan keys on
+  // this: with the soft keyboard overlaying the viewer, the page's own scroll
+  // range ends with the last screenful behind the keys, and the viewer extends
+  // its LOCAL pan only once the remote genuinely can't scroll further — so
+  // scrolling stays native-ordered (page first, local sliver last). Whole px,
+  // like every other measurement, so the report dedup keeps coalescing. Reads
+  // scrollHeight the same way docScrollWidth reads scrollWidth (same cost
+  // class; layout is already forced by the rect reads on every report).
+  function docScrollBottom() {
+    const d = document.documentElement, b = document.body;
+    const sh = Math.max(d ? d.scrollHeight : 0, b ? b.scrollHeight : 0);
+    const y = window.scrollY || (d ? d.scrollTop : 0) || 0;
+    return Math.max(0, Math.round(sh - y - window.innerHeight));
+  }
+
+  // State for the nearest scrollable ancestor of the focused field. The top
+  // document can be at its bottom while a login modal or list still scrolls.
+  function focusedScrollContainer(el) {
+    for (let node = el && el.parentElement; node && node !== document.body; node = node.parentElement) {
+      try {
+        if (node.scrollHeight <= node.clientHeight + 2) continue;
+        const overflowY = getComputedStyle(node).overflowY;
+        if (!/auto|scroll|overlay/.test(overflowY)) continue;
+        const r = node.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) continue;
+        return {
+          x: Math.round(r.x), y: Math.round(r.y),
+          w: Math.round(r.width), h: Math.round(r.height),
+          b: Math.max(0, Math.round(node.scrollHeight - node.scrollTop - node.clientHeight)),
+        };
+      } catch (_) {}
+    }
+    return null;
+  }
+
   // xf — rects of CROSS-ORIGIN iframes in the top document, in CSS px.
   //
   // A tap inside one of these needs a compatibility mouse click, because Chrome
@@ -318,16 +354,19 @@
   //
   // contentDocument throws (or is null) exactly when the frame is cross-origin,
   // which is the same condition that makes it out-of-process under site isolation.
-  const XF_TTL_MS = 2000;
   const XF_MAX = 12;
-  let xfCache = null, xfAt = 0;
+  const XF_SCAN_MAX = 120;
+  // Do not cache this measurement. reCAPTCHA commonly inserts an iframe whose
+  // first document is same-origin about:blank, then navigates it to Google. A
+  // cached empty list makes that frame invisible to the viewer for the one
+  // follow-up report, and there may be no later mutation to correct it. The
+  // scan is tiny (at most XF_MAX usable frames) and runs only on our already
+  // throttled layout reports.
   function crossOriginFrameRects() {
-    const now = Date.now();
-    if (xfCache && now - xfAt < XF_TTL_MS) return xfCache;
     const out = [];
     try {
       const frames = document.querySelectorAll('iframe');
-      for (let i = 0; i < frames.length && out.length < XF_MAX; i++) {
+      for (let i = 0; i < frames.length && i < XF_SCAN_MAX && out.length < XF_MAX; i++) {
         const f = frames[i];
         let cross = true;
         try { cross = !f.contentDocument; } catch (_) { cross = true; }
@@ -337,7 +376,6 @@
         out.push({ x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) });
       }
     } catch (_) {}
-    xfCache = out; xfAt = now;
     return out;
   }
 
@@ -525,6 +563,15 @@
     // FOCUS_KEY_FRAME from a subframe would otherwise look like a navigation.
     if (IS_TOP) {
       base.sw = docScrollWidth(); base.pid = FOCUS_KEY_FRAME; base.novp = noViewportMeta();
+      // sb: distance to the scroll bottom — drives the viewer's keyboard-
+      // occlusion pan (see docScrollBottom). 0 is the load-bearing value.
+      base.sb = docScrollBottom();
+      const sc = focusedScrollContainer(el);
+      if (sc) base.sc = sc;
+      // The viewer's short reload-on-resize guard must distinguish a document
+      // reload caused by its own width change from a real cross-site navigation
+      // (notably an OAuth return). Origin deliberately excludes paths/query data.
+      try { base.origin = location.origin; } catch (_) {}
       // ol: px of content hanging off the LEFT — unreachable, and invisible to sw.
       // olw: how wide the widest clipped piece of real content is — the number the
       // viewer fits to, because ol alone never converges (see leftOverflowStats).
@@ -833,6 +880,14 @@
   }
   window.addEventListener('scroll', scheduleReport, true);
   window.addEventListener('resize', scheduleReport, true);
+  // reCAPTCHA's anchor is an external iframe that often starts as about:blank.
+  // Its cross-origin transition changes no parent-DOM nodes, so the mutation
+  // observer below cannot see it. Capture its load and publish fresh geometry;
+  // this is what arms the viewer's trusted VNC click for the checkbox.
+  document.addEventListener('load', (e) => {
+    const target = e.target;
+    if (target && target.tagName === 'IFRAME') scheduleReport();
+  }, true);
 
   // --- report promptly when the layout changes -----------------------------
   // The cadence used to be a 1500ms heartbeat plus a 2000ms measurement cache, so a
@@ -852,7 +907,17 @@
       overflowDirty = true; // cached rects are stale by definition now
       scheduleReport();
     });
-    mo.observe(document.documentElement, { childList: true, subtree: true });
+    // The reCAPTCHA anchor can already exist when its image challenge is made
+    // visible. That transition is frequently a class/style/src update on an
+    // existing iframe or its wrapper, not a child-list mutation. Watching the
+    // geometry-affecting attributes makes the challenge frame reach the viewer
+    // before its first tile tap, where it takes the trusted VNC-click path.
+    mo.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'src', 'width', 'height'],
+    });
   } catch (_) {}
 
   // A static legacy page may not mutate after its initial parse and may never

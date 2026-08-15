@@ -51,8 +51,6 @@ if (!fbCapPinned) {
     })
     .catch(() => {});
 }
-// Scale-to-fill — on with magnify, ?fill=0 opts out. Read here (not imported
-// from the kbd layer) so rfb._screenSize can size the framebuffer to match.
 // Keep in sync with env.js FILL.
 window.__pcnFill = magnify && params.get('fill') !== '0';
 // The framebuffer + CDP-emulate target size for a desired viewport, the single

@@ -51,6 +51,25 @@ export function createViewportTransform({
   // transform, not this, so it stays correct mid-transition.
   let appliedLift = 0;
 
+  // How many local px the keyboard OVERLAYS without the layout having reflowed —
+  // the pan-range extension budget (see clampPan). Captured in postViewport,
+  // which is already the single funnel every detector pushes its authoritative
+  // (visibleHeight, occludedBottom) pair through — including 0 on the
+  // layout-resize and floating-keyboard paths — so no detector can feed the pan
+  // a different occlusion than it reports to the host. Zeroed in clearLift,
+  // because some teardowns (dismissKeyboard, onSystemBlur) never post a
+  // viewport update; without that, a stale inset would leave the view panned
+  // over a dead #111 strip until the next detector event.
+  let kbdInset = 0;
+  // Read at CLAMP time, not capture time: layoutResizeMode can latch after a
+  // host geometry post (the both-shrink WebView case, where the host sees an
+  // occlusion but the local layout also reflowed) — the layout has already made
+  // room, so any pan extension there would run into blank space below the
+  // framebuffer.
+  function effKbdInset() {
+    return getLayoutResizeMode() ? 0 : kbdInset;
+  }
+
   let zoomScale = 1;
   let panX = 0, panY = 0;
   // minZoom is the "fit" floor — the zoom our CSS transform can't go below. It
@@ -174,8 +193,33 @@ export function createViewportTransform({
     const cw = ew * zoomScale, ch = eh * zoomScale; // content visual size
     if (cw <= dispW + 0.5) panX = (dispW - cw) / 2 - oxz;
     else { const minX = dispW - cw - oxz, maxX = -oxz; if (panX > maxX) panX = maxX; else if (panX < minX) panX = minX; }
-    if (ch <= dispH + 0.5) panY = (dispH - ch) / 2 - oyz;
-    else { const minY = dispH - ch - oyz, maxY = -oyz; if (panY > maxY) panY = maxY; else if (panY < minY) panY = minY; }
+    // While an overlay keyboard is up (inset > 0), the pan range extends DOWN by
+    // the part of the occlusion the field-lift hasn't already revealed: the
+    // composed translate (panY - appliedLift) may bring the content bottom up to
+    // the keyboard's top edge (dispH - inset) but no further. This is the local
+    // analogue of a native browser letting the page scroll an extra keyboard-
+    // height — the remote's own scroll range was computed for the no-keyboard
+    // viewport and runs out with the last screenful still behind the keys, and
+    // resizing the remote instead is the re-emulate ping-pong fit.js avoids.
+    // inset === 0 keeps both branches byte-identical to the historical clamp.
+    const inset = effKbdInset();
+    if (ch <= dispH + 0.5) {
+      const centre = (dispH - ch) / 2 - oyz;
+      if (inset > 0) {
+        // Content fits the display (the zoom-1 viewport-sized framebuffer):
+        // instead of pinning to centre, allow panning up until the content
+        // bottom meets the keyboard top. min() degrades to the pin when the
+        // content already sits fully above the keys.
+        const minY = Math.min(centre, dispH - ch - oyz - inset + appliedLift);
+        if (panY > centre) panY = centre; else if (panY < minY) panY = minY;
+      } else {
+        panY = centre;
+      }
+    } else {
+      const ext = inset > 0 ? Math.max(0, inset - appliedLift) : 0;
+      const minY = dispH - ch - oyz - ext, maxY = -oyz;
+      if (panY > maxY) panY = maxY; else if (panY < minY) panY = minY;
+    }
   }
 
   // Safari-style zoom-into-the-tapped-field for the whole-page desktop-fit view.
@@ -221,6 +265,7 @@ export function createViewportTransform({
   }
 
   function beginPinch(e) {
+    cancelFling();
     const ts = e.touches;
     if (!ts || ts.length < 2) return;
     const a = ts[0], b = ts[1];
@@ -271,6 +316,7 @@ export function createViewportTransform({
   }
 
   function beginPan(e) {
+    cancelFling(); // grabbing again cancels any in-flight glide
     const t = e.touches && e.touches[0];
     if (!t) return;
     panning = { x: t.clientX, y: t.clientY, panX0: panX, panY0: panY };
@@ -299,10 +345,31 @@ export function createViewportTransform({
     const refH = (currentViewport && currentViewport.h > 0) ? currentViewport.h : canvas.height;
     const ratioY = cr.height / refH;
     const stableTop = cr.top - currentTranslateY(screen);
-    const fieldBottom = stableTop + (rect.y + rect.h) * ratioY;
+    // A field scrolled BELOW the remote viewport is not in the framebuffer — no
+    // lift can reveal it, only chase it. The extension reports rects unclipped
+    // (a below-fold editable ships with y > vh), and scrolling the remote while
+    // its field stays focused re-feeds that growing y through every /kbd frame:
+    // observed live as lift 257->479->633->640 on a 689px canvas (vb pinned at
+    // 406), i.e. the whole stream shoved off the top — a black screen. Stand
+    // down until the field scrolls back into the framebuffer.
+    if (rect.y >= refH) return 0;
+    // panY is added back: stableTop undid the WHOLE rendered translate (pan AND
+    // lift), but the lift should only make up what the user's pan hasn't already
+    // revealed. While the pan was structurally 0 at zoom 1 this was moot; with
+    // the keyboard pan extension a user can pre-reveal the field, and lifting
+    // from the unpanned position on top of that over-shifts — content bottom
+    // rises past the keyboard's top edge and a dead #111 strip shows above the
+    // keys.
+    const fieldBottom = stableTop + panY + Math.min(rect.y + rect.h, refH) * ratioY;
     const margin = 16;
     const limit = visibleBottom - margin;
-    if (fieldBottom > limit) return Math.min(fieldBottom - limit, cr.height);
+    // Cap at the occlusion, not the canvas: lifting past the keyboard's own
+    // height never helps (the field would land above where the keys even
+    // start), and clampPan's pan budget (inset - appliedLift) assumes the lift
+    // respects this bound. For an on-viewport field the arithmetic already
+    // stays under it — the cap only bites the pathological geometries above.
+    const inset = Math.max(0, window.innerHeight - visibleBottom);
+    if (fieldBottom > limit) return Math.min(fieldBottom - limit, inset + margin, cr.height);
     return 0;
   }
 
@@ -326,8 +393,61 @@ export function createViewportTransform({
     composeScreenTransform(true);
   }
 
+  // Inertial glide for a released keyboard-pan (kbd/tap.js hands us the finger's
+  // exit velocity). A finger-tracked pan that stops dead on lift feels un-native;
+  // this coasts panY with a constant deceleration, re-clamping every frame so it
+  // rests exactly at the budget edge instead of overshooting into blank space.
+  // Velocity is px/ms (screen space == panY space at zoom 1). Cancelled by any
+  // new gesture or a keyboard teardown so it never fights the user or a dismiss.
+  let flingRAF = null;
+  const FLING_DECEL = 0.004;   // px/ms^2 — ~stops within a few hundred ms
+  const FLING_MIN_V = 0.04;    // px/ms — below this a release is "no flick"
+  function cancelFling() {
+    if (flingRAF != null) { (window.cancelAnimationFrame || (() => {}))(flingRAF); flingRAF = null; }
+  }
+  function flingPanY(vy) {
+    cancelFling();
+    let v = Math.max(-4, Math.min(4, vy || 0));
+    if (Math.abs(v) < FLING_MIN_V) return; // a slow release just stays put
+    let last = nowMs();
+    let frames = 0;
+    const step = () => {
+      flingRAF = null;
+      const now = nowMs();
+      let dt = now - last; last = now;
+      if (!(dt > 0)) dt = 16;      // frozen clock (tests) — nominal frame
+      if (dt > 32) dt = 32;        // a long stall shouldn't teleport the view
+      const target = panY + v * dt;
+      panY = target;
+      clampPan();
+      composeScreenTransform(false);
+      const hitEdge = panY !== target; // clamp pulled it back → at the budget edge
+      const dv = FLING_DECEL * dt;
+      v = Math.abs(v) > dv ? v - Math.sign(v) * dv : 0;
+      if (hitEdge || Math.abs(v) < 0.02 || ++frames > 180) return;
+      flingRAF = (window.requestAnimationFrame || ((fn) => setTimeout(fn, 16)))(step);
+    };
+    flingRAF = (window.requestAnimationFrame || ((fn) => setTimeout(fn, 16)))(step);
+  }
+
   function clearLift() {
+    cancelFling(); // a dismiss mid-glide must not keep coasting
     appliedLift = 0;
+    // Every keyboard teardown funnels through here (including the ones that
+    // never post a viewport update, like dismissKeyboard and onSystemBlur), so
+    // this is where the pan-range extension collapses: drop the inset and
+    // re-clamp, which pulls the view out of the now-keyboard-free strip while
+    // leaving any legitimate zoom/pan exactly where the user left it
+    // (dismissKeyboard's keep-your-place contract). Re-clamp ONLY when the pan
+    // actually sits in the extended strip (inset was up and panY is negative):
+    // an unconditional clampPan here would be the first-ever at-rest clamp in
+    // letterboxed states (canvas smaller than the display, flex-centered by
+    // noVNC inside #screen), where the centering branch writes a positive panY
+    // on top of that flex centering and shoves the canvas down over the #111
+    // background.
+    const contract = kbdInset > 0 && panY < 0;
+    kbdInset = 0;
+    if (contract) clampPan();
     // Ease back down (unless zoomed — a pan/zoom in progress wants no transition).
     composeScreenTransform(zoomScale === 1 && !panning);
   }
@@ -353,6 +473,9 @@ export function createViewportTransform({
   // configured ?parentOrigin= (falling back to '*' when unconfigured, which is
   // the historical behavior existing embedders rely on).
   function postViewport(visibleHeight, occludedBottom) {
+    // Capture the occlusion as the pan-extension budget (see kbdInset). The
+    // wire message is unchanged — hosts keep reading the same numbers.
+    kbdInset = (isFinite(occludedBottom) && occludedBottom > 0) ? occludedBottom : 0;
     postToHost('POPCORN_VIEWPORT', { visibleHeight, occludedBottom });
   }
 
@@ -418,6 +541,14 @@ export function createViewportTransform({
     // Accessors/mutators replacing the core's former direct variable touches.
     zoomScale: () => zoomScale,
     minZoom: () => minZoom,
+    // Keyboard-pan gesture reads (kbd/tap.js): the live pan for its
+    // desired-vs-actual handoff math, and the effective occlusion budget that
+    // gates the gesture (0 with no keyboard, a floating keyboard, or in
+    // layout-resize mode — every state where there is nothing hidden to reach).
+    panY: () => panY,
+    kbdPanInset: () => effKbdInset(),
+    // Inertial glide for a released keyboard-pan (tap.js supplies exit velocity).
+    flingPanY, cancelFling,
     pinchActive: () => !!pinch,
     panActive: () => !!panning,
     // Silent null-out, NO snap-back: 3-finger handoff to remote multi-touch, and

@@ -1,5 +1,5 @@
 // tap-crossorigin-click.test.mjs — characterization: a tap landing inside a
-// cross-origin iframe is followed by a compatibility mouse click.
+// cross-origin iframe is followed by an ordered compatibility mouse click.
 //
 // Chrome synthesizes `click` from a CDP touch tap in the MAIN frame, but not inside
 // an out-of-process (cross-origin) iframe. Measured from inside reCAPTCHA's own
@@ -43,25 +43,21 @@ async function tapAt(screen, x, y) {
   fireDoc('touchend', { touches: [], changedTouches: touches([x, y]), target: screen });
 }
 
-test('a tap inside a cross-origin iframe issues an X11 pointer click over VNC', async () => {
-  // Rect mirrors the live reCAPTCHA anchor frame: 304x78 at (60, 260). The click
-  // goes out as an RFB pointer event — the real X pointer, the same path a desktop
-  // mouse takes — not as a CDP mouse event.
+test('a tap inside a cross-origin iframe uses the ordered CDP compatibility click', async () => {
+  // Rect mirrors the live reCAPTCHA anchor frame: 304x78 at (60, 260). The touch
+  // cancel and compat click share the /input command queue, so a tile cannot get a
+  // VNC press interleaved with a stale CDP touch position.
   const { screen, sock, rfb } = await viewerWithFrames([{ x: 60, y: 260, w: 304, h: 78 }]);
   const before = sock.sent.length;
 
   await tapAt(screen, 90, 299); // the checkbox, ~30px into the frame
 
-  assert.deepEqual(rfb.pointer.map((p) => p.mask), [0, 1, 0], 'move, press, release');
-  const [, press] = rfb.pointer;
-  assert.equal(press.x, 90, 'pressed at the tap point (canvas is 1:1 in the stub)');
-  assert.equal(press.y, 299);
-  assert.ok(!sentTypes(sock, before).includes('click'), 'and NOT over the CDP channel');
+  assert.deepEqual(rfb.pointer, [], 'does not race a raw VNC click');
+  assert.ok(sentTypes(sock, before).includes('click'), 'compat click goes over the ordered CDP channel');
 });
 
-test('it falls back to the CDP click when RFB cannot take the pointer', async () => {
-  // A noVNC upgrade that moves the private pointer method must degrade to the CDP
-  // path, not silently drop every tap inside an iframe.
+test('an unavailable VNC helper does not affect the normal ordered CDP path', async () => {
+  // The private noVNC pointer helper is no longer needed when /input is healthy.
   const { screen, sock, rfb } = await viewerWithFrames([{ x: 60, y: 260, w: 304, h: 78 }], { breakRfbPointer: true });
   const before = sock.sent.length;
 
@@ -69,7 +65,7 @@ test('it falls back to the CDP click when RFB cannot take the pointer', async ()
 
   assert.equal(rfb.pointer.length, 0, 'no pointer events');
   const click = sock.sent.slice(before).map((m) => JSON.parse(m)).find((m) => m.t === 'click');
-  assert.ok(click, 'fell back to the /input click');
+  assert.ok(click, 'uses the /input click');
   assert.equal(click.points.length, 1);
 });
 
@@ -107,7 +103,7 @@ test('one tap in a cross-origin frame produces exactly ONE activation', async ()
   const types = sentTypes(sock, before);
   assert.ok(!types.includes('end'), `touch must not END inside the frame, got ${JSON.stringify(types)}`);
   assert.ok(types.includes('cancel'), 'it is cancelled instead');
-  assert.equal(rfb.pointer.filter((p) => p.mask === 1).length, 1, 'exactly one button press');
+  assert.equal(sentTypes(sock, before).filter((t) => t === 'click').length, 1, 'exactly one compatibility click');
 });
 
 test('a tap outside still ends normally (the touch keeps producing its own click)', async () => {
@@ -121,21 +117,15 @@ test('a tap outside still ends normally (the touch keeps producing its own click
   assert.ok(!types.includes('cancel'), 'not cancelled outside cross-origin frames');
 });
 
-test('the X11 click undoes the CSS zoom before mapping', async () => {
-  // noVNC's own clientToElement reads getBoundingClientRect and does NOT compensate
-  // for a CSS transform — which is exactly why the viewer must, before handing the
-  // point to _handleMouseButton (whose absX divides by noVNC's scale, not ours).
-  // Without the correction every tap while zoomed lands at the wrong framebuffer
-  // pixel, scaled by the zoom factor.
-  const { screen, rfb } = await viewerWithFrames([{ x: 0, y: 0, w: 390, h: 844 }]);
+test('the ordered CDP click maps through CSS zoom before reaching the iframe', async () => {
+  const { screen, sock } = await viewerWithFrames([{ x: 0, y: 0, w: 390, h: 844 }]);
   const canvas = screen.querySelector('canvas');
   // 2x CSS zoom: the box doubles, the layout size does not.
   canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 780, height: 1688 });
 
   await tapAt(screen, 180, 400);
 
-  const press = rfb.pointer.find((p) => p.mask === 1);
-  assert.ok(press, 'a press was sent');
-  assert.equal(press.x, 90, '180 display px at 2x zoom is 90 layout px');
-  assert.equal(press.y, 200);
+  const click = sock.sent.map((m) => JSON.parse(m)).find((m) => m.t === 'click');
+  assert.ok(click, 'a compatibility click was sent');
+  assert.deepEqual(click.points, [{ x: 90, y: 200 }], '180 display px at 2x zoom maps to 90 remote px');
 });

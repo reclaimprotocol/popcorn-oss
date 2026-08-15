@@ -40,6 +40,16 @@ export function createFieldSession({
   let currentXFrames = [];
   let lastNonEmptyRectsAt = 0;   // when we last got a populated rect set (flap stickiness)
   let rectsTruncated = false;    // rects[] was capped by the extension merge (background.js)
+  // Distance (px) from the remote TOP document's scroll bottom (state.sb), or
+  // null before the first sample. 0 means "the remote cannot scroll further
+  // down" — including a page with no vertical scroll at all, which is exactly
+  // the login-form case the keyboard-pan gesture exists for. Advisory like the
+  // rest of the /kbd stream: it lags a forwarded scroll by the extension's
+  // 250ms throttle + tunnel RTT, and it reads 0 on a page that scrolls only in
+  // an inner overflow container (the window never scrolls) — both are absorbed
+  // by the gesture's remote handoff, never by trusting this value harder.
+  let remoteScrollBottom = null;
+  let focusedScrollContainer = null;
   const RECTS_STICKY_MS = 3000;  // ignore a transient rects=[] this long after real rects
 
   // The focusKey (stable per-element identity, from content.js) of the remote's
@@ -252,6 +262,10 @@ export function createFieldSession({
     }
     if (Array.isArray(state.xf)) currentXFrames = state.xf;
     if (state.vw > 0 && state.vh > 0) currentViewport = { w: state.vw, h: state.vh };
+    if (typeof state.sb === 'number' && state.sb >= 0) remoteScrollBottom = state.sb;
+    focusedScrollContainer = state.sc && typeof state.sc === 'object'
+      ? state.sc
+      : null;
 
     // Fit-to-width detection + navigation handling (top document only) lives in
     // ./kbd/fit.js — it also zeroes the rect stickiness on a real nav (onNavChanged).
@@ -472,6 +486,8 @@ export function createFieldSession({
     xframes: () => currentXFrames,
     lastNonEmptyRectsAt: () => lastNonEmptyRectsAt,
     rectsTruncated: () => rectsTruncated,
+    remoteScrollBottom: () => remoteScrollBottom,
+    focusedScrollContainer: () => focusedScrollContainer,
     focusKey: () => remoteFocusKey,
     sensitive: () => sensitiveField,
     remoteValue: () => remoteValue,

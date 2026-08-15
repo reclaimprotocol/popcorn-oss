@@ -1,20 +1,7 @@
 package main
 
-// Device-viewport emulation. The viewer (liveview.html) POSTs its own viewport
-// size + deviceScaleFactor; we drive CDP Emulation.setDeviceMetricsOverride on
-// the container's Chromium so the page REFLOWS to that layout (mobile
-// breakpoints fire) at a framebuffer-filling density.
-//
-// A single POST target isn't enough: links/popups (e.g. "Sign in with Google")
-// open NEW page targets that never had the override, so they render desktop-
-// width and overflow. So we hold ONE persistent browser-level CDP connection
-// with Target.setAutoAttach and (re)apply the current emulation to every page
-// target — existing, newly-opened, and after each navigation.
-//
-// SECURITY: served on the public noVNC port, this exposes ONLY
-// setDeviceMetricsOverride + setTouchEmulationEnabled with numeric-validated
-// params — never general CDP. Worst case a caller resizes the emulated
-// viewport. (The full CDP endpoint stays bound to loopback / behind -p.)
+// Device viewport emulation. The public endpoint accepts only validated
+// emulation settings; the full CDP endpoint remains loopback-only.
 
 import (
 	"bufio"
@@ -43,95 +30,37 @@ type emulateRequest struct {
 	Reset             bool    `json:"reset"`
 }
 
-// emulator holds the desired emulation AND a persistent CDP connection that
-// (a) applies the emulation to every page target and (b) dispatches touch input
-// (Input.dispatchTouchEvent) so the remote page handles scroll/drag/sliders/
-// pinch NATIVELY — VNC only carries mouse, so real touch must come via CDP.
+// emulator maintains device emulation and sends native touch events over CDP.
 type emulator struct {
 	cdpUpstream string
 	mu          sync.Mutex
 	params      *emulateRequest
 	dirty       chan struct{}
 	cmds        chan cdpCmd // input/other commands to send on the live session
-	// prio carries the commands that must NOT be dropped: the terminal half of an
-	// input gesture (touchEnd/Cancel, mouse release) and a dialog answer. They share
-	// the connection but not the queue — a high-frequency touchMove flood filling
-	// cmds used to be able to crowd out the touchEnd behind it, and a lost touchEnd
-	// leaves the remote page with a finger that never lifts.
+	// prio reserves capacity for terminal input events and dialog answers.
 	prio chan cdpCmd
-	// inputDesync is set when a terminal input event was lost anyway (a wedged CDP
-	// consumer). The next gesture starts with a touchCancel so the remote's stuck
-	// finger is cleared instead of being combined with the new touch.
+	// inputDesync triggers a cancel before the next gesture after a lost terminal event.
 	inputDesync atomic.Bool
 
 	sessMu sync.Mutex
 	active string // page sessionId that receives input (the foreground window)
-	// sessTarget maps an attached page session to its targetId. Input routing needs
-	// it: the focused WINDOW arrives as a targetId (from the foreground report), while
-	// input is dispatched on a session.
+	// sessTarget maps CDP sessions to targets for foreground input routing.
 	sessTarget map[string]string
 
-	// ---- JS dialog interception ---------------------------------------------
-	// Chromium lays alert()/confirm()/prompt() out against the real browser
-	// WINDOW, not the emulated viewport, so under a narrow mobile emulation the
-	// dialog overflows and its OK button can end up off-screen — and because a
-	// dialog blocks script execution, an unreachable button wedges the page. The
-	// alternative failure is worse: an automation layer that silently auto-accepts
-	// makes the site's message vanish, so a validation error shows the user
-	// nothing at all.
-	//
-	// So we intercept: Page.javascriptDialogOpening is forwarded to the viewer,
-	// which draws a real-DOM sheet at the correct size, and the reply comes back
-	// as accept/dismiss + text. handleJavaScriptDialog is issued from HERE, never
-	// by the viewer, so answering a dialog does not require exposing a
-	// page-control CDP method to whoever can reach the port.
-	// FedCM account chooser — same "browser UI clipped by emulation" problem as a
-	// JS dialog, but with no safe auto-accept (picking an account is the user's
-	// decision). See fedcm.go.
+	// Browser dialogs and FedCM are rendered by the viewer to avoid mobile clipping.
+	// The proxy alone sends their CDP responses.
 	fedcm fedcmState
 
-	// One entry per BLOCKED target, keyed by CDP sessionId. Chrome allows at most
-	// one dialog per target but several top-level pages are attached at once (main
-	// tab + content tabs + navigated popups), so a confirm() in each is genuinely
-	// concurrent. A single global slot let the second dialog overwrite the first,
-	// and the first page then stayed blocked with nothing left to answer or resync
-	// it with. dlgSeq is global and monotonic, so a sequence number identifies one
-	// dialog on one target and a reply can never be applied to another target's.
+	// Dialog state is per target; dlgSeq rejects stale viewer replies.
 	dlgMu    sync.Mutex
 	dlgSeq   uint64
 	dialogs  map[string]*openDialog
 	onDialog func(payload []byte, open bool)
-	// viewerCount reports how many viewers are attached. An alert() is only worth
-	// keeping the page blocked for if somebody can actually read it.
+	// viewerCount determines whether an alert can be shown to a user.
 	viewerCount func() int
 
-	// ---- secondary windows ---------------------------------------------------
-	// A sign-in flow ("Continue with Google", payment flows) puts a SECOND
-	// top-level page in front of the user. On the remote side that is a real
-	// window, and it covers the whole screen — either because targetCreated
-	// fullscreens it, or because a new window on a kiosk-sized X screen fills it
-	// anyway. Chromium runs --kiosk, so it has no title bar, no tab strip and no
-	// URL bar: a user who changes their mind has NO way back to the page
-	// underneath, and it outlives a viewer reload because it lives in the remote
-	// browser, not the viewer.
-	//
-	// Tracked by "is there more than one top-level page", NOT by openerId. The
-	// flow this exists for — Pinterest's Google sign-in — is FedCM
-	// (accounts.google.com/gsi/fedcm/signin), and its target is reported with
-	// openerId EMPTY, so an opener-based test misses the exact case that matters.
-	// Verified against the live flow; a window.open popup does carry an opener,
-	// and counting pages covers both, plus target=_blank tabs.
-	//
-	// The rule also protects the session for free: with one page there is nothing
-	// to close, so the primary page can never be the thing we offer to destroy.
-	//
-	// WHICH page is offered is the focused one, not simply the newest. Creation order
-	// alone was wrong: once a site refocuses an older popup — or hands focus back to
-	// the opener — the newest target is a window the user cannot see, and the close
-	// button would destroy that instead of what is in front of them. CDP has no focus
-	// signal for a target, so the foreground URL comes from the extension, whose top
-	// frames report document.hasFocus() (browser-global: at most one wins). With no
-	// such report yet, creation order is still the fallback.
+	// Track all top-level pages. The viewer may close a focused secondary page;
+	// the newest page is used until the extension reports foreground focus.
 	popMu      sync.Mutex
 	pages      []pageEntry // top-level pages, creation order (newest last)
 	popFront   string      // targetId currently advertised as closable ("" = none)
@@ -140,8 +69,7 @@ type emulator struct {
 	onPopup    func(payload []byte, open bool)
 }
 
-// pageEntry is a tracked top-level page. The URL is what the foreground report is
-// matched against — CDP identifies targets, the extension only knows documents.
+// pageEntry associates a top-level target with its URL for focus matching.
 type pageEntry struct {
 	targetID string
 	url      string
@@ -155,19 +83,14 @@ type cdpCmd struct {
 	session string
 }
 
-// openDialog is a JS dialog currently blocking one target. The open payload is
-// kept so that closing ONE dialog can restore the sheet/resync cache for another
-// that is still blocking a different page — the viewer and the hub hold a single
-// dialog state, so a close is otherwise read as "no dialog anywhere".
+// openDialog stores a blocking dialog and its viewer payload.
 type openDialog struct {
 	seq     uint64
 	session string
 	payload []byte
 }
 
-// alertAckWait bounds how long an alert() stays blocked waiting for the user to
-// acknowledge it. Long enough to read a sentence and tap, short enough that a viewer
-// which went away mid-alert cannot wedge the page for the rest of the session.
+// alertAckWait prevents an unattended alert from blocking a page indefinitely.
 const alertAckWait = 15 * time.Second
 
 // setViewerCounter installs the "is anyone watching" probe (the /kbd hub).
@@ -800,10 +723,9 @@ func (e *emulator) dispatchTouch(evType string, points []touchPoint) {
 	}
 }
 
-// dispatchCompatClick sends the mouse press/release pair a real phone produces
-// after a tap (the compatibility mouse events). pointerType "touch" keeps it
-// coherent with the touch device we present: a Windows touch screen emitting a
-// bare mouse click with no pointer type would be its own fingerprint tell.
+// dispatchCompatClick sends compatibility mouse events after a touch tap.
+// Google Identity requires these to use pointerType "mouse" for one-tap
+// activation inside its cross-origin frame.
 //
 // queueImportant, not queue: a dropped release leaves the remote page with a held
 // mouse button, which is the same class of stuck-input bug as a dropped touchEnd.
@@ -811,7 +733,7 @@ func (e *emulator) dispatchCompatClick(p touchPoint) {
 	base := map[string]any{
 		"x": p.X, "y": p.Y,
 		"button": "left", "clickCount": 1,
-		"pointerType": "touch",
+		"pointerType": "mouse",
 	}
 	press := map[string]any{"type": "mousePressed", "buttons": 1}
 	release := map[string]any{"type": "mouseReleased", "buttons": 0}

@@ -4,7 +4,7 @@
 // the (stubbed) #screen element.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { installGlobals, freshViewer, fireDoc, makeScreen } from './stub-dom.mjs';
+import { installGlobals, freshViewer, fireDoc, makeScreen, webSockets } from './stub-dom.mjs';
 import { createMockRfb } from './mock-rfb.mjs';
 
 installGlobals('ios', { search: '?magnify=1' }); // TOUCH_INPUT on — full touch ownership
@@ -79,4 +79,3 @@ test('single finger NOT zoomed forwards native touch to the /input channel (no p
   fireDoc('touchend', { touches: [], changedTouches: touches([100, 200]), target: screen });
   assert.equal(screen.style.transform || '', ''); // no local transform at zoom 1
 });
-

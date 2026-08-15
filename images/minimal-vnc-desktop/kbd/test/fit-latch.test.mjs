@@ -119,3 +119,40 @@ test('a genuine navigation clears the latch — a latched page must not infect t
   assert.equal(fit.fitMode(), true, 'a fresh no-viewport page still fits');
   await settleDance();
 });
+
+test('an OAuth-style cross-origin return exits fit immediately', async () => {
+  const { fit } = makeFit();
+
+  // An identity-provider page has entered the desktop fallback fit.
+  fit.handleTopDocSignal({
+    pid: 'google-login', origin: 'https://accounts.google.com', novp: true, vw: 390, sw: 980,
+  });
+  assert.equal(fit.fitMode(), true, 'identity-provider page entered fit');
+  await settleDance();
+
+  // The redirect returns before FIT_SETTLE_MS. This used to be treated as a
+  // resize-provoked reload and kept the origin page's desktop fit on the app.
+  fit.handleTopDocSignal({
+    pid: 'tinder-return', origin: 'https://tinder.com', novp: false, vw: 390, sw: 390,
+  });
+
+  assert.equal(fit.fitMode(), false, 'responsive destination is restored without a refresh');
+});
+
+test('a same-origin responsive destination exits a latched no-viewport fit immediately', async () => {
+  const { fit } = makeFit();
+
+  fit.handleTopDocSignal({ pid: 'hanyang-login', novp: true, vw: 390, sw: 980 });
+  assert.equal(fit.fitMode(), true, 'entered the no-viewport desktop fallback');
+  await settleDance();
+
+  // This is the fit's own reload, so the no-viewport page correctly retains its
+  // full-screen overview and latches against a resize loop.
+  fit.handleTopDocSignal({ pid: 'hanyang-reload', novp: true, vw: 390, sw: 980 });
+  assert.equal(fit.fitMode(), true, 'retained fit across its own reload');
+
+  // A same-origin sign-in or SPA handoff can then load a responsive document
+  // before the old resize settle window expires. It must start at phone width.
+  fit.handleTopDocSignal({ pid: 'hanyang-responsive-app', novp: false, vw: 390, sw: 390 });
+  assert.equal(fit.fitMode(), false, 'responsive destination did not inherit desktop fit');
+});

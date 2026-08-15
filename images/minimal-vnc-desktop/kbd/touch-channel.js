@@ -19,6 +19,11 @@ import { linkLatency } from './latency.js';
 // each one floods /input -> CDP -> a burst of tiny scroll frames over the tunnel
 // (the jitter). We keep only the LATEST position per interval. The interval is
 // RTT-ADAPTIVE — see moveIntervalMs.
+const MOVE_INTERVAL_FULL_MS = 16;   // ~60fps on a very healthy link (<150ms RTT):
+                                    // the forwarded scroll/drag is smoothest when
+                                    // the remote gets moves at display rate; the
+                                    // extra packets are affordable only when the
+                                    // uplink clearly isn't the bottleneck.
 const MOVE_INTERVAL_FAST_MS = 33;   // ~30fps on a healthy link
 const MOVE_INTERVAL_SLOW_MS = 100;  // ~10fps floor on a genuinely slow link:
                                     // enough to keep a drag/scroll feeling like
@@ -162,6 +167,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   // (flushPendingMove), so the drag still finishes at the real point.
   function moveIntervalMs() {
     const l = linkLatency(); // max(tap->confirm, /kbd RTT); 0 until first sample
+    if (l > 0 && l < 150) return MOVE_INTERVAL_FULL_MS; // measured healthy link
     if (l < 300) return MOVE_INTERVAL_FAST_MS;
     // Ramp fast->slow across ~300..1500ms RTT, then hold at the slow floor.
     const t = Math.min(1, (l - 300) / 1200);
