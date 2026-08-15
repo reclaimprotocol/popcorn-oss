@@ -50,10 +50,8 @@ export const FIXEDW = fixedwMatch ? Math.max(320, Math.min(1440, parseInt(fixedw
 // otherwise be silently inert.
 export const MAGNIFY = /[?&]magnify=1/.test(location.search) || FIXEDW > 0;
 
-// Scale-to-fill is experimental: it couples a CSS scale transform to the VNC
-// resize path, which can race a page's own fit resize. Keep ordinary magnify on
-// the stable 1:1 path; ?fill=1 remains available for deliberate testing.
-export const FILL = MAGNIFY && /[?&]fill=1(?:&|$)/.test(location.search);
+// Scale-to-fill is the fullscreen magnify default. ?fill=0 keeps the 1:1
+export const FILL = MAGNIFY && !/[?&]fill=0(?:&|$)/.test(location.search);
 
 // (There is no ?extentfit flag: fitting the measured content extent was built, shipped
 // behind a flag, and removed — along with the extension's ol/cw measurements that fed it.

@@ -51,10 +51,8 @@ if (!fbCapPinned) {
     })
     .catch(() => {});
 }
-// Scale-to-fill is opt-in (?fill=1). Read here (not imported from the kbd layer)
-// so rfb._screenSize can size the framebuffer to match.
 // Keep in sync with env.js FILL.
-window.__pcnFill = magnify && params.get('fill') === '1';
+window.__pcnFill = magnify && params.get('fill') !== '0';
 // The framebuffer + CDP-emulate target size for a desired viewport, the single
 // source of truth for both rfb._screenSize and kbd/fit.js computeEmulation:
 //   default: clamp each axis at the cap independently — the remote renders at
