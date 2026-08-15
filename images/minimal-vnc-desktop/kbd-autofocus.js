@@ -590,6 +590,14 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     pasteFromDevice: () => pasteFromDevice(),
     flushLocalClipboard,
     raiseKeyboard, dismissKeyboard, parkProxyOffscreen, // hoisted
+    zoomToHitField: (rect) => {
+      // The field rect that won the local tap hit-test is trustworthy enough for
+      // an immediate visual zoom. Waiting for the remote focus heartbeat made
+      // fixed-width sites feel broken on a high-latency tunnel.
+      if (!fit.fieldZoomWorthwhile() || fit.wantReadable() || zoomedToField) return;
+      zoomedToField = true;
+      zoomToField(rect);
+    },
     armDismiss: () => session.armDismiss(), // field-session (created later — deferred)
     getKeyboardActive: () => keyboardActive,
     getKeyboardJustDismissed: () => keyboardJustDismissed,
@@ -600,6 +608,8 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getViewport: () => session.viewport(),
     getLastNonEmptyRectsAt: () => session.lastNonEmptyRectsAt(),
     getRectsTruncated: () => session.rectsTruncated(),
+    getRemoteScrollBottom: () => session.remoteScrollBottom(),
+    getFocusedScrollContainer: () => session.focusedScrollContainer(),
     getProxy: () => proxy,
     getScreenElement: () => screenElement(),
   });

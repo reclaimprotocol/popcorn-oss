@@ -76,6 +76,11 @@ export function createFit({
   // readable; the no-viewport-meta desktop-fit opens zoomed-OUT to the whole page
   // (matches how mobile Safari shows such a page).
   let fitWantReadable = true;
+  // The 980px desktop fallback is browser-standard behavior for a document with
+  // no viewport meta. It may survive that document's own resize-triggered reload,
+  // but it must never survive into a responsive destination, even when that
+  // navigation is same-origin and arrives inside the reload settle window.
+  let fitNoViewport = false;
   // True while the CURRENT fit is the ?fixedw one (a responsive page that overflowed),
   // as opposed to the 980px no-viewport-meta fallback. Both report wantReadable false,
   // so that flag cannot tell them apart — and they want opposite things from the
@@ -86,6 +91,7 @@ export function createFit({
   // desktop-fit doesn't flash its device-width render first (see revealWhenSettled).
   let fitDecisionPending = true;
   let lastPid = null;
+  let lastOrigin = null;
 
   // Fit changes RESIZE the remote viewport, and some pages reload their TOP frame
   // on a width change — which bumps pid (our nav signal) even though the user
@@ -194,8 +200,9 @@ export function createFit({
   let fitPhase2Timer = null;
   // wantReadable (default true) picks the opening zoom: readable/zoomed-in vs the
   // whole-page overview (see fitWantReadable).
-  function enterFit(layoutW, sw, wantReadable, countTowardLatch = true) {
-    const dispW = window.innerWidth, dispH = window.innerHeight;
+  function enterFit(layoutW, sw, wantReadable, countTowardLatch = true, fromNoViewport = false) {
+    const dispW = window.innerWidth;
+    const dispH = window.innerHeight;
     if (!(dispW > 0 && dispH > 0 && layoutW > dispW)) return;
     fitMode = true;
     // Suspend the kiosk-window framebuffer cap (viewer.js rfb._screenSize) for the
@@ -206,6 +213,7 @@ export function createFit({
     fitLayoutH = Math.max(1, Math.round(layoutW * dispH / dispW));
     fitDispW = dispW;
     fitWantReadable = (wantReadable == null) ? true : wantReadable;
+    fitNoViewport = !!fromNoViewport;
     vt.resetTransform(); // fresh baseline; instant compose — ensure NO leftover transform
     // Offer the zoom/fit button only when zooming actually buys something. The
     // button exists for the 980px desktop-fallback fit, whose whole-width view is
@@ -245,6 +253,14 @@ export function createFit({
       // keyboard, so noVNC's scale stays put; the keyboard just overlays and the
       // lift transform shifts content as usual.
       if (s) { s.style.width = dispW + 'px'; s.style.height = dispH + 'px'; }
+      // The phase-1 /emulate request and the RFB SetDesktopSize travel on
+      // separate connections. On a slow tunnel the former can reach the proxy
+      // before Xvnc has grown, so its window-fit check sees the OLD (phone-sized)
+      // screen and Chromium stays a tiny window in the top-left of the new wide
+      // framebuffer. Re-send after phase 2: the VNC resize has now landed, and
+      // the proxy's window watcher will fit Chromium to the actual framebuffer.
+      lastEmulateKey = '';
+      pushEmulate();
       // Default to the READABLE (zoomed-in) view, anchored top-left — the whole-
       // page fit is too small to read on a phone. Button/pinch zooms out to the
       // overview. Let scaleViewport settle a beat first, then apply the zoom.
@@ -268,7 +284,7 @@ export function createFit({
     if (fitPhase2Timer) { clearTimeout(fitPhase2Timer); fitPhase2Timer = null; }
     hideCover();
     setMagEligible(false); updateControlButtons(); // responsive page → no magnify button
-    fitMode = false; fitLayoutW = 0; fitLayoutH = 0; fitDispW = 0; fitWantReadable = true; fitFixed = false;
+    fitMode = false; fitLayoutW = 0; fitLayoutH = 0; fitDispW = 0; fitWantReadable = true; fitNoViewport = false; fitFixed = false;
     try { window.__pcnFitActive = false; } catch (_) {} // re-arm the framebuffer cap
     vt.resetTransform(); // instant compose; order vs the size reset below is immaterial
     const s = getScreenElement();
@@ -296,7 +312,7 @@ export function createFit({
     const lw = fitLayoutW, wr = fitWantReadable;
     if (!(lw > 0)) return;
     dbg('fit re-run on reconnect layout=' + lw + ' pending=' + (pendingFitZoomFresh() ? pendingFitZoom.toFixed(2) : 'none'));
-    enterFit(lw, lw, wr, false); // reconnect re-apply — must not feed the ping-pong latch
+    enterFit(lw, lw, wr, false, fitNoViewport); // reconnect re-apply — must not feed the ping-pong latch
   }
 
   // Rotation while in fit mode. Fit pins #screen to a FIXED px size and derives
@@ -333,7 +349,7 @@ export function createFit({
     }
     dbg('rotate re-fit ' + prevW + '->' + dispW + ' layout=' + lw +
       ' zoom=' + vt.zoomScale().toFixed(2) + '->' + (pendingFitZoom == null ? 'default' : pendingFitZoom.toFixed(2)));
-    enterFit(lw, lw, wr, false); // like a reconnect re-apply: must not feed the ping-pong latch
+    enterFit(lw, lw, wr, false, fitNoViewport); // like a reconnect re-apply: must not feed the ping-pong latch
   }
 
   function emulateURL() { return siblingPath('/emulate'); }
@@ -385,6 +401,7 @@ export function createFit({
         .catch(() => { lastEmulateKey = ''; }); // allow retry on failure
     } catch (_) { lastEmulateKey = ''; }
   }
+
 
   // Fit-to-width detection (top document only — sw/pid are absent from subframe
   // signals). Verbatim from applySignal's pid block: a navigation (new pid)
@@ -439,7 +456,10 @@ export function createFit({
   function handleTopDocSignal(state) {
     if (!(MAGNIFY && typeof state.pid === 'string')) return;
     const navChanged = state.pid !== lastPid;
+    const originChanged = navChanged && typeof state.origin === 'string' &&
+      state.origin.length > 0 && lastOrigin !== null && state.origin !== lastOrigin;
     lastPid = state.pid;
+    if (typeof state.origin === 'string' && state.origin) lastOrigin = state.origin;
     // Real navigation → the old page's rects are gone; drop the stickiness so
     // the new page's empty/refreshed rect set takes effect immediately.
     if (navChanged) onNavChanged();
@@ -455,6 +475,30 @@ export function createFit({
     // navigation: drop the latch and let the new page be judged on its own merits.
     // The toggle history goes too, or the ping-pong counter would re-latch on the
     // very next fit.
+    if (originChanged) {
+      // A reload provoked by our viewport resize stays on the same origin. An
+      // OAuth return can happen inside the settle window, though, and must never
+      // inherit the identity provider's desktop fit. Reset immediately and let
+      // this destination's signal make a fresh fit decision below.
+      dbg('fit unlatched: cross-origin navigation');
+      fitLatched = false;
+      fitToggleTimes = [];
+      if (fitMode) exitFit();
+      // exitFit records its own resize. That resize belongs to the old page, so
+      // it must not suppress this destination's first fit decision.
+      lastFitChangeAt = 0;
+    }
+    if (navChanged && fitMode && fitNoViewport && !state.novp) {
+      // The old document was a Hanyang-style no-viewport page, but this one is
+      // responsive. This is a real destination change, not the old document
+      // reloading because we fitted it. Do this BEFORE the generic settle-window
+      // latch so a same-origin sign-in or redirect cannot retain desktop fit.
+      dbg('fit exit: responsive destination after no-viewport page');
+      fitLatched = false;
+      fitToggleTimes = [];
+      exitFit();
+      lastFitChangeAt = 0;
+    }
     if (fitLatched && navChanged && lastFitChangeAt > 0 && nowMs() - lastFitChangeAt >= FIT_SETTLE_MS) {
       dbg('fit unlatched: real navigation ' + Math.round(nowMs() - lastFitChangeAt) + 'ms after the last fit change');
       fitLatched = false;
@@ -464,7 +508,7 @@ export function createFit({
       // A reload-on-resize page was detected — HOLD fit and ignore pid churn so
       // the full-width view stays put (any exit would re-emulate and trigger
       // yet another reload → the ping-pong that killed the keyboard/refreshed).
-    } else if (lastFitChangeAt > 0 && nowMs() - lastFitChangeAt < FIT_SETTLE_MS) {
+    } else if (!originChanged && lastFitChangeAt > 0 && nowMs() - lastFitChangeAt < FIT_SETTLE_MS) {
       // A pid change THIS soon after our OWN fit resize means the page reloaded
       // BECAUSE of the resize (a reload-on-width-change page), not a user nav.
       // Latch fit so we stop re-emulating; the full-width readable view stays.
@@ -482,7 +526,7 @@ export function createFit({
         // page's desktop layout cannot persist into a normal mobile page.
         if (state.novp && state.vw > 0 && window.innerWidth < NO_VIEWPORT_W) {
           if (fitLayoutW !== NO_VIEWPORT_W) {
-            enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false);
+            enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false, true, true);
           } else {
             dbg('fit retained across no-viewport navigation');
           }
@@ -502,7 +546,7 @@ export function createFit({
       // the view already sits at readable zoom, so tapping a field no longer frames
       // it. Blur is a framebuffer-DENSITY problem, not a zoom-level one; fixing it
       // here just traded one complaint for two.
-      enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false);
+      enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false, true, true);
     } else if (FIXEDW > 0 && state.vw > 0 && overflowsViewport(state)) {
       // A "Pinterest-like" page: RESPONSIVE (it declares width=device-width, so the
       // novp branch above passed it over) yet its content still overflows the phone.

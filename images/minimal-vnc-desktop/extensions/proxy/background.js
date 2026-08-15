@@ -233,7 +233,7 @@ try {
 function mergeFrames() {
   const now = Date.now();
   let editable = false, rect = null, hints = null, sync = null, focusKey = null;
-  let vw = 0, vh = 0, sw = 0, pid = null, novp = false, ol = 0, olw = 0, xf = null;
+  let vw = 0, vh = 0, sw = 0, sb = -1, sc = null, pid = null, origin = null, novp = false, ol = 0, olw = 0, xf = null;
   const rects = [];
   let rtrunc = false; // merged list hit MERGED_MAX_RECTS -> the viewer must not read a miss as off-field
   for (const [key, entry] of kbdFrames) {
@@ -264,7 +264,19 @@ function mergeFrames() {
     // can detect a non-responsive page — the merge previously dropped these.
     if (frameId === 0) {
       if (typeof s.sw === 'number' && s.sw > 0) sw = s.sw;
+      // sb: px to the top document's scroll bottom (content.js docScrollBottom),
+      // feeding the viewer's keyboard-occlusion pan. NOT the `> 0` pattern the
+      // other fields use: sb === 0 ("at the bottom / no scroll") is exactly the
+      // value the feature exists for, so a -1 sentinel marks "absent" instead.
+      if (typeof s.sb === 'number' && s.sb >= 0) sb = s.sb;
+      if (s.sc && typeof s.sc === 'object' &&
+          typeof s.sc.x === 'number' && typeof s.sc.y === 'number' &&
+          typeof s.sc.w === 'number' && typeof s.sc.h === 'number' &&
+          typeof s.sc.b === 'number') sc = s.sc;
       if (typeof s.pid === 'string') pid = s.pid;
+      // Origin is sufficient to recognize a real cross-site navigation, without
+      // forwarding paths or query strings (which may contain OAuth credentials).
+      if (typeof s.origin === 'string' && s.origin) origin = s.origin;
       if (typeof s.novp === 'boolean') novp = s.novp; // no-viewport-meta → desktop-fallback fit
       // ol: left-overflow px (content.js leftOverflow) — content sw cannot see.
       // This merge is a WHITELIST, so a field the content script adds is DROPPED
@@ -286,7 +298,10 @@ function mergeFrames() {
   const merged = { editable, rects, vw, vh };
   if (rtrunc) merged.rtrunc = true; // whitelist field, like every other one below
   if (sw > 0) merged.sw = sw;
+  if (sb >= 0) merged.sb = sb; // 0 must survive the merge — see the whitelist note above
+  if (sc) merged.sc = sc;
   if (pid) merged.pid = pid;
+  if (origin) merged.origin = origin;
   if (novp) merged.novp = true;
   if (ol > 0) merged.ol = ol;
   if (olw > 0) merged.olw = olw;

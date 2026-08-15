@@ -33,6 +33,12 @@ export function createImeInput({
   let proxy = null;              // hidden <input>/<div> the OS IME composes into (set by setup)
   let ecMode = false;            // using the EditContext API (Chromium/Android)
   let editCtx = null;            // the EditContext instance (when ecMode)
+  // EditContext's updateRange offsets are UTF-16 indices into the PRE-update
+  // buffer. Keep that buffer so deletion can use the same grapheme-aware
+  // Backspace count as the other mobile paths. Sending the raw range length
+  // makes a single emoji deletion send two Backspaces and eat the character
+  // before it.
+  let ecText = '';
 
   let lastSentValue = '';        // what we've already forwarded to the remote
   let pendingBackspaceTimer = null; // Indic 'Unidentified' deferred backspace
@@ -493,6 +499,7 @@ export function createImeInput({
       editCtx.updateText(0, editCtx.text.length, '');
       editCtx.updateSelection(0, 0);
     } catch (_) {}
+    ecText = '';
     lastSentValue = '';
   }
 
@@ -539,7 +546,17 @@ export function createImeInput({
       (e.updateRangeEnd - e.updateRangeStart) + ' comp=' + (isComposing ? 1 : 0) +
       ' suppress=' + (ecSuppressed ? 1 : 0));
 
-    const deleted = e.updateRangeEnd - e.updateRangeStart;
+    const rangeStart = Math.max(0, e.updateRangeStart || 0);
+    const rangeEnd = Math.max(rangeStart, e.updateRangeEnd || rangeStart);
+    const deletedUnits = rangeEnd - rangeStart;
+    // `editCtx.text` has already changed by the time this event is delivered;
+    // the removed text exists only in our previous shadow buffer.
+    const deletedText = ecText.slice(rangeStart, rangeEnd);
+    // A browser can deliver the first update after an IME restored its own
+    // buffer, before we have observed that buffer. Preserve the old raw-range
+    // fallback for that one unobservable case; once shadow text is available,
+    // use its grapheme-aware count.
+    const deleted = deletedText ? backspaceCountFor(deletedText) : deletedUnits;
 
     // A deferred backspace (onECKeyDown fired on Unidentified/Backspace, unsure if
     // it was a delete or a character) is CANCELLED by a following textupdate that
@@ -550,7 +567,7 @@ export function createImeInput({
     // textupdate. Those must NOT cancel the deferred backspace — otherwise the first
     // few presses delete SwiftKey's phantom word and never reach the remote (you had
     // to press backspace several times before it took). Let the deferred one fire.
-    const phantomDelete = !isComposing && (!e.text || e.text.length === 0) && deleted === 0;
+    const phantomDelete = !isComposing && (!e.text || e.text.length === 0) && deletedUnits === 0;
     if (pendingBackspaceTimer !== null && !phantomDelete) { clearTimeout(pendingBackspaceTimer); pendingBackspaceTimer = null; }
 
     // Re-grab: SwiftKey/Samsung commit each key as ordinary text (comp=0), then
@@ -581,6 +598,7 @@ export function createImeInput({
     if (isComposing && (ecSuppressed || commitOnly())) {
       ecSuppressed = true;
       if (echo.allowed()) { echo.setComposing(stripCtl(editCtx.text)); echo.render(); }
+      ecText = editCtx.text;
       return; // no send, no reset — editCtx.text accumulates the full composition
     }
 
@@ -609,6 +627,7 @@ export function createImeInput({
     // an empty-buffer Backspace surfaces via keydown. Never reset during
     // composition — mutating the buffer cancels the IME.
     if (!isComposing) resetEC();
+    else ecText = editCtx.text;
   }
 
   function onECCompositionEnd() {

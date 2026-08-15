@@ -16,7 +16,7 @@
 
 import { isAndroid, nowMs } from './env.js';
 import { dbg } from './diag.js';
-import { hostGeometryActive } from './host-bridge.js';
+import { hostGeometry, hostGeometryActive } from './host-bridge.js';
 
 export function createKbdDetect({
   getKeyboardActive, setKeyboardActive, getKeyboardOpening, getProxy,
@@ -150,7 +150,20 @@ export function createKbdDetect({
   // state — and the Android back-button dismiss — is invisible, wedging
   // keyboardActive permanently. This watches innerHeight vs a learned baseline.
   function handleLayoutResize() {
-    if (hostGeometryActive()) return; // host geometry owns the state
+    // Stand down only when the host reports a REAL overlay occlusion — not
+    // merely because host geometry is fresh. A Firefox-Android top-level host
+    // resizes its layout viewport for the keyboard, so its measure() reads
+    // occluded≈0 and it heartbeats that forever; suppressing on freshness alone
+    // blinded the one detector that CAN see the keyboard in that cell (the
+    // viewer's own innerHeight shrinks with the embedder's). The lift-driving
+    // detectors below keep the full-freshness suppression — they measure the
+    // same overlay quantity the host does and would double-drive it; this one
+    // measures local layout reflow, which the host structurally cannot see.
+    // Bonus: on a both-shrink WebView (host sees occlusion AND the layout
+    // reflowed) layoutResizeMode can now latch, and applyLift's existing
+    // layout-resize guard then blocks the host-driven lift's double-shift.
+    const hg = hostGeometry();
+    if (hg && hg.occludedBottom > 0) return;
     // Chrome/iOS resize the VISUAL viewport, so a real VV delta means another
     // detector owns this — stay dormant to avoid double-driving the state.
     if (window.visualViewport && (window.innerHeight - window.visualViewport.height) > 50) return;

@@ -29,13 +29,59 @@ export function createTap({
   onDialogSheet,                    // JS dialog sheet (kbd/dialog.js) — own UI, not the stream
   flushLocalClipboard,              // clipboard
   raiseKeyboard, dismissKeyboard, armDismiss, parkProxyOffscreen, // core (hoisted)
+  zoomToHitField,                    // immediate legacy-page field zoom (core)
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
   getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
+  getRemoteScrollBottom, getFocusedScrollContainer,
   getProxy, getScreenElement,
 }) {
   let remoteTouchActive = false; // a touch 'start' is currently forwarded to the remote
   let lastTouchAt = 0;           // last real touch — distinguishes compat-mouse events
   let lastRemoteScrollAt = 0;    // when a forwarded remote scroll/drag last moved (rects lag it)
+
+  // Keyboard-pan gesture (the occluded-content reachability fix). With an
+  // overlay keyboard up at zoom 1, the remote page's scroll range runs out with
+  // the last screenful still behind the keys — the remote viewport was sized
+  // for no keyboard, and resizing it is the re-emulate ping-pong fit.js avoids.
+  // clampPan already extends the local pan range by the occlusion
+  // (vt.kbdPanInset); this state machine is what lets a finger reach it at
+  // zoom 1, where a single finger otherwise forwards straight to the remote:
+  //
+  //   touchstart   DEFER (don't forward yet) — kbdPan = {mode:'pending'}
+  //   first move   route by direction: drag-up goes LOCAL only when the remote
+  //                is believed at its scroll bottom (remoteAtBottom), drag-down
+  //                goes LOCAL only while extension budget is spent (panY < 0) —
+  //                every other drag forwards to the remote exactly as before,
+  //                with the touch 'start' replayed at the ORIGINAL point so the
+  //                remote sees the full drag distance
+  //   local drag   vt pan, clamped; when the finger outruns a clamp edge by
+  //                HANDOFF_SLOP the gesture HANDS OFF to the remote (one-way)
+  //   touchend     no move = a tap: synthesize the remote tap like the zoomed
+  //                path does (the touch was never forwarded)
+  //
+  // Ordering is native: page scrolls first, the local pan covers only the final
+  // keyboard-height sliver past the remote's scroll bottom.
+  let kbdPan = null;             // { mode:'pending'|'local'|'remote', x0, y0, panY0, yAtLocal }
+  const KBD_PAN_SLOP = 6;        // px before the route decision (direction is noise below this)
+  const HANDOFF_SLOP = 12;       // px of clamp overrun before a local drag hands off remote
+
+  // Is the remote page at (or without) vertical scroll? sb === 0 covers both
+  // "scrolled to the bottom" and "no scroll at all" (the login-form case, where
+  // it is correct from the first report with no staleness window). Deliberately
+  // NO freshness check against lastRemoteScrollAt: a stale-sb misroute to local
+  // costs one bounded slide before the handoff forwards to the remote anyway,
+  // while a staleness gate that reads its own dead swipes as scrolls can wedge
+  // routing at the real bottom, where no scroll event ever fires to refresh sb.
+  function remoteAtBottom(touch) {
+    const sc = getFocusedScrollContainer ? getFocusedScrollContainer() : null;
+    const point = touch && screenToRemote(touch.clientX, touch.clientY);
+    if (sc && point && point.rx >= sc.x && point.rx <= sc.x + sc.w &&
+        point.ry >= sc.y && point.ry <= sc.y + sc.h) {
+      return typeof sc.b === 'number' && sc.b <= 2;
+    }
+    const sb = getRemoteScrollBottom ? getRemoteScrollBottom() : null;
+    return typeof sb === 'number' && sb <= 2;
+  }
 
   const TAP_MAX_MS = 350;
   const LONGPRESS_PASTE_MS = 500; // hold this long on a text field -> paste pill
@@ -106,7 +152,7 @@ export function createTap({
         // transform zooms on top). Cancel any remote touch the first finger began.
         cancelPendingMove();
         if (remoteTouchActive) { sendTouch('cancel', []); remoteTouchActive = false; }
-        tapStart = null; vt.clearPan();
+        tapStart = null; kbdPan = null; vt.clearPan();
         beginPinch(e);
         e.stopPropagation();
         if (e.cancelable) e.preventDefault();
@@ -120,7 +166,7 @@ export function createTap({
         cancelPendingMove();
         sendTouch('start', collectPoints(e));
         remoteTouchActive = true;
-        tapStart = null;
+        tapStart = null; kbdPan = null;
         e.stopPropagation();
         if (e.cancelable) e.preventDefault();
         return;
@@ -131,6 +177,20 @@ export function createTap({
           // Zoomed in: one finger PANS the view locally (no remote drag).
           beginPan(e);
           e.stopPropagation();
+          if (e.cancelable) e.preventDefault();
+        } else if (getKeyboardActive() && vt.kbdPanInset() > 0) {
+          // Overlay keyboard up at zoom 1: DEFER — the route (local keyboard-pan
+          // vs remote forward) needs the drag direction, known only at the first
+          // move. A no-move touch is a tap and is synthesized on touchend, the
+          // same way the zoomed path synthesizes its taps. kbdPanInset is 0 in
+          // layout-resize mode and for floating keyboards, so those keep the
+          // immediate-forward path below untouched.
+          vt.cancelFling(); // grabbing again stops an in-flight release glide
+          const t0 = e.touches && e.touches[0];
+          if (t0) kbdPan = { mode: 'pending', x0: t0.clientX, y0: t0.clientY, panY0: 0, yAtLocal: 0, vy: null, lastY: 0, lastT: 0 };
+          e.stopPropagation();
+          // preventDefault keeps the proxy focused, exactly as the forward path
+          // below does while the keyboard is up.
           if (e.cancelable) e.preventDefault();
         } else {
           cancelPendingMove();
@@ -156,12 +216,79 @@ export function createTap({
     tapStart = { t: nowMs(), x: t.clientX, y: t.clientY, target: e.target, moved: false };
   }
 
+  // One keyboard-pan move. Owns the route decision (first move past the slop)
+  // and the one-way local->remote handoff. Handing off nulls kbdPan and starts
+  // the remote touch, so every later move takes the ordinary remoteTouchActive
+  // path — the forwarded-gesture machinery (queueMove throttling, flush on end,
+  // noteRemoteScroll, motion quality) is reused, never duplicated.
+  function handleKbdPanMove(e, t0) {
+    const dx = t0.clientX - kbdPan.x0, dy = t0.clientY - kbdPan.y0;
+    if (kbdPan.mode === 'pending') {
+      if (Math.abs(dx) < KBD_PAN_SLOP && Math.abs(dy) < KBD_PAN_SLOP) return;
+      if (tapStart) tapStart.moved = true;
+      const vertical = Math.abs(dy) >= Math.abs(dx);
+      // Drag-up reveals below: local only once the remote can't scroll further.
+      // Drag-down reveals above: local only while extension budget is spent —
+      // unwind it before the remote scrolls back up. Horizontal drags (and
+      // everything else) belong to the remote (carousels, sliders).
+      const local = vertical &&
+        ((dy < 0 && remoteAtBottom(t0)) || (dy > 0 && vt.panY() < -0.5));
+      if (!local) {
+        handKbdPanToRemote(e, kbdPan.x0, kbdPan.y0);
+        return;
+      }
+      kbdPan.mode = 'local';
+      kbdPan.panY0 = vt.panY();
+      kbdPan.yAtLocal = t0.clientY;
+      beginPan(e);
+      return;
+    }
+    // mode === 'local': pan, clamped by clampPan's extended range; when the
+    // finger outruns a clamp edge the drag has content the pan can't reach —
+    // hand the rest of the gesture to the remote (rubber-band at a real end).
+    updatePan(e);
+    if (tapStart) tapStart.moved = true;
+    // Track exit velocity (px/ms, finger == panY at zoom 1) for the release
+    // glide — a short EMA so one jittery sample can't dominate the flick.
+    const now = nowMs();
+    if (kbdPan.lastT && now > kbdPan.lastT) {
+      const inst = (t0.clientY - kbdPan.lastY) / (now - kbdPan.lastT);
+      kbdPan.vy = kbdPan.vy == null ? inst : kbdPan.vy * 0.6 + inst * 0.4;
+    }
+    kbdPan.lastY = t0.clientY; kbdPan.lastT = now;
+    const desired = kbdPan.panY0 + (t0.clientY - kbdPan.yAtLocal);
+    if (Math.abs(desired - vt.panY()) > HANDOFF_SLOP) {
+      vt.clearPan();
+      handKbdPanToRemote(e, t0.clientX, t0.clientY);
+    }
+  }
+  // Start the remote touch mid-gesture. `sx, sy` is where the remote's finger
+  // goes DOWN: the original touch point for a routed-remote gesture (so the
+  // remote sees the full drag distance), the current point for a handoff (the
+  // local pan already consumed the earlier travel).
+  function handKbdPanToRemote(e, sx, sy) {
+    kbdPan = null;
+    cancelPendingMove();
+    const sp = touchToRemote(sx, sy);
+    if (!sp) return;
+    sendTouch('start', [sp]);
+    remoteTouchActive = true;
+    queueMove(collectPoints(e));
+  }
+
   function onTouchMove(e) {
     lastTouchAt = nowMs();
     if (onMagButton(e.target)) return;
     if (onDialogSheet && onDialogSheet(e.target)) return;
     if (isTouch) {
       if (vt.pinchActive()) { updatePinch(e); e.stopPropagation(); if (e.cancelable) e.preventDefault(); return; }
+      if (kbdPan) {
+        const t0 = e.touches && e.touches[0];
+        if (t0) handleKbdPanMove(e, t0);
+        e.stopPropagation();
+        if (e.cancelable) e.preventDefault();
+        return;
+      }
       if (vt.panActive()) {
         updatePan(e);
         if (tapStart) {
@@ -170,6 +297,14 @@ export function createTap({
                      Math.abs(pt.clientY - tapStart.y) > TAP_MAX_MOVE_PX)) tapStart.moved = true;
         }
         e.stopPropagation(); if (e.cancelable) e.preventDefault();
+        return;
+      }
+      if (TOUCH_INPUT && getKeyboardActive() && vt.zoomScale() > 1) {
+        // Match the start-side lock above. Mark the gesture as moved so its end
+        // cannot be mistaken for a tap and activate whatever sits underneath.
+        if (tapStart) tapStart.moved = true;
+        e.stopPropagation();
+        if (e.cancelable) e.preventDefault();
         return;
       }
       if (TOUCH_INPUT && remoteTouchActive) {
@@ -195,6 +330,21 @@ export function createTap({
     // remote->local clipboard write to succeed.
     flushLocalClipboard();
     if (isTouch) {
+      // A released LOCAL keyboard-pan coasts to rest with the finger's exit
+      // velocity (a finger-tracked pan that stops dead feels un-native). It was
+      // a drag, not a tap, so settle here and return — before the generic
+      // panActive branch clears it with no glide. A 'pending' kbd-pan (no move)
+      // is a deferred tap and must fall through to the synthesis below, so only
+      // 'local' is consumed here.
+      if (kbdPan && kbdPan.mode === 'local') {
+        const vy = kbdPan.vy;
+        kbdPan = null;
+        vt.clearPan();
+        if (typeof vy === 'number') vt.flingPanY(vy);
+        e.stopPropagation();
+        tapStart = null;
+        return;
+      }
       if (vt.pinchActive()) {
         // A finger lifted mid-pinch. If one remains AND we're zoomed in magnify,
         // continue as a pan; otherwise settle the pinch.
@@ -226,6 +376,12 @@ export function createTap({
     }
     const start = tapStart;
     tapStart = null;
+    // A keyboard-pan gesture that never left 'pending' is a deferred TAP — the
+    // touch was never forwarded, so the synthesis below must cover it (a local
+    // 'local' drag returns via start.moved; a handoff already nulled kbdPan and
+    // ended through the remote branch above).
+    const kp = kbdPan;
+    kbdPan = null;
     if (!start) return;
     if (start.moved) return; // a drag/scroll/pan — not a tap
     if (e.touches && e.touches.length > 0) return;
@@ -248,25 +404,29 @@ export function createTap({
       return;
     }
     if (!withinScreen(start.target) || !withinScreen(e.target)) return;
-    // Magnify + zoomed: we intercepted the touch for panning, so synthesize the
-    // remote tap. Desktop mode leaves single-finger to noVNC, which already
-    // clicked at the transform-adjusted point.
-    if (vt.zoomScale() > 1 && TOUCH_INPUT && !inCrossOriginFrame(t.clientX, t.clientY)) {
+    // Magnify + zoomed (or a deferred keyboard-pan touch): we intercepted the
+    // touch for panning, so synthesize the remote tap. Desktop mode leaves
+    // single-finger to noVNC, which already clicked at the transform-adjusted
+    // point.
+    if ((vt.zoomScale() > 1 || kp) && TOUCH_INPUT && !inCrossOriginFrame(t.clientX, t.clientY)) {
       const pt = touchToRemote(t.clientX, t.clientY);
       if (pt) { sendTouch('start', [pt]); sendTouch('end', []); }
     }
     // The touch above was cancelled rather than ended inside a cross-origin iframe
     // (see the touchend branch), so the activation is this click.
     //
-    // Preferred path is VNC: an RFB pointer event moves the real X pointer, so
-    // Chromium sees an OS-level click with nothing synthesized — the same path a
-    // desktop mouse takes, and the one reCAPTCHA was observed to accept. Falls back
-    // to the CDP compat click on /input when RFB is unavailable (between
-    // reconnects, or if a noVNC upgrade moves the private method it uses).
+    // Keep the cancel + compatibility click on the SAME /input -> CDP command
+    // queue. Sending the click over VNC races the touchCancel on a second socket:
+    // the reCAPTCHA grid then receives a press from one cursor position and a
+    // release from another, so quick tile taps become missed drags. The proxy
+    // serializes cancel, mousePressed and mouseReleased in order. VNC remains a
+    // last-resort fallback only while the /input socket is unavailable.
     if (TOUCH_INPUT && inCrossOriginFrame(t.clientX, t.clientY)) {
-      if (!(sendPointerClick && sendPointerClick(t.clientX, t.clientY))) {
-        const cp = touchToRemote(t.clientX, t.clientY);
-        if (cp) { dbg('compat click via CDP (rfb unavailable)'); sendTouch('click', [cp]); }
+      const cp = touchToRemote(t.clientX, t.clientY);
+      if (cp && sendTouch('click', [cp])) {
+        dbg('compat click via ordered CDP');
+      } else if (sendPointerClick && sendPointerClick(t.clientX, t.clientY)) {
+        dbg('compat click via VNC (input unavailable)');
       }
     }
     // Tap: the remote click/focus is produced by the (real or synthetic) touch
@@ -334,18 +494,25 @@ export function createTap({
     return false;
   }
 
-  function hitTest(sx, sy) {
-    if (!getInputRects().length || !getViewport()) return 'unknown';
+  function hitRectAt(sx, sy) {
+    if (!getInputRects().length || !getViewport()) return null;
     const m = screenToRemote(sx, sy);
-    if (!m) return 'unknown';
+    if (!m) return null;
     const rx = m.rx, ry = m.ry;
     const pad = 6; // forgiveness for small fields / imprecise touches
     for (const r of getInputRects()) {
       if (rx >= r.x - pad && rx <= r.x + r.w + pad &&
           ry >= r.y - pad && ry <= r.y + r.h + pad) {
-        return 'hit';
+        return r;
       }
     }
+    return null;
+  }
+
+  function hitTest(sx, sy) {
+    if (!getInputRects().length || !getViewport()) return 'unknown';
+    const r = hitRectAt(sx, sy);
+    if (r) return 'hit';
     // A forwarded remote scroll just happened but our rects still predate it —
     // they lag by the extension report (250ms/1500ms) + tunnel RTT, wide on 3G.
     // Downgrade the miss to 'unknown' so a tap on a now-visible field isn't read
@@ -368,7 +535,8 @@ export function createTap({
     lastTapAt = nowMs();
     lastTapX = x; lastTapY = y; // raiseKeyboard positions the proxy here
 
-    const hit = hitTest(x, y);
+    const hitRect = hitRectAt(x, y);
+    const hit = hitRect ? 'hit' : hitTest(x, y);
     // Only a CONFIRMED miss (tap inside our rect coverage but on no input) blocks
     // recovery. 'unknown' (no coverage — cross-origin/shadow field) must still
     // allow recovery, so it counts as not-a-miss.
@@ -387,6 +555,11 @@ export function createTap({
                 Math.round(cr.width) + 'x' + Math.round(cr.height) : ' cv=none'));
     }
     if (hit === 'hit') {
+      // The rect stream is already local and corresponds to the field under
+      // this exact tap. Legacy desktop-fit pages must not wait for the remote
+      // focus signal (which can be many seconds behind over a tunnel) before
+      // becoming readable. The later focus signal merely confirms this move.
+      if (hitRect && zoomToHitField) zoomToHitField(hitRect);
       // Re-raise (fixes the Android wedge): the keyboard is down but the remote
       // STILL reports an editable focused (remoteFocusKey set) — a prior local
       // dismiss (Android back/swipe-down, watchdog, miss-tap) never blurred the
@@ -465,6 +638,7 @@ export function createTap({
         e.stopPropagation();
       }
       tapStart = null;
+      kbdPan = null;
     }, { capture: true, passive: true });
 
     // Physical mouse input in magnify is owned by noVNC's wrapped pointer entry

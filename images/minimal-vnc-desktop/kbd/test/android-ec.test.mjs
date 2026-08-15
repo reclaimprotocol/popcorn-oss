@@ -32,6 +32,18 @@ test('range deletion translates to that many Backspaces', async () => {
   assert.deepEqual(rfb.tapped(), [BS, BS]);
 });
 
+test('an EditContext range deletion removes one emoji with one Backspace', async () => {
+  const { rfb, ec } = await ecViewer();
+  // Keep the EC buffer alive during composition, then remove the surrogate pair.
+  fireEC(ec, 'compositionstart', {});
+  ec.text = 'A😀';
+  fireEC(ec, 'textupdate', { text: 'A😀', updateRangeStart: 0, updateRangeEnd: 0 });
+  rfb.clearKeys();
+  ec.text = 'A';
+  fireEC(ec, 'textupdate', { text: '', updateRangeStart: 1, updateRangeEnd: 3 });
+  assert.deepEqual(rfb.tapped(), [BS]);
+});
+
 test('SwiftKey re-compose reconcile: committed word is deleted before the re-grab replays it', async () => {
   const { rfb, ec } = await ecViewer();
   // SwiftKey commits 'test' as ordinary text (non-composing)…
