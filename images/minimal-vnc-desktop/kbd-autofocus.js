@@ -275,7 +275,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     // decides keyboard layout, capitalisation and the address-field space filter.
     if (h && KBD_DEBUG) {
       dbg('hints tag=' + h.tag + ' type=' + h.type + ' im=' + h.im + ' ac=' + h.ac +
-          ' pat=' + h.pat + ' name=' + h.name + ' nm=' + h.nm + ' ph=' + h.ph +
+          ' pat=' + h.pat + ' nm=' + h.nm + ' ph=' + h.ph +
           ' -> literal=' + h.literal + ' nospace=' + h.nospace +
           ' cap=' + h.cap + ' correct=' + h.correct);
     }

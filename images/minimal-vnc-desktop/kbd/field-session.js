@@ -182,7 +182,7 @@ export function createFieldSession({
     if (key !== spaceRepairKey) { spaceRepairKey = key; spaceRepairs = 0; }
     if (spaceRepairs >= SPACE_REPAIR_MAX) return;
     spaceRepairs++;
-    dbg('trailing-space repair vlen=' + (hasVal ? sync.val.length : sync.len) + ' try=' + spaceRepairs);
+    dbg('trailing-space repair len=' + (hasVal ? sync.val.length : sync.len) + ' try=' + spaceRepairs);
     sendSpecialKey('Backspace');
     // Keep our local baseline in step with the remote we just edited, or the next
     // diff re-adds the space (mirror: the proxy holds the whole field, so adopt
@@ -231,10 +231,7 @@ export function createFieldSession({
     if (state.editable || getKeyboardActive()) {
       dbg('SIG editable=' + state.editable + ' fk=' + (state.focusKey || '-') +
           ' kbd=' + getKeyboardActive() + ' dtap=' + (tap.lastTapAt() ? Math.round(nowMs() - tap.lastTapAt()) : '-') +
-          ' rects=' + (Array.isArray(state.rects) ? state.rects.length : '?') +
-          // Whether the authoritative field text is reaching us at all, and its
-          // length — the trailing-space repair is blind without it. Length only.
-          ' val=' + (state.sync && typeof state.sync.val === 'string' ? state.sync.val.length : '-'));
+          ' rects=' + (Array.isArray(state.rects) ? state.rects.length : '?'));
     }
 
     // rects/viewport ride on every message (editable or not) — keep them fresh

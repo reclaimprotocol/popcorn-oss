@@ -238,7 +238,7 @@ export function createDialog({ sendReply }) {
     document.body.appendChild(wrap);
     // Normal tier: this is the load-bearing question on a device — did the sheet
     // render at all, with how many accounts, and in which layout. Shape only.
-    dbg('fedcm sheet n=' + accounts.length + ' state=' + (d.loginState || '-') +
+    dbg('fedcm sheet n=' + accounts.length + ' state=' + (d.loginState ? 1 : 0) +
         ' w=' + (window.innerWidth || 0) + ' sheet=' + ((window.innerWidth || 0) < NARROW_PX ? 1 : 0));
   }
 

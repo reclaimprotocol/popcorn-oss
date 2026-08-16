@@ -146,7 +146,7 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
   function sendText(text) {
     if (!text) return;
     const rfb = getRfb();
-    if (!rfb || !getRfbReady()) { dbg('sendText queued (rfb down) chars=' + text.length); echoAppend(text); enqueueSend({ kind: 'text', payload: text }); return; }
+    if (!rfb || !getRfbReady()) { dbg('sendText queued (rfb down) len=' + text.length); echoAppend(text); enqueueSend({ kind: 'text', payload: text }); return; }
     // A focus move is a fresh field even when the page reuses the same focusKey.
     const fk = getFocusKey ? getFocusKey() : null;
     if (fk !== lastSendFk) { lastSendFk = fk; noteFieldReset(); }
@@ -203,7 +203,7 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
     const keysym = SPECIAL_KEYSYMS[name];
     if (!keysym) return;
     const rfb = getRfb();
-    if (!rfb || !getRfbReady()) { dbg('sendKey queued (rfb down) ' + name + 'x' + count); if (name === 'Backspace') echoBackspace(count); enqueueSend({ kind: 'special', payload: { name, count } }); return; }
+    if (!rfb || !getRfbReady()) { dbg('sendKey queued (rfb down)'); if (name === 'Backspace') echoBackspace(count); enqueueSend({ kind: 'special', payload: { name, count } }); return; }
     dbgv('sendKey ' + name + 'x' + count);
     if (count > 1) {
       sendBatched(() => { for (let i = 0; i < count; i++) { try { rfb.sendKey(keysym, name); } catch (_) {} } });

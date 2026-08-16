@@ -99,6 +99,26 @@ function installPointerTransformFix(instance) {
 if (magnify) screen.classList.add('magnify');
 dbg('boot mod-ready magnify=' + (magnify ? 1 : 0));
 
+let lastViewTrace = 0;
+function traceView(reason) {
+  const now = performance.now();
+  if (now - lastViewTrace < 250) return;
+  lastViewTrace = now;
+  const canvas = screen && screen.querySelector('canvas');
+  const vv = window.visualViewport;
+  dbg('view ' + reason +
+    ' win=' + window.innerWidth + 'x' + window.innerHeight +
+    ' vv=' + (vv ? Math.round(vv.width) + 'x' + Math.round(vv.height) : '-') +
+    ' canvas=' + (canvas ? canvas.width + 'x' + canvas.height : '-') +
+    ' connected=' + (connected ? 1 : 0));
+}
+window.addEventListener('resize', () => traceView('resize'));
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', () => traceView('vv-resize'));
+  window.visualViewport.addEventListener('scroll', () => traceView('vv-scroll'));
+}
+document.addEventListener('visibilitychange', () => traceView(document.hidden ? 'hidden' : 'visible'));
+
 // Cold-start timing: mark milestones so the tunnel-load split (handshake ->
 // first pixels -> resize -> reveal) is readable from the server /klog, no
 // on-device capture. Reads a few canvas pixels every 100ms until real content

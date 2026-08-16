@@ -129,7 +129,7 @@ export function createClipboard({
     try { text = (e.clipboardData || window.clipboardData).getData('text/plain') || ''; } catch (_) {}
     if (!text) return;
     e.preventDefault();
-    dbg('paste chars=' + text.length);
+    dbg('paste len=' + text.length);
     insertPastedText(text);
     clearProxy();
   }

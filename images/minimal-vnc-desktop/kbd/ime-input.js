@@ -454,7 +454,7 @@ export function createImeInput({
 
   function onCompositionEnd(e) {
     isComposing = false;
-    dbg('composition end dlen=' + (e && e.data ? e.data.length : 0));
+    dbg('composition end len=' + (e && e.data ? e.data.length : 0));
     echo.setComposing(''); echo.render(); // committed; sendText below appends it
     if (isAndroid) {
       // Commit-only mode withheld the whole composition; flush the committed
@@ -535,7 +535,7 @@ export function createImeInput({
       proxy.setSelectionRange(v.length, v.length);
     } catch (_) {}
     lastSentValue = v;
-    dbg('mirror seed vlen=' + v.length);
+    dbg('mirror seed len=' + v.length);
     return true;
   }
 
@@ -585,7 +585,7 @@ export function createImeInput({
     if (isComposing && !ecComposeReconciled && editCtx.text) {
       ecComposeReconciled = true;
       if (deleted === 0 && ecCommittedWord && e.text === editCtx.text) {
-        dbg('EC re-compose reconcile: drop committed word len=' + editCtx.text.length);
+        dbg('EC re-compose reconcile len=' + editCtx.text.length);
         sendSpecialKey('Backspace', backspaceCountFor(editCtx.text));
         ecCommittedWord = false;
       }

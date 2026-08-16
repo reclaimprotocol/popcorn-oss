@@ -1,14 +1,14 @@
 // diag.js — keyboard diagnostics (server log + optional on-screen overlay).
 //
 // dbg(line) records a STRUCTURAL keyboard event — state / type / length / flag
-// only, NEVER field text. dbgv(line) is the VERBOSE tier (per-keystroke /
-// per-move).
+// only, NEVER field text or individual typing events. Aggregate batch lengths
+// are logged only where they diagnose IME reconciliation or paste delivery.
 //
 // BOTH TIERS ARE OFF UNLESS EXPLICITLY ENABLED. Shipping was opt-OUT before,
 // which meant every real session streamed a keystroke-by-keystroke trace of
 // itself into the pod log — noise in production and a privacy surface that
 // nobody had asked for. Opt in per session:
-//   ?kbdlog=1   (or localStorage pcnKbdLog=1)    ship to the proxy's /klog
+//   ?diag=1 or ?kbdlog=1 (or localStorage pcnKbdLog=1) ship to the proxy's /klog
 //   ?kbddebug=1 (or localStorage pcnKbdDebug=1)  on-screen overlay + console,
 //                                                and implies kbdlog
 // Flags are read once at load, so a session cannot start logging halfway.
@@ -17,7 +17,7 @@ import { nowMs, siblingPath } from './env.js';
 
 function safeLS(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
 export const KBD_DEBUG = /[?&]kbddebug=1/.test(location.search) || safeLS('pcnKbdDebug') === '1';
-const KBD_LOG = KBD_DEBUG || /[?&]kbdlog=1/.test(location.search) || safeLS('pcnKbdLog') === '1';
+const KBD_LOG = KBD_DEBUG || /[?&](?:diag|kbdlog)=1/.test(location.search) || safeLS('pcnKbdLog') === '1';
 
 // Per-page-load id so a device's lines group together in the server log.
 const KBD_SID = (Math.floor(Math.random() * 1e9)).toString(36) +
@@ -26,7 +26,6 @@ const klogURL = siblingPath('/klog');
 const KLOG_FLUSH_MS = 1500, KLOG_BATCH = 40, KLOG_QUEUE_MAX = 400;
 let klogQueue = [];
 let klogTimer = null;
-let klogUAsent = false;
 
 function klogFlush() {
   if (klogTimer) { clearTimeout(klogTimer); klogTimer = null; }
@@ -34,7 +33,6 @@ function klogFlush() {
   const lines = klogQueue;
   klogQueue = [];
   const payload = { sid: KBD_SID, lines: lines };
-  if (!klogUAsent) { payload.ua = (navigator.userAgent || ''); klogUAsent = true; }
   try {
     const body = JSON.stringify(payload);
     // sendBeacon survives unload and needs no preflight; fetch is the fallback.
@@ -81,8 +79,8 @@ export function dbg(line) {
     dbgEl.textContent = dbgLog.slice(-16).join('\n');
   } catch (_) {}
 }
-// Verbose (high-frequency) tier: per-keystroke / per-move, debug flag only.
-export function dbgv(line) { if (KBD_DEBUG) dbg(line); }
+// Per-keystroke diagnostics are intentionally disabled, including in debug mode.
+export function dbgv() {}
 // Never let a typed character reach the logs: named keys (Backspace, Enter,
 // Arrow*, Unidentified, Process…) pass through; a single printable char is
 // redacted so log lines can't reconstruct typed text even in debug mode.
