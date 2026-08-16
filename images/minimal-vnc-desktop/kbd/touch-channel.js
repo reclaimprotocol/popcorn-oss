@@ -33,6 +33,13 @@ const MOVE_INTERVAL_SLOW_MS = 100;  // ~10fps floor on a genuinely slow link:
 export function createTouchChannel({ getRfb, getScreenElement, getViewport, getRemoteTouchActive, noteRemoteScroll }) {
   let inputSock = null;
   let inputReconnectTimer = null;
+  let gestureSent = 0;
+  let gestureDropped = 0;
+  let gestureCoalesced = 0;
+
+  function finishGesture(type) {
+    dbg('touch ' + type + ' sent=' + gestureSent + ' dropped=' + gestureDropped + ' coalesced=' + gestureCoalesced);
+  }
 
   // A REAL click, over VNC rather than CDP.
   //
@@ -83,7 +90,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
       rfb._handleMouseButton(ex, ey, 0);
     } catch (_) { return false; }
     finally { rfb.__pcnPointerCoordsAreLayout = false; }
-    dbg('x11 click ' + Math.round(ex) + ',' + Math.round(ey));
+    dbg('x11 click');
     return true;
   }
 
@@ -108,8 +115,26 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     s.onerror = down;
   }
   function sendTouch(type, points) {
-    if (!inputSock || inputSock.readyState !== WebSocket.OPEN) return false;
-    try { inputSock.send(JSON.stringify({ t: type, points })); return true; } catch (_) { return false; }
+    if (type === 'start') {
+      gestureSent = 0;
+      gestureDropped = 0;
+      gestureCoalesced = 0;
+    }
+    if (!inputSock || inputSock.readyState !== WebSocket.OPEN) {
+      gestureDropped++;
+      if (type === 'end' || type === 'cancel') finishGesture(type);
+      return false;
+    }
+    try {
+      inputSock.send(JSON.stringify({ t: type, points }));
+      gestureSent++;
+      if (type === 'end' || type === 'cancel') finishGesture(type);
+      return true;
+    } catch (_) {
+      gestureDropped++;
+      if (type === 'end' || type === 'cancel') finishGesture(type);
+      return false;
+    }
   }
 
   // Map a screen point to remote framebuffer px (= remote CSS px in magnify,
@@ -185,6 +210,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     // Only a FORWARDED remote scroll/drag shifts the remote doc (and thus stales
     // our rects); a local pan (zoomScale>1) leaves remoteTouchActive false.
     if (TOUCH_INPUT && getRemoteTouchActive()) noteRemoteScroll();
+    if (pendingMovePts) gestureCoalesced++;
     pendingMovePts = points;
     if (moveTimer) return;
     moveTimer = setTimeout(flushMove, Math.max(0, moveIntervalMs() - (nowMs() - lastMoveAt)));

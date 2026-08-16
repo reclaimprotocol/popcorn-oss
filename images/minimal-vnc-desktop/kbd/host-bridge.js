@@ -65,6 +65,11 @@ const HOST_GEOM_STALE_MS = 8000;
 
 let geom = null;      // { visibleHeight, occludedBottom, at }
 let handlers = null;  // installed dispatch table
+let lifecycleAckHandler = null;
+
+export function onLifecycleAck(handler) {
+  lifecycleAckHandler = typeof handler === 'function' ? handler : null;
+}
 
 /**
  * Last host-reported viewport geometry, or null when none has arrived (or the
@@ -193,6 +198,9 @@ function onMessage(e) {
       return;
     case 'POPCORN_PASTE':
       if (typeof d.text === 'string' && d.text && handlers.onPaste) handlers.onPaste(d.text);
+      return;
+    case 'POPCORN_HOST_ACK':
+      if (Number.isInteger(d.seq) && d.seq > 0 && lifecycleAckHandler) lifecycleAckHandler(d.seq);
       return;
     default:
       return;

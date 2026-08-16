@@ -15,7 +15,7 @@
 import RFB from './core/rfb.js';
 import './kbd-autofocus.js';          // side-effect: defines window.PopcornKbd
 import { dbg } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
-import { postToHost, sayHello } from './kbd/host-bridge.js';
+import { onLifecycleAck, postToHost, sayHello } from './kbd/host-bridge.js';
 
 const params = new URLSearchParams(window.location.search);
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -123,12 +123,12 @@ document.addEventListener('visibilitychange', () => traceView(document.hidden ? 
 // first pixels -> resize -> reveal) is readable from the server /klog, no
 // on-device capture. Reads a few canvas pixels every 100ms until real content
 // replaces the #111 background; self-terminates at 20s.
-let firstPaintMarked = false;
-function markFirstPaint() {
-  if (firstPaintMarked) return;
+let firstPaintConnection = 0;
+function markFirstPaint(connection) {
+  if (firstPaintConnection === connection) return;
   const t0 = performance.now();
   const poll = () => {
-    if (firstPaintMarked) return;
+    if (firstPaintConnection === connection || connection !== rfbConnection) return;
     const canvas = screen.querySelector('canvas');
     if (canvas && canvas.width > 0) {
       try {
@@ -138,15 +138,16 @@ function markFirstPaint() {
         for (const [x, y] of pts) {
           const d = ctx.getImageData(x, y, 1, 1).data; // #111 == (17,17,17)
           if (Math.abs(d[0] - 17) > 8 || Math.abs(d[1] - 17) > 8 || Math.abs(d[2] - 17) > 8) {
-            firstPaintMarked = true; dbg('boot first-paint fb=' + w + 'x' + h);
+            firstPaintConnection = connection;
+            dbg('rfb first-frame conn=' + connection + ' wait=' + Math.round(performance.now() - t0) + 'ms fb=' + w + 'x' + h);
             // An embedder gates its "stream is live" UI on real pixels, not on the
             // handshake — a connected-but-blank canvas must stay behind its loading
             // cover. This is the same signal the standalone page reveals on.
-            postToHost('POPCORN_FRAME', { width: w, height: h });
+            postLifecycle('POPCORN_FRAME', { width: w, height: h, connection });
             return;
           }
         }
-      } catch (_) { firstPaintMarked = true; dbg('boot first-paint unavailable'); return; }
+      } catch (_) { firstPaintConnection = connection; dbg('rfb first-frame unavailable conn=' + connection); return; }
     }
     if (performance.now() - t0 < 20000) setTimeout(poll, 100);
   };
@@ -162,6 +163,17 @@ let everConnected = false;   // handshake succeeded at least once this session
 let connectWatchdog = null;  // fires if a connect stalls mid-handshake (any attempt)
 let failedConnects = 0;      // consecutive failures BEFORE the first success
 let connectStartedAt = 0;    // performance.now() of the in-flight connect (stall check)
+let rfbConnection = 0;
+let reconnectAttempt = 0;
+let disconnectedAt = 0;
+let lifecycleSeq = 0;
+
+function postLifecycle(type, data) {
+  const seq = ++lifecycleSeq;
+  dbg('lifecycle send type=' + type + ' seq=' + seq);
+  postToHost(type, Object.assign({ seq }, data || {}));
+}
+onLifecycleAck((seq) => dbg('lifecycle ack seq=' + seq));
 
 // Show the "can't reach the session" overlay. Idempotent (the overlay reuses
 // one node) and only ever fired before the first successful handshake, so a
@@ -169,7 +181,7 @@ let connectStartedAt = 0;    // performance.now() of the in-flight connect (stal
 function showUnreachable() {
   // Surface it to an embedder too: it owns the page-level failure UX (retry,
   // analytics, session abort) and can't see our in-frame overlay.
-  postToHost('POPCORN_ERROR', { reason: 'unreachable' });
+  postLifecycle('POPCORN_ERROR', { reason: 'unreachable' });
   window.__viewerOverlay?.(
     'Can’t reach the live session',
     'If you have a data-saver, Turbo, or “extreme savings” mode turned on (e.g. in Opera), turn it off — it can block the live connection. Otherwise check your network and try again.',
@@ -200,7 +212,8 @@ function websocketPath() {
 }
 
 function connect() {
-  dbg('boot connect-call ever=' + (everConnected ? 1 : 0));
+  if (everConnected) reconnectAttempt++;
+  dbg('rfb connect-start reconnect=' + (everConnected ? 1 : 0) + ' attempt=' + reconnectAttempt);
   intentionalDisconnect = false;
   connecting = true;
   connected = false;
@@ -267,13 +280,18 @@ function connect() {
       window.__pcnFbCap = { w: rfb._fbWidth, h: rfb._fbHeight };
       dbg('boot fbcap=' + rfb._fbWidth + 'x' + rfb._fbHeight);
     }
-    dbg('boot rfb-connect');
-    postToHost('POPCORN_CONNECT', {});
-    markFirstPaint(); // time the first framebuffer transfer over the tunnel
     connecting = false;
     connected = true;
     everConnected = true;
     failedConnects = 0;
+    const connection = ++rfbConnection;
+    const handshakeMS = Math.round(performance.now() - connectStartedAt);
+    const outageMS = disconnectedAt ? Math.round(performance.now() - disconnectedAt) : 0;
+    dbg('rfb connect conn=' + connection + ' handshake=' + handshakeMS + 'ms outage=' + outageMS + 'ms attempt=' + reconnectAttempt);
+    postLifecycle('POPCORN_CONNECT', { connection, handshakeMs: handshakeMS, outageMs: outageMS, attempt: reconnectAttempt });
+    markFirstPaint(connection); // time the first framebuffer transfer over the tunnel
+    reconnectAttempt = 0;
+    disconnectedAt = 0;
     if (connectWatchdog !== null) { window.clearTimeout(connectWatchdog); connectWatchdog = null; }
     window.__viewerHideOverlay?.();
     // Reveal the stream: drop the static boot/unsupported fallback now that a
@@ -331,9 +349,11 @@ function connect() {
     // tear down the *next* attempt.
     if (connectWatchdog !== null) { window.clearTimeout(connectWatchdog); connectWatchdog = null; }
     const willReconnect = reconnect && !intentionalDisconnect;
+    disconnectedAt = performance.now();
+    dbg('rfb disconnect conn=' + rfbConnection + ' connected=' + (everConnected ? 1 : 0) + ' willReconnect=' + (willReconnect ? 1 : 0));
     // willReconnect lets the host distinguish a recoverable blip (show its
     // reconnecting overlay, keep the session) from a real teardown.
-    postToHost('POPCORN_DISCONNECT', { willReconnect, everConnected });
+    postLifecycle('POPCORN_DISCONNECT', { willReconnect, everConnected, connection: rfbConnection });
     // A failure before the FIRST successful handshake is the data-saver /
     // blocked-WS signature (Opera's proxy drops the socket fast, so noVNC
     // fires disconnect almost immediately). Surface the overlay after a

@@ -542,18 +542,7 @@ export function createTap({
     // allow recovery, so it counts as not-a-miss.
     lastTapWasMiss = (hit === 'miss');
     dbg('tap hit=' + hit + ' kbd=' + (getKeyboardActive() ? 1 : 0) + ' rfk=' + (getRemoteFocusKey() ? 1 : 0) + ' rects=' + getInputRects().length);
-    if (KBD_DEBUG) {
-      const m = screenToRemote(x, y);
-      const cr = m ? m.cr : null;
-      const mapped = m ? (Math.round(m.rx) + ',' + Math.round(m.ry)) : 'n/a';
-      // zoom is logged because it is what moves the canvas rect WITHOUT the remote
-      // having moved, and the rect ratio below is supposed to cancel it.
-      dbg('TAP scr=' + Math.round(x) + ',' + Math.round(y) + ' rem=' + mapped +
-          ' z=' + vt.zoomScale().toFixed(2) +
-          ' hit=' + hit + ' kbd=' + getKeyboardActive() + ' rects=' + getInputRects().length +
-          (cr ? ' cv=' + Math.round(cr.left) + ',' + Math.round(cr.top) + ' ' +
-                Math.round(cr.width) + 'x' + Math.round(cr.height) : ' cv=none'));
-    }
+    if (KBD_DEBUG) dbg('tap debug hit=' + hit + ' zoom=' + vt.zoomScale().toFixed(2));
     if (hit === 'hit') {
       // The rect stream is already local and corresponds to the field under
       // this exact tap. Legacy desktop-fit pages must not wait for the remote
