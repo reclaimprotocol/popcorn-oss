@@ -545,6 +545,7 @@ export function createViewportTransform({
     // desired-vs-actual handoff math, and the effective occlusion budget that
     // gates the gesture (0 with no keyboard, a floating keyboard, or in
     // layout-resize mode — every state where there is nothing hidden to reach).
+    panX: () => panX,
     panY: () => panY,
     kbdPanInset: () => effKbdInset(),
     // Inertial glide for a released keyboard-pan (tap.js supplies exit velocity).

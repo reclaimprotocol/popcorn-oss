@@ -20,6 +20,7 @@ import { dbg, KBD_DEBUG } from './diag.js';
 import { DISMISS_MAX_MS } from './latency.js';
 import { showTapRipple } from './ripple.js';
 import { reportInteraction } from './host-bridge.js';
+import { formatPoint, formatRects } from './diag-geometry.js';
 
 export function createTap({
   vt,                               // viewport-transform instance (gesture state machines)
@@ -33,6 +34,7 @@ export function createTap({
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
   getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
   getRemoteScrollBottom, getFocusedScrollContainer,
+  getGestureID,
   getProxy, getScreenElement,
 }) {
   let remoteTouchActive = false; // a touch 'start' is currently forwarded to the remote
@@ -89,6 +91,7 @@ export function createTap({
   let tapStart = null;
   let lastTapAt = 0;
   let lastTapX = 0, lastTapY = 0;
+  let tapSeq = 0;
   let lastTapWasMiss = false;    // last tap was a confirmed non-input (see handleTap):
                                  // suppresses the recovery-raise so an ambient focus
                                  // flap can't re-summon the keyboard onto a tap that
@@ -534,6 +537,7 @@ export function createTap({
     if (getKeyboardJustDismissed()) { dbg('TAP ignored (justDismissed)'); return; } // grace window after a dismiss
     lastTapAt = nowMs();
     lastTapX = x; lastTapY = y; // raiseKeyboard positions the proxy here
+    tapSeq++;
 
     const hitRect = hitRectAt(x, y);
     const hit = hitRect ? 'hit' : hitTest(x, y);
@@ -541,8 +545,20 @@ export function createTap({
     // recovery. 'unknown' (no coverage — cross-origin/shadow field) must still
     // allow recovery, so it counts as not-a-miss.
     lastTapWasMiss = (hit === 'miss');
-    dbg('tap hit=' + hit + ' kbd=' + (getKeyboardActive() ? 1 : 0) + ' rfk=' + (getRemoteFocusKey() ? 1 : 0) + ' rects=' + getInputRects().length);
-    if (KBD_DEBUG) dbg('tap debug hit=' + hit + ' zoom=' + vt.zoomScale().toFixed(2));
+    const m = screenToRemote(x, y);
+    const vp = getViewport();
+    const canvas = m && m.cr;
+    dbg('tap#' + tapSeq + ' g#' + (getGestureID ? getGestureID() : '-') + ' hit=' + hit + ' kbd=' + (getKeyboardActive() ? 1 : 0) +
+      ' rfk=' + (getRemoteFocusKey() ? 1 : 0) +
+      ' screen=' + formatPoint(x, y) +
+      ' remote=' + (m ? formatPoint(m.rx, m.ry) : '-') +
+      ' vp=' + (vp ? Math.round(vp.w) + 'x' + Math.round(vp.h) : '-') +
+      ' canvas=' + (canvas ? formatPoint(canvas.left, canvas.top) + '+' + Math.round(canvas.width) + 'x' + Math.round(canvas.height) : '-') +
+      ' z=' + vt.zoomScale().toFixed(2) + '/' + vt.minZoom().toFixed(2) +
+      ' pan=' + formatPoint(vt.panX(), vt.panY()) +
+      ' kinset=' + Math.round(vt.kbdPanInset()) +
+      ' rects=' + formatRects(getInputRects()) +
+      (hitRect ? ' matched=' + formatRects([hitRect]) : ''));
     if (hit === 'hit') {
       // The rect stream is already local and corresponds to the field under
       // this exact tap. Legacy desktop-fit pages must not wait for the remote
@@ -669,6 +685,7 @@ export function createTap({
     noteRemoteScroll() { lastRemoteScrollAt = nowMs(); },
     // applySignal's recovery window + latency learn; raiseKeyboard's proxy spot
     lastTapAt: () => lastTapAt,
+    diagnosticTag: () => tapSeq ? ('tap#' + tapSeq + '/+' + Math.round(nowMs() - lastTapAt) + 'ms') : 'tap#-',
     lastTapWasMiss: () => lastTapWasMiss,
     lastTapXY: () => ({ x: lastTapX, y: lastTapY }),
     clearLastTap() { lastTapAt = 0; }, // deliberate dismiss must beat a late confirm

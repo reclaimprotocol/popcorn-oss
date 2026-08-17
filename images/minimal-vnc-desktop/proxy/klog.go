@@ -5,12 +5,18 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 )
 
 // klogMaxBody caps a single diagnostic POST. The tunnel is unauthenticated, so
 // the endpoint only logs (no state change) and the body is bounded.
 const klogMaxBody = 64 << 10 // 64 KiB
+
+// The container/runtime already timestamps stdout/stderr. Keep the diagnostic
+// payload compact: every client line begins with its elapsed time, so Go's
+// second wall-clock prefix only duplicates information in the log viewer.
+var diagLog = log.New(os.Stderr, "", 0)
 
 // klogPayload is the batched diagnostic envelope the viewer sends. It carries
 // STRUCTURAL keyboard events only — event types, states, lengths, flags — never
@@ -49,7 +55,7 @@ func klogHTTPHandler() http.HandlerFunc {
 			if s == "" {
 				continue
 			}
-			log.Printf("[popcorn-diag sid=%s] %s", sid, s)
+			diagLog.Printf("[popcorn-diag sid=%s] %s", sid, s)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

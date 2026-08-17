@@ -299,7 +299,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
 
   function raiseKeyboard(reason) {
     if (!proxy) return;
-    dbg('-> raiseKeyboard(' + (reason || '?') + ')');
+    dbg('-> raiseKeyboard(' + (reason || '?') + ') ' + tap.diagnosticTag());
     // Tell the host the keyboard is coming up so it can hide its own bottom-pinned
     // chrome (which would otherwise sit on top of the keys). Sent on INTENT, not on
     // the geometry confirm, because on iOS the confirm can be a second away — the
@@ -380,9 +380,13 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     keyboardOpening = true;
     if (!seedProxyMirror()) clearProxy();
     proxy.focus();
+    dbg('kbd proxy focus requested active=' + (document.activeElement === proxy ? 1 : 0));
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (proxy) proxy.focus();
+        dbg('kbd proxy focus settled active=' + (document.activeElement === proxy ? 1 : 0) +
+          ' vv=' + (window.visualViewport ? Math.round(window.visualViewport.width) + 'x' + Math.round(window.visualViewport.height) : '-') +
+          ' win=' + window.innerWidth + 'x' + window.innerHeight);
         showMirrorBar(); // promote to the visible echo bar (no-op unless mirrorOn)
         setTimeout(() => { keyboardOpening = false; }, 500);
       });
@@ -610,6 +614,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getRectsTruncated: () => session.rectsTruncated(),
     getRemoteScrollBottom: () => session.remoteScrollBottom(),
     getFocusedScrollContainer: () => session.focusedScrollContainer(),
+    getGestureID: () => tc.gestureID(),
     getProxy: () => proxy,
     getScreenElement: () => screenElement(),
   });
@@ -784,6 +789,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     // QuickType-off, chew buffer) instead of the never-tested EC path.
     const ecMode = !DESKTOP && !isIOS && typeof window.EditContext === 'function';
     input.setEcMode(ecMode);
+    dbg('ime pipeline=' + (DESKTOP ? 'desktop-keys' : (ecMode ? 'editcontext' : (isIOS ? 'beforeinput' : 'input-events'))) + ' keyboard-app=not-exposed');
     if (isIOS && typeof window.EditContext === 'function') {
       dbg('WARN iOS now exposes EditContext — staying on WebKit input path (revisit ecMode)');
     }

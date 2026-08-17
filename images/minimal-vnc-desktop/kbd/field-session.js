@@ -17,6 +17,7 @@ import { DESKTOP, STATELESS, nowMs } from './env.js';
 import { dbg, dbgv } from './diag.js';
 import { fieldRejectsSpace } from './ime-hints.js';
 import { dismissDelay, linkLatency, noteTapConfirm } from './latency.js';
+import { formatRects } from './diag-geometry.js';
 
 export function createFieldSession({
   tap, fit, input, echo,
@@ -51,6 +52,13 @@ export function createFieldSession({
   let remoteScrollBottom = null;
   let focusedScrollContainer = null;
   const RECTS_STICKY_MS = 3000;  // ignore a transient rects=[] this long after real rects
+  // /kbd heartbeats can arrive several times per second while a field remains
+  // focused. Preserve the first signal after every tap and state changes, then
+  // sample identical heartbeats sparingly so permanent diagnostics stay cheap.
+  let lastSigLogKey = '';
+  let lastSigTapTag = '';
+  let lastSigLogAt = 0;
+  const SIG_HEARTBEAT_LOG_MS = 3000;
 
   // The focusKey (stable per-element identity, from content.js) of the remote's
   // currently-focused editable — null when none. The authoritative recovery
@@ -227,11 +235,26 @@ export function createFieldSession({
 
   function applySignal(state) {
     if (!state || typeof state.editable !== 'boolean') return;
-    // Skip idle editable=false heartbeats so the panel keeps meaningful lines.
-    if (state.editable || getKeyboardActive()) {
+    // Skip idle editable=false heartbeats. For active fields, log a state change,
+    // the first signal after a tap, or a low-rate heartbeat only.
+    const sigTapTag = tap.diagnosticTag();
+    const sigKey = (state.editable ? 1 : 0) + '|' + (state.focusKey || '-') + '|' +
+      (getKeyboardActive() ? 1 : 0) + '|' + (state.vw || 0) + 'x' + (state.vh || 0) + '|' +
+      formatRects(state.rects) + '|' + (state.rtrunc ? 1 : 0);
+    const sigNow = nowMs();
+    const sigChanged = sigKey !== lastSigLogKey;
+    const sigNewTap = sigTapTag !== 'tap#-' && sigTapTag.split('/')[0] !== lastSigTapTag;
+    if ((state.editable || getKeyboardActive()) &&
+        (sigChanged || sigNewTap || sigNow - lastSigLogAt >= SIG_HEARTBEAT_LOG_MS)) {
       dbg('SIG editable=' + state.editable + ' fk=' + (state.focusKey || '-') +
           ' kbd=' + getKeyboardActive() + ' dtap=' + (tap.lastTapAt() ? Math.round(nowMs() - tap.lastTapAt()) : '-') +
-          ' rects=' + (Array.isArray(state.rects) ? state.rects.length : '?'));
+          ' ' + sigTapTag +
+          ' vp=' + (state.vw > 0 && state.vh > 0 ? Math.round(state.vw) + 'x' + Math.round(state.vh) : '-') +
+          ' rects=' + formatRects(state.rects) + (state.rtrunc ? '+truncated' : ''),
+      sigChanged || sigNewTap);
+      lastSigLogKey = sigKey;
+      lastSigTapTag = sigTapTag.split('/')[0];
+      lastSigLogAt = sigNow;
     }
 
     // rects/viewport ride on every message (editable or not) — keep them fresh
@@ -274,6 +297,10 @@ export function createFieldSession({
       // false->editable case too (remoteFocusKey is null when nothing was
       // focused), so this is the single "the remote focused a NEW field" test.
       const isNewField = curKey !== remoteFocusKey;
+      if (isNewField) {
+        dbg('focus change from=' + (remoteFocusKey || '-') + ' to=' + (curKey || '-') +
+          ' ' + tap.diagnosticTag() + ' rect=' + formatRects(state.rect ? [state.rect] : []));
+      }
       currentRect = state.rect || null;
       currentHints = state.hints || null;
       detectDrift(state);

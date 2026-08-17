@@ -12,8 +12,9 @@
 // active) plus a callback to stamp the last remote-scroll time.
 
 import { MAGNIFY, TOUCH_INPUT, nowMs, siblingPath } from './env.js';
-import { dbg, dbgv } from './diag.js';
+import { dbg, dbgv, KBD_LOG, KBD_SID } from './diag.js';
 import { linkLatency } from './latency.js';
+import { formatPoint, formatPoints } from './diag-geometry.js';
 
 // Coalesce touchmove sends. A fast swipe fires touchmove 60-120x/s; forwarding
 // each one floods /input -> CDP -> a burst of tiny scroll frames over the tunnel
@@ -36,9 +37,13 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   let gestureSent = 0;
   let gestureDropped = 0;
   let gestureCoalesced = 0;
+  let gestureStartPoints = '[]';
+  let gestureID = 0;
 
   function finishGesture(type) {
-    dbg('touch ' + type + ' sent=' + gestureSent + ' dropped=' + gestureDropped + ' coalesced=' + gestureCoalesced);
+    dbg('touch g#' + gestureID + ' ' + type + ' start=' + gestureStartPoints + ' sent=' + gestureSent +
+      ' dropped=' + gestureDropped + ' coalesced=' + gestureCoalesced +
+      ' socket=' + (inputSock && inputSock.readyState === WebSocket.OPEN ? 'open' : 'down'));
   }
 
   // A REAL click, over VNC rather than CDP.
@@ -90,7 +95,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
       rfb._handleMouseButton(ex, ey, 0);
     } catch (_) { return false; }
     finally { rfb.__pcnPointerCoordsAreLayout = false; }
-    dbg('x11 click');
+    dbg('x11 click screen=' + formatPoint(sx, sy) + ' layout=' + formatPoint(ex, ey));
     return true;
   }
 
@@ -110,6 +115,18 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     catch (_) { scheduleInputReconnect(); return; }
     inputSock = s;
     s.onopen = () => dbg('input socket open');
+    s.onmessage = (e) => {
+      // Terminal input acknowledgements prove the proxy queued, then wrote, the
+      // matching CDP command. They contain only the random diagnostics SID and
+      // gesture number — no coordinates or page/input contents.
+      if (!KBD_LOG) return;
+      try {
+        const a = JSON.parse(e.data);
+        if (a && a.diag === 'input' && a.sid === KBD_SID && typeof a.g === 'number') {
+          dbg('input g#' + a.g + ' ' + (a.t || '-') + ' proxy=' + (a.state || '-'));
+        }
+      } catch (_) {}
+    };
     const down = () => { if (inputSock === s) { inputSock = null; dbg('input socket down -> reconnect'); scheduleInputReconnect(); } };
     s.onclose = down;
     s.onerror = down;
@@ -119,6 +136,8 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
       gestureSent = 0;
       gestureDropped = 0;
       gestureCoalesced = 0;
+      gestureStartPoints = formatPoints(points);
+      gestureID++;
     }
     if (!inputSock || inputSock.readyState !== WebSocket.OPEN) {
       gestureDropped++;
@@ -126,7 +145,9 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
       return false;
     }
     try {
-      inputSock.send(JSON.stringify({ t: type, points }));
+      const msg = { t: type, points };
+      if (KBD_LOG) { msg.d = KBD_SID; msg.g = gestureID; }
+      inputSock.send(JSON.stringify(msg));
       gestureSent++;
       if (type === 'end' || type === 'cancel') finishGesture(type);
       return true;
@@ -238,5 +259,6 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     connectInput, sendTouch, sendPointerClick, touchToRemote, collectPoints,
     queueMove, cancelPendingMove, flushPendingMove, kick,
     getInputSock: () => inputSock,
+    gestureID: () => gestureID,
   };
 }

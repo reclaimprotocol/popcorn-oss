@@ -18,7 +18,7 @@
 
 import { isTouch, nowMs } from './env.js';
 import { fieldRejectsSpace } from './ime-hints.js';
-import { dbg, dbgv, safeKeyName } from './diag.js';
+import { dbg, dbgv, safeKeyName, KBD_LOG } from './diag.js';
 import { SPECIAL_KEYSYMS, keysymForCodepoint } from './keys.js';
 import { reportInteraction } from './host-bridge.js';
 
@@ -135,13 +135,40 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
   let freshField = true;
   let freshFieldAt = 0;
   let lastSendFk = null;
+  // Content-free session progress marker for diagnosing partial or repeated
+  // IME delivery. Counts only code points actually forwarded to RFB.
+  let sessionCharsSent = 0;
+  let textLogEvents = 0, textLogSent = 0, textLogFiltered = 0, textLogTimer = null;
+
+  // IMEs can deliver one event per character. Batch their diagnostic accounting
+  // into a short summary rather than adding a log POST for every keystroke.
+  function flushTextLog() {
+    textLogTimer = null;
+    if (!textLogEvents) return;
+    dbg('text send events=' + textLogEvents + ' sent=' + textLogSent +
+      ' total=' + sessionCharsSent + (textLogFiltered ? ' filtered=' + textLogFiltered : '') +
+      ' rfb=ready');
+    textLogEvents = 0;
+    textLogSent = 0;
+    textLogFiltered = 0;
+  }
+  function noteTextLog(requested, sent) {
+    if (!KBD_LOG) return;
+    textLogEvents++;
+    textLogSent += sent;
+    textLogFiltered += Math.max(0, requested - sent);
+    if (textLogTimer === null) textLogTimer = setTimeout(flushTextLog, 750);
+  }
 
   // True only for a space we can attribute to the IME's cross-field flush.
   function carryOverSpace() {
     return freshField && isTouch && (nowMs() - freshFieldAt) < CARRYOVER_WINDOW_MS;
   }
 
-  function noteFieldReset() { freshField = true; freshFieldAt = nowMs(); }
+  function noteFieldReset() {
+    freshField = true;
+    freshFieldAt = nowMs();
+  }
 
   function sendText(text) {
     if (!text) return;
@@ -190,6 +217,8 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
       }
     });
     onSent(sent);
+    sessionCharsSent += sent;
+    noteTextLog(text.length, sent);
     // One 'char' per CALL, not per code point — parity with the CDP path a host
     // may have used before (Input.insertText counted once regardless of length),
     // so a paste or an IME batch doesn't inflate a host's typing metrics.
@@ -210,6 +239,7 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
     } else {
       try { rfb.sendKey(keysym, name); } catch (_) {}
     }
+    dbg('key send name=' + safeKeyName(name) + ' count=' + count + ' rfb=ready');
     // Once per repeat: a held backspace would have been N dispatchKeyEvents on the
     // CDP path, so N is what a host's counters expect. safeKeyName is belt-and-
     // braces — these are always named keys, never printable characters.

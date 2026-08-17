@@ -53,6 +53,15 @@ export function createImeInput({
                                   // cleared at a word boundary / field change
   let ecComposeReconciled = false; // this EC composition's re-grab was already checked
   let lastProxyInputAt = 0;       // last soft-keyboard input — floating/split kbd proof
+  let firstImeEvent = null;       // diagnostic evidence of which browser input API actually fired
+
+  // Android does not expose the installed keyboard app (Gboard, SwiftKey,
+  // Samsung Keyboard, etc.). The browser event path is actionable for debugging input delivery and contains no user data.
+  function noteImeEvent(path) {
+    if (firstImeEvent) return;
+    firstImeEvent = path;
+    dbg('ime first-event=' + path);
+  }
 
   // Minimal edit from oldV -> newV keeping the common PREFIX (the remote caret is
   // at the end of oldV, so we can only safely edit the tail without moving it):
@@ -155,6 +164,7 @@ export function createImeInput({
     if (!getRfb() || !proxy) return;
     noteProxyInput();
     const inputType = e.inputType;
+    noteImeEvent('beforeinput:' + (inputType || '-'));
     const data = e.data;
     dbgv('beforeinput type=' + inputType + ' dlen=' + (data ? data.length : 0) +
       ' comp=' + (isComposing || e.isComposing ? 1 : 0) + ' vlen=' + proxy.value.length);
@@ -230,6 +240,7 @@ export function createImeInput({
     noteProxyInput();
     const currentValue = proxy.value;
     const inputType = e.inputType;
+    noteImeEvent('input:' + (inputType || '-'));
     dbgv('input type=' + inputType + ' vlen=' + currentValue.length +
       ' comp=' + (isComposing || e.isComposing ? 1 : 0) + ' plat=' + (isAndroid ? 'a' : 'i'));
 
@@ -542,6 +553,7 @@ export function createImeInput({
   function onECTextUpdate(e) {
     if (!editCtx) return; // rfb-null is fine: sendText/sendSpecialKey queue it
     noteProxyInput();
+    noteImeEvent('editcontext:textupdate');
     dbgv('EC textupdate tlen=' + (e.text ? e.text.length : 0) + ' del=' +
       (e.updateRangeEnd - e.updateRangeStart) + ' comp=' + (isComposing ? 1 : 0) +
       ' suppress=' + (ecSuppressed ? 1 : 0));

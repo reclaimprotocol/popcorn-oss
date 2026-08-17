@@ -14,18 +14,37 @@
 // Flags are read once at load, so a session cannot start logging halfway.
 
 import { nowMs, siblingPath } from './env.js';
+import { linkLatency } from './latency.js';
 
 function safeLS(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
 export const KBD_DEBUG = /[?&]kbddebug=1/.test(location.search) || safeLS('pcnKbdDebug') === '1';
-const KBD_LOG = KBD_DEBUG || /[?&](?:diag|kbdlog)=1/.test(location.search) || safeLS('pcnKbdLog') === '1';
+export const KBD_LOG = KBD_DEBUG || /[?&](?:diag|kbdlog)=1/.test(location.search) || safeLS('pcnKbdLog') === '1';
 
 // Per-page-load id so a device's lines group together in the server log.
-const KBD_SID = (Math.floor(Math.random() * 1e9)).toString(36) +
+export const KBD_SID = (Math.floor(Math.random() * 1e9)).toString(36) +
   (Math.floor(nowMs()) % 1000).toString(36);
 const klogURL = siblingPath('/klog');
 const KLOG_FLUSH_MS = 1500, KLOG_BATCH = 40, KLOG_QUEUE_MAX = 400;
 let klogQueue = [];
 let klogTimer = null;
+let klogDroppedRoutine = 0;
+
+// Diagnostics must never compete with the input stream on a constrained link.
+// Keep tap/socket/browser outcomes, but shed repeatable progress lines until the
+// connection recovers. navigator.connection is advisory; measured tunnel latency
+// is the reliable fallback once the RTT probe has sampled it.
+function constrainedLink() {
+  try {
+    const c = navigator.connection;
+    if (c && (c.saveData || c.effectiveType === 'slow-2g' || c.effectiveType === '2g')) return true;
+  } catch (_) {}
+  return linkLatency() >= 700;
+}
+function routineLine(line) {
+  return line.startsWith('SIG ') || line.startsWith('text send ') ||
+    line.startsWith('key send ') || line.startsWith('view resize ') ||
+    line.startsWith('canvas ');
+}
 
 function klogFlush() {
   if (klogTimer) { clearTimeout(klogTimer); klogTimer = null; }
@@ -60,8 +79,18 @@ try {
 
 let dbgEl = null;
 const dbgLog = [];
-export function dbg(line) {
+export function dbg(line, essential = false) {
   if (!KBD_LOG) return; // KBD_DEBUG implies KBD_LOG, so this covers both tiers
+  // kbddebug explicitly asks for the full overlay; ordinary ?diag=1 remains
+  // lossy under link pressure so it cannot worsen the failure being diagnosed.
+  if (!KBD_DEBUG && !essential && constrainedLink() && routineLine(line)) {
+    klogDroppedRoutine++;
+    return;
+  }
+  if (klogDroppedRoutine) {
+    klogEnqueue(Math.round(nowMs()) + ' diag routine-dropped=' + klogDroppedRoutine + ' link=constrained');
+    klogDroppedRoutine = 0;
+  }
   const entry = Math.round(nowMs()) + ' ' + line;
   klogEnqueue(entry);
   if (!KBD_DEBUG) return; // overlay + console only when explicitly debugging
