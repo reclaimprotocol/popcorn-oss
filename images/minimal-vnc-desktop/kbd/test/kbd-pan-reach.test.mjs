@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  installGlobals, freshViewer, fireDoc, fireWindow, fireHostMessage, makeScreen,
+  installGlobals, freshViewer, fire, fireDoc, fireWindow, fireHostMessage, makeScreen,
   pushSignal, webSockets, parentMessages, setVisualViewportHeight, advanceClock,
 } from './stub-dom.mjs';
 import { createMockRfb } from './mock-rfb.mjs';
@@ -173,8 +173,14 @@ test('a deferred no-move touch is a tap: synthesized to the remote like the zoom
   fireDoc('touchstart', { touches: touches([100, 300]), changedTouches: touches([100, 300]), target: canvas });
   fireDoc('touchend', { touches: [], changedTouches: touches([100, 300]), target: canvas });
 
-  assert.deepEqual(sentTypes(sock, before), ['start', 'end'],
+  assert.deepEqual(sentTypes(sock, before), ['start'],
     'the touch was never forwarded live, so the tap is synthesized on end');
+  // The press is HELD ~60ms rather than released in the same tick: a
+  // zero-duration tap is missed by some remote widgets (the same reason
+  // focusClosestInput holds its press).
+  await new Promise((r) => setTimeout(r, 90));
+  assert.deepEqual(sentTypes(sock, before), ['start', 'end'],
+    'and released after the hold, like a real finger');
   dismissViaHost();
 });
 
@@ -201,4 +207,110 @@ test('host occ=0 heartbeats no longer blind the layout-resize detector (Firefox-
   globalThis.window.innerHeight = 844;
   setVisualViewportHeight(844);
   fireWindow('resize');
+});
+
+test('rotating while typing does not false-latch layout-resize mode', async () => {
+  // A soft keyboard never changes the viewport WIDTH; a rotation does. Without
+  // a width guard the rotation's innerHeight drop (far past the 150px keyboard
+  // threshold, with the proxy still focused because the user was typing) read
+  // as a layout-resize keyboard. That latch then suppresses the lift AND zeroes
+  // the pan budget, so when the keys come back the field sits behind them with
+  // no way to reach it — and rotating back read as a "grow" and tore down a
+  // live keyboard.
+  const { proxy } = await freshViewer(createMockRfb);
+  const screen = makeScreen();
+  const canvas = screen.querySelector('canvas');
+  // Keyboard up via the host, mid-typing.
+  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 300 });
+  pushSignal({
+    editable: true, focusKey: 'rot', rect: { x: 20, y: 100, w: 200, h: 40 },
+    rects: [{ x: 20, y: 100, w: 200, h: 40 }], vw: 390, vh: 844, sb: 0,
+  });
+  proxy.focus();
+  // The user is mid-word. This matters: a transient occ=0 arriving within the
+  // recent-input window takes the floating-keyboard KEEP branch, so the
+  // keyboard stays up and the proxy stays focused — which is exactly what lets
+  // the rotation resize below reach the latch.
+  proxy.value = 'a';
+  fire(proxy, 'input', { inputType: 'insertText' });
+
+  // Rotate to landscape: the IME hides transiently, so the host posts occ=0 —
+  // which now passes the (occlusion-only) layout-detector suppression.
+  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 390, occludedBottom: 0 });
+  globalThis.window.innerWidth = 844;
+  globalThis.window.innerHeight = 390;
+  setVisualViewportHeight(390);
+  fireWindow('resize');
+
+  // The keyboard re-shows in landscape. If the rotation had latched
+  // layout-resize mode, the pan budget would be clamped to 0.
+  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 250, occludedBottom: 140 });
+  pushSignal({
+    editable: true, focusKey: 'rot', rect: { x: 20, y: 40, w: 200, h: 30 },
+    rects: [{ x: 20, y: 40, w: 200, h: 30 }], vw: 844, vh: 390, sb: 0,
+  });
+  const before = translateY(screen);
+  fireDoc('touchstart', { touches: touches([400, 200]), changedTouches: touches([400, 200]), target: canvas });
+  fireDoc('touchmove', { touches: touches([400, 190]), changedTouches: touches([400, 190]), target: canvas }); // past slop -> route
+  fireDoc('touchmove', { touches: touches([400, 150]), changedTouches: touches([400, 150]), target: canvas });
+  assert.ok(translateY(screen) < before - 1,
+    'the pan budget survived the rotation — occluded content is still reachable');
+  fireDoc('touchend', { touches: [], changedTouches: touches([400, 150]), target: canvas });
+
+  globalThis.window.innerWidth = 390;
+  globalThis.window.innerHeight = 844;
+  setVisualViewportHeight(844);
+  fireWindow('resize');
+  dismissViaHost();
+});
+
+test('a letterboxed canvas gets no pan extension (nothing hides behind the keys)', async () => {
+  // A canvas SMALLER than the display is flex-centered by noVNC with blank #111
+  // below it, so there is nothing behind the keyboard to reach. Extending there
+  // would make the clamp band entirely positive, snapping the view DOWN by the
+  // whole centring offset on the first drag.
+  const { proxy } = await freshViewer(createMockRfb);
+  const screen = makeScreen();
+  const canvas = screen.querySelector('canvas');
+  canvas.offsetWidth = 390;
+  canvas.offsetHeight = 500;   // letterboxed inside an 844px-tall display
+  screen.offsetHeight = 500;
+  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 300 });
+  pushSignal({
+    editable: true, focusKey: 'lb', rect: { x: 20, y: 100, w: 200, h: 40 },
+    rects: [{ x: 20, y: 100, w: 200, h: 40 }], vw: 390, vh: 500, sb: 0,
+  });
+  proxy.focus();
+
+  // Where the centering branch parks a 500px-tall canvas in an 844px display.
+  const centred = (844 - 500) / 2;
+  fireDoc('touchstart', { touches: touches([200, 300]), changedTouches: touches([200, 300]), target: canvas });
+  fireDoc('touchmove', { touches: touches([200, 290]), changedTouches: touches([200, 290]), target: canvas }); // past slop -> route
+  fireDoc('touchmove', { touches: touches([200, 240]), changedTouches: touches([200, 240]), target: canvas });
+  assert.equal(translateY(screen), centred,
+    'the letterboxed view stays centred — no snap, no extension');
+  fireDoc('touchend', { touches: [], changedTouches: touches([200, 240]), target: canvas });
+
+  canvas.offsetHeight = 844;
+  screen.offsetHeight = 844;
+  dismissViaHost();
+});
+
+test('an absurd host occlusion is rejected rather than becoming pan budget', async () => {
+  // occludedBottom doubles as the pan-extension budget, so a buggy embedder
+  // posting a keyboard taller than the window could drag the canvas off-screen.
+  const { proxy } = await freshViewer(createMockRfb);
+  const screen = makeScreen();
+  const canvas = screen.querySelector('canvas');
+  proxy.focus();
+  parentMessages.length = 0;
+  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 5000 });
+  assert.equal(lastViewportMsg(), null, 'the nonsense sample never reached the detector');
+
+  const rest = translateY(screen);
+  fireDoc('touchstart', { touches: touches([200, 300]), changedTouches: touches([200, 300]), target: canvas });
+  fireDoc('touchmove', { touches: touches([200, 200]), changedTouches: touches([200, 200]), target: canvas });
+  assert.equal(translateY(screen), rest, 'and granted no pan budget');
+  fireDoc('touchend', { touches: [], changedTouches: touches([200, 200]), target: canvas });
+  dismissViaHost();
 });

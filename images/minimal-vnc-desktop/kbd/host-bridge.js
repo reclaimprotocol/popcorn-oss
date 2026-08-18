@@ -62,6 +62,8 @@ const EMBEDDED = (function () { try { return window !== window.top; } catch (_) 
 // enough that a normal idle period (no keyboard changes = no messages) does not
 // flap: the embedder re-posts on every geometry change AND on a heartbeat.
 const HOST_GEOM_STALE_MS = 8000;
+// Absolute malformed-input guard; host geometry can exceed this iframe's height.
+const MAX_HOST_OCCLUSION_PX = 4096;
 
 let geom = null;      // { visibleHeight, occludedBottom, at }
 let handlers = null;  // installed dispatch table
@@ -181,11 +183,9 @@ function onMessage(e) {
     case 'POPCORN_HOST_GEOMETRY': {
       const vh = Number(d.visibleHeight);
       const ob = Number(d.occludedBottom);
-      // Reject nonsense rather than applying a bogus lift: a non-finite or
-      // negative height, or an occlusion taller than the viewport itself, means
-      // the host measured mid-transition. Dropping the sample lets the previous
-      // one age out naturally into the local-detector fallback.
+      // Reject malformed values; occlusion also controls the pan budget.
       if (!isFinite(vh) || vh <= 0 || !isFinite(ob) || ob < 0) return;
+      if (ob > MAX_HOST_OCCLUSION_PX) return;
       geom = { visibleHeight: vh, occludedBottom: ob, at: nowMs() };
       if (handlers.onGeometry) handlers.onGeometry(geom);
       return;

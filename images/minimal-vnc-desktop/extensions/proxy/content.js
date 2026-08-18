@@ -312,9 +312,26 @@
   // class; layout is already forced by the rect reads on every report).
   function docScrollBottom() {
     const d = document.documentElement, b = document.body;
-    const sh = Math.max(d ? d.scrollHeight : 0, b ? b.scrollHeight : 0);
-    const y = window.scrollY || (d ? d.scrollTop : 0) || 0;
-    return Math.max(0, Math.round(sh - y - window.innerHeight));
+    // Which element actually scrolls this document: normally documentElement,
+    // but a page styled html{overflow:hidden} body{overflow:auto;height:100%}
+    // scrolls its BODY instead. There window.scrollY stays 0 no matter how far
+    // down the user is, so a scrollY-only read reports a huge distance-to-bottom
+    // forever — the viewer then never believes the page is at its end and every
+    // drag-up forwards to a remote that cannot scroll, leaving the occluded
+    // strip permanently unreachable on that whole page class. scrollingElement
+    // names the real scroller (and is correct in quirks mode, where it is body);
+    // fall back through both roots for a detached/odd document.
+    const se = document.scrollingElement || d;
+    const y = (se && se.scrollTop) || window.scrollY || (b ? b.scrollTop : 0) || 0;
+    // Pair the extent with the same element, or a body-scroller's tall content
+    // would be measured against documentElement's viewport-sized scrollHeight.
+    const sh = Math.max(
+      (se && se.scrollHeight) || 0,
+      d ? d.scrollHeight : 0,
+      b ? b.scrollHeight : 0,
+    );
+    const view = (se && se.clientHeight) || window.innerHeight;
+    return Math.max(0, Math.round(sh - y - view));
   }
 
   // State for the nearest scrollable ancestor of the focused field. The top

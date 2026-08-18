@@ -28,6 +28,11 @@ export function createKbdDetect({
   let vkSeen = false;           // VirtualKeyboard geometrychange has fired for real
   let layoutResizeMode = false; // Firefox Android / WebView: layout viewport resizes for the kbd
   let baselineInnerHeight = (typeof window !== 'undefined' && window.innerHeight) || 0;
+  // Width the layout baseline was learned at. A soft keyboard never changes the
+  // viewport WIDTH; a rotation, a split-screen resize and a foldable posture
+  // change all do. Comparing against it is what stops those from being read as
+  // a keyboard — see the width guard in handleLayoutResize.
+  let baselineInnerWidth = (typeof window !== 'undefined' && window.innerWidth) || 0;
 
   // HOST-SUPPLIED geometry (embedded viewer) — the highest-priority detector.
   //
@@ -81,6 +86,14 @@ export function createKbdDetect({
     }
     dbg('host geom occ=0 -> kbd=false');
     hostSawOccluded = false; // next keyboard must prove itself again
+    // A host-driven dismissal ends the keyboard session, so it must also drop a
+    // layout-resize latch — otherwise a latch set during THIS session survives
+    // into the next one, where it suppresses the lift and zeroes the pan
+    // extension for a keyboard that really does overlay. dismissKeyboard and
+    // the layout grow-branch were the only two paths that cleared it.
+    layoutResizeMode = false;
+    baselineInnerHeight = window.innerHeight;
+    baselineInnerWidth = window.innerWidth;
     setKeyboardActive(false);
     clearLift();
     hideMirrorBar(); // keyboardActive already false, so onProxyBlur won't do it
@@ -168,6 +181,24 @@ export function createKbdDetect({
     // detector owns this — stay dormant to avoid double-driving the state.
     if (window.visualViewport && (window.innerHeight - window.visualViewport.height) > 50) return;
     const h = window.innerHeight;
+    const w = window.innerWidth;
+    // A WIDTH change means the viewport itself changed shape — a rotation, a
+    // split-screen drag, a foldable unfolding — not a keyboard. Relearn both
+    // baselines from the new shape and take no keyboard decision on this event.
+    // Without this, rotating while typing shrinks innerHeight by far more than
+    // the 150px threshold with the proxy still focused, which false-latched
+    // layoutResizeMode: the lift is then suppressed and the pan extension
+    // clamped to 0, so the field sits behind the keys with no way to reach it —
+    // and rotating back read as a "grow" and tore down a live keyboard. The
+    // `focused` gate below cannot catch this, because a rotation mid-typing
+    // keeps the proxy focused.
+    if (baselineInnerWidth > 0 && Math.abs(w - baselineInnerWidth) > 8) {
+      baselineInnerWidth = w;
+      baselineInnerHeight = h;
+      dbg('layout-resize: width changed -> relearn baseline (' + w + 'x' + h + ')');
+      return;
+    }
+    baselineInnerWidth = w;
     if (!getKeyboardActive() && !getKeyboardOpening()) {
       // Learn the no-keyboard baseline; also absorbs rotation/window resizes.
       if (h > baselineInnerHeight) baselineInnerHeight = h;

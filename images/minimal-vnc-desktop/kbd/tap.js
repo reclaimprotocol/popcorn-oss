@@ -391,7 +391,27 @@ export function createTap({
     const t = e.changedTouches ? e.changedTouches[0] : e;
     if (!t) return;
     const heldMs = nowMs() - start.t;
+    // Replay a DEFERRED touch (zoomed pan, or a keyboard-pan that never moved)
+    // as a real press the remote can act on. The press is held ~60ms rather
+    // than sent as a zero-duration start+end, because some remote widgets miss
+    // an instantaneous tap — the same reason focusClosestInput holds its press.
+    const synthesizeDeferredTap = (sx, sy) => {
+      const pt = touchToRemote(sx, sy);
+      if (!pt) return;
+      sendTouch('start', [pt]);
+      setTimeout(() => { sendTouch('end', []); }, 60);
+    };
     if (heldMs > TAP_MAX_MS) {
+      // A deferred keyboard-pan touch was never forwarded, so a slow press
+      // (350ms+ — a deliberate press on a button, a long-press for a context
+      // menu or text selection) would otherwise reach the remote as NOTHING.
+      // Forward it here before the paste-pill check below, which needs the
+      // remote to have focused the field under the finger for the text to land
+      // in the right place.
+      if (kp && TOUCH_INPUT && withinScreen(start.target) && withinScreen(e.target) &&
+          !inCrossOriginFrame(t.clientX, t.clientY)) {
+        synthesizeDeferredTap(t.clientX, t.clientY);
+      }
       // Long-press on a remote TEXT FIELD -> native iOS "Paste" pill. This
       // touchend is a user gesture, so readText() pops the system paste
       // confirmation right where the finger is — the closest a page can get to
@@ -412,8 +432,7 @@ export function createTap({
     // single-finger to noVNC, which already clicked at the transform-adjusted
     // point.
     if ((vt.zoomScale() > 1 || kp) && TOUCH_INPUT && !inCrossOriginFrame(t.clientX, t.clientY)) {
-      const pt = touchToRemote(t.clientX, t.clientY);
-      if (pt) { sendTouch('start', [pt]); sendTouch('end', []); }
+      synthesizeDeferredTap(t.clientX, t.clientY);
     }
     // The touch above was cancelled rather than ended inside a cross-origin iframe
     // (see the touchend branch), so the activation is this click.
