@@ -84,9 +84,6 @@ export const STATELESS = /[?&]stateless=1/.test(location.search);
 // untouched. Sensitive fields never publish val, so they can never be mirrored.
 export const MIRROR = /[?&]mirror=1/.test(location.search);
 
-// ?motionq=1 forces lower quality while scrolling.
-export const MOTION_QUALITY_ALWAYS = /[?&]motionq=1/.test(location.search);
-
 // The visible mirror bar is a SEPARATE, opt-in feature (?mirrorbar=1). It's NOT
 // needed for the suggestion/autocorrect fix — that comes from seeding the hidden
 // proxy so QuickType has context. The bar only adds instant WYSIWYG local echo

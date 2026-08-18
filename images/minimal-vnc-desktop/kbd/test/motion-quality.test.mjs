@@ -61,6 +61,3 @@ test('slow link: forwarded scroll lowers quality, restored ~300ms after release'
   await sleep(300);
   assert.equal(rfb.qualityLevel, 9, 'restored to configured quality after motion settles');
 });
-
-// ?motionq=1 is exercised in its own file (motion-quality-forced.test.mjs): env.js
-// freezes flags at first import, so a search-string variant needs a fresh process.
