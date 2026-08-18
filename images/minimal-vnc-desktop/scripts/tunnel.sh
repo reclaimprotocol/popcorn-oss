@@ -10,7 +10,8 @@
 # Usage:
 #   ./tunnel.sh              # tunnel an already-running container's :6080
 #   ./tunnel.sh --run        # start the container first, then tunnel
-#   ./tunnel.sh --run --embed  # ALSO serve host/ on a SECOND tunnel (embedded test)
+#   ./tunnel.sh --run --embed         # ALSO serve the minimal embedded harness
+#   ./tunnel.sh --run --embed-nested  # three-frame embedded harness + keyboard debug panel
 #   NOVNC_PORT=6080 IMAGE=popcorn/minimal-vnc-desktop:local ./tunnel.sh --run
 #
 # --embed (or EMBED=1) is for testing the iframe-embedded path the portal/SDK uses.
@@ -18,6 +19,10 @@
 # harness lands on a DIFFERENT https origin than the viewer — which is the point:
 # same-origin embedding would silently pass even if the postMessage bridge, the
 # origin checks or the Permissions-Policy delegation were broken.
+#
+# --embed-nested adds an intermediate relay frame, reproducing the full
+# SDK -> portal -> liveview topology. It opens the debug harness so the phone
+# can show the measured keyboard occlusion and forwarded viewport events.
 #
 # NOTE: on Apple Silicon the amd64 Fortress Chromium SIGTRAPs under emulation
 # (see the Dockerfile). Run this on a native amd64 host, or point it at a
@@ -35,6 +40,7 @@ CONTAINER="${CONTAINER:-minimal-vnc-desktop}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 RUN=0
 EMBED="${EMBED:-0}"
+NESTED_EMBED=0
 HOST_PORT="${HOST_PORT:-8080}"
 HOST_DIR="$SCRIPT_DIR/../host"
 
@@ -42,6 +48,7 @@ for arg in "$@"; do
   case "$arg" in
     --run) RUN=1 ;;
     --embed) EMBED=1 ;;
+    --embed-nested) EMBED=1; NESTED_EMBED=1 ;;
     --port=*) PORT="${arg#*=}" ;;
     --host-port=*) HOST_PORT="${arg#*=}" ;;
     -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
@@ -186,14 +193,20 @@ embed_block=""
 if [[ "$EMBED" == "1" ]]; then
   host_url=$(wait_for_url "$HOST_TUNNEL_LOG" "$host_tunnel_pid") || host_url=""
   if [[ -n "$host_url" ]]; then
+    harness="test-min.html"
+    harness_query="viewer=${url}"
+    if [[ "$NESTED_EMBED" == "1" ]]; then
+      harness="test-host.html"
+      harness_query="viewer=${url}&nest=1&kbddebug=1"
+    fi
     embed_block="
   EMBEDDED (what the portal/SDK actually ships — cross-origin iframe):
 
-      ${host_url}/test-min.html?viewer=${url}
+      ${host_url}/${harness}?${harness_query}
 
   - test-min.html is the bare full-viewport iframe (sharp).
-    test-host.html is the same thing plus a debug panel;
-    add &nest=1 there for the 3-level SDK->portal->viewer chain.
+    test-host.html is the same thing plus a debug panel.
+    --embed-nested selects test-host.html with the 3-level SDK->portal->viewer chain.
   - Host tunnel log: ${HOST_TUNNEL_LOG}
 "
   else

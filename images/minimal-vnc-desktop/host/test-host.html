@@ -62,7 +62,7 @@
        three-level chain). On a phone, replace localhost with your machine's LAN
        IP in BOTH the address bar and ?viewer=. -->
   <iframe id="viewer" title="Popcorn live view"
-    allow="virtual-keyboard; clipboard-read; clipboard-write"></iframe>
+    allow="clipboard-read; clipboard-write"></iframe>
   <div id="panel">
     <div id="row">
       <button id="mag">Magnify</button>
@@ -118,6 +118,7 @@
         // Level 1 of 3: load ourselves as the middle (relay) frame. It carries the
         // same viewer target down, plus relay=1 so it forwards instead of measuring.
         childUrl = location.pathname + '?relay=1&nest=1&viewer=' + encodeURIComponent(viewerBase) +
+                   (q.get('viewerpage') ? '&viewerpage=' + encodeURIComponent(q.get('viewerpage')) : '') +
                    (pass.length ? '&' + pass.join('&') : '');
         log('nested mode: child is this page in relay mode');
       } else {
@@ -132,7 +133,11 @@
         // pan-to-read, with noVNC's touch->mouse instead of the /input channel.
         var params = ['magnify=' + (q.get('magnify') === '0' ? '0' : '1')];
         if (q.get('noorigin') !== '1') params.push('parentOrigin=' + encodeURIComponent(location.origin));
-        childUrl = viewerBase.replace(/\/+$/, '') + '/liveview.html?' +
+        // ?viewerpage= selects WHICH viewer page to load, so a before/after
+        // bundle can be A/B'd against the SAME pod and session — the fixed
+        // bundle is installed alongside as liveview-fixed.html.
+        var viewerPage = q.get('viewerpage') || 'liveview.html';
+        childUrl = viewerBase.replace(/\/+$/, '') + '/' + viewerPage + '?' +
                    params.concat(pass).join('&');
       }
       iframeEl.src = childUrl;
@@ -142,14 +147,99 @@
       // it's the pod. Pinning it (rather than '*') is what production should do.
       var childOrigin = nest && !relayMode ? location.origin : new URL(viewerBase).origin;
 
+      // ?legacybridge=1 — REPRODUCE the deployed portal break, on purpose.
+      //
+      // An integrator's top-level page can measure the viewport correctly and
+      // still post it under its OWN message type (an older or hand-rolled
+      // bridge, e.g. `{type:'parent-viewport', innerHeight, viewportHeight}`),
+      // a message type NOTHING in the chain consumes: popcorn-host.js only
+      // forwards POPCORN_HOST_GEOMETRY / POPCORN_TOGGLE_* / POPCORN_PASTE down.
+      // So the geometry is dropped at the middle hop.
+      //
+      // The failure is worse than "no geometry", which is why it needs a real
+      // reproduction: the middle frame's PopcornHost sees no upstream sample,
+      // times out its 2s grace and starts measuring ITSELF — but it is a
+      // cross-origin iframe whose visualViewport never shrinks, so it measures
+      // occluded=0 and heartbeats that forever. The viewer then has a FRESH host
+      // sample saying "no keyboard", which suppresses its own local detectors.
+      // Result: no lift and no pan budget, i.e. exactly the reported symptom.
+      //
+      // Combine with &nest=1 for the full SDK -> portal -> viewer chain.
+      var legacyBridge = q.get('legacybridge') === '1' && !relayMode;
+
       // Let the mode RESOLVE (?forcerelay=1 pins it, to test forwarding in
       // isolation). The middle frame of the nested chain should land on 'relay' on
       // its own because the top frame measures — that self-resolution is the thing
       // worth exercising here, since it's what the portal will rely on.
+      // In legacy-bridge mode the top frame is pinned to 'relay' so PopcornHost
+      // never sends geometry, mirroring the deployed portal (which drives its own
+      // hook instead of PopcornHost's measuring path).
       var host = PopcornHost.attach(iframeEl, {
         childOrigin: childOrigin,
-        relay: q.get('forcerelay') === '1',
+        relay: q.get('forcerelay') === '1' || legacyBridge,
       });
+      // ?fakekbd=NNN — simulate an occluding keyboard NNN px tall, so BOTH halves
+      // are testable on a desktop browser (which has no soft keyboard to open).
+      // It rides whichever bridge is active, which is what makes the A/B sharp:
+      //   ?fakekbd=300                -> POPCORN_HOST_GEOMETRY -> viewer lifts/pans
+      //   ?fakekbd=300&legacybridge=1 -> parent-viewport        -> viewer sees NOTHING
+      // Toggle live from the console: window.__fakeKbd(300) / window.__fakeKbd(0).
+      var fakeKbd = parseInt(q.get('fakekbd') || '0', 10) || 0;
+
+      if (legacyBridge) {
+        log('LEGACY BRIDGE: posting parent-viewport (the deployed portal message)', 'warn');
+        var legacyPost = function () {
+          var vv = window.visualViewport;
+          var innerH = window.innerHeight;
+          // Honour the simulated keyboard so the break is reproducible without a
+          // device: these are the very numbers the deployed portal would send.
+          var visH = fakeKbd > 0 ? innerH - fakeKbd : (vv ? vv.height : innerH);
+          try {
+            iframeEl.contentWindow.postMessage({
+              type: 'parent-viewport',
+              innerHeight: innerH,
+              viewportHeight: visH,
+              offsetTop: vv ? (vv.offsetTop || 0) : 0,
+              screenHeight: (window.screen && window.screen.height) || null,
+              ts: Date.now(),
+            }, childOrigin);
+          } catch (_) {}
+        };
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', legacyPost);
+          window.visualViewport.addEventListener('scroll', legacyPost);
+        }
+        window.addEventListener('resize', legacyPost);
+        setInterval(legacyPost, 3000);
+        iframeEl.addEventListener('load', legacyPost);
+      }
+
+      if (!relayMode) {
+        window.__fakeKbd = function (px) {
+          fakeKbd = px || 0;
+          var h = window.innerHeight;
+          if (legacyBridge) {
+            // Deployed-portal shape: measured correctly, addressed to nobody.
+            legacyPost();
+            log('FAKE KBD (legacy parent-viewport) -> visible=' + (fakeKbd > 0 ? h - fakeKbd : h) +
+                ' occluded=' + fakeKbd + ' — nothing downstream consumes this');
+            return;
+          }
+          var payload = {
+            type: 'POPCORN_HOST_GEOMETRY',
+            visibleHeight: fakeKbd > 0 ? h - fakeKbd : h,
+            occludedBottom: fakeKbd,
+          };
+          try { iframeEl.contentWindow.postMessage(payload, childOrigin); } catch (_) {}
+          log('FAKE KBD -> visible=' + payload.visibleHeight + ' occluded=' + payload.occludedBottom);
+        };
+        if (fakeKbd > 0) {
+          // Re-post on the same cadence a real host would, so the viewer's 8s
+          // staleness window never ages the simulated keyboard out.
+          iframeEl.addEventListener('load', function () { setTimeout(function () { window.__fakeKbd(fakeKbd); }, 1200); });
+          setInterval(function () { if (fakeKbd > 0) window.__fakeKbd(fakeKbd); }, 3000);
+        }
+      }
       log('attached -> child ' + childOrigin + ', initial mode=' + host.mode());
       setTimeout(function () { log('mode after upstream grace: ' + host.mode()); }, 2500);
 
