@@ -13,7 +13,7 @@
 
 import { MAGNIFY, TOUCH_INPUT, nowMs, siblingPath } from './env.js';
 import { dbg, dbgv, KBD_LOG, KBD_SID } from './diag.js';
-import { linkLatency } from './latency.js';
+import { linkRtt } from './latency.js';
 import { formatPoint, formatPoints } from './diag-geometry.js';
 
 // Coalesce touchmove sends. A fast swipe fires touchmove 60-120x/s; forwarding
@@ -247,7 +247,8 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   // touchEnd, so the gesture wedges. touchEnd always flushes the final position
   // (flushPendingMove), so the drag still finishes at the real point.
   function moveIntervalMs() {
-    const l = linkLatency(); // max(tap->confirm, /kbd RTT); 0 until first sample
+    // Touch cadence tracks network RTT only.
+    const l = linkRtt();
     if (l > 0 && l < 150) return MOVE_INTERVAL_FULL_MS; // measured healthy link
     if (l < 300) return MOVE_INTERVAL_FAST_MS;
     // Ramp fast->slow across ~300..1500ms RTT, then hold at the slow floor.
