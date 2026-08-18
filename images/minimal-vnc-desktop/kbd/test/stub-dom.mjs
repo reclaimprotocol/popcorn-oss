@@ -135,7 +135,18 @@ export function clearWindowListeners() { winListeners = {}; }
 // TO it (capture-phase handlers that rewrite coordinates, stopPropagation flags…),
 // not just what they did with it.
 export function fireWindow(type, props) {
-  const e = Object.assign({ type }, props || {});
+  // Same event surface as fireDoc — window-capture handlers call preventDefault
+  // and stopImmediatePropagation, which a bare {type} object would throw on.
+  const e = Object.assign({
+    type,
+    target: (props && props.target) || null,
+    defaultPrevented: false,
+    propagationStopped: false,
+    cancelable: true,
+    preventDefault() { this.defaultPrevented = true; },
+    stopPropagation() { this.propagationStopped = true; },
+    stopImmediatePropagation() { this.propagationStopped = true; },
+  }, props || {});
   for (const fn of (winListeners[type] || []).slice()) fn(e);
   return e;
 }
@@ -403,6 +414,10 @@ let importSeq = 0;
 // Fresh core instance (cache-busted import) attached to a fresh mock RFB with
 // 'connect' already fired (rfbReady=true). Returns everything a test touches.
 export async function freshViewer(makeMockRfb) {
+  // A new viewer is a new document: the previous one's proxy must not still read
+  // as focused, or focus-sensitive paths see a detached element no browser would
+  // report.
+  globalThis.document.activeElement = null;
   importSeq++;
   await import(CORE_URL + '?fresh=' + importSeq);
   const kbd = globalThis.window.PopcornKbd;

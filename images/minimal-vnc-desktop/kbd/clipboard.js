@@ -17,13 +17,15 @@
 // Own state (remoteClipboardText / pendingLocalWrite) lives here.
 
 import { dbg } from './diag.js';
+import { nowMs } from './env.js';
 
 export function createClipboard({
-  getRfb, getProxy, getHints, sendText, sendSpecialKey,
+  getRfb, getProxy, getHints, getFocusKey, sendText, sendSpecialKey,
   clearProxy, setAllowBlur, setKeyboardActive,
 }) {
   let remoteClipboardText = null; // latest text the remote copied
   let pendingLocalWrite = false;  // remote text awaiting a user-gesture write
+  let pendingSince = 0;
 
   // Ctrl+V on the remote — used to paste a long insert we staged on the remote
   // clipboard in one shot instead of N per-char keysym round-trips.
@@ -111,12 +113,19 @@ export function createClipboard({
     const hints = getHints();
     if (hints && hints.tag === 'INPUT') text = text.replace(/[\r\n]+/g, '');
     if (!text) return;
-    // Long inserts: stage on the remote clipboard + Ctrl+V (one round-trip) — a
-    // big win over per-char keysyms on a 3G link. Safe for pure Latin-1 always,
-    // and for ANY text (CJK/emoji) when the server negotiated Extended Clipboard,
-    // since clipboardPasteFrom then uses the lossless UTF-8 path instead of the
-    // '?'-corrupting ISO-8859-1 fallback. Otherwise fall back to per-char sendText.
-    if (text.length > 32 && typeof rfb.clipboardPasteFrom === 'function' &&
+    // Stage on the remote clipboard + Ctrl+V (one round-trip) instead of per-char
+    // keysyms when either:
+    //   long text  — a big win over N keysyms on a 3G link;
+    //   no known focused field — the desktop window-level ⌘V fires with whatever
+    //     the remote has focused, and stray keysyms there would trigger a page's
+    //     single-key shortcuts (Gmail/GitHub j/k). Ctrl+V with nothing focused is
+    //     simply inert.
+    // Safe for pure Latin-1 always, and for ANY text (CJK/emoji) when the server
+    // negotiated Extended Clipboard, since clipboardPasteFrom then uses the
+    // lossless UTF-8 path instead of the '?'-corrupting ISO-8859-1 fallback.
+    // Otherwise fall back to per-char sendText — that text is non-Latin-1, so it
+    // cannot trigger an ASCII shortcut either.
+    if ((text.length > 32 || !getFocusKey()) && typeof rfb.clipboardPasteFrom === 'function' &&
         (/^[\x00-\xff]*$/.test(text) || serverExtendedClipboard())) {
       try { rfb.clipboardPasteFrom(text); remoteCtrlV(); return; } catch (_) {}
     }
@@ -147,14 +156,21 @@ export function createClipboard({
       }
     } catch (_) {}
   }
+  // Bounded: a write that never succeeded must not sit armed and then replace the
+  // user's own clipboard on some unrelated gesture minutes later. The retry exists
+  // for the next gesture, not for the rest of the session.
+  const PENDING_MAX_AGE_MS = 30000;
   function flushLocalClipboard() {
-    if (pendingLocalWrite && remoteClipboardText) tryWriteLocalClipboard(remoteClipboardText);
+    if (!pendingLocalWrite || !remoteClipboardText) return;
+    if (nowMs() - pendingSince > PENDING_MAX_AGE_MS) { pendingLocalWrite = false; return; }
+    tryWriteLocalClipboard(remoteClipboardText);
   }
   function onRemoteClipboard(e) {
     const text = e && e.detail && e.detail.text;
     if (!text) return;
     remoteClipboardText = text;
     pendingLocalWrite = true;
+    pendingSince = nowMs();
     tryWriteLocalClipboard(text); // best-effort now; retried on next gesture
   }
 

@@ -8,6 +8,9 @@
 // X11 keysym. When no field is focused we hand focus back to the canvas so
 // page-level shortcuts and scrolling still reach noVNC.
 //
+// The clipboard/select-all chords are the exception: they must work with no
+// remote field focused, so they capture at the WINDOW — see installDesktopChords.
+//
 // createDesktopBridge(deps): eventComposing is the CORE's hoisted function (it
 // folds per-event composition signals back into the shared isComposing flag —
 // pass it, don't reimplement); sendText/sendSpecialKey/clearEcho are core
@@ -16,9 +19,11 @@
 import {
   DESKTOP_KEYSYMS, MOD_SHIFT, MOD_CONTROL, MOD_ALT, keysymForCodepoint,
 } from './keys.js';
+import { dbg } from './diag.js';
 
 export function createDesktopBridge({
   getRfb, getProxy, sendText, sendSpecialKey, eventComposing, applyProxyImeHints, clearEcho,
+  onProxyPaste, flushLocalClipboard,
 }) {
   function desktopKeysymFor(e) {
     const k = e.key;
@@ -91,5 +96,57 @@ export function createDesktopBridge({
     try { if (rfb && rfb.focus) rfb.focus(); } catch (_) {}
   }
 
-  return { onDesktopKeyDown, onDesktopInput, focusProxyDesktop, blurProxyDesktop };
+  // ---- Window-level clipboard / select-all chords --------------------------
+  //
+  // The proxy handlers below only run while /kbd reports a focused remote
+  // editable, and desktop leaves focusOnClick TRUE — so the usual state is
+  // canvas-focused, where noVNC forwards the chord RAW: ⌘A/⌘C/⌘X arrive as
+  // Super_L+a/c/x (ignored by the remote) and ⌘V pastes the REMOTE clipboard.
+  // Capture at the window instead, ahead of noVNC's canvas listener, and route
+  // through sendKeyChord (which is where ⌘ -> Control lives).
+  const CHORD_KEYS = { a: 1, c: 1, x: 1, v: 1 };
+
+  // Any focused field in OUR document: the proxy (whose own handlers own the
+  // chord) or the JS-dialog sheet's prompt input, which is a real local field the
+  // user is typing into — stealing its ⌘A/⌘C/⌘V would send them to a remote that
+  // is blocked on that very dialog.
+  function localFieldFocused() {
+    const a = document.activeElement;
+    if (!a) return false;
+    return a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.isContentEditable === true;
+  }
+
+  function installDesktopChords() {
+    window.addEventListener('keydown', (e) => {
+      if (!getRfb()) return;
+      if (localFieldFocused()) return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = (e.key || '').toLowerCase();
+      if (!CHORD_KEYS[k]) return;
+      e.stopImmediatePropagation(); // keep the raw chord off the wire
+      // No preventDefault for V: that would cancel the 'paste' event, which is
+      // the only permission-free read of the local clipboard.
+      if (k === 'v') return;
+      e.preventDefault();
+      dbg('desktop chord ' + (e.metaKey ? 'meta' : 'ctrl') + '+' + k);
+      sendKeyChord(e, keysymForCodepoint(k.codePointAt(0)));
+    }, true);
+
+    // Canvas-focused ⌘V still fires a paste event; it just had no listener.
+    window.addEventListener('paste', (e) => {
+      if (!getRfb()) return;
+      if (localFieldFocused()) return; // proxy listener, or a real local field
+      onProxyPaste(e);
+    }, true);
+
+    // writeText rejects when the document isn't focused or activation expired
+    // across the ⌘C round-trip. Mouse equivalent of the touch path's onTouchEnd
+    // retry. (A cross-origin embed also needs allow="clipboard-write".)
+    window.addEventListener('pointerdown', () => { flushLocalClipboard(); }, true);
+  }
+
+  return {
+    onDesktopKeyDown, onDesktopInput, focusProxyDesktop, blurProxyDesktop,
+    installDesktopChords,
+  };
 }

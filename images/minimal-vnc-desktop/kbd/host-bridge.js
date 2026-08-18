@@ -186,8 +186,12 @@ function onMessage(e) {
       // Reject malformed values; occlusion also controls the pan budget.
       if (!isFinite(vh) || vh <= 0 || !isFinite(ob) || ob < 0) return;
       if (ob > MAX_HOST_OCCLUSION_PX) return;
+      // No handler = this viewer has no keyboard to lift (desktop wires onPaste
+      // only). Storing geom anyway would still make hostGeometryActive() true and
+      // feed currentVisibleBottom a keyboard rect that means nothing here.
+      if (!handlers.onGeometry) return;
       geom = { visibleHeight: vh, occludedBottom: ob, at: nowMs() };
-      if (handlers.onGeometry) handlers.onGeometry(geom);
+      handlers.onGeometry(geom);
       return;
     }
     case 'POPCORN_TOGGLE_MAGNIFY':

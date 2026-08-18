@@ -3,7 +3,7 @@
 // normal input path).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { installGlobals, freshViewer, fire, pushSignal } from './stub-dom.mjs';
+import { installGlobals, freshViewer, fire, fireWindow, pushSignal } from './stub-dom.mjs';
 import { createMockRfb, keysymsFor, BS } from './mock-rfb.mjs';
 
 installGlobals('desktop');
@@ -52,12 +52,25 @@ test('Ctrl/⌘+V is NOT forwarded — the paste event owns it', async () => {
   assert.deepEqual(rfb.keys, []);
 });
 
-test('short paste sends per-char keysyms', async () => {
+test('short paste into a KNOWN focused field sends per-char keysyms', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'p1', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: {}, sync: {} });
+  rfb.clearKeys();
   const e = fire(proxy, 'paste', { clipboardData: { getData: () => 'hi there' } });
   assert.equal(e.defaultPrevented, true);
   assert.deepEqual(rfb.tapped(), keysymsFor('hi there'));
   assert.deepEqual(rfb.clipboard, []);
+});
+
+// With no field known-focused, per-char keysyms would land as single-key page
+// shortcuts (Gmail/GitHub j/k). Ctrl+V is inert instead.
+test('short paste with NO known focused field stages + Ctrl+V instead of keysyms', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  fire(proxy, 'paste', { clipboardData: { getData: () => 'hi there' } });
+  assert.deepEqual(rfb.clipboard, ['hi there']);
+  assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x76, true], [0x76, false], [0xffe3, false]]);
+  assert.deepEqual(rfb.tapped(), []);
 });
 
 test('long Latin-1 paste stages on the remote clipboard + Ctrl+V (one round-trip)', async () => {
@@ -85,6 +98,72 @@ test('newlines are stripped when pasting into a single-line INPUT', async () => 
   rfb.clearKeys();
   fire(proxy, 'paste', { clipboardData: { getData: () => 'user\n' } });
   assert.deepEqual(rfb.tapped(), keysymsFor('user')); // no Enter fired at the form
+});
+
+// ---- clipboard / select-all with the CANVAS focused -------------------------
+// The chords above arrive on the proxy, which holds focus only while /kbd reports
+// a focused remote editable. These pin the window-level capture that covers the
+// rest of the time.
+
+test('⌘A with the canvas focused still reaches the remote as Ctrl+A', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  const e = fireWindow('keydown', { key: 'a', keyCode: 65, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+  assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x61, true], [0x61, false], [0xffe3, false]]);
+  assert.equal(e.defaultPrevented, true, 'no browser select-all of the viewer chrome');
+  assert.equal(e.propagationStopped, true, 'noVNC must not also forward the raw ⌘ chord');
+});
+
+test('⌘C and ⌘X with the canvas focused reach the remote as Control chords', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  fireWindow('keydown', { key: 'c', keyCode: 67, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+  assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x63, true], [0x63, false], [0xffe3, false]]);
+  rfb.clearKeys();
+  fireWindow('keydown', { key: 'x', keyCode: 88, ctrlKey: true, metaKey: false, shiftKey: false, altKey: false });
+  assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x78, true], [0x78, false], [0xffe3, false]]);
+});
+
+test('⌘V with the canvas focused: chord withheld, paste event injects the LOCAL clipboard', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  const e = fireWindow('keydown', { key: 'v', keyCode: 86, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+  assert.deepEqual(rfb.keys, [], 'a forwarded chord would paste the REMOTE clipboard instead');
+  assert.equal(e.propagationStopped, true, 'noVNC must not forward it either');
+  assert.equal(e.defaultPrevented, false, 'preventDefault would cancel the paste event below');
+  fireWindow('paste', { clipboardData: { getData: () => 'hi there' } });
+  // No field known-focused here, so it stages rather than typing the text out as
+  // keysyms the remote page would read as shortcuts.
+  assert.deepEqual(rfb.clipboard, ['hi there']);
+});
+
+test('the window capture stands down while the proxy holds focus (no double-send)', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'f3', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: {}, sync: {} });
+  assert.equal(globalThis.document.activeElement, proxy);
+  rfb.clearKeys();
+  fireWindow('keydown', { key: 'a', keyCode: 65, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+  assert.deepEqual(rfb.keys, [], 'the proxy keydown handler owns this case');
+});
+
+test('a paste event targeted AT the proxy is left to the proxy listener', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  globalThis.document.activeElement = proxy;
+  fireWindow('paste', { target: proxy, clipboardData: { getData: () => 'once' } });
+  assert.deepEqual(rfb.tapped(), [], 'no second injection from the window capture');
+});
+
+// The JS-dialog sheet's prompt() renders a real local <input> in OUR document,
+// and the remote is blocked on that dialog — stealing its chords sends them
+// nowhere and empties the field the user is typing in.
+test('a focused local field (dialog prompt) keeps its own clipboard chords', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  const localInput = globalThis.document.createElement('input');
+  globalThis.document.activeElement = localInput;
+  const a = fireWindow('keydown', { key: 'a', keyCode: 65, metaKey: true, ctrlKey: false, shiftKey: false, altKey: false });
+  assert.deepEqual(rfb.keys, []);
+  assert.equal(a.defaultPrevented, false);
+  assert.equal(a.propagationStopped, false);
+  fireWindow('paste', { target: localInput, clipboardData: { getData: () => 'mine' } });
+  assert.deepEqual(rfb.tapped(), [], 'the text belongs to the local field');
 });
 
 test('remote focus signal moves key focus to the proxy; blur hands it back', async () => {

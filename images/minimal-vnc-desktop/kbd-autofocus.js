@@ -165,6 +165,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getRfb: () => rfb,
     getProxy: () => proxy,
     getHints: () => session.hints(),
+    getFocusKey: () => session.focusKey(),
     sendText,
     sendSpecialKey,
     clearProxy: () => clearProxy(),
@@ -211,11 +212,14 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     eventComposing: (e) => input.eventComposing(e),
     applyProxyImeHints,
     clearEcho,
+    onProxyPaste,
+    flushLocalClipboard,
   });
   const onDesktopKeyDown = desktopBridge.onDesktopKeyDown;
   const onDesktopInput = desktopBridge.onDesktopInput;
   const focusProxyDesktop = desktopBridge.focusProxyDesktop;
   const blurProxyDesktop = desktopBridge.blurProxyDesktop;
+  const installDesktopChords = desktopBridge.installDesktopChords;
 
   // ---- IME input state machine (see ./kbd/ime-input.js) ---------------------
   // Instantiated here so the echo/clipboard aliases above are initialized
@@ -875,6 +879,12 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
 
     if (DESKTOP) {
       connectSignal(); // /kbd focus signal drives proxy focus on desktop too
+      installDesktopChords(); // ⌘/Ctrl + A/C/X/V, canvas-focused included
+      // The portal's own paste button. Only onPaste — geometry and the
+      // magnify/keyboard toggles have nothing to drive on desktop.
+      installHostBridge({
+        onPaste: (text) => { dbg('host cmd paste len=' + text.length); insertPastedText(text); },
+      });
       window.addEventListener('online', kickReconnects);
       window.addEventListener('pageshow', kickReconnects);
       document.addEventListener('visibilitychange', () => { if (!document.hidden) kickReconnects(); });
