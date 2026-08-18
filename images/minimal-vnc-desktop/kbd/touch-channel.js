@@ -100,6 +100,10 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   }
 
   function inputPath() { return siblingPath('/input'); }
+  // Bound stalled input upgrades.
+  const INPUT_CONNECT_TIMEOUT_MS = 8000;
+  let inputAttempt = 0;
+  let inputDialAt = 0;
   function scheduleInputReconnect() {
     if (inputReconnectTimer !== null) return;
     inputReconnectTimer = setTimeout(() => { inputReconnectTimer = null; connectInput(); }, 1000);
@@ -109,12 +113,33 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     // remote CSS pixels (the same coordinate space as verified touch input),
     // avoiding noVNC's transform-blind mouse conversion.
     if (!MAGNIFY) return;
+    // Do not replace a live or in-flight connection.
+    if (inputSock && (inputSock.readyState === WebSocket.CONNECTING ||
+                      inputSock.readyState === WebSocket.OPEN)) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let s;
     try { s = new WebSocket(proto + '//' + location.host + inputPath()); }
     catch (_) { scheduleInputReconnect(); return; }
     inputSock = s;
-    s.onopen = () => dbg('input socket open');
+    inputAttempt++;
+    inputDialAt = nowMs();
+    const myAttempt = inputAttempt, myDialAt = inputDialAt;
+    dbg('input socket connecting #' + myAttempt);
+    // Keep the watchdog local to this connection.
+    let myConnectTimer = setTimeout(() => {
+      myConnectTimer = null;
+      if (inputSock !== s || s.readyState === WebSocket.OPEN) return;
+      dbg('input socket connect stalled -> retry');
+      try { s.close(); } catch (_) {}   // onclose -> scheduleInputReconnect
+    }, INPUT_CONNECT_TIMEOUT_MS);
+    const clearMyTimer = () => {
+      if (myConnectTimer !== null) { clearTimeout(myConnectTimer); myConnectTimer = null; }
+    };
+    s.onopen = () => {
+      clearMyTimer();
+      if (inputSock !== s) { dbg('input: late open on a replaced socket -> close'); try { s.close(); } catch (_) {} return; }
+      dbg('input socket open #' + myAttempt + ' upgrade=' + Math.round(nowMs() - myDialAt) + 'ms');
+    };
     s.onmessage = (e) => {
       // Terminal input acknowledgements prove the proxy queued, then wrote, the
       // matching CDP command. They contain only the random diagnostics SID and
@@ -127,7 +152,17 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
         }
       } catch (_) {}
     };
-    const down = () => { if (inputSock === s) { inputSock = null; dbg('input socket down -> reconnect'); scheduleInputReconnect(); } };
+    const down = (ev) => {
+      clearMyTimer();
+      s.onopen = s.onmessage = s.onclose = s.onerror = null;
+      // Ignore callbacks from replaced sockets.
+      if (inputSock !== s) { dbg('input: stale socket callback ignored (#' + myAttempt + ')'); return; }
+      inputSock = null;
+      dbg('input socket down #' + myAttempt +
+          ' after=' + Math.round(nowMs() - myDialAt) + 'ms' +
+          ' code=' + ((ev && ev.code) || '-') + ' -> reconnect');
+      scheduleInputReconnect();
+    };
     s.onclose = down;
     s.onerror = down;
   }
@@ -249,6 +284,13 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   // reconnect timer). No-op unless the native touch channel is in use.
   function kick() {
     if (!MAGNIFY) return;
+    // Replace only overdue connection attempts.
+    if (inputSock && inputSock.readyState === WebSocket.CONNECTING) {
+      if (nowMs() - inputDialAt < INPUT_CONNECT_TIMEOUT_MS) return;
+      dbg('kick: replacing an overdue input connect');
+      try { inputSock.close(); } catch (_) {}
+      inputSock = null;
+    }
     if (!inputSock) {
       if (inputReconnectTimer !== null) { clearTimeout(inputReconnectTimer); inputReconnectTimer = null; }
       connectInput();
@@ -259,6 +301,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     connectInput, sendTouch, sendPointerClick, touchToRemote, collectPoints,
     queueMove, cancelPendingMove, flushPendingMove, kick,
     getInputSock: () => inputSock,
+    inputReady: () => !!inputSock && inputSock.readyState === WebSocket.OPEN,
     gestureID: () => gestureID,
   };
 }

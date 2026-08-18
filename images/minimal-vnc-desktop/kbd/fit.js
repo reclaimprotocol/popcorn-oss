@@ -200,9 +200,10 @@ export function createFit({
   let fitPhase2Timer = null;
   // wantReadable (default true) picks the opening zoom: readable/zoomed-in vs the
   // whole-page overview (see fitWantReadable).
-  function enterFit(layoutW, sw, wantReadable, countTowardLatch = true, fromNoViewport = false) {
-    const dispW = window.innerWidth;
-    const dispH = window.innerHeight;
+  function enterFit(layoutW, sw, wantReadable, countTowardLatch = true, fromNoViewport = false, display = null) {
+    // Observer-driven refits can supply host surface dimensions.
+    const dispW = (display && display.w) || window.innerWidth;
+    const dispH = (display && display.h) || window.innerHeight;
     if (!(dispW > 0 && dispH > 0 && layoutW > dispW)) return;
     fitMode = true;
     // Suspend the kiosk-window framebuffer cap (viewer.js rfb._screenSize) for the
@@ -329,11 +330,11 @@ export function createFit({
   // page ~2x too zoomed in. Comparing against readableZoomFor(fitDispW) (the width
   // fit was applied at) rather than a live window read keeps this independent of
   // when the browser updates innerWidth relative to the rotate event.
-  function refitForRotate() {
+  function refitForRotate(display = null) {
     if (!fitMode || !getRfb()) return;
     if (fitPhase2Timer) return;              // a fit dance is already running
     const lw = fitLayoutW, wr = fitWantReadable, prevW = fitDispW;
-    const dispW = window.innerWidth;
+    const dispW = (display && display.w) || window.innerWidth;
     if (!(lw > 0 && dispW > 0)) return;
     // Landscape can be wider than the page we were fitting (tablets, and any page
     // narrower than ~1000px). Fit is then meaningless — drop it and let the
@@ -349,7 +350,7 @@ export function createFit({
     }
     dbg('rotate re-fit ' + prevW + '->' + dispW + ' layout=' + lw +
       ' zoom=' + vt.zoomScale().toFixed(2) + '->' + (pendingFitZoom == null ? 'default' : pendingFitZoom.toFixed(2)));
-    enterFit(lw, lw, wr, false, fitNoViewport); // like a reconnect re-apply: must not feed the ping-pong latch
+    enterFit(lw, lw, wr, false, fitNoViewport, display); // like a reconnect re-apply: must not feed the ping-pong latch
   }
 
   function emulateURL() { return siblingPath('/emulate'); }
@@ -381,6 +382,8 @@ export function createFit({
   }
   function pushEmulate() {
     if (!MAGNIFY) return;
+    // Track geometry to avoid duplicate observer refreshes.
+    noteGeometry();
     const e = computeEmulation();
     const key = e.width + 'x' + e.height + '@' + e.deviceScaleFactor.toFixed(3);
     if (key === lastEmulateKey) return; // skip redundant POSTs (resize spam)
@@ -739,6 +742,7 @@ export function createFit({
     setTimeout(settle, 800);
     setTimeout(settle, 2500);
     window.addEventListener('resize', onResize, { passive: true });
+    startGeometryWatch();
     // orientationchange can fire BEFORE the browser has updated innerWidth, and on
     // some browsers doesn't fire at all — so it and resize both funnel into the same
     // debounced handler, which reads the size only once it has settled. Whichever
@@ -758,8 +762,134 @@ export function createFit({
     }, 3000);
   }
 
+  // Report whether the framebuffer reached its target size.
+  function framebufferConverged() {
+    if (!MAGNIFY) return true;
+    if (fitMode) return true;
+    const screen = getScreenElement();
+    const c = screen && screen.querySelector && screen.querySelector('canvas');
+    if (!c || !(c.width > 0)) return false;
+    const dw = (screen && screen.offsetWidth) || window.innerWidth;
+    const dh = (screen && screen.offsetHeight) || window.innerHeight;
+    const target = (typeof window !== 'undefined' && window.__pcnFbTarget)
+      ? window.__pcnFbTarget(dw, dh).w : dw;
+    return Math.abs(c.width - target) <= Math.max(6, target * 0.06);
+  }
+
+  function resettleOnConnect() {
+    if (!MAGNIFY) return;
+    lastEmulateKey = '';
+    dbg('resettle on rfb connect');
+    settle();
+  }
+
+  // Watch the display surface because host iframe resizes may skip window events.
+  const GEOM_SETTLE_MS = 250;
+  const GEOM_POLL_MS = 1000;
+  const GEOM_MIN_DELTA = 4;
+  let geomObserver = null;
+  let geomTimer = null;
+  let geomPollTimer = null;
+  let geomActive = false;
+  let geomW = 0, geomH = 0;
+
+  function displaySize() {
+    const screen = getScreenElement();
+    return {
+      w: Math.round((screen && screen.offsetWidth) || 0),
+      h: Math.round((screen && screen.offsetHeight) || 0),
+    };
+  }
+  function noteGeometry() {
+    const d = displaySize();
+    if (d.w > 0 && d.h > 0) { geomW = d.w; geomH = d.h; }
+  }
+  // The observed size, or null when there is nothing worth acting on.
+  function geometryChange() {
+    const { w, h } = displaySize();
+    if (w <= 0 || h <= 0) return null;
+    if (typeof document !== 'undefined' && document.hidden) return null;
+    const dw = Math.abs(w - geomW), dh = Math.abs(h - geomH);
+    if (dw < GEOM_MIN_DELTA && dh < GEOM_MIN_DELTA) return null;
+    return { w, h, widthChanged: dw >= GEOM_MIN_DELTA };
+  }
+  function onGeometrySettled() {
+    geomTimer = null;
+    if (!geomActive) return;
+    const change = geometryChange();
+    if (!change) return;
+    // Ignore height-only changes while fit owns width.
+    if (fitMode && !change.widthChanged) { geomH = change.h; return; }
+    if (!change.widthChanged && getKeyboardActive()) { geomH = change.h; return; }
+    dbg('geometry changed -> ' + change.w + 'x' + change.h + ' (no resize event)');
+    refreshAfterVisibility(change);
+  }
+  function scheduleGeometryCheck() {
+    if (!geomActive) return;
+    if (geomTimer) clearTimeout(geomTimer);
+    geomTimer = setTimeout(onGeometrySettled, GEOM_SETTLE_MS);
+  }
+  function startGeometryWatch() {
+    if (!MAGNIFY || geomActive) return;
+    geomActive = true;
+    noteGeometry();
+    const screen = getScreenElement();
+    if (typeof ResizeObserver === 'function' && screen) {
+      try {
+        geomObserver = new ResizeObserver(scheduleGeometryCheck);
+        geomObserver.observe(screen);
+        return;
+      } catch (_) { geomObserver = null; }
+    }
+    dbg('no ResizeObserver — polling geometry');
+    geomPollTimer = setInterval(() => {
+      if (geometryChange()) scheduleGeometryCheck();
+    }, GEOM_POLL_MS);
+  }
+  function stopGeometryWatch() {
+    geomActive = false;
+    if (geomObserver) { try { geomObserver.disconnect(); } catch (_) {} geomObserver = null; }
+    if (geomTimer) { clearTimeout(geomTimer); geomTimer = null; }
+    if (geomPollTimer !== null) { clearInterval(geomPollTimer); geomPollTimer = null; }
+  }
+
+  // Re-measure the REAL viewport and re-apply emulation after the viewer becomes
+  // visible again, or after the host iframe changed size without emitting a
+  // resize event.
+  //
+  // An embedded viewer is routinely hidden with display:none and shown again at a
+  // different size, and neither transition reliably fires `resize` in a WebView —
+  // so the remote stayed emulated at whatever was measured before it was hidden
+  // and the canvas kept its old height. That is the "refresh or a host viewport
+  // change leaves the canvas at an old height" report.
+  //
+  // lastEmulateKey MUST be cleared first: the stale dimensions are exactly what it
+  // has latched, so without this the re-push dedupes against them and the whole
+  // call is a silent no-op — which is the same trap resettleOnConnect documents.
+  function refreshAfterVisibility(observedDisplay = null) {
+    if (!MAGNIFY) return;
+    lastEmulateKey = '';
+    if (fitMode) {
+      // Fit pins #screen to the display width it measured. If that width has
+      // actually changed, re-run the fit dance rather than re-POSTing numbers
+      // derived from the old pin; otherwise a plain re-push is enough.
+      const displayW = (observedDisplay && observedDisplay.w) || window.innerWidth;
+      if (displayW !== fitDispW) {
+        dbg('refresh after visibility -> refit');
+        refitForRotate(observedDisplay);
+        return;
+      }
+      dbg('refresh after visibility (fit)');
+      pushEmulate();
+      return;
+    }
+    dbg('refresh after visibility');
+    settle();
+  }
+
   return {
     enterFit, exitFit, reapplyFitOnReconnect, refitForRotate, pushEmulate, readableZoom,
+    resettleOnConnect, framebufferConverged, refreshAfterVisibility, stopGeometryWatch,
     setZoomFreeze,
     startMagnify, handleTopDocSignal, snapshotZoomOnSoftDetach,
     fitMode: () => fitMode,

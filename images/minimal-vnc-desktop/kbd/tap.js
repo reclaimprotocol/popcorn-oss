@@ -31,6 +31,7 @@ export function createTap({
   flushLocalClipboard,              // clipboard
   raiseKeyboard, dismissKeyboard, armDismiss, parkProxyOffscreen, // core (hoisted)
   zoomToHitField,                    // immediate legacy-page field zoom (core)
+  inputReady,                        // is the CDP touch channel usable right now?
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
   getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
   getRemoteScrollBottom, getFocusedScrollContainer,
@@ -450,6 +451,11 @@ export function createTap({
       } else if (sendPointerClick && sendPointerClick(t.clientX, t.clientY)) {
         dbg('compat click via VNC (input unavailable)');
       }
+    }
+    // Use VNC for taps until native touch is ready.
+    if (TOUCH_INPUT && inputReady && !inputReady() &&
+        !inCrossOriginFrame(t.clientX, t.clientY) && sendPointerClick) {
+      if (sendPointerClick(t.clientX, t.clientY)) dbg('tap via VNC (input not ready yet)');
     }
     // Tap: the remote click/focus is produced by the (real or synthetic) touch
     // above; this only drives the keyboard hit-test.

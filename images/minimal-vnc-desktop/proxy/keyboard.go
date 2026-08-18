@@ -345,6 +345,16 @@ func (h *kbdHub) publish(sender *kbdClient, payload []byte) {
 }
 
 // broadcastDialog fans a dialog state out to every viewer and caches it for
+// snapshot returns cached viewer state for the HTTP fallback.
+func (h *kbdHub) snapshot() (state, dialog, popup []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.publishers > 0 {
+		state = h.lastState
+	}
+	return state, h.lastDialog, h.lastPopup
+}
+
 // late joiners. Unlike publish it never touches lastState — a dialog must not
 // overwrite the cached focus signal, or a reconnecting viewer would be resynced
 // with a dialog in place of its keyboard state. An `open:false` state clears the

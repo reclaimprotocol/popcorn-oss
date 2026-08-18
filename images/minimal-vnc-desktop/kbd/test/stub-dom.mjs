@@ -198,6 +198,30 @@ export function makeScreen() {
   return screen;
 }
 
+// ---- ResizeObserver recorder -------------------------------------------------
+// The viewer observes its display surface DIRECTLY, because in an embedded
+// WebView neither window.resize nor visibilitychange is guaranteed to fire when
+// the host changes the iframe's size. Tests drive that edge through
+// fireResizeObservers(el), which is the same notification the browser delivers.
+export const resizeObservers = [];
+class StubResizeObserver {
+  constructor(cb) { this.cb = cb; this.targets = []; this.disconnected = false; resizeObservers.push(this); }
+  observe(el) { if (this.targets.indexOf(el) < 0) this.targets.push(el); }
+  unobserve(el) { const i = this.targets.indexOf(el); if (i >= 0) this.targets.splice(i, 1); }
+  disconnect() { this.targets.length = 0; this.disconnected = true; }
+}
+// Fire only the observers watching `el`. Scoping by target matters: a test file
+// builds several viewers, and a notification delivered to a previous one's
+// observer would run its debounce against the CURRENT test's fetch recorder.
+export function fireResizeObservers(el) {
+  for (const o of resizeObservers.slice()) {
+    if (o.disconnected) continue;
+    const targets = el ? o.targets.filter((t) => t === el) : o.targets;
+    if (!targets.length) continue;
+    o.cb(targets.map((t) => ({ target: t })), o);
+  }
+}
+
 // ---- WebSocket recorder ----------------------------------------------------
 export const webSockets = [];
 
@@ -357,6 +381,8 @@ export function installGlobals(profileName, opts) {
   globalThis.Element = StubElement; // `target instanceof Element` in withinScreen
   globalThis.localStorage = { getItem: () => null, setItem: noop, removeItem: noop };
   globalThis.WebSocket = StubWebSocket;
+  resizeObservers.length = 0;
+  globalThis.ResizeObserver = StubResizeObserver;
   globalThis.requestAnimationFrame = (fn) => { fn(); return 0; }; // synchronous double-rAF is fine
   // Intervals never self-tick (watchdog / polls / pings stay quiet); tests that
   // exercise interval-driven behavior call tickIntervals() to fire them once.

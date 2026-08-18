@@ -86,7 +86,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
   // Deploy stamp, logged in the "setup env" klog line. Bump on every deploy so a
   // stale-cache session is provable from the log alone (many "still broken"
   // reports were pages running old JS).
-  const BUILD_TAG = 'bundle-79';
+  const BUILD_TAG = 'bundle-80';
 
   // ---- RFB transport (replaces CDP Input.*) --------------------------------
   // Lives in ./kbd/transport.js: sendText/sendSpecialKey, per-burst WebSocket
@@ -603,6 +603,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       zoomToField(rect);
     },
     armDismiss: () => session.armDismiss(), // field-session (created later — deferred)
+    inputReady: () => tc.inputReady(),
     getKeyboardActive: () => keyboardActive,
     getKeyboardJustDismissed: () => keyboardJustDismissed,
     getEcMode: () => input.ecMode(),
@@ -755,11 +756,74 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
   });
   const connectSignal = sig.connectSignal;
   const kickReconnects = sig.kickReconnects;
+  const startStateBridge = sig.startStateBridge;
   const startKbdStaleWatch = sig.startKbdStaleWatch;
 
   // ---- Setup / public API --------------------------------------------------
 
   let initialized = false;
+
+  // Retry incomplete startup work until it converges or times out.
+  const CONVERGE_FAST_TICK_MS = 250;
+  const CONVERGE_FAST_PHASE_MS = 8000;
+  const CONVERGE_SLOW_TICK_MS = 1000;
+  const CONVERGE_MAX_MS = 60000;
+  let convergeTimer = null;
+  let convergeStart = 0;
+  let convergeFast = true;
+  // Framebuffer retries are rate-limited.
+  const FB_DRIVE_MIN_GAP_MS = 2500;
+  const FB_MAX_DRIVES = 4;
+  let fbDriveAt = 0;
+  let fbDrives = 0;
+  function convergenceGaps() {
+    const gaps = [];
+    if (MAGNIFY) {
+      const isock = tc.getInputSock();
+      if (!isock || isock.readyState !== WebSocket.OPEN) gaps.push('input');
+    }
+    if (!sig.isOpen()) gaps.push('kbd');
+    if (rfbReady && !fit.framebufferConverged()) gaps.push('fb');
+    return gaps;
+  }
+  function stopConvergenceWatch() {
+    if (convergeTimer !== null) { clearInterval(convergeTimer); convergeTimer = null; }
+  }
+  function convergeTick() {
+    const gaps = convergenceGaps();
+    if (!gaps.length) {
+      dbg('converged after ' + Math.round(nowMs() - convergeStart) + 'ms');
+      stopConvergenceWatch();
+      return;
+    }
+    const elapsed = nowMs() - convergeStart;
+    if (elapsed > CONVERGE_MAX_MS) {
+      dbg('convergence gave up, still missing: ' + gaps.join(','));
+      stopConvergenceWatch();
+      return;
+    }
+    dbg('converge re-drive: ' + gaps.join(','));
+    if (gaps.indexOf('input') !== -1 || gaps.indexOf('kbd') !== -1) kickReconnects();
+    if (gaps.indexOf('fb') !== -1 && fbDrives < FB_MAX_DRIVES &&
+        nowMs() - fbDriveAt >= FB_DRIVE_MIN_GAP_MS) {
+      fbDriveAt = nowMs();
+      fbDrives++;
+      fit.resettleOnConnect();
+    }
+    if (convergeFast && elapsed > CONVERGE_FAST_PHASE_MS) {
+      convergeFast = false;
+      if (convergeTimer !== null) { clearInterval(convergeTimer); convergeTimer = null; }
+      convergeTimer = setInterval(convergeTick, CONVERGE_SLOW_TICK_MS);
+    }
+  }
+  function startConvergenceWatch() {
+    if (convergeTimer !== null) return;
+    convergeStart = nowMs();
+    convergeFast = true;
+    fbDrives = 0;
+    fbDriveAt = 0;
+    convergeTimer = setInterval(convergeTick, CONVERGE_FAST_TICK_MS);
+  }
 
   function setup() {
     if (initialized || (!isTouch && !DESKTOP)) return;
@@ -846,7 +910,9 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     connectInput(); // native touch channel (no-op unless magnify + touch)
 
     connectSignal();
+    startStateBridge();
     startKbdStaleWatch(); // reap half-open /kbd sockets on lossy mobile links
+    startConvergenceWatch(); // re-drives whatever above did not land (see above)
 
     // Network-back signals: reconnect the idle WS channels immediately instead
     // of waiting out the exponential backoff (up to 10s). Mobile networks fire
@@ -856,7 +922,11 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     window.addEventListener('online', kickReconnects);
     window.addEventListener('pageshow', () => { kickReconnects(); reconcileKeyboardOnForeground(); });
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) { kickReconnects(); reconcileKeyboardOnForeground(); }
+      if (!document.hidden) {
+        kickReconnects();
+        reconcileKeyboardOnForeground();
+        setTimeout(() => fit.refreshAfterVisibility(), 0);
+      }
     });
   }
 
@@ -878,6 +948,8 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
           // BEFORE the typing re-lower below, which stashes the current value.
           quality.beginRefine();
           flushSendQueue();
+          kickReconnects();
+          fit.resettleOnConnect();
           // Restore fit-to-width rendering on the fresh RFB by re-running the fit
           // dance (see helper). No-op outside fit mode / on first connect.
           reapplyFitOnReconnect();
@@ -916,6 +988,8 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
         rfbReady = true;
         quality.beginRefine(); // same cold-then-sharpen cycle as the listener above
         flushSendQueue();
+        kickReconnects();
+        fit.resettleOnConnect();
         reapplyFitOnReconnect();
         if (keyboardActive) lowerTypingQuality();
       }
@@ -960,7 +1034,10 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       session.resetField();
       clearProxy(); // drops lastSentValue too
       stopWatchdog();
+      stopConvergenceWatch();
+      fit.stopGeometryWatch();
     },
     toggle: toggleKeyboard,
+    preconnectInput() { tc.connectInput(); },
   };
 })();
