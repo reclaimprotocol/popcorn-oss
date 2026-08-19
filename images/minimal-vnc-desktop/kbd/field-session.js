@@ -15,6 +15,8 @@
 
 import { DESKTOP, STATELESS, nowMs } from './env.js';
 import { dbg, dbgv } from './diag.js';
+import { e2e } from './e2e.js';
+import { reportHealth } from './health.js';
 import { fieldRejectsSpace } from './ime-hints.js';
 import { dismissDelay, linkLatency, noteTapConfirm } from './latency.js';
 import { formatRects } from './diag-geometry.js';
@@ -41,6 +43,13 @@ export function createFieldSession({
   let currentXFrames = [];
   let lastNonEmptyRectsAt = 0;   // when we last got a populated rect set (flap stickiness)
   let rectsTruncated = false;    // rects[] was capped by the extension merge (background.js)
+  // Some remote frame reported that it HAS editable fields but cannot place them
+  // yet — a cross-origin frame still waiting to be positioned by its parent (see
+  // emitBlind in extensions/proxy/content.js). Live, not sticky: the merge
+  // recomputes it from every frame's latest state, so it clears itself the moment
+  // that frame reports real rects. While it is set, "the tap matched no rect" is a
+  // statement about OUR coverage, not about the page.
+  let coverageBlind = false;
   // Distance (px) from the remote TOP document's scroll bottom (state.sb), or
   // null before the first sample. 0 means "the remote cannot scroll further
   // down" — including a page with no vertical scroll at all, which is exactly
@@ -280,6 +289,7 @@ export function createFieldSession({
         rectsTruncated = false;
       } // else: keep the last non-empty rects through the transient flap
     }
+    coverageBlind = state.blind === true;
     if (Array.isArray(state.xf)) currentXFrames = state.xf;
     if (state.vw > 0 && state.vh > 0) currentViewport = { w: state.vw, h: state.vh };
     if (typeof state.sb === 'number' && state.sb >= 0) remoteScrollBottom = state.sb;
@@ -342,12 +352,27 @@ export function createFieldSession({
         // cumulative; otherwise a repeated same-len frame would eat live chars.
         if (reconEnabled && typeof sync.len === 'number') {
           const confirmed = Math.max(0, Math.min(sync.len - baselineLen, echo.textLen()));
-          if (confirmed > 0) { reconcileEcho(confirmed); baselineLen += confirmed; sentDelta -= confirmed; }
+          if (confirmed > 0) {
+            reconcileEcho(confirmed); baselineLen += confirmed; sentDelta -= confirmed;
+            // This is the only end-to-end proof a KEYSTROKE landed: the remote
+            // field's own length grew by what we sent. Keysyms travel down the RFB
+            // tunnel, which acknowledges nothing, so without this an input trace
+            // cannot tell a lost keystroke from a slow repaint. Free here — the
+            // reconciliation already had to compute it. (No-op unless ?e2e=.)
+            e2e.noteRemoteConfirm();
+          }
         }
         // Safety net: clear whatever's still unconfirmed after an RTT-scaled
         // window (never below the old 8s floor, grows on slow links, capped 15s)
         // so a lost confirm or drift can't strand the pill.
-        if (echo.hasText() && nowMs() - echo.lastAt() > Math.min(15000, Math.max(8000, 4 * linkLatency()))) reconcileEcho();
+        if (echo.hasText() && nowMs() - echo.lastAt() > Math.min(15000, Math.max(8000, 4 * linkLatency()))) {
+          // Characters we sent that the remote field never reported holding. This
+          // is the real "lost input" signal — distinct from a slow repaint, which
+          // is what every previous report of it turned out to be — so it is worth
+          // telling the embedder about rather than only clearing the pill.
+          reportHealth('remote-unconfirmed', { pendingChars: echo.textLen(), waitedMs: nowMs() - echo.lastAt() });
+          reconcileEcho();
+        }
       }
       if (isNewField) {
         // Learn tap -> confirm latency to size the dismiss window.
@@ -510,6 +535,7 @@ export function createFieldSession({
     xframes: () => currentXFrames,
     lastNonEmptyRectsAt: () => lastNonEmptyRectsAt,
     rectsTruncated: () => rectsTruncated,
+    coverageBlind: () => coverageBlind,
     remoteScrollBottom: () => remoteScrollBottom,
     focusedScrollContainer: () => focusedScrollContainer,
     focusKey: () => remoteFocusKey,

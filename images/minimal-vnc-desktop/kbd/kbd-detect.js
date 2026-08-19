@@ -16,7 +16,8 @@
 
 import { isAndroid, nowMs } from './env.js';
 import { dbg } from './diag.js';
-import { hostGeometry, hostGeometryActive } from './host-bridge.js';
+import { hostGeometry, hostGeometryActive, hostGeometryAge } from './host-bridge.js';
+import { reportHealth } from './health.js';
 
 export function createKbdDetect({
   getKeyboardActive, setKeyboardActive, getKeyboardOpening, getProxy,
@@ -103,13 +104,72 @@ export function createKbdDetect({
     postViewport(visible, 0);
   }
 
+  // ---- ARBITRATION between the host feed and our own eyes -------------------
+  //
+  // Host geometry SUPPRESSES the local detectors, and that exclusivity is right:
+  // two sources driving the lift with slightly different heights is what causes
+  // keyboard-open jitter. But exclusivity belongs to the VALUE, not to the
+  // EVIDENCE, and the code used to conflate the two — a host sample that had once
+  // reported an occlusion was believed unconditionally from then on, including
+  // when a local detector was simultaneously measuring something completely
+  // different.
+  //
+  // That gap is the common integration mistake, not an exotic one: a portal that
+  // measures its own container instead of the visual viewport, or that keeps
+  // heartbeating the LAST keyboard's height after the keyboard changed size
+  // (a language switch, a suggestion strip appearing, a floating keyboard being
+  // docked). Both produce a fresh, authoritative-looking sample that disagrees
+  // with the only document that can actually see the difference — and the user
+  // gets a lift that is wrong by that difference for the rest of the session.
+  //
+  // So: keep believing the host by default, but require it to survive contact
+  // with local evidence. When a local detector positively measures an occlusion
+  // that the host contradicts, and the disagreement PERSISTS (one sample can just
+  // be the two sides catching a keyboard animation at different moments), the
+  // local measurement takes the lift and the embedder is told its feed is wrong.
+  const DISAGREE_PX = 60;      // below a suggestion-strip's height: not a disagreement
+  const DISAGREE_MS = 1200;    // longer than any keyboard open/close animation
+  let disagreeSince = 0;
+
+  // Did a host that WAS driving us simply stop? The samples age out after 8s and
+  // the local detectors resume automatically — that fallback is deliberate and
+  // works. What was missing is that nobody was told: from the embedder's side the
+  // keyboard just starts behaving differently mid-session, with no signal that its
+  // own bridge died (a backgrounded tab, a framework unmount, a thrown listener).
+  let hadHostAuthority = false;
+  function noteHostAuthorityLapse() {
+    if (hostGeometryActive()) { hadHostAuthority = true; return; }
+    if (!hadHostAuthority) return;
+    hadHostAuthority = false;
+    if (!getKeyboardActive()) return;      // nothing was depending on it
+    reportHealth('host-geometry-stale', { ageMs: hostGeometryAge() });
+  }
+
+  function hostContradicted(localOccluded) {
+    const hg = hostGeometry();
+    if (!hg) { disagreeSince = 0; return false; }
+    // Only positive local evidence counts. "I see no keyboard" is exactly what a
+    // blind detector reports, so it can never be grounds for overruling anybody.
+    if (!(localOccluded > 50)) { disagreeSince = 0; return false; }
+    if (Math.abs(localOccluded - hg.occludedBottom) <= DISAGREE_PX) { disagreeSince = 0; return false; }
+    const now = nowMs();
+    if (!disagreeSince) { disagreeSince = now; return false; }
+    if (now - disagreeSince < DISAGREE_MS) return false;
+    reportHealth(hg.occludedBottom > 0 ? 'host-geometry-disagrees' : 'host-geometry-blind',
+      { hostOccluded: hg.occludedBottom, localOccluded: localOccluded });
+    return true;
+  }
+
   function handleViewportResize() {
     if (!window.visualViewport) return;
-    if (hostGeometryActive()) return; // the embedder measures for us — stand down
-    if (vkSeen) return; // the VirtualKeyboard API is live and authoritative here
     const viewportHeight = window.visualViewport.height;
     const windowHeight = window.innerHeight;
     const shrunk = (windowHeight - viewportHeight) > 50;
+    // The gate, now evidence-aware: stand down for the embedder unless we can
+    // positively see something it is getting wrong (see hostContradicted).
+    noteHostAuthorityLapse();
+    if (hostGeometryActive() && !hostContradicted(windowHeight - viewportHeight)) return;
+    if (vkSeen) return; // the VirtualKeyboard API is live and authoritative here
 
     if (shrunk) {
       if (!getKeyboardActive()) dbg('VP shrunk -> kbd=true (h=' + Math.round(viewportHeight) + ')');

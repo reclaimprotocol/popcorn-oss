@@ -23,9 +23,26 @@
        was byte-identical to a sharp top-level tab. Same constraint applies to the
        portal: do not shrink the iframe with flex/grid siblings; overlay instead. */
     /* Direct child of body, no wrapper — every extra layer around the iframe is a
-       chance for the compositor to rasterise it at the wrong scale. */
+       chance for the compositor to rasterise it at the wrong scale. The live rule
+       is applied by PopcornHost.layer() (host/popcorn-host.js LAYER_CSS) so the
+       harness and every real embedder share one definition; this is the fallback
+       for the pre-script paint. */
     iframe { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
              border: 0; background: #111; }
+
+    /* ?badlayout=1 — REPRODUCE the blur, on purpose.
+       The shape that was measured soft on device: the iframe as a flex child in a
+       transformed, scrolling wrapper. Every number the viewer reports stays
+       identical to the sharp case (same framebuffer, same canvas CSS size, same
+       zoom) — which is the whole difficulty of this bug, and the reason
+       PopcornHost.auditLayout() reports the CAUSE instead of trying to measure the
+       effect. Open with &badlayout=1 next to a clean load on the same pod for the
+       A/B. */
+    body.badlayout #wrap { position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+                           display: flex; flex-direction: column; overflow: auto;
+                           transform: translateZ(0); will-change: transform; }
+    body.badlayout #wrap iframe { position: relative; flex: 1 1 auto;
+                                  width: 100%; height: auto; }
     /* Overlay, NOT a sibling that resizes the iframe. Its own layer, so scrolling it
        cannot force a re-raster of the stream beneath. */
     #panel { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
@@ -60,9 +77,19 @@
 
        Then open http://localhost:8080/host/test-host.html   (add &nest=1 for the
        three-level chain). On a phone, replace localhost with your machine's LAN
-       IP in BOTH the address bar and ?viewer=. -->
-  <iframe id="viewer" title="Popcorn live view"
-    allow="clipboard-read; clipboard-write"></iframe>
+       IP in BOTH the address bar and ?viewer=.
+
+       Sharpness A/B (the reported Android blur), same pod and same session:
+         ...&quality=9&compression=9              -> the layout contract applied
+         ...&quality=9&compression=9&badlayout=1  -> iframe left in a flex +
+                                                     overflow:auto + transformed
+                                                     wrapper
+       Both report identical SCALE lines (fb / css / dpr / sc / dev) and render
+       differently, which is the whole point of the LAYOUT audit: the cause is
+       above the viewer and not measurable from inside it. Add &e2e=1&diag=1 for
+       input->paint traces. -->
+  <div id="wrap"><iframe id="viewer" title="Popcorn live view"
+    allow="clipboard-read; clipboard-write; virtual-keyboard"></iframe></div>
   <div id="panel">
     <div id="row">
       <button id="mag">Magnify</button>
@@ -97,28 +124,53 @@
       var iframeEl = document.getElementById('viewer');
       var childUrl;
 
+      // The layout contract, applied the way an embedder should: before src, so
+      // reparenting out of #wrap is free (moving a LOADED iframe reloads it, which
+      // is why PopcornHost.layer() refuses to do that — see its comment).
+      // ?badlayout=1 skips it and leaves the iframe inside the flex/scroll/
+      // transform wrapper instead, to reproduce the soft render.
+      if (q.get('badlayout') === '1') {
+        document.body.className = 'badlayout';
+        log('BAD LAYOUT: iframe left inside a flex + overflow:auto + transformed wrapper', 'warn');
+      } else {
+        PopcornHost.layer(iframeEl, { background: '#111' });
+      }
+
       // Viewer-side knobs, forwarded verbatim to liveview.html so tuning on a device
       // is just editing this page's URL. Everything else (viewer/nest/relay/
-      // forcerelay/noorigin) is harness-only and stays here. In nested mode these
-      // ride down to the middle frame too, or the chain would silently drop them —
-      // which is exactly the bug that made the first quality=9 test a no-op.
-      var PASSTHROUGH = [
-        'quality', 'compression', 'resize', 'view_only', 'shared', 'show_dot',
-        'password', 'path', 'reconnect', 'reconnect_delay',
-        'iosbridge', 'kbddebug', 'kbdlog', 'stateless', 'mirror', 'mirrorbar',
-        'smooth',
-      ];
-      var pass = [];
-      for (var pi = 0; pi < PASSTHROUGH.length; pi++) {
-        var pv = q.get(PASSTHROUGH[pi]);
-        if (pv !== null) pass.push(PASSTHROUGH[pi] + '=' + encodeURIComponent(pv));
-      }
+      // forcerelay/noorigin/badlayout) is harness-only and stays here. In nested
+      // mode these ride down to the middle frame too, or the chain would silently
+      // drop them — which is exactly the bug that made the first quality=9 test a
+      // no-op.
+      //
+      // The LIST lives in popcorn-host.js (PopcornHost.VIEWER_PARAMS), not here:
+      // every real deployment has the same two hops as this harness, and a
+      // parameter that only one of them knows about is a parameter that dies
+      // silently at the other. One list, one forwarding function, tested directly
+      // (kbd/test/host-embed-params.test.mjs).
+      var pass = PopcornHost.forwardParams(location.search);
 
       if (nest && !relayMode) {
         // Level 1 of 3: load ourselves as the middle (relay) frame. It carries the
         // same viewer target down, plus relay=1 so it forwards instead of measuring.
+        // Harness-only knobs that must ALSO survive this hop, because the middle
+        // frame is the one that builds the viewer URL: magnify and noorigin were
+        // dropped here before, so `&nest=1&magnify=0` silently ran the nested chain
+        // in magnify mode — the three-level topology could not be A/B'd at all.
+        var nestExtra = [];
+        // legacyxlate belongs to the MIDDLE frame — it is that hop's PopcornHost
+        // that decides whether to translate the portal's `parent-viewport` message
+        // into POPCORN_HOST_GEOMETRY. Leaving it out meant `?nest=1&legacybridge=1
+        // &legacyxlate=0` could not reproduce the deployed break at all: the middle
+        // frame defaulted the translation back ON and the keyboard worked, which is
+        // the OPPOSITE of what that URL claims to demonstrate. (A parameter dying at
+        // a hop, in the page whose comments warn about parameters dying at hops.)
+        ['viewerpage', 'magnify', 'noorigin', 'badlayout', 'legacyxlate'].forEach(function (k) {
+          var v = q.get(k);
+          if (v !== null) nestExtra.push(k + '=' + encodeURIComponent(v));
+        });
         childUrl = location.pathname + '?relay=1&nest=1&viewer=' + encodeURIComponent(viewerBase) +
-                   (q.get('viewerpage') ? '&viewerpage=' + encodeURIComponent(q.get('viewerpage')) : '') +
+                   (nestExtra.length ? '&' + nestExtra.join('&') : '') +
                    (pass.length ? '&' + pass.join('&') : '');
         log('nested mode: child is this page in relay mode');
       } else {
@@ -165,6 +217,17 @@
       // Result: no lift and no pan budget, i.e. exactly the reported symptom.
       //
       // Combine with &nest=1 for the full SDK -> portal -> viewer chain.
+      //
+      // NOW FIXED, in two independent places, so this mode reproduces the break only
+      // with &legacyxlate=0:
+      //   * popcorn-host.js translates parent-viewport into POPCORN_HOST_GEOMETRY, so
+      //     the geometry survives the hop;
+      //   * and even with no translation, a fallback measurer that can see nothing
+      //     stays SILENT rather than heartbeating occluded=0 — while the viewer
+      //     additionally refuses to let a host that has never seen an occlusion
+      //     silence its own detectors. Either half alone is enough to keep the
+      //     keyboard working; both together mean a misconfigured embedder degrades
+      //     to "no help" instead of "actively broken".
       var legacyBridge = q.get('legacybridge') === '1' && !relayMode;
 
       // Let the mode RESOLVE (?forcerelay=1 pins it, to test forwarding in
@@ -174,9 +237,16 @@
       // In legacy-bridge mode the top frame is pinned to 'relay' so PopcornHost
       // never sends geometry, mirroring the deployed portal (which drives its own
       // hook instead of PopcornHost's measuring path).
+      // legacyGeometry (default ON) translates the deployed portal's own
+      // `parent-viewport` message into POPCORN_HOST_GEOMETRY, which is what makes
+      // that portal work without shipping anything. So ?legacybridge=1 now
+      // demonstrates the FIX; add &legacyxlate=0 to turn the translation off and
+      // reproduce the original break (no lift, no pan budget, echo pill behind the
+      // keys, every keystroke waiting for remote pixels).
       var host = PopcornHost.attach(iframeEl, {
         childOrigin: childOrigin,
         relay: q.get('forcerelay') === '1' || legacyBridge,
+        legacyGeometry: q.get('legacyxlate') !== '0',
       });
       // ?fakekbd=NNN — simulate an occluding keyboard NNN px tall, so BOTH halves
       // are testable on a desktop browser (which has no soft keyboard to open).
@@ -248,11 +318,31 @@
             ' magnify=' + (d.magnify ? 1 : 0) + (d.unsupported ? ' unsupported=' + d.unsupported : ''));
         if (!d.vk) log('viewer has no usable VirtualKeyboard API -> host geometry is load-bearing', 'warn');
       });
+      host.on('layout', function (a) {
+        log('LAYOUT ' + (a.ok ? 'ok' : a.issues.join(',')) + ' reason=' + a.reason +
+            ' depth=' + a.depth + ' css=' + a.css.w + 'x' + a.css.h + ' dpr=' + a.dpr,
+            a.ok ? '' : 'warn');
+      });
+      // fb vs CSS vs device px. dev<1 means the phone is upscaling the stream; the
+      // A/B against ?badlayout=1 shows identical numbers with a visibly different
+      // render, which is exactly why the audit above exists.
+      host.on('scale', function (d) {
+        log('SCALE fb=' + d.fbWidth + 'x' + d.fbHeight + ' css=' + d.cssWidth + 'x' + d.cssHeight +
+            ' dpr=' + d.dpr + ' sc=' + d.scale + ' dev=' + d.deviceScale + ' (' + d.reason + ')');
+      });
       host.on('connect', function () { log('CONNECT (rfb handshake)'); });
       host.on('frame', function (d) { log('FRAME first paint fb=' + d.width + 'x' + d.height); });
       host.on('disconnect', function (d) { log('DISCONNECT willReconnect=' + (d.willReconnect ? 1 : 0)); });
       host.on('error', function (d) { log('ERROR ' + d.reason, 'warn'); });
       host.on('kbdstate', function (d) { log('KBD_STATE active=' + (d.active ? 1 : 0) + (d.reason ? ' (' + d.reason + ')' : '')); });
+      // The viewer telling US we are breaking its keyboard. Warn-coloured on
+      // purpose: every one of these codes means a user-visible failure that the
+      // embedder is causing and cannot otherwise see.
+      host.on('health', function (d) {
+        var det = d.detail && Object.keys(d.detail).length
+          ? ' ' + Object.keys(d.detail).map(function (k) { return k + '=' + d.detail[k]; }).join(' ') : '';
+        log('HEALTH ' + d.code + det + '  [seen: ' + (d.codes || []).join(',') + ']', 'warn');
+      });
       host.on('viewport', function (d) { log('VIEWPORT back: visible=' + Math.round(d.visibleHeight) + ' occluded=' + Math.round(d.occludedBottom)); });
 
       // Show what we're measuring, so a device test can see at a glance whether

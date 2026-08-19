@@ -53,4 +53,33 @@ Suite map: `ios-input` / `android-value-diff` / `android-ec` / `composition-ios`
 floating-keyboard keep) · `host-geometry` (embedded viewer: host-supplied keyboard
 rect, detector exclusivity, origin/source rejection, heartbeat-vs-dismiss) ·
 `mirror` (?mirror=1 seed/diff/idle-reconcile) · `stateless` (?stateless=1
-advisory-signal invariants) · `watchdog`.
+advisory-signal invariants) · `watchdog` · `blind-coverage-raise` (a tap on a
+cross-origin form field raises without waiting for the remote confirm) ·
+`e2e-trace` (input→paint legs + the privacy shape of a trace line) ·
+`fbtarget` (the framebuffer/CDP size agreement that makes deviceScaleFactor>1 safe) ·
+`fbscale` (when supersampling is worth its k² pixels) · `portal-blind-host` (a
+misconfigured embedder cannot break the keyboard) ·
+`host-embed-layout` / `host-embed-params` (the EMBEDDER side — see below).
+
+### Host-side suites
+
+`host-embed-layout` and `host-embed-params` test `host/popcorn-host.js`, which is
+a classic script an integrator drops into their own page — not a module, so it
+cannot be imported. `host-stub.mjs` evaluates it against a hand-built window whose
+only job is to be honest about what the layout audit reads (`getComputedStyle`, the
+parent chain, `getBoundingClientRect`, the viewport size); a test writes the DOM
+shape it wants to characterise and asserts on what the audit says about it. That
+stub models the page ABOVE the viewer, so it is deliberately separate from
+`stub-dom.mjs`, which models the viewer's own document.
+
+New in the embed/diagnostics group: `health` (the integration verdict sent to the
+embedder) · `fbscale-pinned` (a pinned ?fbscale=N must actually reach the
+framebuffer) · `e2e-trace` (input->paint legs, including the remote-confirmation
+leg and the field-aware paint sampler) · `watchdog` (focus reclaim vs dismissal).
+
+A browser-driven counterpart lives at `host/test/embed-contract.browser.mjs`: the
+embedding contract is a BROWSER behaviour (raster scale, iframe lifetime,
+permission policy) and a stub can only disagree with a browser in the direction
+nobody wrote a test for — which is exactly how `PopcornHost.layer()` shipped
+broken while its stub test passed. It skips with exit 0 when no Chrome or no pod
+is available.

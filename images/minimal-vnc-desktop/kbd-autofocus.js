@@ -62,6 +62,7 @@ import { createEcho } from './kbd/echo.js';
 import { createClipboard } from './kbd/clipboard.js';
 import { createTouchChannel } from './kbd/touch-channel.js';
 import { createWatchdog } from './kbd/watchdog.js';
+import { reportHealth } from './kbd/health.js';
 import { applyImeHints } from './kbd/ime-hints.js';
 import { createAutoSpaceFilter } from './kbd/autospace.js';
 import { createDesktopBridge } from './kbd/desktop-bridge.js';
@@ -79,6 +80,8 @@ import { createSignal } from './kbd/signal.js';
 import { createDialog } from './kbd/dialog.js';
 import { createPopupBar } from './kbd/popup-bar.js';
 import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
+import { initE2E } from './kbd/e2e.js';
+import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
 (function () {
   'use strict';
@@ -295,6 +298,14 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getKeyboardJustDismissed: () => keyboardJustDismissed,
     getProxy: () => proxy,
     dismissKeyboard,
+    // Ask for the focus back before concluding the keyboard is gone. In an embed
+    // the page above us runs its own code, and any of it can take focus while the
+    // user is still typing — which used to read as "the keyboard went away" and
+    // tore down a live session mid-word.
+    reclaimFocus: () => { if (proxy) proxy.focus(); },
+    // A successful reclaim means somebody up there stole it. That is an
+    // integration bug the embedder cannot see from its own side, so say so.
+    onFocusStolen: () => reportHealth('focus-stolen'),
   });
   const startWatchdog = watchdog.start;
   const stopWatchdog = watchdog.stop;
@@ -617,6 +628,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getViewport: () => session.viewport(),
     getLastNonEmptyRectsAt: () => session.lastNonEmptyRectsAt(),
     getRectsTruncated: () => session.rectsTruncated(),
+    getCoverageBlind: () => session.coverageBlind(),
     getRemoteScrollBottom: () => session.remoteScrollBottom(),
     getFocusedScrollContainer: () => session.focusedScrollContainer(),
     getGestureID: () => tc.gestureID(),
@@ -766,6 +778,8 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
   // ---- Setup / public API --------------------------------------------------
 
   let initialized = false;
+  // Supersampled-framebuffer policy watcher (kbd/fbscale.js), created in setup().
+  let fbScaleWatch = null;
 
   // Retry incomplete startup work until it converges or times out.
   const CONVERGE_FAST_TICK_MS = 250;
@@ -844,6 +858,24 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       // plain ?magnify=1 escalating to a 508px fit at readable zoom 1.41.
       ' fixedw=' + FIXEDW +
       ' iw=' + window.innerWidth + ' ih=' + window.innerHeight + ' build=' + BUILD_TAG);
+    // An embedded viewer without allow="virtual-keyboard" gets the VK object but
+    // never a rect, and a subframe's visualViewport does not reliably shrink
+    // either — so in that configuration the HOST's geometry is the only thing
+    // keeping the keyboard usable, and the embedder should know it is load-bearing
+    // before a user finds out.
+    //
+    // ASK THE POLICY, not the object. `navigator.virtualKeyboard` is present
+    // either way and `boundingRect` is a real (0x0) rect whether the feature was
+    // denied or the keyboard is merely closed — verified in Chrome against an
+    // iframe with the token missing, where the object-shape check reported a
+    // perfectly healthy `vk=1`. The permissions policy is the only thing that
+    // answers the actual question, and it answers it at load, before any keyboard
+    // has had a chance to open.
+    try {
+      const pol = document.permissionsPolicy || document.featurePolicy;
+      if (window !== window.top && pol && typeof pol.allowsFeature === 'function' &&
+          !pol.allowsFeature('virtual-keyboard')) reportHealth('no-virtual-keyboard');
+    } catch (_) { /* no policy API here: cannot tell, so say nothing */ }
 
     // EditContext (Chromium/Android) drives the IME natively — glide/swipe typing
     // and the prediction bar work through it. SwiftKey's autocorrect-on-space is
@@ -884,12 +916,36 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       // magnify/keyboard toggles have nothing to drive on desktop.
       installHostBridge({
         onPaste: (text) => { dbg('host cmd paste len=' + text.length); insertPastedText(text); },
+      onHostLayout: (r) => dbg('host layout ' + (r.issues.length ? r.issues.join(',') : 'ok') +
+        ' reason=' + r.reason + ' top=' + (r.top ? 1 : 0) + ' depth=' + r.depth +
+        ' css=' + r.cssW + 'x' + r.cssH + ' dpr=' + r.dpr, r.issues.length > 0),
       });
       window.addEventListener('online', kickReconnects);
       window.addEventListener('pageshow', kickReconnects);
       document.addEventListener('visibilitychange', () => { if (!document.hidden) kickReconnects(); });
       return;
     }
+    // Input->paint tracing (?e2e=). Returns null and installs nothing when the
+    // flag is absent, so the untraced path stays a null check per input event.
+    initE2E({
+      getScreenElement: () => screenElement(),
+      // WHERE to look for the paint. Typing changes a caret and a couple of glyphs
+      // inside one field; a uniform sample grid lands between them and reports
+      // `paint=none` for a keystroke that is plainly on screen. The focused rect
+      // arrives on /kbd in REMOTE pixels, which are framebuffer pixels — the same
+      // 1:1 mapping tap.js relies on — so it can be handed straight to the sampler.
+      getFieldRect: () => session.rect(),
+    });
+    // Supersampled framebuffer (kbd/fbscale.js). Starts at 1x — today's behaviour —
+    // and steps up only once the tunnel RTT has been measured healthy for a few
+    // seconds, so a cold start and a slow link cost exactly what they cost now.
+    // Blocked while a CSS zoom holds the framebuffer size frozen or a fit dance owns
+    // it; the watcher just tries again on its next tick.
+    fbScaleWatch = createFbScaleWatch({
+      getCurrent: () => fit.fbScale(),
+      getBlocked: () => fit.fitMode() || vt.zoomScale() > 1.01 || !rfbReady,
+      onChange: (k) => fit.applyFbScale(k),
+    });
     parkProxyOffscreen(); // start off-screen; raiseKeyboard brings it in when needed
 
     // Kill the browser's OWN pinch-zoom / double-tap-zoom on the stream in every
@@ -916,6 +972,9 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       onToggleMagnify: () => { dbg('host cmd toggle-magnify'); toggleMagnify(); },
       onToggleKeyboard: () => { dbg('host cmd toggle-kbd'); toggleKeyboard(); },
       onPaste: (text) => { dbg('host cmd paste len=' + text.length); insertPastedText(text); },
+      onHostLayout: (r) => dbg('host layout ' + (r.issues.length ? r.issues.join(',') : 'ok') +
+        ' reason=' + r.reason + ' top=' + (r.top ? 1 : 0) + ' depth=' + r.depth +
+        ' css=' + r.cssW + 'x' + r.cssH + ' dpr=' + r.dpr, r.issues.length > 0),
     });
     connectInput(); // native touch channel (no-op unless magnify + touch)
 
@@ -923,6 +982,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     startStateBridge();
     startKbdStaleWatch(); // reap half-open /kbd sockets on lossy mobile links
     startConvergenceWatch(); // re-drives whatever above did not land (see above)
+    if (fbScaleWatch) fbScaleWatch.start();
 
     // Network-back signals: reconnect the idle WS channels immediately instead
     // of waiting out the exponential backoff (up to 10s). Mobile networks fire
@@ -1011,6 +1071,9 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       // RFB reconnects at its configured quality and re-lowers on 'connect' if
       // the keyboard is still up (soft detach keeps it up).
       quality.resetSaved();
+      // Same reasoning for the framebuffer scale factor: the next RFB arrives with
+      // scaleViewport off, so the factor has to come back to 1 with it.
+      fit.resetFbScaleOnDetach();
       rfb = null;
       // A full teardown must not leave a dialog sheet stranded over a dead stream
       // (there is nothing left that could answer it). A SOFT detach keeps it: the

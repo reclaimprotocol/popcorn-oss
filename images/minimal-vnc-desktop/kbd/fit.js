@@ -206,6 +206,16 @@ export function createFit({
     const dispH = (display && display.h) || window.innerHeight;
     if (!(dispW > 0 && dispH > 0 && layoutW > dispW)) return;
     fitMode = true;
+    // A real fit renders the page's FULL width into the framebuffer and scales it
+    // down — already more remote pixels than the display has, so supersampling on
+    // top would multiply an already-sharp render (and 980*2 is a framebuffer nobody
+    // asked for). Hand the framebuffer back to fit, which owns #screen from here.
+    if (fbScale !== 1) {
+      if (fbScaleTimer) { clearTimeout(fbScaleTimer); fbScaleTimer = null; }
+      fbScale = 1;
+      try { window.__pcnFbScale = 1; } catch (_) {}
+      dbg('fbscale 1 (fit owns the framebuffer)');
+    }
     // Suspend the kiosk-window framebuffer cap (viewer.js rfb._screenSize) for the
     // duration of the fit dance, which deliberately grows the framebuffer to the
     // whole page before scaleViewport downscales it.
@@ -360,8 +370,13 @@ export function createFit({
   // clipping and no blank margin. In fit-to-width mode #screen is sized to the
   // full page width (fitLayoutW×fitLayoutH), so this naturally emulates + resizes
   // the framebuffer wide; the CSS transform then scales it down to the viewport.
-  // deviceScaleFactor is ALWAYS 1: a fractional DSF only changes reported DPR, it
-  // does NOT downscale the raster into the VNC framebuffer (verified — it crops).
+  // deviceScaleFactor was ALWAYS 1 here, on the finding that raising it crops: a
+  // fractional DSF changes the reported DPR and does NOT downscale the raster into
+  // the VNC framebuffer. That finding is right about the CAUSE and wrong about the
+  // conclusion — it crops because the framebuffer stayed CSS-sized while the render
+  // grew. Grow both from the same number (window.__pcnFbTarget, which returns the
+  // framebuffer AND the CSS size it corresponds to) and a DSF>1 renders exactly
+  // into it. See the supersampling branch below and kbd/fbscale.js.
   function computeEmulation() {
     if (fitMode && fitLayoutW > 0) {
       // Render the FULL page width; the wide framebuffer is scaled down for
@@ -377,8 +392,17 @@ export function createFit({
     // fitted in the cap (?fill=1). Sharing the one function keeps CDP layout ==
     // framebuffer, so the render is never clipped and (in fill) never letterboxed.
     const t = (typeof window !== 'undefined' && window.__pcnFbTarget) ? window.__pcnFbTarget(width, height) : null;
-    if (t) { width = t.w; height = t.h; }
-    return { width, height, deviceScaleFactor: 1 };
+    if (!t) return { width, height, deviceScaleFactor: 1 };
+    // SUPERSAMPLING (kbd/fbscale.js): render the SAME CSS viewport at k device
+    // pixels per CSS pixel. The layout is untouched — cssW/cssH is exactly what a
+    // 1x render would have used, so the page reflows identically and cannot be
+    // pushed into a reload — while the raster (and the framebuffer noVNC asks for,
+    // t.w/t.h from the same call) carries k times the detail per axis. Emulating
+    // the CSS size with dsf>1 while the framebuffer stayed CSS-sized is what the
+    // old "DSF is ALWAYS 1" note above describes: it crops, because the render is
+    // larger than the framebuffer. Sizing both from one function is what makes it
+    // safe. k is 1 unless the policy raised it, in which case this is unchanged.
+    return { width: t.cssW, height: t.cssH, deviceScaleFactor: t.scale || 1 };
   }
   function pushEmulate() {
     if (!MAGNIFY) return;
@@ -682,6 +706,85 @@ export function createFit({
     pushEmulate();
   }
 
+  // ---- SUPERSAMPLING ------------------------------------------------------
+  // Apply a framebuffer scale factor (kbd/fbscale.js decides WHEN; this does it).
+  //
+  // Deliberately NOT the fit dance, even though fit is the same idea (render more
+  // remote pixels than the display, let noVNC scale them down). Fit's phase 1 grows
+  // #screen to an oversized box so noVNC's own size math requests a bigger
+  // framebuffer, and hides that behind a 1.15s cover — fine for a page-load
+  // decision, wrong for a mid-session one that must not flash. We don't need it:
+  // viewer.js overrides rfb._screenSize, so the request already comes from
+  // __pcnFbTarget and grows the moment the factor changes. #screen never moves.
+  //
+  // Four steps, in this order:
+  //   1. publish the factor (both the framebuffer request and computeEmulation read
+  //      it from __pcnFbTarget, so they cannot disagree);
+  //   2. PIN #screen to a fixed pixel size. With scaleViewport on, noVNC recomputes
+  //      its display scale from #screen's box, so a 100% box + a soft keyboard that
+  //      reflows the layout viewport = a visible zoom jump on every keyboard open.
+  //      Fit's phase 2 pins for exactly this reason;
+  //   3. scaleViewport on (display the k-times-bigger framebuffer across the same
+  //      box) and resizeSession on for one beat, to send the new SetDesktopSize;
+  //   4. re-emulate at the same CSS size with the new deviceScaleFactor, then freeze
+  //      resizeSession so nothing re-requests behind our back.
+  let fbScale = 1;
+  let fbScaleTimer = null;
+  function applyFbScale(k) {
+    k = Math.max(1, Math.round(k || 1));
+    if (k === fbScale) return;
+    if (fitMode) { fbScale = 1; return; } // fit owns the framebuffer; already supersampled
+    const rfb = getRfb();
+    if (!rfb) return;
+    const dispW = window.innerWidth, dispH = window.innerHeight;
+    if (!(dispW > 0 && dispH > 0)) return;
+    fbScale = k;
+    try { window.__pcnFbScale = k; } catch (_) {}
+    const s = getScreenElement();
+    if (s) {
+      if (k > 1) { s.style.width = dispW + 'px'; s.style.height = dispH + 'px'; }
+      else { s.style.width = ''; s.style.height = ''; }
+    }
+    lastEmulateKey = ''; // the key includes the DSF, but force it anyway
+    try {
+      rfb.scaleViewport = k > 1;
+      rfb.resizeSession = true; // assignment is what makes noVNC send SetDesktopSize
+    } catch (_) {}
+    pushEmulate();
+    // Freeze the size once the resize has had time to land, so a later #screen or
+    // keyboard event cannot re-request. Re-sending the emulate here is the same
+    // belt-and-braces fit's phase 2 uses: the /emulate POST and the VNC resize
+    // travel on different connections, and the proxy's window fit needs the screen
+    // to have actually grown before it can size Chromium to it.
+    if (fbScaleTimer) clearTimeout(fbScaleTimer);
+    fbScaleTimer = setTimeout(() => {
+      fbScaleTimer = null;
+      if (fitMode || fbScale !== k) return;
+      const r2 = getRfb();
+      try { if (r2 && k > 1) r2.resizeSession = false; } catch (_) {}
+      lastEmulateKey = '';
+      pushEmulate();
+      dbg('fbscale applied k=' + k + ' fb=' + (k * dispW) + 'x' + (k * dispH) +
+        ' css=' + dispW + 'x' + dispH, true);
+    }, 900);
+  }
+
+  // A reconnect starts a FRESH RFB, and kbd-autofocus configures every new one with
+  // scaleViewport off — so a factor left set would leave the k-times-bigger
+  // framebuffer being displayed 1:1, i.e. a cropped view of the top-left corner.
+  // Reset to 1x on detach and let the watcher earn the step-up again once the new
+  // link has proved healthy; that is the same cold-start rule the policy already
+  // follows, so a reconnect on a degraded link correctly stays cheap.
+  function resetFbScaleOnDetach() {
+    if (fbScaleTimer) { clearTimeout(fbScaleTimer); fbScaleTimer = null; }
+    if (fbScale === 1) return;
+    dbg('fbscale reset to 1 (detach)');
+    fbScale = 1;
+    try { window.__pcnFbScale = 1; } catch (_) {}
+    const s = getScreenElement();
+    if (s && !fitMode) { s.style.width = ''; s.style.height = ''; }
+  }
+
   // A CSS zoom must FREEZE the remote framebuffer size.
   //
   // noVNC derives the size it requests from getBoundingClientRect(#screen) — which
@@ -888,6 +991,9 @@ export function createFit({
   }
 
   return {
+    applyFbScale,
+    resetFbScaleOnDetach,
+    fbScale: () => fbScale,
     enterFit, exitFit, reapplyFitOnReconnect, refitForRotate, pushEmulate, readableZoom,
     resettleOnConnect, framebufferConverged, refreshAfterVisibility, stopGeometryWatch,
     setZoomFreeze,

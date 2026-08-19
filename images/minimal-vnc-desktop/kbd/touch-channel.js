@@ -15,6 +15,7 @@ import { MAGNIFY, TOUCH_INPUT, nowMs, siblingPath } from './env.js';
 import { dbg, dbgv, KBD_LOG, KBD_SID } from './diag.js';
 import { linkRtt } from './latency.js';
 import { formatPoint, formatPoints } from './diag-geometry.js';
+import { e2e } from './e2e.js';
 
 // Coalesce touchmove sends. A fast swipe fires touchmove 60-120x/s; forwarding
 // each one floods /input -> CDP -> a burst of tiny scroll frames over the tunnel
@@ -149,6 +150,10 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
         const a = JSON.parse(e.data);
         if (a && a.diag === 'input' && a.sid === KBD_SID && typeof a.g === 'number') {
           dbg('input g#' + a.g + ' ' + (a.t || '-') + ' proxy=' + (a.state || '-'));
+          // Third leg of the input->paint trace (see kbd/e2e.js): this is the
+          // moment the remote browser actually received the gesture, so it is
+          // where waiting for pixels legitimately starts.
+          e2e.noteWritten('g#' + a.g, a.state);
         }
       } catch (_) {}
     };
@@ -183,6 +188,9 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
       const msg = { t: type, points };
       if (KBD_LOG) { msg.d = KBD_SID; msg.g = gestureID; }
       inputSock.send(JSON.stringify(msg));
+      // Only the terminal events carry a proxy acknowledgement (emulate.go acks
+      // end/cancel/click), so only those can be traced through to a paint.
+      if (type === 'end' || type === 'cancel') e2e.noteSent('tap', 'g#' + gestureID, true);
       gestureSent++;
       if (type === 'end' || type === 'cancel') finishGesture(type);
       return true;

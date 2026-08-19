@@ -80,6 +80,160 @@ python3 -m http.server 8080   # from images/minimal-vnc-desktop
 #       http://localhost:8080/host/test-host.html  (+ debug panel, buttons, ?nest=1)
 ```
 
+### The embed layout contract (mobile sharpness)
+
+The stream is a bitmap, so whatever raster scale the embedding page's compositor
+picks for the iframe's layer is the scale the user sees. Mobile compositors pick
+one BELOW device scale for a layer they consider cheap to redraw, and every number
+the viewer can report stays identical while the render goes visibly soft — same
+framebuffer, same canvas CSS size, zoom 1.00, byte-identical to a sharp top-level
+tab. So sharpness on a phone is a property of the embedder, not of the encoder,
+and lowering `quality`/`compression` cannot buy it back.
+
+The rules, at **every** hop of a chain (customer page → portal → liveview):
+
+- the viewer iframe is a plain fixed full-viewport layer — `position: fixed;
+  inset: 0; width: 100%; height: 100%; border: 0` — and a **direct child of
+  `<body>`**, with no wrapper;
+- page chrome is **layered over** it (`position: fixed` + `z-index`), never a
+  layout sibling that resizes it;
+- no ancestor carries a transform, `zoom`, filter, containment,
+  `content-visibility`, `opacity < 1`, `will-change`, or scrolls or animates;
+- the iframe carries `allow="clipboard-read; clipboard-write; virtual-keyboard"`.
+  Without the `virtual-keyboard` token the VirtualKeyboard API exists inside the
+  frame but stays mute, which makes YOUR geometry the only thing keeping the
+  keyboard usable — the viewer reports `no-virtual-keyboard` when it finds itself
+  in that configuration;
+- **do not take the focus while the keyboard is up.** Anything in the embedding
+  page that calls `focus()` — an input of your own, a scroll-into-view, a consent
+  banner mounting, an analytics widget — closes the user's keyboard mid-word.
+  Each document owns its own `activeElement`, so the viewer cannot see this
+  happening and cannot re-open a soft keyboard without a user gesture; all it can
+  do is notice via `document.hasFocus()` and report `focus-stolen`. Track
+  `.on('kbdstate')` and leave the focus alone while `active` is true.
+
+`host/popcorn-host.js` both applies and checks this:
+
+```js
+const frame = document.createElement('iframe');
+PopcornHost.layer(frame);                       // the contract, before src
+frame.src = viewerBase + '/liveview.html?' +
+  ['magnify=1', 'parentOrigin=' + encodeURIComponent(location.origin)]
+    .concat(PopcornHost.forwardParams()).join('&');   // params survive this hop
+document.body.appendChild(frame);
+const host = PopcornHost.attach(frame, { childOrigin: new URL(viewerBase).origin });
+host.on('layout', (a) => { if (!a.ok) report(a.issues); });  // codes only
+host.on('scale', (s) => report(s.deviceScale));  // remote px per device px
+host.on('health', (h) => report(h.code, h.detail)); // this embed is breaking the keyboard
+```
+
+`auditLayout()` runs itself on hello and on first paint, warns to the console with
+the offending codes, emits `.on('layout')`, and posts the finding down to the
+viewer's structural session log — so a "the stream is blurry" report is
+attributable from the pod side without asking anyone to open devtools on a phone.
+`.on('scale')` carries the four numbers that separate the causes: `fbWidth/fbHeight`
+(remote px sent), `cssWidth/cssHeight` (the box on the device), `scale` (fb/CSS)
+and `deviceScale` (fb per DEVICE px — the one that predicts what the user sees).
+
+Reproduce the failure on purpose with `host/test-host.html?badlayout=1`, which
+leaves the iframe inside a flex + `overflow: auto` + transformed wrapper. Combine
+with `&nest=1` for the full three-level chain.
+
+### Geometry: the failure that looks like a broken keyboard
+
+An embedder that posts geometry it cannot measure is worse than one that posts
+nothing. A middle frame whose `PopcornHost` falls back to measuring *itself* is a
+cross-origin iframe whose `visualViewport` never shrinks, so it reports
+`occludedBottom: 0` forever — and host geometry deliberately **suppresses** the
+viewer's own detectors (two detectors driving the lift with different heights is what
+causes keyboard-open jitter). The result is no lift, no pan budget to reach the
+field, and the local-echo pill positioned behind the keyboard, so the one mechanism
+that masks per-keystroke round-trip latency becomes invisible and typing appears
+dead until the remote's pixels arrive.
+
+Three defences, so a misconfigured embedder degrades to "no help" rather than
+"actively broken":
+
+- an embedded fallback measurer that sees no occlusion stays **silent**;
+- the viewer only lets a host silence its detectors once that host has reported a
+  real occlusion at least once;
+- the legacy `{type:'parent-viewport', innerHeight, viewportHeight}` message — what
+  the deployed portal sends — is **translated** into `POPCORN_HOST_GEOMETRY`, so that
+  portal works unmodified. Opt out with `attach(frame, { legacyGeometry: false })`.
+
+`host/test-host.html?legacybridge=1` exercises the translation; add `&legacyxlate=0`
+to reproduce the original break.
+
+### `.on('health')` — the viewer's verdict on your integration
+
+Every failure in this chain that has cost real time degraded *silently*: the viewer
+knew something was wrong and the only place it could say so was a console inside a
+cross-origin iframe on somebody's phone. The integrator saw a working page, the
+user saw a broken keyboard, and nobody had both halves at once.
+
+So the viewer reports its own health up the bridge, in codes. Alert on them, or log
+them beside your own session id — they are structural (short strings plus rounded
+numbers, never anything derived from page content), so they are safe to forward
+into your own logging.
+
+| code | what it means |
+| --- | --- |
+| `host-geometry-blind` | you are feeding geometry but have never seen an occlusion, while the viewer's own detectors say the keyboard is up — you are measuring the wrong window |
+| `host-geometry-stale` | your feed stopped while the keyboard was up; the viewer has fallen back to local detection |
+| `host-geometry-disagrees` | both sides see a keyboard, with materially different occlusion — usually an iframe that is not full-viewport, so the lift is wrong by the difference |
+| `focus-stolen` | something in your page took the focus while the keyboard was open |
+| `no-virtual-keyboard` | embedded without `allow="virtual-keyboard"`, so your geometry is load-bearing |
+| `remote-unconfirmed` | keystrokes were sent that the remote field never reported holding — a real lost-input signal, as opposed to a slow repaint |
+
+Each code is reported at most once per 30s, and every message carries the
+cumulative `codes` list, so a listener that mounts late still learns what went
+wrong. `host/test-host.html` logs them in its debug panel.
+
+### Sharpness on a phone: the supersampled framebuffer
+
+Even with the layout contract satisfied, the framebuffer is sized in the phone's CSS
+pixels (`deviceScaleFactor: 1`), so a 411px viewport streams 411 remote pixels onto
+~1080 device pixels — `dev=0.38` in the scale line, i.e. every remote pixel is
+upscaled ~2.6x by the phone. No encoder setting can put that detail back.
+
+`?fbscale=` raises CDP `deviceScaleFactor` **and** grows the framebuffer with it, so
+the page still lays out as a 411px mobile viewport (same reflow, no reload — and
+`injected.js` pins `devicePixelRatio` to 1, so the site sees no change) while the
+raster carries k times the detail per axis: `dev` 0.38 → 0.76 at k=2.
+
+| value | behaviour |
+| --- | --- |
+| `auto` | Opt-in adaptive mode: 2x once the link is measured healthy — magnify + touch + DPR≥2 + not in desktop-fit + RTT<400ms sustained 3s + no saveData/2g/3g. **Cold start is always 1x**, and it drops back to 1x if the link degrades. |
+| `1` (default) | Off — today's behaviour byte-for-byte. Use this default until device A/B data proves supersampling improves input-to-paint latency as well as sharpness. |
+| `2`, `3` | pinned, ignoring link health. For a device A/B. |
+
+**It costs k² pixels per frame** — ~4x encode CPU on the pod and ~4x bytes on the
+wire at k=2. That trades against paint latency, which is why `auto` never spends it
+on a link it has not measured. The CPU side is the one to watch: this image runs
+TigerVNC 1.12, whose Tight/JPEG encoding is single-threaded per client (no equivalent
+of KasmVNC's `-RecThreads`), so 4x the pixels is 4x the work on ONE core. KasmVNC
+ships the same idea on by default — its Medium/High presets auto-scale the remote
+resolution to the client and explicitly scale upward on mobile — but its encoder fans
+out across cores. The mechanism is proven; the cost profile is not the same. Pages that hit desktop-fit are excluded because they
+are already supersampled (980 remote px into a 411px viewport ≈ `dev=0.91`, which is
+why desktop-fallback pages look sharp while responsive ones look soft).
+
+### Diagnostics
+
+All opt-in, all structural — no typed text, no field values, no coordinates, no
+URLs. Append to the viewer URL (they survive every embedding hop; see
+`PopcornHost.VIEWER_PARAMS`):
+
+| param | what it adds |
+| --- | --- |
+| `diag=1` | ship the structural keyboard/input log to the proxy's `/klog` |
+| `kbddebug=1` | the same, plus an on-screen overlay and console mirror |
+| `fbscale=1` | disable the supersampled framebuffer (see above) — first thing to try if sharpness improved but latency got worse |
+| `e2e=1` | input→paint traces: `e2e tap g#7 sent=+3ms written=+58ms paint=+412ms total=473ms`. Needs `diag=1`. Reads a 5×5 grid of 12×12 pixel patches to detect localized paints, reduced to a checksum and discarded, so it costs a GPU readback per poll — bounded to 8 traces per load, one in flight, 2.5s each. `e2e=N` for N traces. |
+
+`scale` lines (`fb=… css=… dpr=… sc=… dev=…`) and `host layout …` lines land in
+the same log, which is where a blur report should be read from first.
+
 noVNC HTTP/WebSocket is served on `6080`. Restricted CDP is served on `9222`
 and full CDP is served on `9226` for trusted internal routing. Raw VNC listens
 on `127.0.0.1:5900` inside the container, and Chromium's raw DevTools endpoint

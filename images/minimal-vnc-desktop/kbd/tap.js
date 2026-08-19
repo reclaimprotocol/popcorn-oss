@@ -21,6 +21,7 @@ import { DISMISS_MAX_MS } from './latency.js';
 import { showTapRipple } from './ripple.js';
 import { reportInteraction } from './host-bridge.js';
 import { formatPoint, formatRects } from './diag-geometry.js';
+import { e2e } from './e2e.js';
 
 export function createTap({
   vt,                               // viewport-transform instance (gesture state machines)
@@ -34,6 +35,7 @@ export function createTap({
   inputReady,                        // is the CDP touch channel usable right now?
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
   getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
+  getCoverageBlind,
   getRemoteScrollBottom, getFocusedScrollContainer,
   getGestureID,
   getProxy, getScreenElement,
@@ -328,6 +330,11 @@ export function createTap({
 
   function onTouchEnd(e) {
     lastTouchAt = nowMs();
+    // Leg 0 of the input->paint trace: the finger left the glass. Stamped here,
+    // before any of our own queuing, so the measured total is the latency the user
+    // actually felt rather than the one our transports account for. No-op unless
+    // ?e2e= asked for tracing (see kbd/e2e.js).
+    e2e.noteInput();
     if (onMagButton(e.target)) return;
     if (onDialogSheet && onDialogSheet(e.target)) return;
     // A tap is a transient activation — the moment iOS Safari allows a deferred
@@ -651,6 +658,28 @@ export function createTap({
     // page of buttons). lastTapAt is already stamped above, so if this tap did
     // land on a real input the remote's authoritative editable:true will raise
     // the keyboard via applySignal()'s recovery within the tap window.
+    //
+    // UNLESS the remote has TOLD us our coverage is blind: a frame reported that
+    // it holds editable fields it cannot place yet (state.blind — a cross-origin
+    // form frame still waiting to be positioned; see emitBlind in
+    // extensions/proxy/content.js). Then 'unknown' is a statement about us, not
+    // about the page, and waiting for the confirm is a measured ~2s of "typing is
+    // broken" on the first field of an embedded signup form. Raise now and let
+    // armDismiss's RTT-adaptive timer take it back down if no confirm follows —
+    // the same self-correcting contract the optimistic 'hit' raise runs on.
+    //
+    // Deliberately NOT extended to rtrunc (a rect list capped by the wire budget):
+    // that flag stays set for a whole big-form page, so every button tap on it
+    // would flicker the keyboard. `blind` is a brief load-time window on the one
+    // page shape that needs it, and it clears itself the moment rects arrive.
+    // STATELESS is excluded too: it never dismisses for a missing confirm, so a
+    // false pop there would stay up.
+    if (!STATELESS && (isIOS || isAndroid || getEcMode()) &&
+        getCoverageBlind && getCoverageBlind() && !getKeyboardActive()) {
+      dbg('tap#' + tapSeq + ' blind coverage -> optimistic raise');
+      raiseKeyboard('tap-blind');
+      armDismiss();
+    }
   }
 
 

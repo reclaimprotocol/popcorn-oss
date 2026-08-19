@@ -724,7 +724,16 @@
   // a frame whose parent could move it anyway; a forged FIELD is no longer possible.
   let absOffset = null;   // our viewport origin in TOP coords, published by our parent
   let absAsks = 0;
-  const ABS_MAX_ASKS = 8;
+  const ABS_MAX_ASKS = 10;
+  // Retry ladder for "parent, where am I?". The old shape was 300/300/300 then a
+  // flat 2000, which put a ~2s cliff right where a three-level embed lands: the
+  // portal's form frame asks before its own parent has been positioned, that ask
+  // is answered with silence, and the next attempt is 2s later. Until it lands
+  // the frame cannot report ANY coordinate, so the first tap on the first field
+  // waits that whole time for the remote's editable:true instead of raising the
+  // keyboard from a local rect hit. Ramp instead of stepping: the same total
+  // coverage (~7s) with no single gap wide enough to be felt.
+  const ABS_ASK_DELAYS = [120, 200, 320, 500, 800, 1200, 2000];
   const publishedAbs = new WeakMap(); // iframe element -> last published "x,y"
 
   // Our offset to the top document, or null when we are inside a cross-origin
@@ -744,8 +753,10 @@
     if (frameOffset().reachedTop) return; // same-origin chain positions itself
     absAsks++;
     try { window.parent.postMessage({ __pcnKbdAbsReq: 1 }, '*'); } catch (_) {}
-    // Retry: at document_start the parent's content script may not be listening yet.
-    setTimeout(askForOffset, absAsks < 4 ? 300 : 2000);
+    emitBlind(); // keep the "my fields are invisible to you" notice fresh while we wait
+    // Retry: at document_start the parent's content script may not be listening
+    // yet, and a parent that is not positioned ITSELF answers nothing at all.
+    setTimeout(askForOffset, ABS_ASK_DELAYS[Math.min(absAsks - 1, ABS_ASK_DELAYS.length - 1)]);
   }
 
   // Tell every child frame where it sits. Positions change on scroll/resize/layout,
@@ -770,14 +781,55 @@
     }
   }
 
+  // Coordinate-free "my fields are invisible to you" notice, sent once while this
+  // frame is still waiting to be positioned.
+  //
+  // Silence was the old behaviour, and it hides the one fact the viewer needs: some
+  // frame on this page HAS editable fields whose rects are missing from the merged
+  // list. Without it a tap over a cross-origin form is indistinguishable from a tap
+  // on a page of buttons — both look like 'unknown' coverage — so the viewer
+  // refuses to raise the keyboard optimistically and the first tap waits a full
+  // tunnel round-trip for the remote's editable:true (measured ~2s on mobile).
+  //
+  // Carries NO geometry and NO content: no rect, no rects, no hints, no value. Just
+  // the blind flag, which is exactly the amount of information needed to say "do
+  // not read a miss here as off-field". Cleared implicitly — the next real emit()
+  // replaces this frame's slot in the background's per-frame map.
+  //
+  // RE-ASSERTED on a slow heartbeat rather than sent once: the background expires a
+  // frame that has gone quiet (FRAME_STALE_MS, 6s), and a frame that is still
+  // unpositioned past that point is exactly the one whose fields are still missing,
+  // so letting the notice age out would silently restore the old behaviour at the
+  // worst moment.
+  // The heartbeat rides the ask ladder (askForOffset), which is already running for
+  // exactly as long as this frame is unpositioned — no extra timer, and no layout
+  // read per beat, because whether we hold fields is remembered rather than
+  // recomputed. Once the ladder gives up we stop asserting too: a frame that can
+  // never be positioned would otherwise leave every unknown tap on the page
+  // raising the keyboard forever.
+  const BLIND_REASSERT_MS = 2000;
+  let blindSentAt = 0;
+  let sawFields = false;
+  function noteFields(state) {
+    if (state.editable === true || (Array.isArray(state.rects) && state.rects.length > 0)) sawFields = true;
+  }
+  function emitBlind() {
+    if (!sawFields) return;
+    if (blindSentAt && Date.now() - blindSentAt < BLIND_REASSERT_MS) return;
+    blindSentAt = Date.now();
+    try { chrome.runtime.sendMessage({ type: 'PCN_KBD', state: { editable: false, rects: [], blind: 1 } }); } catch (_) {}
+  }
+
   // Report our own state, in top coords, directly to the background.
   function emit(state) {
     const off = ownOffset();
     if (!off) {
       // Not positioned yet. Reporting frame-local coords would put every rect in the
-      // wrong place, so stay silent and keep asking — the same outcome the previous
-      // relay had when there was nobody above us to relay through.
+      // wrong place, so keep asking — but say that our coverage is missing rather
+      // than going completely dark (see emitBlind).
+      noteFields(state);
       askForOffset();
+      emitBlind();
       return;
     }
     offsetState(state, off.x, off.y);
@@ -948,14 +1000,23 @@
   // layout change (an iframe that loads into a static page would wait forever).
   if (!IS_TOP) askForOffset();
 
-  if (IS_TOP) {
-    const reportInitialLayout = () => report(deepActiveElement(), true);
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', reportInitialLayout, { once: true });
-    } else {
-      reportInitialLayout();
-    }
-    window.addEventListener('load', reportInitialLayout, { once: true });
+  // Runs in EVERY frame, not just the top one. A cross-origin form frame (the
+  // portal's hosted signup form) often renders its fields once, before our
+  // MutationObserver is watching or with no further mutation at all, and never
+  // focuses anything by itself — so its rects used to reach the viewer only when
+  // the user focused a field, which is the very tap that needed them. The tap then
+  // hit-tested against no coverage and could not raise the keyboard locally.
+  // A forced report is also what re-sends a state that emit() had to drop while the
+  // frame was unpositioned.
+  const reportInitialLayout = () => report(deepActiveElement(), true);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', reportInitialLayout, { once: true });
+  } else {
+    reportInitialLayout();
   }
+  window.addEventListener('load', reportInitialLayout, { once: true });
+  // Back/forward-cache restore is a fresh page to the user and to the remote, but
+  // fires neither of the two above.
+  window.addEventListener('pageshow', (e) => { if (e && e.persisted) reportInitialLayout(); });
 
 })();

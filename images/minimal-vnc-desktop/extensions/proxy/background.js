@@ -236,6 +236,11 @@ function mergeFrames() {
   let vw = 0, vh = 0, sw = 0, sb = -1, sc = null, pid = null, origin = null, novp = false, ol = 0, olw = 0, xf = null;
   const rects = [];
   let rtrunc = false; // merged list hit MERGED_MAX_RECTS -> the viewer must not read a miss as off-field
+  // Some frame reported that it HAS editable fields but cannot place them yet
+  // (content.js emitBlind: a cross-origin frame still waiting to be positioned).
+  // Same meaning as rtrunc for the viewer — our rect coverage is known-incomplete,
+  // so a tap matching nothing proves nothing.
+  let blind = false;
   for (const [key, entry] of kbdFrames) {
     if (now - entry.ts > FRAME_STALE_MS) { kbdFrames.delete(key); continue; }
     if (entry.tabId !== kbdActiveTab) continue; // background tabs are kept fresh, never published
@@ -243,6 +248,7 @@ function mergeFrames() {
     const s = entry.state;
     // content.js caps rects PER FRAME, so a page full of same-origin iframes multiplies that cap. Bound the
     // merged list too, or the focus message outgrows the hub's frame limit and the whole state is dropped.
+    if (s.blind) blind = true;
     if (Array.isArray(s.rects)) {
       for (const r of s.rects) {
         if (rects.length >= MERGED_MAX_RECTS) { rtrunc = true; break; }
@@ -297,6 +303,7 @@ function mergeFrames() {
   }
   const merged = { editable, rects, vw, vh };
   if (rtrunc) merged.rtrunc = true; // whitelist field, like every other one below
+  if (blind) merged.blind = true;   // ditto — an unwhitelisted field is dropped here
   if (sw > 0) merged.sw = sw;
   if (sb >= 0) merged.sb = sb; // 0 must survive the merge — see the whitelist note above
   if (sc) merged.sc = sc;

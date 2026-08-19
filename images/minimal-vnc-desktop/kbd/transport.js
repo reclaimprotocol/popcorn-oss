@@ -19,6 +19,7 @@
 import { isTouch, nowMs } from './env.js';
 import { fieldRejectsSpace } from './ime-hints.js';
 import { dbg, dbgv, safeKeyName, KBD_LOG } from './diag.js';
+import { e2e } from './e2e.js';
 import { SPECIAL_KEYSYMS, keysymForCodepoint } from './keys.js';
 import { reportInteraction } from './host-bridge.js';
 
@@ -223,6 +224,10 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
     // may have used before (Input.insertText counted once regardless of length),
     // so a paste or an IME batch doesn't inflate a host's typing metrics.
     if (sent > 0) reportInteraction('char');
+    // Typing has no per-keystroke acknowledgement to wait for (keysyms go over
+    // RFB, which is fire-and-forget), so the trace runs send -> paint: exactly the
+    // "I typed and the character showed up later" complaint, measured.
+    if (sent > 0) e2e.noteSent('text', 'n=' + sent, false);
     if (sent > 0 && !replayingQueue) echoAppend(text); // optimistic local echo (already echoed on the queued path)
   }
 
@@ -240,6 +245,9 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
       try { rfb.sendKey(keysym, name); } catch (_) {}
     }
     dbg('key send name=' + safeKeyName(name) + ' count=' + count + ' rfb=ready');
+    // safeKeyName, never the raw key: a trace tag must not be able to carry a
+    // printable character.
+    e2e.noteSent('key', safeKeyName(name), false);
     // Once per repeat: a held backspace would have been N dispatchKeyEvents on the
     // CDP path, so N is what a host's counters expect. safeKeyName is belt-and-
     // braces — these are always named keys, never printable characters.

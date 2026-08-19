@@ -16,6 +16,7 @@ import RFB from './core/rfb.js';
 import './kbd-autofocus.js';          // side-effect: defines window.PopcornKbd
 import { dbg } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
 import { onLifecycleAck, postToHost, sayHello } from './kbd/host-bridge.js';
+import { fbTarget, FB_MAX } from './kbd/fbtarget.js';
 
 const params = new URLSearchParams(window.location.search);
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -61,14 +62,16 @@ window.__pcnFill = magnify && params.get('fill') !== '0';
 //   fill: clamp proportionally to the WINDOW's aspect, so the page renders at
 //     the window's shape (nothing cropped) and the viewer upscales it to fill,
 //     trading sharpness for the letterbox.
-window.__pcnFbTarget = function (w, h) {
-  w = Math.max(1, Math.round(w)); h = Math.max(1, Math.round(h));
-  const cap = window.__pcnFbCap;
-  if (!cap) return { w, h };
-  if (!window.__pcnFill) return { w: Math.min(w, cap.w), h: Math.min(h, cap.h) };
-  const s = Math.min(1, cap.w / w, cap.h / h); // shrink to fit the cap, preserving aspect
-  return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)) };
-};
+//
+// SUPERSAMPLING (kbd/fbscale.js): the returned framebuffer is the CSS target times
+// the active scale factor, while cssW/cssH stay the CSS-pixel LAYOUT size. Both
+// consumers read the half they need from one place, which is what keeps the CDP
+// render and the VNC framebuffer the same size — the invariant that a mismatched
+// deviceScaleFactor breaks (it crops). The cap applies to the CSS size (it is about
+// sane LAYOUT sizes, and the kiosk window is fitted to whatever screen we ask for);
+// FB_MAX bounds the product.
+window.__pcnFbScale = 1;
+window.__pcnFbTarget = (w, h) => fbTarget(w, h, window);
 const screen = document.getElementById('screen');
 
 // noVNC converts browser events to canvas-local coordinates before calling these
@@ -99,11 +102,56 @@ function installPointerTransformFix(instance) {
 if (magnify) screen.classList.add('magnify');
 dbg('boot mod-ready magnify=' + (magnify ? 1 : 0));
 
+// The sharpness numbers, in one line.
+//
+// "The remote UI looks blurry" has three independent causes and they are only
+// separable numerically, so report all four quantities rather than a verdict:
+//
+//   fb    framebuffer size — remote pixels we are actually being sent
+//   css   the canvas box on this device, in CSS px
+//   sc    fb/css: remote pixels per CSS pixel. 1.00 = 1:1, <1 = we are upscaling
+//         the stream (soft by construction), >1 = supersampled (sharp)
+//   dev   sc/devicePixelRatio: remote pixels per DEVICE pixel, the number that
+//         predicts what the user sees. On a 3x phone streaming a CSS-px-sized
+//         framebuffer this is ~0.33, and no encoder setting can fix that — it is
+//         the deviceScaleFactor:1 trade in kbd/fit.js. Anything BELOW that ratio
+//         means something above us (a compositor rasterising the iframe's layer
+//         small — see host/popcorn-host.js auditLayout) is losing detail we did
+//         pay to send.
+//
+// Structural only: sizes and ratios, nothing about what is on the screen.
+let lastScaleKey = '';
+function traceScale(reason) {
+  const canvas = screen && screen.querySelector('canvas');
+  if (!canvas || !canvas.width) return;
+  const r = canvas.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const dpr = window.devicePixelRatio || 1;
+  const fbScale = window.__pcnFbScale || 1;
+  const sc = canvas.width / r.width;
+  const dev = sc / dpr;
+  const key = canvas.width + 'x' + canvas.height + '|' + Math.round(r.width) + 'x' + Math.round(r.height) + '|' + dpr.toFixed(2) + '|' + fbScale;
+  if (key === lastScaleKey) return; // only on a real change, not per resize event
+  lastScaleKey = key;
+  dbg('scale ' + reason + ' fb=' + canvas.width + 'x' + canvas.height +
+    ' css=' + Math.round(r.width) + 'x' + Math.round(r.height) +
+    ' dpr=' + dpr.toFixed(2) + ' sc=' + sc.toFixed(2) + ' dev=' + dev.toFixed(2) +
+    ' fbscale=' + fbScale, true);
+  // Up to the embedder too: it is the side that can DO something about a soft
+  // stream (its own layout), and it cannot see any of these numbers itself.
+  postToHost('POPCORN_SCALE', {
+    fbWidth: canvas.width, fbHeight: canvas.height,
+    cssWidth: Math.round(r.width), cssHeight: Math.round(r.height),
+    dpr, scale: Number(sc.toFixed(3)), deviceScale: Number(dev.toFixed(3)), fbScale, reason,
+  });
+}
+
 let lastViewTrace = 0;
 function traceView(reason) {
   const now = performance.now();
   if (now - lastViewTrace < 250) return;
   lastViewTrace = now;
+  traceScale(reason);
   const canvas = screen && screen.querySelector('canvas');
   const vv = window.visualViewport;
   dbg('view ' + reason +
@@ -144,6 +192,7 @@ function markFirstPaint(connection) {
             // handshake — a connected-but-blank canvas must stay behind its loading
             // cover. This is the same signal the standalone page reveals on.
             postLifecycle('POPCORN_FRAME', { width: w, height: h, connection });
+            traceScale('first-frame');
             return;
           }
         }
@@ -244,7 +293,6 @@ function connect() {
   // NB: a CAP only — deliberately NOT `rect * devicePixelRatio`, which was
   // measured to CLIP the desktop on every retina device (a 390-CSS phone would
   // request 1170 px and be shown 1:1 in a 390 window).
-  const FB_MAX = 4096; // == proxy/emulate.go setDeviceMetricsOverride clamp
   rfb._screenSize = function () {
     const r = this._screen.getBoundingClientRect();
     // Fit-to-width owns a deliberately oversized framebuffer (it grows #screen

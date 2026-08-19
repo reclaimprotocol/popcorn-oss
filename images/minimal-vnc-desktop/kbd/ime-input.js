@@ -25,6 +25,7 @@ import { dbg, dbgv, safeKeyName } from './diag.js';
 import { isHighSurrogate, isLowSurrogate, backspaceCountFor } from './keys.js';
 import { linkLatency } from './latency.js';
 import { stripCtl } from './echo.js';
+import { e2e } from './e2e.js';
 
 export function createImeInput({
   getRfb, sendText, sendSpecialKey, sendActionKey, echo, filterAutoSpace, toggleKeyboard,
@@ -162,6 +163,10 @@ export function createImeInput({
 
   function onProxyBeforeInput(e) {
     if (!getRfb() || !proxy) return;
+    // Stamp the DOM input boundary, before IME/value-diff processing.  The
+    // transport later records its send time, so an e2e text trace includes the
+    // local processing a user experiences rather than starting at sendKey.
+    e2e.noteInput();
     noteProxyInput();
     const inputType = e.inputType;
     noteImeEvent('beforeinput:' + (inputType || '-'));
@@ -237,6 +242,7 @@ export function createImeInput({
 
   function onProxyInput(e) {
     if (!getRfb() || !proxy) return;
+    e2e.noteInput();
     noteProxyInput();
     const currentValue = proxy.value;
     const inputType = e.inputType;
@@ -464,6 +470,7 @@ export function createImeInput({
   }
 
   function onCompositionEnd(e) {
+    e2e.noteInput();
     isComposing = false;
     dbg('composition end len=' + (e && e.data ? e.data.length : 0));
     echo.setComposing(''); echo.render(); // committed; sendText below appends it
@@ -552,6 +559,7 @@ export function createImeInput({
 
   function onECTextUpdate(e) {
     if (!editCtx) return; // rfb-null is fine: sendText/sendSpecialKey queue it
+    e2e.noteInput();
     noteProxyInput();
     noteImeEvent('editcontext:textupdate');
     dbgv('EC textupdate tlen=' + (e.text ? e.text.length : 0) + ' del=' +
@@ -643,6 +651,7 @@ export function createImeInput({
   }
 
   function onECCompositionEnd() {
+    e2e.noteInput();
     // Commit-only mode withheld every step; send the accumulated committed text
     // once (read the buffer BEFORE resetEC clears it).
     if (ecSuppressed) {
@@ -660,6 +669,7 @@ export function createImeInput({
 
   function onECKeyDown(e) {
     if (!getRfb()) return;
+    e2e.noteInput();
     dbgv('EC keydown key=' + safeKeyName(e.key) + ' code=' + e.keyCode + ' comp=' + (e.isComposing ? 1 : 0));
     const empty = !editCtx || editCtx.text === '';
     // Delete keys are handled BEFORE the composition guard. Gboard leaves a
