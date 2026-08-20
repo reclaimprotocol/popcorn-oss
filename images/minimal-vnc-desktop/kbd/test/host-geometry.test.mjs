@@ -112,6 +112,28 @@ test('a message from the right origin but the wrong window is ignored', async ()
   assert.equal(lastViewportMsg(), null, 'geometry from a non-parent window never applied');
 });
 
+test('lifecycle acknowledgements are accepted only from the configured parent', async () => {
+  await freshViewer(createMockRfb);
+  const { onLifecycleAck } = await import('../host-bridge.js');
+  const seen = [];
+  onLifecycleAck((seq) => seen.push(seq));
+
+  fireHostMessage({ type: 'POPCORN_HOST_ACK', seq: 7 });
+  fireHostMessage(
+    { type: 'POPCORN_HOST_ACK', seq: 8 },
+    { origin: 'https://attacker.test' },
+  );
+  fireHostMessage(
+    { type: 'POPCORN_HOST_ACK', seq: 9 },
+    { source: { notTheParent: true } },
+  );
+  fireHostMessage({ type: 'POPCORN_HOST_ACK', seq: 0 });
+
+  assert.ok(seen.length > 0);
+  assert.ok(seen.every((seq) => seq === 7));
+  onLifecycleAck(null);
+});
+
 test('nonsense geometry is rejected rather than applied as a bogus lift', async () => {
   await freshViewer(createMockRfb);
   parentMessages.length = 0;

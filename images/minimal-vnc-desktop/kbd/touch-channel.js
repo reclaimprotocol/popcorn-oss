@@ -12,8 +12,10 @@
 // active) plus a callback to stamp the last remote-scroll time.
 
 import { MAGNIFY, TOUCH_INPUT, nowMs, siblingPath } from './env.js';
-import { dbg, dbgv } from './diag.js';
-import { linkLatency } from './latency.js';
+import { dbg, dbgv, KBD_LOG, KBD_SID } from './diag.js';
+import { linkRtt } from './latency.js';
+import { formatPoint, formatPoints } from './diag-geometry.js';
+import { e2e } from './e2e.js';
 
 // Coalesce touchmove sends. A fast swipe fires touchmove 60-120x/s; forwarding
 // each one floods /input -> CDP -> a burst of tiny scroll frames over the tunnel
@@ -33,6 +35,17 @@ const MOVE_INTERVAL_SLOW_MS = 100;  // ~10fps floor on a genuinely slow link:
 export function createTouchChannel({ getRfb, getScreenElement, getViewport, getRemoteTouchActive, noteRemoteScroll }) {
   let inputSock = null;
   let inputReconnectTimer = null;
+  let gestureSent = 0;
+  let gestureDropped = 0;
+  let gestureCoalesced = 0;
+  let gestureStartPoints = '[]';
+  let gestureID = 0;
+
+  function finishGesture(type) {
+    dbg('touch g#' + gestureID + ' ' + type + ' start=' + gestureStartPoints + ' sent=' + gestureSent +
+      ' dropped=' + gestureDropped + ' coalesced=' + gestureCoalesced +
+      ' socket=' + (inputSock && inputSock.readyState === WebSocket.OPEN ? 'open' : 'down'));
+  }
 
   // A REAL click, over VNC rather than CDP.
   //
@@ -83,11 +96,15 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
       rfb._handleMouseButton(ex, ey, 0);
     } catch (_) { return false; }
     finally { rfb.__pcnPointerCoordsAreLayout = false; }
-    dbg('x11 click ' + Math.round(ex) + ',' + Math.round(ey));
+    dbg('x11 click screen=' + formatPoint(sx, sy) + ' layout=' + formatPoint(ex, ey));
     return true;
   }
 
   function inputPath() { return siblingPath('/input'); }
+  // Bound stalled input upgrades.
+  const INPUT_CONNECT_TIMEOUT_MS = 8000;
+  let inputAttempt = 0;
+  let inputDialAt = 0;
   function scheduleInputReconnect() {
     if (inputReconnectTimer !== null) return;
     inputReconnectTimer = setTimeout(() => { inputReconnectTimer = null; connectInput(); }, 1000);
@@ -97,19 +114,91 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     // remote CSS pixels (the same coordinate space as verified touch input),
     // avoiding noVNC's transform-blind mouse conversion.
     if (!MAGNIFY) return;
+    // Do not replace a live or in-flight connection.
+    if (inputSock && (inputSock.readyState === WebSocket.CONNECTING ||
+                      inputSock.readyState === WebSocket.OPEN)) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let s;
     try { s = new WebSocket(proto + '//' + location.host + inputPath()); }
     catch (_) { scheduleInputReconnect(); return; }
     inputSock = s;
-    s.onopen = () => dbg('input socket open');
-    const down = () => { if (inputSock === s) { inputSock = null; dbg('input socket down -> reconnect'); scheduleInputReconnect(); } };
+    inputAttempt++;
+    inputDialAt = nowMs();
+    const myAttempt = inputAttempt, myDialAt = inputDialAt;
+    dbg('input socket connecting #' + myAttempt);
+    // Keep the watchdog local to this connection.
+    let myConnectTimer = setTimeout(() => {
+      myConnectTimer = null;
+      if (inputSock !== s || s.readyState === WebSocket.OPEN) return;
+      dbg('input socket connect stalled -> retry');
+      try { s.close(); } catch (_) {}   // onclose -> scheduleInputReconnect
+    }, INPUT_CONNECT_TIMEOUT_MS);
+    const clearMyTimer = () => {
+      if (myConnectTimer !== null) { clearTimeout(myConnectTimer); myConnectTimer = null; }
+    };
+    s.onopen = () => {
+      clearMyTimer();
+      if (inputSock !== s) { dbg('input: late open on a replaced socket -> close'); try { s.close(); } catch (_) {} return; }
+      dbg('input socket open #' + myAttempt + ' upgrade=' + Math.round(nowMs() - myDialAt) + 'ms');
+    };
+    s.onmessage = (e) => {
+      // Terminal input acknowledgements prove the proxy queued, then wrote, the
+      // matching CDP command. They contain only the random diagnostics SID and
+      // gesture number — no coordinates or page/input contents.
+      if (!KBD_LOG) return;
+      try {
+        const a = JSON.parse(e.data);
+        if (a && a.diag === 'input' && a.sid === KBD_SID && typeof a.g === 'number') {
+          dbg('input g#' + a.g + ' ' + (a.t || '-') + ' proxy=' + (a.state || '-'));
+          // Third leg of the input->paint trace (see kbd/e2e.js): this is the
+          // moment the remote browser actually received the gesture, so it is
+          // where waiting for pixels legitimately starts.
+          e2e.noteWritten('g#' + a.g, a.state);
+        }
+      } catch (_) {}
+    };
+    const down = (ev) => {
+      clearMyTimer();
+      s.onopen = s.onmessage = s.onclose = s.onerror = null;
+      // Ignore callbacks from replaced sockets.
+      if (inputSock !== s) { dbg('input: stale socket callback ignored (#' + myAttempt + ')'); return; }
+      inputSock = null;
+      dbg('input socket down #' + myAttempt +
+          ' after=' + Math.round(nowMs() - myDialAt) + 'ms' +
+          ' code=' + ((ev && ev.code) || '-') + ' -> reconnect');
+      scheduleInputReconnect();
+    };
     s.onclose = down;
     s.onerror = down;
   }
   function sendTouch(type, points) {
-    if (!inputSock || inputSock.readyState !== WebSocket.OPEN) return false;
-    try { inputSock.send(JSON.stringify({ t: type, points })); return true; } catch (_) { return false; }
+    if (type === 'start') {
+      gestureSent = 0;
+      gestureDropped = 0;
+      gestureCoalesced = 0;
+      gestureStartPoints = formatPoints(points);
+      gestureID++;
+    }
+    if (!inputSock || inputSock.readyState !== WebSocket.OPEN) {
+      gestureDropped++;
+      if (type === 'end' || type === 'cancel') finishGesture(type);
+      return false;
+    }
+    try {
+      const msg = { t: type, points };
+      if (KBD_LOG) { msg.d = KBD_SID; msg.g = gestureID; }
+      inputSock.send(JSON.stringify(msg));
+      // Only the terminal events carry a proxy acknowledgement (emulate.go acks
+      // end/cancel/click), so only those can be traced through to a paint.
+      if (type === 'end' || type === 'cancel') e2e.noteSent('tap', 'g#' + gestureID, true);
+      gestureSent++;
+      if (type === 'end' || type === 'cancel') finishGesture(type);
+      return true;
+    } catch (_) {
+      gestureDropped++;
+      if (type === 'end' || type === 'cancel') finishGesture(type);
+      return false;
+    }
   }
 
   // Map a screen point to remote framebuffer px (= remote CSS px in magnify,
@@ -166,7 +255,8 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   // touchEnd, so the gesture wedges. touchEnd always flushes the final position
   // (flushPendingMove), so the drag still finishes at the real point.
   function moveIntervalMs() {
-    const l = linkLatency(); // max(tap->confirm, /kbd RTT); 0 until first sample
+    // Touch cadence tracks network RTT only.
+    const l = linkRtt();
     if (l > 0 && l < 150) return MOVE_INTERVAL_FULL_MS; // measured healthy link
     if (l < 300) return MOVE_INTERVAL_FAST_MS;
     // Ramp fast->slow across ~300..1500ms RTT, then hold at the slow floor.
@@ -185,6 +275,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     // Only a FORWARDED remote scroll/drag shifts the remote doc (and thus stales
     // our rects); a local pan (zoomScale>1) leaves remoteTouchActive false.
     if (TOUCH_INPUT && getRemoteTouchActive()) noteRemoteScroll();
+    if (pendingMovePts) gestureCoalesced++;
     pendingMovePts = points;
     if (moveTimer) return;
     moveTimer = setTimeout(flushMove, Math.max(0, moveIntervalMs() - (nowMs() - lastMoveAt)));
@@ -202,6 +293,13 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
   // reconnect timer). No-op unless the native touch channel is in use.
   function kick() {
     if (!MAGNIFY) return;
+    // Replace only overdue connection attempts.
+    if (inputSock && inputSock.readyState === WebSocket.CONNECTING) {
+      if (nowMs() - inputDialAt < INPUT_CONNECT_TIMEOUT_MS) return;
+      dbg('kick: replacing an overdue input connect');
+      try { inputSock.close(); } catch (_) {}
+      inputSock = null;
+    }
     if (!inputSock) {
       if (inputReconnectTimer !== null) { clearTimeout(inputReconnectTimer); inputReconnectTimer = null; }
       connectInput();
@@ -212,5 +310,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
     connectInput, sendTouch, sendPointerClick, touchToRemote, collectPoints,
     queueMove, cancelPendingMove, flushPendingMove, kick,
     getInputSock: () => inputSock,
+    inputReady: () => !!inputSock && inputSock.readyState === WebSocket.OPEN,
+    gestureID: () => gestureID,
   };
 }

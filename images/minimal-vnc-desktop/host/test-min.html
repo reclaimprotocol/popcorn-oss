@@ -20,27 +20,28 @@
 </head>
 <body>
   <iframe id="viewer" title="Popcorn live view"
-    allow="virtual-keyboard; clipboard-read; clipboard-write"></iframe>
+    allow="clipboard-read; clipboard-write; virtual-keyboard"></iframe>
   <script src="popcorn-host.js"></script>
   <script>
     (function () {
       var q = new URLSearchParams(location.search);
       var viewerBase = q.get('viewer') || (location.protocol + '//' + location.hostname + ':6080');
-      var PASSTHROUGH = ['magnify', 'quality', 'compression', 'resize', 'iosbridge',
-                         'kbddebug', 'kbdlog', 'stateless', 'mirror', 'mirrorbar',
-                         'smooth'];
+      // One shared list for every hop (PopcornHost.VIEWER_PARAMS) — a private copy
+      // here is how a parameter silently stops reaching the viewer on one path but
+      // not another, and this page exists to be the trustworthy control.
       var params = ['parentOrigin=' + encodeURIComponent(location.origin)];
       if (q.get('magnify') === null) params.push('magnify=1'); // default on, like the portal
-      for (var i = 0; i < PASSTHROUGH.length; i++) {
-        var v = q.get(PASSTHROUGH[i]);
-        if (v !== null) params.push(PASSTHROUGH[i] + '=' + encodeURIComponent(v));
-      }
+      params = params.concat(PopcornHost.forwardParams(location.search));
       var el = document.getElementById('viewer');
+      PopcornHost.layer(el);   // the contract, restated in code (the CSS above is the fallback)
       el.src = viewerBase.replace(/\/+$/, '') + '/liveview.html?' + params.join('&');
       // Geometry + events still flow; results go to the console and /klog rather
       // than to on-screen chrome, so the page stays visually empty by design.
       var host = PopcornHost.attach(el, { childOrigin: new URL(viewerBase).origin });
-      ['hello', 'connect', 'frame', 'disconnect', 'error', 'kbdstate'].forEach(function (n) {
+      // 'layout' and 'scale' are the two that matter for a sharpness comparison:
+      // layout says whether THIS page broke the contract, scale gives fb / css /
+      // dpr and the remote-px-per-device-px ratio the user actually sees.
+      ['hello', 'connect', 'frame', 'disconnect', 'error', 'kbdstate', 'layout', 'scale'].forEach(function (n) {
         host.on(n, function (d) { try { console.log('[host] ' + n, d); } catch (_) {} });
       });
     })();

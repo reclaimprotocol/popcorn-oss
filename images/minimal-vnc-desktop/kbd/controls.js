@@ -263,7 +263,7 @@ export function createControls({
     if (!navigator.clipboard || !navigator.clipboard.readText) { dbg('paste: no clipboard API'); return; }
     const wasUp = getKeyboardActive();
     navigator.clipboard.readText().then((text) => {
-      dbg('paste btn chars=' + (text ? text.length : 0));
+      dbg('paste btn len=' + (text ? text.length : 0));
       if (text) insertPastedText(text);
       // Tapping the button blurred the proxy; restore focus so the keyboard
       // stays up and typing continues where the paste landed.

@@ -22,7 +22,7 @@ export function createMirrorBar({ getProxy, mirrorOn, getVisibleBottom, hideEcho
     const proxy = getProxy();
     if (!MIRROR_BAR || !mirrorOn() || !proxy) return; // opt-in; invisible otherwise
     if (mirrorBarShown) { position(); return; } // already up — just re-pin
-    dbg('mirror bar SHOW vlen=' + (proxy.value != null ? proxy.value.length : (proxy.textContent || '').length));
+    dbg('mirror bar show len=' + (proxy.value != null ? proxy.value.length : (proxy.textContent || '').length));
     mirrorBarShown = true;
     const s = proxy.style;
     s.opacity = '1';

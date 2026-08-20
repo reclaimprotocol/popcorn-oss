@@ -34,6 +34,7 @@
 
 import { dbg } from './diag.js';
 import { nowMs } from './env.js';
+import { linkLatency } from './latency.js';
 
 // Wire-format version. Bump on any BREAKING change to the message shapes; the
 // embedder receives it in POPCORN_HELLO and should refuse to drive a viewer it
@@ -62,9 +63,55 @@ const EMBEDDED = (function () { try { return window !== window.top; } catch (_) 
 // enough that a normal idle period (no keyboard changes = no messages) does not
 // flap: the embedder re-posts on every geometry change AND on a heartbeat.
 const HOST_GEOM_STALE_MS = 8000;
+// ...but 8s is a statement about a FAST link, and it is applied on the slowest
+// ones. The window has to cover the embedder's 3s heartbeat plus whatever the
+// network does to it; on a phone that has dropped to 3G mid-session, two
+// heartbeats can easily arrive late enough to age out a host that is alive and
+// measuring correctly — and the viewer then flips to local detectors mid-typing,
+// which in a cross-origin iframe means flipping to detectors that see nothing.
+//
+// So scale it with the latency we already measure (the same signal quality.js and
+// the dismiss windows use), keeping 8s as the FLOOR so nothing gets shorter than
+// today, and capping it so a genuinely dead embedder is still noticed promptly.
+const HOST_GEOM_STALE_MAX_MS = 20000;
+function staleWindowMs() {
+  return Math.min(HOST_GEOM_STALE_MAX_MS, Math.max(HOST_GEOM_STALE_MS, 6 * linkLatency()));
+}
+// Absolute malformed-input guard; host geometry can exceed this iframe's height.
+const MAX_HOST_OCCLUSION_PX = 4096;
 
 let geom = null;      // { visibleHeight, occludedBottom, at }
+// The boot HELLO can race a framework mounting its parent-side bridge.  Keep the
+// last capability payload so an authenticated parent can explicitly ask us to
+// repeat it once its listener is ready.
+let helloPayload = null;
+// Has the embedder ever demonstrated it can actually SEE the keyboard?
+//
+// This gate exists because of a specific, reproducible portal failure. Host
+// geometry SUPPRESSES our local detectors (kbd-detect.js) — deliberately, since two
+// detectors driving the lift with different heights is what causes keyboard-open
+// jitter. But an embedder that posts geometry it cannot measure suppresses them
+// with a lie: a middle frame whose own PopcornHost fell back to measuring itself is
+// a cross-origin iframe whose visualViewport never shrinks, so it heartbeats
+// occludedBottom:0 forever. The viewer then has a FRESH host sample saying "no
+// keyboard", its own detectors are muted, and the result is no lift, no pan budget,
+// the focused field behind the keys — and the local-echo pill positioned at the
+// bottom of the screen, i.e. behind the keyboard too, so the one mechanism that
+// masks per-keystroke round-trip latency is invisible. Typing then looks completely
+// dead until the remote's pixels come back.
+//
+// So a host earns authority by reporting a real occlusion at least once. Until
+// then its samples are still readable (hostGeometry() returns them — 0 is a
+// legitimate value) but they do not take the local detectors off the field.
+// Sticky afterwards: a measurer that has proved itself and then legitimately
+// reports 0 IS reporting a dismissal, which must keep working.
+let hostEverOccluded = false;
 let handlers = null;  // installed dispatch table
+let lifecycleAckHandler = null;
+
+export function onLifecycleAck(handler) {
+  lifecycleAckHandler = typeof handler === 'function' ? handler : null;
+}
 
 /**
  * Last host-reported viewport geometry, or null when none has arrived (or the
@@ -73,9 +120,21 @@ let handlers = null;  // installed dispatch table
  */
 export function hostGeometry() {
   if (!geom) return null;
-  if (nowMs() - geom.at > HOST_GEOM_STALE_MS) return null;
+  if (nowMs() - geom.at > staleWindowMs()) return null;
   return geom;
 }
+
+/**
+ * Age of the newest host sample in ms, or -1 when none has ever arrived. Reads
+ * the raw sample rather than hostGeometry(), so it still answers AFTER the
+ * staleness window has expired — which is exactly when somebody wants to know.
+ */
+export function hostGeometryAge() {
+  return geom ? Math.max(0, nowMs() - geom.at) : -1;
+}
+
+/** How long a sample stays authoritative right now (link-scaled; see above). */
+export function hostGeometryStaleMs() { return staleWindowMs(); }
 
 /**
  * True when the embedder is actively feeding geometry, i.e. the local keyboard
@@ -84,7 +143,7 @@ export function hostGeometry() {
  * so host geometry must SUPPRESS rather than race them.
  */
 export function hostGeometryActive() {
-  return hostGeometry() !== null;
+  return hostEverOccluded && hostGeometry() !== null;
 }
 
 /**
@@ -131,7 +190,8 @@ export function reportInteraction(kind, detail) {
  * knows the protocol version it's talking to and can start posting geometry.
  */
 export function sayHello(extra) {
-  postToHost('POPCORN_HELLO', Object.assign({ protocol: HOST_PROTOCOL }, extra || {}));
+  if (extra) helloPayload = Object.assign({}, extra);
+  postToHost('POPCORN_HELLO', Object.assign({ protocol: HOST_PROTOCOL }, helloPayload || {}));
 }
 
 /**
@@ -140,6 +200,7 @@ export function sayHello(extra) {
  *   onToggleMagnify()                              host's magnify button
  *   onToggleKeyboard()                             host's keyboard button
  *   onPaste(text)                                  host read its clipboard
+ *   onHostLayout(report)                           host audited its own embedding
  *
  * Every entry is optional; unknown message types are ignored. Safe to call in a
  * top-level tab — with no configured parent origin nothing is ever dispatched.
@@ -173,16 +234,29 @@ function onMessage(e) {
   if (!d || typeof d.type !== 'string') return;
 
   switch (d.type) {
+    // Mount-order recovery: the host may attach after viewer.js's one-shot boot
+    // hello.  This request is accepted only through the same exact-origin,
+    // exact-parent gate above, and it carries no data, so it cannot broaden the
+    // bridge's authority or leak session state.
+    case 'POPCORN_HELLO_REQUEST':
+      sayHello();
+      return;
     case 'POPCORN_HOST_GEOMETRY': {
       const vh = Number(d.visibleHeight);
       const ob = Number(d.occludedBottom);
-      // Reject nonsense rather than applying a bogus lift: a non-finite or
-      // negative height, or an occlusion taller than the viewport itself, means
-      // the host measured mid-transition. Dropping the sample lets the previous
-      // one age out naturally into the local-detector fallback.
+      // Reject malformed values; occlusion also controls the pan budget.
       if (!isFinite(vh) || vh <= 0 || !isFinite(ob) || ob < 0) return;
+      if (ob > MAX_HOST_OCCLUSION_PX) return;
+      // No handler = this viewer has no keyboard to lift (desktop wires onPaste
+      // only). Storing geom anyway would still make hostGeometryActive() true and
+      // feed currentVisibleBottom a keyboard rect that means nothing here.
+      if (!handlers.onGeometry) return;
+      if (ob > 0 && !hostEverOccluded) {
+        hostEverOccluded = true;
+        dbg('host-bridge: embedder proved it can see the keyboard -> local detectors stand down');
+      }
       geom = { visibleHeight: vh, occludedBottom: ob, at: nowMs() };
-      if (handlers.onGeometry) handlers.onGeometry(geom);
+      handlers.onGeometry(geom);
       return;
     }
     case 'POPCORN_TOGGLE_MAGNIFY':
@@ -193,6 +267,34 @@ function onMessage(e) {
       return;
     case 'POPCORN_PASTE':
       if (typeof d.text === 'string' && d.text && handlers.onPaste) handlers.onPaste(d.text);
+      return;
+    // The embedder's own layout audit (popcorn-host.js auditLayout). We cannot see
+    // our ancestors from in here — a cross-origin frame has no view of the page
+    // above it — and the compositor's raster scale is not observable from either
+    // side, so this is the ONLY signal that can attribute "the stream looks blurry"
+    // to the embedding rather than to the encoder. Structural codes only; recorded,
+    // never acted on (a viewer that started restyling its host would be worse than
+    // the blur).
+    case 'POPCORN_HOST_LAYOUT': {
+      if (!handlers.onHostLayout) return;
+      var issues = Array.isArray(d.issues) ? d.issues : null;
+      if (!issues) return;
+      // Codes are a closed vocabulary from our own script; drop anything that
+      // isn't one rather than logging a string an embedder chose.
+      const safe = issues.filter((c) => typeof c === 'string' && /^[a-z-]{1,24}$/.test(c)).slice(0, 12);
+      handlers.onHostLayout({
+        issues: safe,
+        depth: Number.isFinite(d.depth) ? d.depth : null,
+        dpr: Number.isFinite(d.dpr) ? d.dpr : null,
+        cssW: Number.isFinite(d.cssW) ? Math.round(d.cssW) : null,
+        cssH: Number.isFinite(d.cssH) ? Math.round(d.cssH) : null,
+        top: d.top === true,
+        reason: typeof d.reason === 'string' && /^[a-z-]{1,16}$/.test(d.reason) ? d.reason : '-',
+      });
+      return;
+    }
+    case 'POPCORN_HOST_ACK':
+      if (Number.isInteger(d.seq) && d.seq > 0 && lifecycleAckHandler) lifecycleAckHandler(d.seq);
       return;
     default:
       return;

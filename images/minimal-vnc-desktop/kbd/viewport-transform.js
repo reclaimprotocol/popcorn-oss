@@ -205,7 +205,17 @@ export function createViewportTransform({
     const inset = effKbdInset();
     if (ch <= dispH + 0.5) {
       const centre = (dispH - ch) / 2 - oyz;
-      if (inset > 0) {
+      // Only the viewport-SIZED framebuffer earns the extension. A genuinely
+      // LETTERBOXED canvas (smaller than the display, flex-centered by noVNC
+      // inside #screen) has blank #111 below it already, so there is nothing
+      // behind the keys to reach — and extending there is actively wrong: the
+      // clamp band would become entirely POSITIVE (centre > dispH-ch-inset),
+      // so the first drag-up would snap the view DOWN by the whole centring
+      // offset, on top of a flex centring that offY does not compensate outside
+      // fill mode. Requiring the content to fill the display keeps the
+      // extension to the case it was designed for.
+      const fillsDisplay = ch >= dispH - 1;
+      if (inset > 0 && fillsDisplay) {
         // Content fits the display (the zoom-1 viewport-sized framebuffer):
         // instead of pinning to centre, allow panning up until the content
         // bottom meets the keyboard top. min() degrades to the pin when the
@@ -545,6 +555,7 @@ export function createViewportTransform({
     // desired-vs-actual handoff math, and the effective occlusion budget that
     // gates the gesture (0 with no keyboard, a floating keyboard, or in
     // layout-resize mode — every state where there is nothing hidden to reach).
+    panX: () => panX,
     panY: () => panY,
     kbdPanInset: () => effKbdInset(),
     // Inertial glide for a released keyboard-pan (tap.js supplies exit velocity).

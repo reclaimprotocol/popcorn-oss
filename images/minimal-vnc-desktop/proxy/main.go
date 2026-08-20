@@ -89,6 +89,42 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	mux.HandleFunc("/kbd", func(w http.ResponseWriter, r *http.Request) {
 		kbd.serve(w, r, ready)
 	})
+	// HTTP fallback while /kbd is connecting.
+	mux.HandleFunc("/kbdstate", func(w http.ResponseWriter, r *http.Request) {
+		if !ready.ready() {
+			http.Error(w, "app is not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		state, dialog, popup := kbd.snapshot()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		var b []byte
+		b = append(b, '{')
+		if len(state) > 0 {
+			b = append(b, []byte(`"state":`)...)
+			b = append(b, state...)
+		}
+		if len(dialog) > 0 {
+			if len(b) > 1 {
+				b = append(b, ',')
+			}
+			b = append(b, []byte(`"dialog":`)...)
+			b = append(b, dialog...)
+		}
+		if len(popup) > 0 {
+			if len(b) > 1 {
+				b = append(b, ',')
+			}
+			b = append(b, []byte(`"popup":`)...)
+			b = append(b, popup...)
+		}
+		b = append(b, '}')
+		_, _ = w.Write(b)
+	})
 	// Mobile viewport emulation: the viewer POSTs its own size so the remote
 	// reflows to a real mobile layout (see emulate.go). One persistent CDP
 	// manager applies it to every page target (incl. popups/new tabs). Safe

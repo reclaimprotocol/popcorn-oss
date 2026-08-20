@@ -62,6 +62,7 @@ import { createEcho } from './kbd/echo.js';
 import { createClipboard } from './kbd/clipboard.js';
 import { createTouchChannel } from './kbd/touch-channel.js';
 import { createWatchdog } from './kbd/watchdog.js';
+import { reportHealth } from './kbd/health.js';
 import { applyImeHints } from './kbd/ime-hints.js';
 import { createAutoSpaceFilter } from './kbd/autospace.js';
 import { createDesktopBridge } from './kbd/desktop-bridge.js';
@@ -79,6 +80,8 @@ import { createSignal } from './kbd/signal.js';
 import { createDialog } from './kbd/dialog.js';
 import { createPopupBar } from './kbd/popup-bar.js';
 import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
+import { initE2E } from './kbd/e2e.js';
+import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
 (function () {
   'use strict';
@@ -86,7 +89,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
   // Deploy stamp, logged in the "setup env" klog line. Bump on every deploy so a
   // stale-cache session is provable from the log alone (many "still broken"
   // reports were pages running old JS).
-  const BUILD_TAG = 'bundle-79';
+  const BUILD_TAG = 'bundle-80';
 
   // ---- RFB transport (replaces CDP Input.*) --------------------------------
   // Lives in ./kbd/transport.js: sendText/sendSpecialKey, per-burst WebSocket
@@ -165,6 +168,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getRfb: () => rfb,
     getProxy: () => proxy,
     getHints: () => session.hints(),
+    getFocusKey: () => session.focusKey(),
     sendText,
     sendSpecialKey,
     clearProxy: () => clearProxy(),
@@ -211,11 +215,14 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     eventComposing: (e) => input.eventComposing(e),
     applyProxyImeHints,
     clearEcho,
+    onProxyPaste,
+    flushLocalClipboard,
   });
   const onDesktopKeyDown = desktopBridge.onDesktopKeyDown;
   const onDesktopInput = desktopBridge.onDesktopInput;
   const focusProxyDesktop = desktopBridge.focusProxyDesktop;
   const blurProxyDesktop = desktopBridge.blurProxyDesktop;
+  const installDesktopChords = desktopBridge.installDesktopChords;
 
   // ---- IME input state machine (see ./kbd/ime-input.js) ---------------------
   // Instantiated here so the echo/clipboard aliases above are initialized
@@ -275,7 +282,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     // decides keyboard layout, capitalisation and the address-field space filter.
     if (h && KBD_DEBUG) {
       dbg('hints tag=' + h.tag + ' type=' + h.type + ' im=' + h.im + ' ac=' + h.ac +
-          ' pat=' + h.pat + ' name=' + h.name + ' nm=' + h.nm + ' ph=' + h.ph +
+          ' pat=' + h.pat + ' nm=' + h.nm + ' ph=' + h.ph +
           ' -> literal=' + h.literal + ' nospace=' + h.nospace +
           ' cap=' + h.cap + ' correct=' + h.correct);
     }
@@ -291,6 +298,14 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getKeyboardJustDismissed: () => keyboardJustDismissed,
     getProxy: () => proxy,
     dismissKeyboard,
+    // Ask for the focus back before concluding the keyboard is gone. In an embed
+    // the page above us runs its own code, and any of it can take focus while the
+    // user is still typing — which used to read as "the keyboard went away" and
+    // tore down a live session mid-word.
+    reclaimFocus: () => { if (proxy) proxy.focus(); },
+    // A successful reclaim means somebody up there stole it. That is an
+    // integration bug the embedder cannot see from its own side, so say so.
+    onFocusStolen: () => reportHealth('focus-stolen'),
   });
   const startWatchdog = watchdog.start;
   const stopWatchdog = watchdog.stop;
@@ -299,7 +314,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
 
   function raiseKeyboard(reason) {
     if (!proxy) return;
-    dbg('-> raiseKeyboard(' + (reason || '?') + ')');
+    dbg('-> raiseKeyboard(' + (reason || '?') + ') ' + tap.diagnosticTag());
     // Tell the host the keyboard is coming up so it can hide its own bottom-pinned
     // chrome (which would otherwise sit on top of the keys). Sent on INTENT, not on
     // the geometry confirm, because on iOS the confirm can be a second away — the
@@ -380,9 +395,13 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     keyboardOpening = true;
     if (!seedProxyMirror()) clearProxy();
     proxy.focus();
+    dbg('kbd proxy focus requested active=' + (document.activeElement === proxy ? 1 : 0));
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         if (proxy) proxy.focus();
+        dbg('kbd proxy focus settled active=' + (document.activeElement === proxy ? 1 : 0) +
+          ' vv=' + (window.visualViewport ? Math.round(window.visualViewport.width) + 'x' + Math.round(window.visualViewport.height) : '-') +
+          ' win=' + window.innerWidth + 'x' + window.innerHeight);
         showMirrorBar(); // promote to the visible echo bar (no-op unless mirrorOn)
         setTimeout(() => { keyboardOpening = false; }, 500);
       });
@@ -599,6 +618,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       zoomToField(rect);
     },
     armDismiss: () => session.armDismiss(), // field-session (created later — deferred)
+    inputReady: () => tc.inputReady(),
     getKeyboardActive: () => keyboardActive,
     getKeyboardJustDismissed: () => keyboardJustDismissed,
     getEcMode: () => input.ecMode(),
@@ -608,8 +628,10 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     getViewport: () => session.viewport(),
     getLastNonEmptyRectsAt: () => session.lastNonEmptyRectsAt(),
     getRectsTruncated: () => session.rectsTruncated(),
+    getCoverageBlind: () => session.coverageBlind(),
     getRemoteScrollBottom: () => session.remoteScrollBottom(),
     getFocusedScrollContainer: () => session.focusedScrollContainer(),
+    getGestureID: () => tc.gestureID(),
     getProxy: () => proxy,
     getScreenElement: () => screenElement(),
   });
@@ -750,11 +772,76 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
   });
   const connectSignal = sig.connectSignal;
   const kickReconnects = sig.kickReconnects;
+  const startStateBridge = sig.startStateBridge;
   const startKbdStaleWatch = sig.startKbdStaleWatch;
 
   // ---- Setup / public API --------------------------------------------------
 
   let initialized = false;
+  // Supersampled-framebuffer policy watcher (kbd/fbscale.js), created in setup().
+  let fbScaleWatch = null;
+
+  // Retry incomplete startup work until it converges or times out.
+  const CONVERGE_FAST_TICK_MS = 250;
+  const CONVERGE_FAST_PHASE_MS = 8000;
+  const CONVERGE_SLOW_TICK_MS = 1000;
+  const CONVERGE_MAX_MS = 60000;
+  let convergeTimer = null;
+  let convergeStart = 0;
+  let convergeFast = true;
+  // Framebuffer retries are rate-limited.
+  const FB_DRIVE_MIN_GAP_MS = 2500;
+  const FB_MAX_DRIVES = 4;
+  let fbDriveAt = 0;
+  let fbDrives = 0;
+  function convergenceGaps() {
+    const gaps = [];
+    if (MAGNIFY) {
+      const isock = tc.getInputSock();
+      if (!isock || isock.readyState !== WebSocket.OPEN) gaps.push('input');
+    }
+    if (!sig.isOpen()) gaps.push('kbd');
+    if (rfbReady && !fit.framebufferConverged()) gaps.push('fb');
+    return gaps;
+  }
+  function stopConvergenceWatch() {
+    if (convergeTimer !== null) { clearInterval(convergeTimer); convergeTimer = null; }
+  }
+  function convergeTick() {
+    const gaps = convergenceGaps();
+    if (!gaps.length) {
+      dbg('converged after ' + Math.round(nowMs() - convergeStart) + 'ms');
+      stopConvergenceWatch();
+      return;
+    }
+    const elapsed = nowMs() - convergeStart;
+    if (elapsed > CONVERGE_MAX_MS) {
+      dbg('convergence gave up, still missing: ' + gaps.join(','));
+      stopConvergenceWatch();
+      return;
+    }
+    dbg('converge re-drive: ' + gaps.join(','));
+    if (gaps.indexOf('input') !== -1 || gaps.indexOf('kbd') !== -1) kickReconnects();
+    if (gaps.indexOf('fb') !== -1 && fbDrives < FB_MAX_DRIVES &&
+        nowMs() - fbDriveAt >= FB_DRIVE_MIN_GAP_MS) {
+      fbDriveAt = nowMs();
+      fbDrives++;
+      fit.resettleOnConnect();
+    }
+    if (convergeFast && elapsed > CONVERGE_FAST_PHASE_MS) {
+      convergeFast = false;
+      if (convergeTimer !== null) { clearInterval(convergeTimer); convergeTimer = null; }
+      convergeTimer = setInterval(convergeTick, CONVERGE_SLOW_TICK_MS);
+    }
+  }
+  function startConvergenceWatch() {
+    if (convergeTimer !== null) return;
+    convergeStart = nowMs();
+    convergeFast = true;
+    fbDrives = 0;
+    fbDriveAt = 0;
+    convergeTimer = setInterval(convergeTick, CONVERGE_FAST_TICK_MS);
+  }
 
   function setup() {
     if (initialized || (!isTouch && !DESKTOP)) return;
@@ -771,6 +858,24 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       // plain ?magnify=1 escalating to a 508px fit at readable zoom 1.41.
       ' fixedw=' + FIXEDW +
       ' iw=' + window.innerWidth + ' ih=' + window.innerHeight + ' build=' + BUILD_TAG);
+    // An embedded viewer without allow="virtual-keyboard" gets the VK object but
+    // never a rect, and a subframe's visualViewport does not reliably shrink
+    // either — so in that configuration the HOST's geometry is the only thing
+    // keeping the keyboard usable, and the embedder should know it is load-bearing
+    // before a user finds out.
+    //
+    // ASK THE POLICY, not the object. `navigator.virtualKeyboard` is present
+    // either way and `boundingRect` is a real (0x0) rect whether the feature was
+    // denied or the keyboard is merely closed — verified in Chrome against an
+    // iframe with the token missing, where the object-shape check reported a
+    // perfectly healthy `vk=1`. The permissions policy is the only thing that
+    // answers the actual question, and it answers it at load, before any keyboard
+    // has had a chance to open.
+    try {
+      const pol = document.permissionsPolicy || document.featurePolicy;
+      if (window !== window.top && pol && typeof pol.allowsFeature === 'function' &&
+          !pol.allowsFeature('virtual-keyboard')) reportHealth('no-virtual-keyboard');
+    } catch (_) { /* no policy API here: cannot tell, so say nothing */ }
 
     // EditContext (Chromium/Android) drives the IME natively — glide/swipe typing
     // and the prediction bar work through it. SwiftKey's autocorrect-on-space is
@@ -784,6 +889,7 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     // QuickType-off, chew buffer) instead of the never-tested EC path.
     const ecMode = !DESKTOP && !isIOS && typeof window.EditContext === 'function';
     input.setEcMode(ecMode);
+    dbg('ime pipeline=' + (DESKTOP ? 'desktop-keys' : (ecMode ? 'editcontext' : (isIOS ? 'beforeinput' : 'input-events'))) + ' keyboard-app=not-exposed');
     if (isIOS && typeof window.EditContext === 'function') {
       dbg('WARN iOS now exposes EditContext — staying on WebKit input path (revisit ecMode)');
     }
@@ -805,11 +911,41 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
 
     if (DESKTOP) {
       connectSignal(); // /kbd focus signal drives proxy focus on desktop too
+      installDesktopChords(); // ⌘/Ctrl + A/C/X/V, canvas-focused included
+      // The portal's own paste button. Only onPaste — geometry and the
+      // magnify/keyboard toggles have nothing to drive on desktop.
+      installHostBridge({
+        onPaste: (text) => { dbg('host cmd paste len=' + text.length); insertPastedText(text); },
+      onHostLayout: (r) => dbg('host layout ' + (r.issues.length ? r.issues.join(',') : 'ok') +
+        ' reason=' + r.reason + ' top=' + (r.top ? 1 : 0) + ' depth=' + r.depth +
+        ' css=' + r.cssW + 'x' + r.cssH + ' dpr=' + r.dpr, r.issues.length > 0),
+      });
       window.addEventListener('online', kickReconnects);
       window.addEventListener('pageshow', kickReconnects);
       document.addEventListener('visibilitychange', () => { if (!document.hidden) kickReconnects(); });
       return;
     }
+    // Input->paint tracing (?e2e=). Returns null and installs nothing when the
+    // flag is absent, so the untraced path stays a null check per input event.
+    initE2E({
+      getScreenElement: () => screenElement(),
+      // WHERE to look for the paint. Typing changes a caret and a couple of glyphs
+      // inside one field; a uniform sample grid lands between them and reports
+      // `paint=none` for a keystroke that is plainly on screen. The focused rect
+      // arrives on /kbd in REMOTE pixels, which are framebuffer pixels — the same
+      // 1:1 mapping tap.js relies on — so it can be handed straight to the sampler.
+      getFieldRect: () => session.rect(),
+    });
+    // Supersampled framebuffer (kbd/fbscale.js). Starts at 1x — today's behaviour —
+    // and steps up only once the tunnel RTT has been measured healthy for a few
+    // seconds, so a cold start and a slow link cost exactly what they cost now.
+    // Blocked while a CSS zoom holds the framebuffer size frozen or a fit dance owns
+    // it; the watcher just tries again on its next tick.
+    fbScaleWatch = createFbScaleWatch({
+      getCurrent: () => fit.fbScale(),
+      getBlocked: () => fit.fitMode() || vt.zoomScale() > 1.01 || !rfbReady,
+      onChange: (k) => fit.applyFbScale(k),
+    });
     parkProxyOffscreen(); // start off-screen; raiseKeyboard brings it in when needed
 
     // Kill the browser's OWN pinch-zoom / double-tap-zoom on the stream in every
@@ -836,11 +972,17 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       onToggleMagnify: () => { dbg('host cmd toggle-magnify'); toggleMagnify(); },
       onToggleKeyboard: () => { dbg('host cmd toggle-kbd'); toggleKeyboard(); },
       onPaste: (text) => { dbg('host cmd paste len=' + text.length); insertPastedText(text); },
+      onHostLayout: (r) => dbg('host layout ' + (r.issues.length ? r.issues.join(',') : 'ok') +
+        ' reason=' + r.reason + ' top=' + (r.top ? 1 : 0) + ' depth=' + r.depth +
+        ' css=' + r.cssW + 'x' + r.cssH + ' dpr=' + r.dpr, r.issues.length > 0),
     });
     connectInput(); // native touch channel (no-op unless magnify + touch)
 
     connectSignal();
+    startStateBridge();
     startKbdStaleWatch(); // reap half-open /kbd sockets on lossy mobile links
+    startConvergenceWatch(); // re-drives whatever above did not land (see above)
+    if (fbScaleWatch) fbScaleWatch.start();
 
     // Network-back signals: reconnect the idle WS channels immediately instead
     // of waiting out the exponential backoff (up to 10s). Mobile networks fire
@@ -850,7 +992,11 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
     window.addEventListener('online', kickReconnects);
     window.addEventListener('pageshow', () => { kickReconnects(); reconcileKeyboardOnForeground(); });
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) { kickReconnects(); reconcileKeyboardOnForeground(); }
+      if (!document.hidden) {
+        kickReconnects();
+        reconcileKeyboardOnForeground();
+        setTimeout(() => fit.refreshAfterVisibility(), 0);
+      }
     });
   }
 
@@ -872,6 +1018,8 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
           // BEFORE the typing re-lower below, which stashes the current value.
           quality.beginRefine();
           flushSendQueue();
+          kickReconnects();
+          fit.resettleOnConnect();
           // Restore fit-to-width rendering on the fresh RFB by re-running the fit
           // dance (see helper). No-op outside fit mode / on first connect.
           reapplyFitOnReconnect();
@@ -910,6 +1058,8 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
         rfbReady = true;
         quality.beginRefine(); // same cold-then-sharpen cycle as the listener above
         flushSendQueue();
+        kickReconnects();
+        fit.resettleOnConnect();
         reapplyFitOnReconnect();
         if (keyboardActive) lowerTypingQuality();
       }
@@ -921,6 +1071,9 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       // RFB reconnects at its configured quality and re-lowers on 'connect' if
       // the keyboard is still up (soft detach keeps it up).
       quality.resetSaved();
+      // Same reasoning for the framebuffer scale factor: the next RFB arrives with
+      // scaleViewport off, so the factor has to come back to 1 with it.
+      fit.resetFbScaleOnDetach();
       rfb = null;
       // A full teardown must not leave a dialog sheet stranded over a dead stream
       // (there is nothing left that could answer it). A SOFT detach keeps it: the
@@ -954,7 +1107,10 @@ import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bri
       session.resetField();
       clearProxy(); // drops lastSentValue too
       stopWatchdog();
+      stopConvergenceWatch();
+      fit.stopGeometryWatch();
     },
     toggle: toggleKeyboard,
+    preconnectInput() { tc.connectInput(); },
   };
 })();

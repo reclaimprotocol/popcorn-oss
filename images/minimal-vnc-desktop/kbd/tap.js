@@ -20,6 +20,8 @@ import { dbg, KBD_DEBUG } from './diag.js';
 import { DISMISS_MAX_MS } from './latency.js';
 import { showTapRipple } from './ripple.js';
 import { reportInteraction } from './host-bridge.js';
+import { formatPoint, formatRects } from './diag-geometry.js';
+import { e2e } from './e2e.js';
 
 export function createTap({
   vt,                               // viewport-transform instance (gesture state machines)
@@ -30,9 +32,12 @@ export function createTap({
   flushLocalClipboard,              // clipboard
   raiseKeyboard, dismissKeyboard, armDismiss, parkProxyOffscreen, // core (hoisted)
   zoomToHitField,                    // immediate legacy-page field zoom (core)
+  inputReady,                        // is the CDP touch channel usable right now?
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
   getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
+  getCoverageBlind,
   getRemoteScrollBottom, getFocusedScrollContainer,
+  getGestureID,
   getProxy, getScreenElement,
 }) {
   let remoteTouchActive = false; // a touch 'start' is currently forwarded to the remote
@@ -89,6 +94,7 @@ export function createTap({
   let tapStart = null;
   let lastTapAt = 0;
   let lastTapX = 0, lastTapY = 0;
+  let tapSeq = 0;
   let lastTapWasMiss = false;    // last tap was a confirmed non-input (see handleTap):
                                  // suppresses the recovery-raise so an ambient focus
                                  // flap can't re-summon the keyboard onto a tap that
@@ -324,6 +330,11 @@ export function createTap({
 
   function onTouchEnd(e) {
     lastTouchAt = nowMs();
+    // Leg 0 of the input->paint trace: the finger left the glass. Stamped here,
+    // before any of our own queuing, so the measured total is the latency the user
+    // actually felt rather than the one our transports account for. No-op unless
+    // ?e2e= asked for tracing (see kbd/e2e.js).
+    e2e.noteInput();
     if (onMagButton(e.target)) return;
     if (onDialogSheet && onDialogSheet(e.target)) return;
     // A tap is a transient activation — the moment iOS Safari allows a deferred
@@ -388,7 +399,27 @@ export function createTap({
     const t = e.changedTouches ? e.changedTouches[0] : e;
     if (!t) return;
     const heldMs = nowMs() - start.t;
+    // Replay a DEFERRED touch (zoomed pan, or a keyboard-pan that never moved)
+    // as a real press the remote can act on. The press is held ~60ms rather
+    // than sent as a zero-duration start+end, because some remote widgets miss
+    // an instantaneous tap — the same reason focusClosestInput holds its press.
+    const synthesizeDeferredTap = (sx, sy) => {
+      const pt = touchToRemote(sx, sy);
+      if (!pt) return;
+      sendTouch('start', [pt]);
+      setTimeout(() => { sendTouch('end', []); }, 60);
+    };
     if (heldMs > TAP_MAX_MS) {
+      // A deferred keyboard-pan touch was never forwarded, so a slow press
+      // (350ms+ — a deliberate press on a button, a long-press for a context
+      // menu or text selection) would otherwise reach the remote as NOTHING.
+      // Forward it here before the paste-pill check below, which needs the
+      // remote to have focused the field under the finger for the text to land
+      // in the right place.
+      if (kp && TOUCH_INPUT && withinScreen(start.target) && withinScreen(e.target) &&
+          !inCrossOriginFrame(t.clientX, t.clientY)) {
+        synthesizeDeferredTap(t.clientX, t.clientY);
+      }
       // Long-press on a remote TEXT FIELD -> native iOS "Paste" pill. This
       // touchend is a user gesture, so readText() pops the system paste
       // confirmation right where the finger is — the closest a page can get to
@@ -409,8 +440,7 @@ export function createTap({
     // single-finger to noVNC, which already clicked at the transform-adjusted
     // point.
     if ((vt.zoomScale() > 1 || kp) && TOUCH_INPUT && !inCrossOriginFrame(t.clientX, t.clientY)) {
-      const pt = touchToRemote(t.clientX, t.clientY);
-      if (pt) { sendTouch('start', [pt]); sendTouch('end', []); }
+      synthesizeDeferredTap(t.clientX, t.clientY);
     }
     // The touch above was cancelled rather than ended inside a cross-origin iframe
     // (see the touchend branch), so the activation is this click.
@@ -428,6 +458,11 @@ export function createTap({
       } else if (sendPointerClick && sendPointerClick(t.clientX, t.clientY)) {
         dbg('compat click via VNC (input unavailable)');
       }
+    }
+    // Use VNC for taps until native touch is ready.
+    if (TOUCH_INPUT && inputReady && !inputReady() &&
+        !inCrossOriginFrame(t.clientX, t.clientY) && sendPointerClick) {
+      if (sendPointerClick(t.clientX, t.clientY)) dbg('tap via VNC (input not ready yet)');
     }
     // Tap: the remote click/focus is produced by the (real or synthetic) touch
     // above; this only drives the keyboard hit-test.
@@ -534,6 +569,7 @@ export function createTap({
     if (getKeyboardJustDismissed()) { dbg('TAP ignored (justDismissed)'); return; } // grace window after a dismiss
     lastTapAt = nowMs();
     lastTapX = x; lastTapY = y; // raiseKeyboard positions the proxy here
+    tapSeq++;
 
     const hitRect = hitRectAt(x, y);
     const hit = hitRect ? 'hit' : hitTest(x, y);
@@ -541,19 +577,20 @@ export function createTap({
     // recovery. 'unknown' (no coverage — cross-origin/shadow field) must still
     // allow recovery, so it counts as not-a-miss.
     lastTapWasMiss = (hit === 'miss');
-    dbg('tap hit=' + hit + ' kbd=' + (getKeyboardActive() ? 1 : 0) + ' rfk=' + (getRemoteFocusKey() ? 1 : 0) + ' rects=' + getInputRects().length);
-    if (KBD_DEBUG) {
-      const m = screenToRemote(x, y);
-      const cr = m ? m.cr : null;
-      const mapped = m ? (Math.round(m.rx) + ',' + Math.round(m.ry)) : 'n/a';
-      // zoom is logged because it is what moves the canvas rect WITHOUT the remote
-      // having moved, and the rect ratio below is supposed to cancel it.
-      dbg('TAP scr=' + Math.round(x) + ',' + Math.round(y) + ' rem=' + mapped +
-          ' z=' + vt.zoomScale().toFixed(2) +
-          ' hit=' + hit + ' kbd=' + getKeyboardActive() + ' rects=' + getInputRects().length +
-          (cr ? ' cv=' + Math.round(cr.left) + ',' + Math.round(cr.top) + ' ' +
-                Math.round(cr.width) + 'x' + Math.round(cr.height) : ' cv=none'));
-    }
+    const m = screenToRemote(x, y);
+    const vp = getViewport();
+    const canvas = m && m.cr;
+    dbg('tap#' + tapSeq + ' g#' + (getGestureID ? getGestureID() : '-') + ' hit=' + hit + ' kbd=' + (getKeyboardActive() ? 1 : 0) +
+      ' rfk=' + (getRemoteFocusKey() ? 1 : 0) +
+      ' screen=' + formatPoint(x, y) +
+      ' remote=' + (m ? formatPoint(m.rx, m.ry) : '-') +
+      ' vp=' + (vp ? Math.round(vp.w) + 'x' + Math.round(vp.h) : '-') +
+      ' canvas=' + (canvas ? formatPoint(canvas.left, canvas.top) + '+' + Math.round(canvas.width) + 'x' + Math.round(canvas.height) : '-') +
+      ' z=' + vt.zoomScale().toFixed(2) + '/' + vt.minZoom().toFixed(2) +
+      ' pan=' + formatPoint(vt.panX(), vt.panY()) +
+      ' kinset=' + Math.round(vt.kbdPanInset()) +
+      ' rects=' + formatRects(getInputRects()) +
+      (hitRect ? ' matched=' + formatRects([hitRect]) : ''));
     if (hit === 'hit') {
       // The rect stream is already local and corresponds to the field under
       // this exact tap. Legacy desktop-fit pages must not wait for the remote
@@ -621,6 +658,28 @@ export function createTap({
     // page of buttons). lastTapAt is already stamped above, so if this tap did
     // land on a real input the remote's authoritative editable:true will raise
     // the keyboard via applySignal()'s recovery within the tap window.
+    //
+    // UNLESS the remote has TOLD us our coverage is blind: a frame reported that
+    // it holds editable fields it cannot place yet (state.blind — a cross-origin
+    // form frame still waiting to be positioned; see emitBlind in
+    // extensions/proxy/content.js). Then 'unknown' is a statement about us, not
+    // about the page, and waiting for the confirm is a measured ~2s of "typing is
+    // broken" on the first field of an embedded signup form. Raise now and let
+    // armDismiss's RTT-adaptive timer take it back down if no confirm follows —
+    // the same self-correcting contract the optimistic 'hit' raise runs on.
+    //
+    // Deliberately NOT extended to rtrunc (a rect list capped by the wire budget):
+    // that flag stays set for a whole big-form page, so every button tap on it
+    // would flicker the keyboard. `blind` is a brief load-time window on the one
+    // page shape that needs it, and it clears itself the moment rects arrive.
+    // STATELESS is excluded too: it never dismisses for a missing confirm, so a
+    // false pop there would stay up.
+    if (!STATELESS && (isIOS || isAndroid || getEcMode()) &&
+        getCoverageBlind && getCoverageBlind() && !getKeyboardActive()) {
+      dbg('tap#' + tapSeq + ' blind coverage -> optimistic raise');
+      raiseKeyboard('tap-blind');
+      armDismiss();
+    }
   }
 
 
@@ -680,6 +739,7 @@ export function createTap({
     noteRemoteScroll() { lastRemoteScrollAt = nowMs(); },
     // applySignal's recovery window + latency learn; raiseKeyboard's proxy spot
     lastTapAt: () => lastTapAt,
+    diagnosticTag: () => tapSeq ? ('tap#' + tapSeq + '/+' + Math.round(nowMs() - lastTapAt) + 'ms') : 'tap#-',
     lastTapWasMiss: () => lastTapWasMiss,
     lastTapXY: () => ({ x: lastTapX, y: lastTapY }),
     clearLastTap() { lastTapAt = 0; }, // deliberate dismiss must beat a late confirm

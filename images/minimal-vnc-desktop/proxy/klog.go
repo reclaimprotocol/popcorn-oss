@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"io"
 	"log"
-	"net"
 	"net/http"
+	"os"
 	"strings"
 )
 
@@ -13,12 +13,16 @@ import (
 // the endpoint only logs (no state change) and the body is bounded.
 const klogMaxBody = 64 << 10 // 64 KiB
 
+// The container/runtime already timestamps stdout/stderr. Keep the diagnostic
+// payload compact: every client line begins with its elapsed time, so Go's
+// second wall-clock prefix only duplicates information in the log viewer.
+var diagLog = log.New(os.Stderr, "", 0)
+
 // klogPayload is the batched diagnostic envelope the viewer sends. It carries
 // STRUCTURAL keyboard events only — event types, states, lengths, flags — never
 // field text (the client never puts typed content on this channel).
 type klogPayload struct {
-	SID   string   `json:"sid"`          // per-page-load id, correlates a session's lines
-	UA    string   `json:"ua,omitempty"` // sent once per session
+	SID   string   `json:"sid"` // per-page-load id, correlates a session's lines
 	Lines []string `json:"lines"`
 }
 
@@ -38,48 +42,23 @@ func klogHTTPHandler() http.HandlerFunc {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		ip := klogClientIP(r)
 		var p klogPayload
 		if err := json.Unmarshal(body, &p); err != nil {
-			// Not JSON — still surface it rather than dropping silently.
-			if s := klogSanitize(string(body), 2000); s != "" {
-				log.Printf("[kbd-client %s] %s", ip, s)
-			}
+			// This endpoint accepts diagnostics only. Never reflect arbitrary request
+			// content into production logs.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		sid := klogSanitize(p.SID, 24)
-		if p.UA != "" {
-			log.Printf("[kbd-client ip=%s sid=%s] ua=%s", ip, sid, klogSanitize(p.UA, 300))
-		}
 		for _, line := range p.Lines {
 			s := klogSanitize(line, 500)
 			if s == "" {
 				continue
 			}
-			log.Printf("[kbd-client ip=%s sid=%s] %s", ip, sid, s)
+			diagLog.Printf("[popcorn-diag sid=%s] %s", sid, s)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
-}
-
-// klogClientIP prefers the cloudflared / proxy forwarding headers, falling back
-// to the socket peer. Best-effort; only used to group a device's log lines.
-func klogClientIP(r *http.Request) string {
-	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
-		return klogSanitize(v, 64)
-	}
-	if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
-		if i := strings.IndexByte(v, ','); i >= 0 {
-			v = v[:i]
-		}
-		return klogSanitize(strings.TrimSpace(v), 64)
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return klogSanitize(r.RemoteAddr, 64)
-	}
-	return klogSanitize(host, 64)
 }
 
 // klogSanitize collapses newlines/tabs to spaces, drops other control chars

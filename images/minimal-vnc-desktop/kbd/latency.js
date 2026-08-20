@@ -24,6 +24,9 @@ let rttEMA = 0;     // measured /kbd tunnel round-trip (see ./rtt.js ping/pong)
 // the start and never underestimates a slow link. 0 until the first sample.
 export function linkLatency() { return Math.max(emaLatency, rttEMA); }
 
+// Network RTT without remote-processing time.
+export function linkRtt() { return rttEMA; }
+
 export function dismissDelay() {
   const latency = linkLatency();
   if (latency <= 0) return DISMISS_BASE_MS;

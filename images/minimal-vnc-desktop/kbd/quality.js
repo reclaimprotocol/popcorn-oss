@@ -16,12 +16,12 @@
 // SHARE one savedQuality stash keyed by a reason set: quality is restored only
 // once BOTH reasons clear, so a scroll that settles mid-typing can't yank quality
 // back up under the keyboard, and a keyboard dismiss mid-scroll can't either.
-// Gated on linkLatency() so a fast link stays crisp.
+// Both levers are RTT-gated, so a fast link stays crisp.
 //
 // createQuality({ getRfb }) closes over a live accessor for the (reconnect-
 // swappable) RFB instance and the shared linkLatency() estimate.
 
-import { linkLatency } from './latency.js';
+import { linkRtt } from './latency.js';
 import { dbg } from './diag.js';
 
 const LOW_QUALITY = 6;          // Preserve legibility while masking a slow link
@@ -59,7 +59,7 @@ export function createQuality({ getRfb }) {
   function lowerFor(reason) {
     const rfb = getRfb();
     if (!rfb) return;
-    if (linkLatency() < SLOW_RTT_MS) return;  // fast link: keep it crisp
+    if (linkRtt() < SLOW_RTT_MS) return;  // fast link: keep it crisp
     reasons.add(reason);
     if (savedQuality !== null) return;         // already lowered by another reason
     try {

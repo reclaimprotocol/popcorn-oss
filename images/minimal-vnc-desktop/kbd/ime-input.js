@@ -25,6 +25,7 @@ import { dbg, dbgv, safeKeyName } from './diag.js';
 import { isHighSurrogate, isLowSurrogate, backspaceCountFor } from './keys.js';
 import { linkLatency } from './latency.js';
 import { stripCtl } from './echo.js';
+import { e2e } from './e2e.js';
 
 export function createImeInput({
   getRfb, sendText, sendSpecialKey, sendActionKey, echo, filterAutoSpace, toggleKeyboard,
@@ -53,6 +54,15 @@ export function createImeInput({
                                   // cleared at a word boundary / field change
   let ecComposeReconciled = false; // this EC composition's re-grab was already checked
   let lastProxyInputAt = 0;       // last soft-keyboard input — floating/split kbd proof
+  let firstImeEvent = null;       // diagnostic evidence of which browser input API actually fired
+
+  // Android does not expose the installed keyboard app (Gboard, SwiftKey,
+  // Samsung Keyboard, etc.). The browser event path is actionable for debugging input delivery and contains no user data.
+  function noteImeEvent(path) {
+    if (firstImeEvent) return;
+    firstImeEvent = path;
+    dbg('ime first-event=' + path);
+  }
 
   // Minimal edit from oldV -> newV keeping the common PREFIX (the remote caret is
   // at the end of oldV, so we can only safely edit the tail without moving it):
@@ -153,8 +163,13 @@ export function createImeInput({
 
   function onProxyBeforeInput(e) {
     if (!getRfb() || !proxy) return;
+    // Stamp the DOM input boundary, before IME/value-diff processing.  The
+    // transport later records its send time, so an e2e text trace includes the
+    // local processing a user experiences rather than starting at sendKey.
+    e2e.noteInput();
     noteProxyInput();
     const inputType = e.inputType;
+    noteImeEvent('beforeinput:' + (inputType || '-'));
     const data = e.data;
     dbgv('beforeinput type=' + inputType + ' dlen=' + (data ? data.length : 0) +
       ' comp=' + (isComposing || e.isComposing ? 1 : 0) + ' vlen=' + proxy.value.length);
@@ -227,9 +242,11 @@ export function createImeInput({
 
   function onProxyInput(e) {
     if (!getRfb() || !proxy) return;
+    e2e.noteInput();
     noteProxyInput();
     const currentValue = proxy.value;
     const inputType = e.inputType;
+    noteImeEvent('input:' + (inputType || '-'));
     dbgv('input type=' + inputType + ' vlen=' + currentValue.length +
       ' comp=' + (isComposing || e.isComposing ? 1 : 0) + ' plat=' + (isAndroid ? 'a' : 'i'));
 
@@ -453,8 +470,9 @@ export function createImeInput({
   }
 
   function onCompositionEnd(e) {
+    e2e.noteInput();
     isComposing = false;
-    dbg('composition end dlen=' + (e && e.data ? e.data.length : 0));
+    dbg('composition end len=' + (e && e.data ? e.data.length : 0));
     echo.setComposing(''); echo.render(); // committed; sendText below appends it
     if (isAndroid) {
       // Commit-only mode withheld the whole composition; flush the committed
@@ -535,13 +553,15 @@ export function createImeInput({
       proxy.setSelectionRange(v.length, v.length);
     } catch (_) {}
     lastSentValue = v;
-    dbg('mirror seed vlen=' + v.length);
+    dbg('mirror seed len=' + v.length);
     return true;
   }
 
   function onECTextUpdate(e) {
     if (!editCtx) return; // rfb-null is fine: sendText/sendSpecialKey queue it
+    e2e.noteInput();
     noteProxyInput();
+    noteImeEvent('editcontext:textupdate');
     dbgv('EC textupdate tlen=' + (e.text ? e.text.length : 0) + ' del=' +
       (e.updateRangeEnd - e.updateRangeStart) + ' comp=' + (isComposing ? 1 : 0) +
       ' suppress=' + (ecSuppressed ? 1 : 0));
@@ -585,7 +605,7 @@ export function createImeInput({
     if (isComposing && !ecComposeReconciled && editCtx.text) {
       ecComposeReconciled = true;
       if (deleted === 0 && ecCommittedWord && e.text === editCtx.text) {
-        dbg('EC re-compose reconcile: drop committed word len=' + editCtx.text.length);
+        dbg('EC re-compose reconcile len=' + editCtx.text.length);
         sendSpecialKey('Backspace', backspaceCountFor(editCtx.text));
         ecCommittedWord = false;
       }
@@ -631,6 +651,7 @@ export function createImeInput({
   }
 
   function onECCompositionEnd() {
+    e2e.noteInput();
     // Commit-only mode withheld every step; send the accumulated committed text
     // once (read the buffer BEFORE resetEC clears it).
     if (ecSuppressed) {
@@ -648,6 +669,7 @@ export function createImeInput({
 
   function onECKeyDown(e) {
     if (!getRfb()) return;
+    e2e.noteInput();
     dbgv('EC keydown key=' + safeKeyName(e.key) + ' code=' + e.keyCode + ' comp=' + (e.isComposing ? 1 : 0));
     const empty = !editCtx || editCtx.text === '';
     // Delete keys are handled BEFORE the composition guard. Gboard leaves a

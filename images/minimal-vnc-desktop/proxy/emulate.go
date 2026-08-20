@@ -81,6 +81,9 @@ type cdpCmd struct {
 	method  string
 	params  map[string]any
 	session string
+	// done observes whether the command was written to the live CDP socket.
+	// It is used only by opt-in /input diagnostics; normal commands leave it nil.
+	done func(bool)
 }
 
 // openDialog stores a blocking dialog and its viewer payload.
@@ -596,13 +599,19 @@ func (e *emulator) activeSession() string {
 // enqueue a command for the active page session; drops if no session or the
 // queue is full (input is high-frequency; a dropped move self-corrects).
 func (e *emulator) queue(method string, params map[string]any) {
+	e.queueWithDone(method, params, nil)
+}
+
+func (e *emulator) queueWithDone(method string, params map[string]any, done func(bool)) bool {
 	sid := e.activeSession()
 	if sid == "" {
-		return
+		return false
 	}
 	select {
-	case e.cmds <- cdpCmd{method: method, params: params, session: sid}:
+	case e.cmds <- cdpCmd{method: method, params: params, session: sid, done: done}:
+		return true
 	default:
+		return false
 	}
 }
 
@@ -614,13 +623,19 @@ func (e *emulator) queue(method string, params map[string]any) {
 // stall the /input read loop forever; if it does expire, the gesture is marked
 // desynced and the next one opens with a cancel.
 func (e *emulator) queueImportant(method string, params map[string]any) {
+	e.queueImportantWithDone(method, params, nil)
+}
+
+func (e *emulator) queueImportantWithDone(method string, params map[string]any, done func(bool)) bool {
 	sid := e.activeSession()
 	if sid == "" {
-		return
+		return false
 	}
-	if !e.enqueuePriority(cdpCmd{method: method, params: params, session: sid}, inputEnqueueWait) {
+	if !e.enqueuePriority(cdpCmd{method: method, params: params, session: sid, done: done}, inputEnqueueWait) {
 		e.inputDesync.Store(true)
+		return false
 	}
+	return true
 }
 
 // cmdEnqueueWait bounds a generic queued command; dialogEnqueueWait bounds one
@@ -692,6 +707,13 @@ type touchPoint struct {
 // real fingers report those, and behavioral captchas (GeeTest, reCAPTCHA) treat
 // a constant force of 0 / zero radius as a synthetic-input tell.
 func (e *emulator) dispatchTouch(evType string, points []touchPoint) {
+	e.dispatchTouchWithDone(evType, points, nil)
+}
+
+// dispatchTouchWithDone queues a native touch command and reports whether it
+// entered the CDP queue. done runs once the command is written (or rejected
+// because its target disappeared).
+func (e *emulator) dispatchTouchWithDone(evType string, points []touchPoint, done func(bool)) bool {
 	tp := make([]map[string]any, 0, len(points))
 	for _, p := range points {
 		force := math.Round((0.45+rand.Float64()*0.2)*100) / 100 // ~0.45..0.65
@@ -717,9 +739,9 @@ func (e *emulator) dispatchTouch(evType string, points []touchPoint) {
 	}
 	params := map[string]any{"type": evType, "touchPoints": tp}
 	if evType == "touchMove" {
-		e.queue("Input.dispatchTouchEvent", params) // high-frequency; a dropped move self-corrects
+		return e.queueWithDone("Input.dispatchTouchEvent", params, done) // high-frequency; a dropped move self-corrects
 	} else {
-		e.queueImportant("Input.dispatchTouchEvent", params) // start/end/cancel: never drop (stuck-finger)
+		return e.queueImportantWithDone("Input.dispatchTouchEvent", params, done) // start/end/cancel: never drop (stuck-finger)
 	}
 }
 
@@ -730,6 +752,10 @@ func (e *emulator) dispatchTouch(evType string, points []touchPoint) {
 // queueImportant, not queue: a dropped release leaves the remote page with a held
 // mouse button, which is the same class of stuck-input bug as a dropped touchEnd.
 func (e *emulator) dispatchCompatClick(p touchPoint) {
+	e.dispatchCompatClickWithDone(p, nil)
+}
+
+func (e *emulator) dispatchCompatClickWithDone(p touchPoint, done func(bool)) bool {
 	base := map[string]any{
 		"x": p.X, "y": p.Y,
 		"button": "left", "clickCount": 1,
@@ -741,8 +767,11 @@ func (e *emulator) dispatchCompatClick(p touchPoint) {
 		press[k] = v
 		release[k] = v
 	}
-	e.queueImportant("Input.dispatchMouseEvent", press)
-	e.queueImportant("Input.dispatchMouseEvent", release)
+	// A compatibility click is complete only after the release is written.
+	if !e.queueImportantWithDone("Input.dispatchMouseEvent", press, nil) {
+		return false
+	}
+	return e.queueImportantWithDone("Input.dispatchMouseEvent", release, done)
 }
 
 func (e *emulator) set(req emulateRequest) {
@@ -838,6 +867,22 @@ func inputWSHandler(em *emulator, ready readyGate) http.HandlerFunc {
 		// socket to error the read below (browsers auto-pong; a dead peer never
 		// does, so the read deadline fires). Only this goroutine writes.
 		var writeMu sync.Mutex
+		// A terminal input acknowledgement closes the diagnostic blind spot: the
+		// viewer can distinguish "sent to /input" from "written to the browser". It carries
+		// only a random per-load SID, gesture id, event kind, and outcome.
+		ackInput := func(sid string, gesture uint64, event, state string) {
+			if sid == "" || gesture == 0 {
+				return
+			}
+			b, err := json.Marshal(map[string]any{
+				"diag": "input", "sid": sid, "g": gesture, "t": event, "state": state,
+			})
+			if err != nil {
+				return
+			}
+			_ = conn.SetWriteDeadline(time.Now().Add(inputWriteDeadline))
+			_ = writeFrameToConn(conn, &writeMu, 0x1, b, false, true)
+		}
 		closed := make(chan struct{})
 		defer close(closed)
 		go func() {
@@ -885,9 +930,30 @@ func inputWSHandler(em *emulator, ready readyGate) http.HandlerFunc {
 			var msg struct {
 				T      string       `json:"t"`
 				Points []touchPoint `json:"points"`
+				D      string       `json:"d"` // opt-in diagnostic session id
+				G      uint64       `json:"g"` // opt-in diagnostic gesture id
 			}
 			if json.Unmarshal(payload, &msg) != nil {
 				continue
+			}
+			sid := klogSanitize(msg.D, 24)
+			gesture := msg.G
+			event := msg.T
+			// One terminal acknowledgement proves the whole gesture path. Start is
+			// intentionally omitted on the success path to keep permanent diagnostics
+			// to a single browser round-trip per tap; an end/cancel failure still tells
+			// us that the gesture could not complete.
+			diagnostic := sid != "" && msg.G != 0 && (msg.T == "end" || msg.T == "cancel" || msg.T == "click")
+			traceDone := func(ok bool) {
+				if !diagnostic {
+					return
+				}
+				state := "written"
+				if !ok {
+					state = "not-written"
+					diagLog.Printf("[popcorn-input sid=%s] g=%d type=%s browser=%s", sid, gesture, event, state)
+				}
+				ackInput(sid, gesture, event, state)
 			}
 			var evType string
 			switch msg.T {
@@ -907,14 +973,24 @@ func inputWSHandler(em *emulator, ready readyGate) http.HandlerFunc {
 				// no click, and never activated. The viewer decides when to send
 				// this (it knows where those frames are) — sending it for every tap
 				// would double-fire wherever the touch already produced a click.
-				if len(msg.Points) == 1 {
-					em.dispatchCompatClick(msg.Points[0])
+				queued := len(msg.Points) == 1 && em.dispatchCompatClickWithDone(msg.Points[0], traceDone)
+				if diagnostic {
+					if !queued {
+						diagLog.Printf("[popcorn-input sid=%s] g=%d type=%s points=%d rejected", sid, msg.G, msg.T, len(msg.Points))
+						ackInput(sid, msg.G, msg.T, "rejected")
+					}
 				}
 				continue
 			default:
 				continue
 			}
-			em.dispatchTouch(evType, msg.Points)
+			queued := em.dispatchTouchWithDone(evType, msg.Points, traceDone)
+			if diagnostic {
+				if !queued {
+					diagLog.Printf("[popcorn-input sid=%s] g=%d type=%s points=%d rejected", sid, msg.G, msg.T, len(msg.Points))
+					ackInput(sid, msg.G, msg.T, "rejected")
+				}
+			}
 		}
 	}
 }
@@ -959,15 +1035,14 @@ func (e *emulator) session() error {
 
 	var writeMu sync.Mutex
 	var idCounter int64
-	send := func(method string, params map[string]any, sessionID string) int {
+	send := func(method string, params map[string]any, sessionID string) (int, bool) {
 		id := int(atomic.AddInt64(&idCounter, 1))
 		msg := map[string]any{"id": id, "method": method, "params": params}
 		if sessionID != "" {
 			msg["sessionId"] = sessionID
 		}
 		b, _ := json.Marshal(msg)
-		_ = writeFrameToConn(conn, &writeMu, 0x1, b, true, true)
-		return id
+		return id, writeFrameToConn(conn, &writeMu, 0x1, b, true, true) == nil
 	}
 
 	applyTo := func(sessionID string) {
@@ -1141,22 +1216,34 @@ func (e *emulator) session() error {
 		case c := <-e.prio:
 			// The reserved queue is selected alongside cmds, so a never-drop command
 			// never waits behind a backlog of moves.
+			ok := false
 			if c.session == "" {
-				send(c.method, c.params, "")
+				_, ok = send(c.method, c.params, "")
 			} else if sessions[c.session] {
-				send(c.method, c.params, c.session)
+				_, ok = send(c.method, c.params, c.session)
+			}
+			if c.done != nil {
+				c.done(ok)
 			}
 		case c := <-e.cmds:
 			// A browser-level command (empty session) addresses a target by id —
 			// closing an unattached OAuth popup is the case that needs it, since
 			// those never get a session at all.
 			if c.session == "" {
-				send(c.method, c.params, "")
+				_, ok := send(c.method, c.params, "")
+				if c.done != nil {
+					c.done(ok)
+				}
 				continue
 			}
 			// Otherwise only dispatch if the target session still exists.
 			if sessions[c.session] {
-				send(c.method, c.params, c.session)
+				_, ok := send(c.method, c.params, c.session)
+				if c.done != nil {
+					c.done(ok)
+				}
+			} else if c.done != nil {
+				c.done(false)
 			}
 		case m := <-msgs:
 			method, _ := m["method"].(string)

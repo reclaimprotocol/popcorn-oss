@@ -18,7 +18,8 @@
 
 import { isTouch, nowMs } from './env.js';
 import { fieldRejectsSpace } from './ime-hints.js';
-import { dbg, dbgv, safeKeyName } from './diag.js';
+import { dbg, dbgv, safeKeyName, KBD_LOG } from './diag.js';
+import { e2e } from './e2e.js';
 import { SPECIAL_KEYSYMS, keysymForCodepoint } from './keys.js';
 import { reportInteraction } from './host-bridge.js';
 
@@ -135,18 +136,45 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
   let freshField = true;
   let freshFieldAt = 0;
   let lastSendFk = null;
+  // Content-free session progress marker for diagnosing partial or repeated
+  // IME delivery. Counts only code points actually forwarded to RFB.
+  let sessionCharsSent = 0;
+  let textLogEvents = 0, textLogSent = 0, textLogFiltered = 0, textLogTimer = null;
+
+  // IMEs can deliver one event per character. Batch their diagnostic accounting
+  // into a short summary rather than adding a log POST for every keystroke.
+  function flushTextLog() {
+    textLogTimer = null;
+    if (!textLogEvents) return;
+    dbg('text send events=' + textLogEvents + ' sent=' + textLogSent +
+      ' total=' + sessionCharsSent + (textLogFiltered ? ' filtered=' + textLogFiltered : '') +
+      ' rfb=ready');
+    textLogEvents = 0;
+    textLogSent = 0;
+    textLogFiltered = 0;
+  }
+  function noteTextLog(requested, sent) {
+    if (!KBD_LOG) return;
+    textLogEvents++;
+    textLogSent += sent;
+    textLogFiltered += Math.max(0, requested - sent);
+    if (textLogTimer === null) textLogTimer = setTimeout(flushTextLog, 750);
+  }
 
   // True only for a space we can attribute to the IME's cross-field flush.
   function carryOverSpace() {
     return freshField && isTouch && (nowMs() - freshFieldAt) < CARRYOVER_WINDOW_MS;
   }
 
-  function noteFieldReset() { freshField = true; freshFieldAt = nowMs(); }
+  function noteFieldReset() {
+    freshField = true;
+    freshFieldAt = nowMs();
+  }
 
   function sendText(text) {
     if (!text) return;
     const rfb = getRfb();
-    if (!rfb || !getRfbReady()) { dbg('sendText queued (rfb down) chars=' + text.length); echoAppend(text); enqueueSend({ kind: 'text', payload: text }); return; }
+    if (!rfb || !getRfbReady()) { dbg('sendText queued (rfb down) len=' + text.length); echoAppend(text); enqueueSend({ kind: 'text', payload: text }); return; }
     // A focus move is a fresh field even when the page reuses the same focusKey.
     const fk = getFocusKey ? getFocusKey() : null;
     if (fk !== lastSendFk) { lastSendFk = fk; noteFieldReset(); }
@@ -190,10 +218,16 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
       }
     });
     onSent(sent);
+    sessionCharsSent += sent;
+    noteTextLog(text.length, sent);
     // One 'char' per CALL, not per code point — parity with the CDP path a host
     // may have used before (Input.insertText counted once regardless of length),
     // so a paste or an IME batch doesn't inflate a host's typing metrics.
     if (sent > 0) reportInteraction('char');
+    // Typing has no per-keystroke acknowledgement to wait for (keysyms go over
+    // RFB, which is fire-and-forget), so the trace runs send -> paint: exactly the
+    // "I typed and the character showed up later" complaint, measured.
+    if (sent > 0) e2e.noteSent('text', 'n=' + sent, false);
     if (sent > 0 && !replayingQueue) echoAppend(text); // optimistic local echo (already echoed on the queued path)
   }
 
@@ -203,13 +237,17 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
     const keysym = SPECIAL_KEYSYMS[name];
     if (!keysym) return;
     const rfb = getRfb();
-    if (!rfb || !getRfbReady()) { dbg('sendKey queued (rfb down) ' + name + 'x' + count); if (name === 'Backspace') echoBackspace(count); enqueueSend({ kind: 'special', payload: { name, count } }); return; }
+    if (!rfb || !getRfbReady()) { dbg('sendKey queued (rfb down)'); if (name === 'Backspace') echoBackspace(count); enqueueSend({ kind: 'special', payload: { name, count } }); return; }
     dbgv('sendKey ' + name + 'x' + count);
     if (count > 1) {
       sendBatched(() => { for (let i = 0; i < count; i++) { try { rfb.sendKey(keysym, name); } catch (_) {} } });
     } else {
       try { rfb.sendKey(keysym, name); } catch (_) {}
     }
+    dbg('key send name=' + safeKeyName(name) + ' count=' + count + ' rfb=ready');
+    // safeKeyName, never the raw key: a trace tag must not be able to carry a
+    // printable character.
+    e2e.noteSent('key', safeKeyName(name), false);
     // Once per repeat: a held backspace would have been N dispatchKeyEvents on the
     // CDP path, so N is what a host's counters expect. safeKeyName is belt-and-
     // braces — these are always named keys, never printable characters.
