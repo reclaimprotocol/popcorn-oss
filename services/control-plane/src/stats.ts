@@ -20,6 +20,16 @@ export interface SessionAllocationStats {
   p95LatencyMs: number;
 }
 
+export interface ViewerRttStats {
+  // Sessions carrying a viewerRtt summary — makes partial coverage explicit
+  // (the probe only runs on viewers that connect through /kbd).
+  measuredSessions: number;
+  totalSamples: number;
+  avgRttMs: number;
+  p50RttMs: number;
+  p95RttMs: number;
+}
+
 function toNumber(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -101,6 +111,84 @@ export async function getSessionAllocationStats(windowHours = 1): Promise<Sessio
   };
 }
 
+// Viewer-measured tunnel RTT (metadata.viewerRtt). Each session contributes its
+// own avg/p50/p95, so fleet percentiles are over sessions, not raw samples — a
+// single chatty session cannot dominate the fleet picture.
+export async function getSessionRttStats(windowHours = 1): Promise<ViewerRttStats> {
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? Math.min(168, windowHours) : 1;
+  const rows = (await db.execute(sql`
+    WITH measured AS (
+      SELECT (metadata->'viewerRtt'->>'avgMs')::double precision AS avg_ms,
+             (metadata->'viewerRtt'->>'p50Ms')::double precision AS p50_ms,
+             (metadata->'viewerRtt'->>'p95Ms')::double precision AS p95_ms,
+             COALESCE((metadata->'viewerRtt'->>'sampleCount')::double precision, 0) AS samples
+      FROM sessions
+      WHERE created_at >= NOW() - make_interval(hours => ${hours})
+        AND jsonb_typeof(metadata->'viewerRtt') = 'object'
+        AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
+    )
+    SELECT
+      COUNT(*) AS measured_sessions,
+      COALESCE(SUM(samples), 0) AS total_samples,
+      COALESCE(AVG(avg_ms), 0) AS avg_rtt_ms,
+      COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY p50_ms), 0) AS p50_rtt_ms,
+      COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY p95_ms), 0) AS p95_rtt_ms
+    FROM measured
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  const row = rows[0] ?? {};
+  return {
+    measuredSessions: toNumber(row.measured_sessions),
+    totalSamples: toNumber(row.total_samples),
+    avgRttMs: toNumber(row.avg_rtt_ms),
+    p50RttMs: toNumber(row.p50_rtt_ms),
+    p95RttMs: toNumber(row.p95_rtt_ms),
+  };
+}
+
+export interface RegionViewerRttStat {
+  region: string;
+  measuredSessions: number;
+  avgRttMs: number;
+  p50RttMs: number;
+  p95RttMs: number;
+}
+
+// Session-level viewer RTT grouped by region; percentiles are over the sessions
+// within each region, so regions stay comparable regardless of traffic volume.
+export async function getSessionRttStatsByRegion(windowHours = 1): Promise<RegionViewerRttStat[]> {
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? Math.min(168, windowHours) : 1;
+  const rows = (await db.execute(sql`
+    WITH measured AS (
+      SELECT COALESCE(region, 'unknown') AS key,
+             (metadata->'viewerRtt'->>'avgMs')::double precision AS avg_ms,
+             (metadata->'viewerRtt'->>'p50Ms')::double precision AS p50_ms,
+             (metadata->'viewerRtt'->>'p95Ms')::double precision AS p95_ms
+      FROM sessions
+      WHERE created_at >= NOW() - make_interval(hours => ${hours})
+        AND jsonb_typeof(metadata->'viewerRtt') = 'object'
+        AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
+    )
+    SELECT
+      key,
+      COUNT(*) AS measured_sessions,
+      COALESCE(AVG(avg_ms), 0) AS avg_rtt_ms,
+      COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY p50_ms), 0) AS p50_rtt_ms,
+      COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY p95_ms), 0) AS p95_rtt_ms
+    FROM measured
+    GROUP BY key
+    ORDER BY measured_sessions DESC, key ASC
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    region: String(row.key ?? 'unknown'),
+    measuredSessions: toNumber(row.measured_sessions),
+    avgRttMs: toNumber(row.avg_rtt_ms),
+    p50RttMs: toNumber(row.p50_rtt_ms),
+    p95RttMs: toNumber(row.p95_rtt_ms),
+  }));
+}
+
 export interface SessionTimeBucket {
   bucketStart: string;
   created: number;
@@ -171,6 +259,61 @@ export async function getSessionTimeSeries(windowHours = 1, buckets = 12): Promi
     expired: toNumber(row.expired),
     ended: toNumber(row.ended),
     avgDurationSeconds: toNumber(row.avg_duration_s),
+  }));
+}
+
+export interface ViewerRttSeriesPoint {
+  bucketStart: string;
+  measuredSessions: number;
+  p50RttMs: number;
+  p95RttMs: number;
+}
+
+// Viewer RTT over time. Summaries are written at teardown, so each session
+// lands in the bucket its ended_at falls into (like the duration trend).
+export async function getViewerRttTimeSeries(windowHours = 1, buckets = 12): Promise<ViewerRttSeriesPoint[]> {
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? Math.min(168, windowHours) : 1;
+  const n = Number.isFinite(buckets) && buckets > 0 ? Math.min(48, Math.floor(buckets)) : 12;
+  const bucketSeconds = Math.max(1, Math.round((hours * 3600) / n));
+
+  const rows = (await db.execute(sql`
+    WITH params AS (
+      SELECT NOW() - make_interval(hours => ${hours}) AS window_start,
+             NOW() AS window_end
+    ),
+    grid AS (
+      SELECT gs AS bucket_start
+      FROM params,
+           generate_series(
+             (SELECT window_start FROM params),
+             (SELECT window_end FROM params) - make_interval(secs => ${bucketSeconds}),
+             make_interval(secs => ${bucketSeconds})
+           ) AS gs
+    )
+    SELECT g.bucket_start AS bucket_start,
+           COUNT(s.session_id) AS measured_sessions,
+           COALESCE(percentile_cont(0.5) WITHIN GROUP (
+             ORDER BY (s.metadata->'viewerRtt'->>'p50Ms')::double precision), 0) AS p50_rtt_ms,
+           COALESCE(percentile_cont(0.95) WITHIN GROUP (
+             ORDER BY (s.metadata->'viewerRtt'->>'p95Ms')::double precision), 0) AS p95_rtt_ms
+    FROM grid g
+    LEFT JOIN sessions s
+      ON s.ended_at IS NOT NULL
+     AND s.ended_at >= g.bucket_start
+     AND s.ended_at < g.bucket_start + make_interval(secs => ${bucketSeconds})
+     AND jsonb_typeof(s.metadata->'viewerRtt') = 'object'
+     AND jsonb_typeof(s.metadata->'viewerRtt'->'avgMs') = 'number'
+    GROUP BY g.bucket_start
+    ORDER BY g.bucket_start
+  `)) as unknown as Array<Record<string, unknown>>;
+
+  return rows.map((row) => ({
+    bucketStart: row.bucket_start instanceof Date
+      ? row.bucket_start.toISOString()
+      : String(row.bucket_start),
+    measuredSessions: toNumber(row.measured_sessions),
+    p50RttMs: toNumber(row.p50_rtt_ms),
+    p95RttMs: toNumber(row.p95_rtt_ms),
   }));
 }
 
