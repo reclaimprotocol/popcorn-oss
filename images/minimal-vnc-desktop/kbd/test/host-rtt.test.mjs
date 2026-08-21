@@ -10,6 +10,7 @@ import {
   installGlobals, freshViewer, fireHostMessage, parentMessages, advanceClock,
 } from './stub-dom.mjs';
 import { createMockRfb } from './mock-rfb.mjs';
+import { makeHostWindow } from './host-stub.mjs';
 
 installGlobals('ios', { embedded: true, search: '?parentOrigin=https://portal.test' });
 
@@ -51,4 +52,22 @@ test('the RTT read obeys the fail-closed inbound gate (wrong origin ignored)', a
   parentMessages.length = 0;
   fireHostMessage({ type: 'POPCORN_RTT_REQUEST' }, { origin: 'https://evil.example' });
   assert.equal(lastRttMsg(), null, 'request from a non-configured origin is dropped');
+});
+
+// ---- host side (PopcornHost SDK) ----------------------------------------
+
+test('PopcornHost.requestRtt posts the request and surfaces the reply as .on(\'rtt\')', async () => {
+  const h = makeHostWindow({ top: true, iframeStyle: { position: 'fixed' },
+    iframeRect: { left: 0, top: 0, width: 411, height: 732 } });
+  const host = h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test' });
+
+  const got = [];
+  host.on('rtt', (d) => got.push(d));
+  host.requestRtt();
+  assert.ok(h.posted.some((m) => m.type === 'POPCORN_RTT_REQUEST'), 'request posted to the frame');
+
+  h.fromChild({ type: 'POPCORN_RTT', rttMs: 86, avgMs: 92, samples: 41 });
+  assert.equal(got.length, 1, 'rtt event emitted');
+  assert.equal(got[0].rttMs, 86);
+  assert.equal(got[0].samples, 41);
 });
