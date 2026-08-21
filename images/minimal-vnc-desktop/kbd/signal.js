@@ -98,7 +98,8 @@ export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, 
   }
 
   // Client-side liveness watchdog for the /kbd viewer socket. Our RTT ping echoes
-  // back every 5s and the server pings every 30s, so a healthy pipe stamps
+  // back every 2–8s (jittered per session, see rtt.js) and the server pings every
+  // 30s, so a healthy pipe stamps
   // lastKbdMsgAt continuously. On a lossy mobile link a half-open socket (wifi<->
   // cell handoff, NAT rebind) can sit readyState=OPEN with NO data for minutes —
   // every focus signal lost, taps hitting stale rects. If nothing arrives for 45s

@@ -247,6 +247,10 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	// field text) here so mobile keyboard issues show up in the proxy log rather
 	// than requiring on-device screenshots. See klog.go.
 	mux.HandleFunc("/klog", klogHTTPHandler())
+	// Viewer-measured tunnel RTT (kbd/rtt-report.js): POST ingests sample batches,
+	// GET ?sid= serves the per-session aggregate read at teardown for analytics.
+	// Carries timestamps and integers only.
+	mux.HandleFunc("/rtstats", rtstatsHTTPHandler(newRtstatsStore(log.Printf)))
 	// Screen-geometry hygiene: a fit/magnify viewer resizes the X screen to its own
 	// layout and nothing put it back, so the next session inherited a phone-shaped
 	// screen. Restore the advertised desktop size once the last viewer leaves.

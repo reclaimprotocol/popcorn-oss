@@ -103,6 +103,10 @@ func (r *GameServerTTLReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// Get session ID from annotation (set during allocation)
 		sessionID := gs.Annotations["popcorn.dev/session-id"]
 
+		// Capture the viewer-measured RTT aggregate before the delete tears
+		// down the pod that holds it.
+		forwardViewerRtt(ctx, &gs, sessionID)
+
 		// Report expiry event to analytics (non-blocking)
 		reportExpiry(ctx, gs.Name, sessionID)
 
