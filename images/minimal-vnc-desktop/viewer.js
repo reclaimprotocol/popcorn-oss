@@ -227,10 +227,11 @@ let firstFrameAt = 0;
 let disconnectCause = 'transport-or-remote';
 
 function requestDisconnect(cause, intentional = false) {
-  disconnectCause = cause;
   if (intentional) intentionalDisconnect = true;
   dbg('rfb disconnect-request cause=' + cause + ' hidden=' + (document.hidden ? 1 : 0));
-  try { rfb && rfb.disconnect(); } catch (_) {}
+  if (!rfb) return; // no connection to close -> no cause to attribute; a stale one would label the NEXT transport disconnect
+  disconnectCause = cause;
+  try { rfb.disconnect(); } catch (_) {}
 }
 
 function postLifecycle(type, data) {
@@ -353,6 +354,7 @@ function connect() {
     const outageMS = disconnectedAt ? Math.round(performance.now() - disconnectedAt) : 0;
     dbg('rfb connect conn=' + connection + ' handshake=' + handshakeMS + 'ms outage=' + outageMS + 'ms attempt=' + reconnectAttempt);
     postLifecycle('POPCORN_CONNECT', { connection, handshakeMs: handshakeMS, outageMs: outageMS, attempt: reconnectAttempt });
+    firstFrameAt = 0; // per-connection, like firstPaintConnection — and BEFORE markFirstPaint, whose first poll is synchronous and may set it
     markFirstPaint(connection); // time the first framebuffer transfer over the tunnel
     reconnectAttempt = 0;
     disconnectedAt = 0;
