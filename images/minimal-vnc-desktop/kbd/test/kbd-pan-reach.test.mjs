@@ -56,8 +56,8 @@ async function kbdUpViewer(sb, sc = null) {
   pushSignal(state);
   return { ...v, screen, canvas };
 }
-function dismissViaHost() {
-  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 844, occludedBottom: 0 });
+function dismissExplicitly() {
+  globalThis.window.PopcornKbd.toggle();
 }
 
 test('drag-up on an unscrollable page pans locally into the occluded sliver, clamped to it', async () => {
@@ -81,8 +81,28 @@ test('drag-up on an unscrollable page pans locally into the occluded sliver, cla
   assert.ok(sentTypes(sock, before).includes('end'), 'the handed-off remote touch was ended');
 
   // Dismissal collapses the extension: the view returns from the extended strip.
-  dismissViaHost();
+  dismissExplicitly();
   assert.equal(translateY(screen), 0, 'dismiss pulls the view back out of the keyboard strip');
+});
+
+test('transient host zero while typing preserves the lifted/panned screen', async () => {
+  const { proxy, screen, canvas } = await kbdUpViewer(0);
+  proxy.focus();
+  fireDoc('touchstart', { touches: touches([200, 600]), changedTouches: touches([200, 600]), target: canvas });
+  fireDoc('touchmove', { touches: touches([200, 590]), changedTouches: touches([200, 590]), target: canvas });
+  fireDoc('touchmove', { touches: touches([200, 500]), changedTouches: touches([200, 500]), target: canvas });
+  fireDoc('touchend', { touches: [], changedTouches: touches([200, 500]), target: canvas });
+  const lifted = translateY(screen);
+  assert.ok(lifted < 0, 'precondition: content is using the keyboard pan budget');
+
+  proxy.value = 'a';
+  fire(proxy, 'input', { inputType: 'insertText' });
+  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 844, occludedBottom: 0 });
+  assert.equal(translateY(screen), lifted,
+    'ambiguous zero did not clear the lift or expose the black background');
+
+  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 300 });
+  dismissExplicitly();
 });
 
 test('a flicked local pan coasts past where the finger lifted (momentum), clamped to the budget', async () => {
@@ -99,7 +119,7 @@ test('a flicked local pan coasts past where the finger lifted (momentum), clampe
 
   assert.ok(afterGlide < atRelease - 1, 'the release glided further up than the finger left it (' + atRelease + ' -> ' + afterGlide + ')');
   assert.ok(afterGlide >= -300, 'but momentum never carries past the occlusion budget');
-  dismissViaHost();
+  dismissExplicitly();
   assert.equal(translateY(screen), 0, 'and a dismiss mid-rest still collapses the extension');
 });
 
@@ -116,7 +136,7 @@ test('drag-up forwards to the remote while it can still scroll (sb large)', asyn
 
   fireDoc('touchend', { touches: [], changedTouches: touches([200, 590]), target: canvas });
   assert.ok(sentTypes(sock, before).includes('end'));
-  dismissViaHost();
+  dismissExplicitly();
 });
 
 test('drag-up inside a scrollable modal stays remote even when the document is at bottom', async () => {
@@ -130,7 +150,7 @@ test('drag-up inside a scrollable modal stays remote even when the document is a
   assert.ok(sentTypes(sock, before).includes('start'), 'the modal still has remote scroll room');
   assert.equal(translateY(screen), 0, 'the keyboard pan did not steal the modal gesture');
   fireDoc('touchend', { touches: [], changedTouches: touches([200, 560]), target: canvas });
-  dismissViaHost();
+  dismissExplicitly();
 });
 
 test('drag-down unwinds the spent budget locally, then hands off to the remote', async () => {
@@ -156,7 +176,7 @@ test('drag-down unwinds the spent budget locally, then hands off to the remote',
   fireDoc('touchmove', { touches: touches([200, 478]), changedTouches: touches([200, 478]), target: canvas });
   assert.ok(sentTypes(sock, before).includes('start'), 'the overrun handed off to the remote');
   fireDoc('touchend', { touches: [], changedTouches: touches([200, 478]), target: canvas });
-  dismissViaHost();
+  dismissExplicitly();
 });
 
 test('a deferred no-move touch is a tap: synthesized to the remote like the zoomed path', async () => {
@@ -181,7 +201,7 @@ test('a deferred no-move touch is a tap: synthesized to the remote like the zoom
   await new Promise((r) => setTimeout(r, 90));
   assert.deepEqual(sentTypes(sock, before), ['start', 'end'],
     'and released after the hold, like a real finger');
-  dismissViaHost();
+  dismissExplicitly();
 });
 
 test('host occ=0 heartbeats no longer blind the layout-resize detector (Firefox-nested cell)', async () => {
@@ -261,7 +281,7 @@ test('rotating while typing does not false-latch layout-resize mode', async () =
   globalThis.window.innerHeight = 844;
   setVisualViewportHeight(844);
   fireWindow('resize');
-  dismissViaHost();
+  dismissExplicitly();
 });
 
 test('a letterboxed canvas gets no pan extension (nothing hides behind the keys)', async () => {
@@ -293,7 +313,7 @@ test('a letterboxed canvas gets no pan extension (nothing hides behind the keys)
 
   canvas.offsetHeight = 844;
   screen.offsetHeight = 844;
-  dismissViaHost();
+  dismissExplicitly();
 });
 
 test('an absurd host occlusion is rejected rather than becoming pan budget', async () => {
@@ -312,5 +332,5 @@ test('an absurd host occlusion is rejected rather than becoming pan budget', asy
   fireDoc('touchmove', { touches: touches([200, 200]), changedTouches: touches([200, 200]), target: canvas });
   assert.equal(translateY(screen), rest, 'and granted no pan budget');
   fireDoc('touchend', { touches: [], changedTouches: touches([200, 200]), target: canvas });
-  dismissViaHost();
+  dismissExplicitly();
 });

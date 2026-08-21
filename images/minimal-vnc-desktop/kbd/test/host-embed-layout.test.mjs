@@ -119,6 +119,51 @@ test('layer() applies the contract and reparents a not-yet-loaded frame', () => 
   assert.deepEqual(h.PopcornHost.auditLayout(h.iframe).issues, [], 'audits clean afterwards');
 });
 
+test('attach pins a layered iframe to its pre-keyboard height until dismissal', () => {
+  const h = makeHostWindow({
+    iframeRect: { left: 0, top: 0, width: 411, height: 732 },
+    viewport: { w: 411, h: 732 },
+  });
+  h.PopcornHost.layer(h.iframe);
+  const host = h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test' });
+
+  h.win.visualViewport.height = 400;
+  h.win.visualViewport.offsetTop = 300;
+  h.fireWindow('resize');
+  assert.equal(h.iframe.style.height, '732px', 'keyboard cannot collapse the live-view box');
+  assert.equal(h.iframe.style.bottom, 'auto', 'the pinned top + height own its vertical box');
+  assert.equal(h.iframe.style.top, '0', 'the layout top remains stable');
+  assert.equal(h.iframe.style.transform, 'translate3d(0,300px,0)',
+    'visual viewport panning is cancelled in the compositor');
+
+  h.win.visualViewport.height = 732;
+  h.win.visualViewport.offsetTop = 0;
+  h.fireWindow('resize');
+  assert.equal(h.iframe.style.height, '100%', 'dismiss restores the embedder layout contract');
+  assert.equal(h.iframe.style.bottom, '0', 'dismiss restores the original bottom edge');
+  assert.equal(h.iframe.style.top, '0', 'dismiss restores the original top edge');
+  assert.equal(h.iframe.style.transform, 'none', 'dismiss removes the temporary compositor translation');
+  host.destroy();
+});
+
+test('a relay pins its own child from upstream keyboard geometry', () => {
+  const h = makeHostWindow({
+    top: false,
+    iframeRect: { left: 0, top: 0, width: 411, height: 732 },
+    viewport: { w: 411, h: 732 },
+  });
+  h.PopcornHost.layer(h.iframe);
+  const host = h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test' });
+
+  h.fromParent({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 400, occludedBottom: 332 });
+  assert.equal(h.iframe.style.height, '732px');
+  assert.equal(h.iframe.style.bottom, 'auto');
+  h.fromParent({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 732, occludedBottom: 0 });
+  assert.equal(h.iframe.style.height, '100%');
+  assert.equal(h.iframe.style.bottom, '0');
+  host.destroy();
+});
+
 test('a BLANK frame is not a live one — the about:blank document must not block layer()', () => {
   // REGRESSION (reproduced in Chrome on an emulated Pixel 7, host/test-host.html):
   // the documented recipe is "call layer() before setting src", and it did not
