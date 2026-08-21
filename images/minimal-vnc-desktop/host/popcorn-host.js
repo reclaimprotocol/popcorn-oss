@@ -326,6 +326,8 @@
     // pass { legacyGeometry: false }.
     var legacyGeometry = opts.legacyGeometry !== false;
     var legacyLogged = false;
+    var legacyBaselineHeight = 0;
+    var legacyOccluding = false;
     var embedded;
     try { embedded = global !== global.top; } catch (_) { embedded = true; }
     // Resolved stance: relay until proven otherwise when embedded under 'auto'.
@@ -339,6 +341,35 @@
     // once we have measured a real occlusion, our 0 means "dismissed" and must be
     // sent, or the keyboard could never be torn down through this bridge.
     var everOccluded = false;
+    // Safari can eventually shrink window.innerHeight to the already-shrunk
+    // visualViewport height while the keyboard remains docked.  Keep the last
+    // no-keyboard layout height for the active occlusion session; otherwise the
+    // live innerHeight-vv.height delta collapses to zero after the first key.
+    var layoutBaselineHeight = global.innerHeight || 0;
+    var layoutBaselineWidth = global.innerWidth || 0;
+    var measuredOccluding = false;
+    // A fixed iframe declared as height:100% still follows Safari's shrinking
+    // layout viewport.  After the first character WebKit can collapse that box
+    // to the area above the keyboard, exposing the embedder's background as a
+    // large black band.  Remember the pre-keyboard box and pin it in CSS pixels
+    // for the keyboard session.  Geometry/lift decides what PART is visible;
+    // resizing the stream itself is both redundant and visibly destructive.
+    var pinKeyboardHeight = opts.pinKeyboardHeight !== false;
+    var frameBaselineHeight = 0;
+    var frameBaselineWidth = 0;
+    var framePinned = false;
+    var frameRestoreHeight = '';
+    var frameRestoreBottom = '';
+    var frameRestoreTop = '';
+    var frameRestoreTransform = '';
+    try {
+      var initialFrameRect = iframeEl.getBoundingClientRect();
+      frameBaselineHeight = initialFrameRect.height || layoutBaselineHeight;
+      frameBaselineWidth = initialFrameRect.width || layoutBaselineWidth;
+    } catch (_) {
+      frameBaselineHeight = layoutBaselineHeight;
+      frameBaselineWidth = layoutBaselineWidth;
+    }
     var blindLogged = false;
     var destroyed = false;
     var childHello = null;
@@ -388,26 +419,130 @@
       }
     }
 
+    function frameHeightNow() {
+      try { return iframeEl.getBoundingClientRect().height || 0; } catch (_) { return 0; }
+    }
+
+    function pinFrameForKeyboard(active) {
+      if (!pinKeyboardHeight) return;
+      var cs;
+      try { cs = global.getComputedStyle(iframeEl); } catch (_) { return; }
+      if (!cs || cs.position !== 'fixed') return;
+
+      if (active) {
+        if (!framePinned) {
+          var rect;
+          try { rect = iframeEl.getBoundingClientRect(); } catch (_) { rect = null; }
+          if (rect && rect.width && frameBaselineWidth && Math.abs(rect.width - frameBaselineWidth) > 8) {
+            // A rotation is a new layout.  Prefer the current box only when it has
+            // not already collapsed below the pre-keyboard layout baseline.
+            frameBaselineWidth = rect.width;
+            if (rect.height >= layoutBaselineHeight - 8) frameBaselineHeight = rect.height;
+          } else if (rect && rect.height > frameBaselineHeight) {
+            frameBaselineHeight = rect.height;
+          }
+          frameBaselineHeight = Math.max(frameBaselineHeight, layoutBaselineHeight);
+          if (!(frameBaselineHeight > 0)) return;
+          frameRestoreHeight = iframeEl.style.height || '';
+          frameRestoreBottom = iframeEl.style.bottom || '';
+          frameRestoreTop = iframeEl.style.top || '';
+          frameRestoreTransform = iframeEl.style.transform || '';
+          iframeEl.style.height = Math.round(frameBaselineHeight) + 'px';
+          // top + bottom + an explicit height is over-constrained.  Say which two
+          // edges own the box so WebKit cannot choose the shrunken bottom inset.
+          iframeEl.style.bottom = 'auto';
+          framePinned = true;
+        }
+        // iOS pans the visual viewport after the first key (offsetTop becomes
+        // roughly the keyboard height).  Fixed content remains in layout-viewport
+        // coordinates, so without this compensation the entire 714px iframe moves
+        // up ~337px and its bottom exposes the host background.  Keep its top at
+        // the visual viewport's top; the viewer's own lift still positions the
+        // remote field within the visible 377px.  Use an integer compositor
+        // translation only when Safari actually pans.  The normal proxy placement
+        // keeps offsetTop at zero, so the iframe retains the transform-free layout
+        // contract and its native raster scale.
+        var vv = global.visualViewport;
+        var visualTop = Math.round(vv ? (vv.offsetTop || 0) : 0);
+        iframeEl.style.top = frameRestoreTop;
+        iframeEl.style.transform = visualTop
+          ? 'translate3d(0,' + visualTop + 'px,0)'
+          : frameRestoreTransform;
+        return;
+      }
+
+      if (!framePinned) {
+        var idleHeight = frameHeightNow();
+        if (idleHeight > 0) frameBaselineHeight = idleHeight;
+        return;
+      }
+      iframeEl.style.height = frameRestoreHeight;
+      iframeEl.style.bottom = frameRestoreBottom;
+      iframeEl.style.top = frameRestoreTop;
+      iframeEl.style.transform = frameRestoreTransform;
+      framePinned = false;
+      var restoredHeight = frameHeightNow();
+      if (restoredHeight > 0) frameBaselineHeight = restoredHeight;
+    }
+
+    function annotateGeometry(g) {
+      var vv = global.visualViewport;
+      g.rawInnerHeight = global.innerHeight || 0;
+      g.rawViewportHeight = vv ? vv.height : 0;
+      g.rawOffsetTop = vv ? (vv.offsetTop || 0) : 0;
+      g.layoutBaselineHeight = layoutBaselineHeight;
+      g.frameHeight = frameHeightNow();
+      g.framePinned = framePinned ? 1 : 0;
+      return g;
+    }
+
     // ---- MEASURE -----------------------------------------------------------
     // occludedBottom is the height the keyboard covers; visibleHeight is what's
     // left. Prefer the VirtualKeyboard API when this document actually has it
     // (Chromium, and only where permitted) since it reports the keyboard rect
     // explicitly; otherwise derive it from the visual viewport, which is the
-    // only signal iOS Safari offers. offsetTop matters: iOS shifts the visual
-    // viewport rather than only shrinking it, so height alone under-reports.
+    // only signal iOS Safari offers.  The keyboard reduces visualViewport.height;
+    // offsetTop is the page's pan/scroll position and must NOT be subtracted from
+    // the keyboard height.  iOS raises offsetTop while keeping a lower-page field
+    // visible during typing; subtracting it made a still-docked keyboard report
+    // occludedBottom=0 and caused the viewer to expose a large black gap.
     function measure() {
       var innerH = global.innerHeight || 0;
+      var innerW = global.innerWidth || 0;
+      if (layoutBaselineWidth && Math.abs(innerW - layoutBaselineWidth) > 8) {
+        // Rotation/posture change: relearn in the new width.  If the keyboard is
+        // already visible, vv.height will still be smaller and latch it below.
+        layoutBaselineWidth = innerW;
+        layoutBaselineHeight = innerH;
+        measuredOccluding = false;
+      } else {
+        layoutBaselineWidth = innerW;
+        if (innerH > layoutBaselineHeight) layoutBaselineHeight = innerH;
+      }
       var vk = global.navigator && global.navigator.virtualKeyboard;
       if (vk && vk.boundingRect && vk.boundingRect.height > 0) {
+        measuredOccluding = true;
         return { visibleHeight: innerH - vk.boundingRect.height, occludedBottom: vk.boundingRect.height };
       }
       var vv = global.visualViewport;
       if (vv) {
-        var occluded = Math.max(0, innerH - vv.height - (vv.offsetTop || 0));
+        // When both viewports agree and no keyboard session has been observed,
+        // this is ordinary page/browser-chrome geometry.  Relearn downward as
+        // well so an expanded URL bar is not mistaken for a keyboard.
+        if (!measuredOccluding && Math.abs(innerH - vv.height) < 50) {
+          layoutBaselineHeight = innerH;
+          return { visibleHeight: innerH, occludedBottom: 0 };
+        }
+        var occluded = Math.max(0, Math.max(layoutBaselineHeight, innerH) - vv.height);
         // Under ~50px is not a keyboard — it's a URL bar collapsing, a pinch, or
         // fractional rounding. Report it as "no keyboard" so the viewer clears
         // its lift instead of nudging the page around.
-        if (occluded < 50) return { visibleHeight: innerH, occludedBottom: 0 };
+        if (occluded < 50) {
+          measuredOccluding = false;
+          if (Math.abs(innerH - vv.height) < 50) layoutBaselineHeight = innerH;
+          return { visibleHeight: innerH, occludedBottom: 0 };
+        }
+        measuredOccluding = true;
         return { visibleHeight: vv.height, occludedBottom: occluded };
       }
       return { visibleHeight: innerH, occludedBottom: 0 };
@@ -417,6 +552,8 @@
       if (relay) return; // a relaying frame forwards its parent's numbers, never its own
       if (destroyed) return;
       var g = measure();
+      pinFrameForKeyboard(g.occludedBottom > 0);
+      annotateGeometry(g);
       // A FALLBACK measurer (embedded, nobody above us proved it measures) must
       // never assert "there is no keyboard". Our visualViewport is a subframe's: it
       // does not reliably shrink when the keyboard opens, so occludedBottom:0 from
@@ -604,12 +741,22 @@
       if (legacyGeometry && d.type === 'parent-viewport') {
         var innerH = Number(d.innerHeight);
         var visH = Number(d.viewportHeight);
-        var offTop = Number(d.offsetTop) || 0;
         if (isFinite(innerH) && innerH > 0 && isFinite(visH) && visH > 0) {
-          var occ = Math.max(0, innerH - visH - offTop);
+          // offsetTop is scroll position, not keyboard occlusion.  This mirrors
+          // measure() above for the legacy portal message shape.
+          if (!legacyBaselineHeight || innerH > legacyBaselineHeight) legacyBaselineHeight = innerH;
+          if (!legacyOccluding && Math.abs(innerH - visH) < 50) legacyBaselineHeight = innerH;
+          var occ = Math.max(0, Math.max(legacyBaselineHeight, innerH) - visH);
           // Same sub-threshold rule as measure(): under ~50px is a collapsing URL
           // bar or rounding, not a keyboard.
-          if (occ < 50) { occ = 0; visH = innerH; }
+          if (occ < 50) {
+            occ = 0;
+            visH = innerH;
+            legacyOccluding = false;
+            if (Math.abs(innerH - Number(d.viewportHeight)) < 50) legacyBaselineHeight = innerH;
+          } else {
+            legacyOccluding = true;
+          }
           if (!legacyLogged) {
             legacyLogged = true;
             logInfo('translating the legacy parent-viewport message into POPCORN_HOST_GEOMETRY');
@@ -619,7 +766,8 @@
             if (graceTimer) { global.clearTimeout(graceTimer); graceTimer = null; }
             if (!relay) { stopMeasuring(); relay = true; logInfo('upstream host is measuring (legacy bridge) — switching to relay'); }
           }
-          post('POPCORN_HOST_GEOMETRY', { visibleHeight: visH, occludedBottom: occ });
+          pinFrameForKeyboard(occ > 0);
+          post('POPCORN_HOST_GEOMETRY', annotateGeometry({ visibleHeight: visH, occludedBottom: occ }));
         }
         return;
       }
@@ -630,6 +778,9 @@
           upstreamSeen = true;
           if (graceTimer) { global.clearTimeout(graceTimer); graceTimer = null; }
           if (!relay) { stopMeasuring(); relay = true; logInfo('upstream host is measuring — switching to relay'); }
+        }
+        if (d.type === 'POPCORN_HOST_GEOMETRY') {
+          pinFrameForKeyboard(Number(d.occludedBottom) > 0);
         }
         post(d.type, d);
       }
@@ -732,6 +883,7 @@
         stopHelloRetry();
         if (graceTimer) { global.clearTimeout(graceTimer); graceTimer = null; }
         stopMeasuring();
+        pinFrameForKeyboard(false);
         if (resizeWatch) { try { resizeWatch.disconnect(); } catch (_) {} resizeWatch = null; }
         listeners = {};
       },

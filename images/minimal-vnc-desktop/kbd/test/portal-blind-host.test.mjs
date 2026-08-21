@@ -182,6 +182,8 @@ test('and its later occluded=0 is honoured as a real dismissal', async () => {
   fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 400, occludedBottom: 332 });
   advanceClock(3000); // past the recent-input grace
   fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 732, occludedBottom: 0 });
+  assert.equal(globalThis.document.activeElement, proxy, 'single zero is debounced');
+  await new Promise((resolve) => setTimeout(resolve, 750));
   assert.notEqual(globalThis.document.activeElement, proxy, 'dismissed on the host\'s word');
 });
 
@@ -224,6 +226,43 @@ test('the same fallback DOES post once it can actually see an occlusion', async 
   assert.equal(after[1].occludedBottom, 0);
 });
 
+test('iOS visualViewport offsetTop does not erase a docked keyboard occlusion', () => {
+  const h = makeHostWindow({ top: true, viewport: { w: 411, h: 732 },
+    iframeStyle: { position: 'fixed' }, iframeRect: { left: 0, top: 0, width: 411, height: 732 } });
+  h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test' });
+  h.posted.length = 0;
+  h.win.visualViewport.height = 400;
+  h.win.visualViewport.offsetTop = 300; // iOS pans to keep a lower field visible
+  h.fireWindow('resize');
+  const geom = h.posted.filter((m) => m.type === 'POPCORN_HOST_GEOMETRY');
+  assert.equal(geom.length, 1);
+  assert.equal(geom[0].visibleHeight, 400);
+  assert.equal(geom[0].occludedBottom, 332,
+    'keyboard height comes from viewport shrink, independent of scroll position');
+});
+
+test('iOS keeps the no-keyboard baseline when innerHeight later shrinks too', () => {
+  const h = makeHostWindow({ top: true, viewport: { w: 411, h: 732 },
+    iframeStyle: { position: 'fixed' }, iframeRect: { left: 0, top: 0, width: 411, height: 732 } });
+  h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test' });
+  h.posted.length = 0;
+
+  h.win.visualViewport.height = 400; // keyboard animation: VV shrinks first
+  h.fireWindow('resize');
+  h.win.innerHeight = 400;           // WebKit settles layout viewport afterward
+  h.fireWindow('resize');
+
+  const geom = h.posted.filter((m) => m.type === 'POPCORN_HOST_GEOMETRY');
+  assert.equal(geom.length, 1, 'the second event did not publish a false zero');
+  assert.equal(geom[0].occludedBottom, 332);
+
+  h.win.innerHeight = 732;           // real dismissal restores the baseline
+  h.win.visualViewport.height = 732;
+  h.fireWindow('resize');
+  const after = h.posted.filter((m) => m.type === 'POPCORN_HOST_GEOMETRY');
+  assert.equal(after.at(-1).occludedBottom, 0, 'real viewport restoration still dismisses');
+});
+
 test('the legacy parent-viewport message is TRANSLATED, not dropped', () => {
   // Fixes the deployed portal without the portal shipping anything: the numbers are
   // its own, they came from window.parent like every other inbound message, and the
@@ -257,6 +296,26 @@ test('a legacy sub-threshold delta is a URL bar, not a keyboard', () => {
   assert.equal(geom.length, 1);
   assert.equal(geom[0].occludedBottom, 0, '32px is not a keyboard');
   assert.equal(geom[0].visibleHeight, 732);
+});
+
+test('legacy geometry also treats offsetTop as scroll position, not occlusion', () => {
+  const h = makeHostWindow(EMBEDDED_HOST);
+  h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test' });
+  h.fromParent({ type: 'parent-viewport', innerHeight: 732, viewportHeight: 400, offsetTop: 300 });
+  const geom = h.posted.filter((m) => m.type === 'POPCORN_HOST_GEOMETRY');
+  assert.equal(geom.length, 1);
+  assert.equal(geom[0].visibleHeight, 400);
+  assert.equal(geom[0].occludedBottom, 332);
+});
+
+test('legacy geometry retains its pre-keyboard baseline when innerHeight settles', () => {
+  const h = makeHostWindow(EMBEDDED_HOST);
+  h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test' });
+  h.fromParent({ type: 'parent-viewport', innerHeight: 732, viewportHeight: 400, offsetTop: 0 });
+  h.fromParent({ type: 'parent-viewport', innerHeight: 400, viewportHeight: 400, offsetTop: 0 });
+  const geom = h.posted.filter((m) => m.type === 'POPCORN_HOST_GEOMETRY');
+  assert.equal(geom.length, 2);
+  assert.equal(geom[1].occludedBottom, 332, 'settled innerHeight did not emit a false dismissal');
 });
 
 test('legacy translation can be turned off by a page that owns that message type', () => {

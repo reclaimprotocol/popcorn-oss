@@ -80,7 +80,13 @@ function staleWindowMs() {
 // Absolute malformed-input guard; host geometry can exceed this iframe's height.
 const MAX_HOST_OCCLUSION_PX = 4096;
 
-let geom = null;      // { visibleHeight, occludedBottom, at }
+let geom = null;      // newest raw { visibleHeight, occludedBottom, at }
+// A host's visualViewport can briefly report zero occlusion while iOS pans the
+// viewport around a focused field.  kbd-detect owns the decision about whether
+// that zero is a dismissal; while it is deciding, keep exposing the last
+// accepted positive sample so field updates cannot indirectly drop the lift.
+let heldGeom = null;  // accepted positive geometry during zero confirmation
+let lastGeometryDiag = '';
 // The boot HELLO can race a framework mounting its parent-side bridge.  Keep the
 // last capability payload so an authenticated parent can explicitly ask us to
 // repeat it once its listener is ready.
@@ -119,10 +125,22 @@ export function onLifecycleAck(handler) {
  * occludedBottom is the keyboard's height (0 when dismissed).
  */
 export function hostGeometry() {
-  if (!geom) return null;
-  if (nowMs() - geom.at > staleWindowMs()) return null;
-  return geom;
+  const effective = heldGeom || geom;
+  if (!effective) return null;
+  if (nowMs() - effective.at > staleWindowMs()) return null;
+  return effective;
 }
+
+/** Keep exposing a previously accepted positive sample while a host zero is
+ * being confirmed.  Only kbd-detect should call this: it has the keyboard/input
+ * state needed to distinguish a transient iOS viewport pan from dismissal. */
+export function holdHostGeometry(g) {
+  if (!g || !(g.occludedBottom > 0) || !(g.visibleHeight > 0)) return;
+  heldGeom = g;
+}
+
+/** Reveal the newest raw host sample again after confirmation or cancellation. */
+export function releaseHostGeometryHold() { heldGeom = null; }
 
 /**
  * Age of the newest host sample in ms, or -1 when none has ever arrived. Reads
@@ -251,6 +269,19 @@ function onMessage(e) {
       // only). Storing geom anyway would still make hostGeometryActive() true and
       // feed currentVisibleBottom a keyboard rect that means nothing here.
       if (!handlers.onGeometry) return;
+      const raw = [
+        Number(d.rawInnerHeight), Number(d.rawViewportHeight), Number(d.rawOffsetTop),
+        Number(d.layoutBaselineHeight), Number(d.frameHeight), Number(d.framePinned),
+      ];
+      if (raw.every(Number.isFinite)) {
+        const key = raw.map((n) => Math.round(n)).join(',');
+        if (key !== lastGeometryDiag) {
+          lastGeometryDiag = key;
+          dbg('host geom raw inner=' + Math.round(raw[0]) + ' vv=' + Math.round(raw[1]) +
+            ' top=' + Math.round(raw[2]) + ' base=' + Math.round(raw[3]) +
+            ' frame=' + Math.round(raw[4]) + ' pinned=' + Math.round(raw[5]));
+        }
+      }
       if (ob > 0 && !hostEverOccluded) {
         hostEverOccluded = true;
         dbg('host-bridge: embedder proved it can see the keyboard -> local detectors stand down');

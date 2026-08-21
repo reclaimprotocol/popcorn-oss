@@ -347,8 +347,17 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // Bring the proxy on-screen near the tap before focusing (it's parked
     // off-screen while the keyboard is down so miss-taps can't hit it).
     const tapXY = tap.lastTapXY();
+    // On iOS, putting the real DOM input at a bottom-page remote field makes
+    // WebKit pan the TOP-LEVEL visual viewport by roughly the keyboard height on
+    // the first character.  A cross-origin LiveView cannot cancel that pan before
+    // its first compositor frame, which is the 309px black flash seen in the
+    // simulator.  The proxy only needs to be rendered and focusable inside the
+    // gesture; it does not need to sit under the remote field.  Keep it in the
+    // top safe strip so Safari has no reason to auto-scroll.  Android retains the
+    // under-finger placement used by its input/IME paths.
+    const proxyY = isIOS ? 24 : (tapXY.y || Math.round(window.innerHeight / 2));
     moveProxyTo(tapXY.x || Math.round(window.innerWidth / 2),
-                tapXY.y || Math.round(window.innerHeight / 2));
+                proxyY);
 
     try { proxy.removeAttribute('readonly'); } catch (_) {}
     applyProxyImeHints();

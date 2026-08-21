@@ -16,7 +16,10 @@
 
 import { isAndroid, nowMs } from './env.js';
 import { dbg } from './diag.js';
-import { hostGeometry, hostGeometryActive, hostGeometryAge } from './host-bridge.js';
+import {
+  hostGeometry, hostGeometryActive, hostGeometryAge,
+  holdHostGeometry, releaseHostGeometryHold,
+} from './host-bridge.js';
 import { reportHealth } from './health.js';
 
 export function createKbdDetect({
@@ -34,6 +37,59 @@ export function createKbdDetect({
   // change all do. Comparing against it is what stops those from being read as
   // a keyboard — see the width guard in handleLayoutResize.
   let baselineInnerWidth = (typeof window !== 'undefined' && window.innerWidth) || 0;
+
+  // A host-derived zero is weaker than a native VK geometrychange: on iOS the
+  // top-level visualViewport can briefly pan far enough during input that the
+  // host computes occludedBottom=0 even though the docked keyboard never left.
+  // Keep the last positive geometry effective until zero stays stable beyond
+  // the viewport animation.  Explicit dismiss/blur paths reset us immediately.
+  const HOST_ZERO_CONFIRM_MS = 700;
+  let lastPositiveHostGeometry = null;
+  let pendingHostZero = null;
+  let pendingHostZeroTimer = null;
+
+  function cancelPendingHostZero() {
+    if (pendingHostZeroTimer !== null) clearTimeout(pendingHostZeroTimer);
+    pendingHostZeroTimer = null;
+    pendingHostZero = null;
+    releaseHostGeometryHold();
+  }
+
+  function finishHostDismiss(g) {
+    dbg('host geom occ=0 -> kbd=false');
+    hostSawOccluded = false; // next keyboard must prove itself again
+    layoutResizeMode = false;
+    baselineInnerHeight = window.innerHeight;
+    baselineInnerWidth = window.innerWidth;
+    setKeyboardActive(false);
+    clearLift();
+    hideMirrorBar(); // keyboardActive already false, so onProxyBlur won't do it
+    flagJustDismissed(100);
+    const proxy = getProxy();
+    if (proxy) proxy.blur();
+    postViewport(g.visibleHeight, 0);
+  }
+
+  function confirmHostZero() {
+    const g = pendingHostZero;
+    pendingHostZero = null;
+    pendingHostZeroTimer = null;
+    releaseHostGeometryHold();
+    if (!g || !getKeyboardActive() || !hostSawOccluded) return;
+    const current = hostGeometry();
+    if (!current || current.occludedBottom > 0) return;
+
+    // Input proves the keyboard itself is still alive.  Once zero has remained
+    // stable for the whole confirmation window it is safe to interpret that as
+    // a floating/non-occluding keyboard and drop only the lift.
+    if (nowMs() - getLastInputAt() < 1000) {
+      dbg('host geom occ=0 persisted with recent input -> keep kbd (floating)');
+      clearLift();
+      postViewport(g.visibleHeight, 0);
+      return;
+    }
+    finishHostDismiss(g);
+  }
 
   // HOST-SUPPLIED geometry (embedded viewer) — the highest-priority detector.
   //
@@ -55,6 +111,8 @@ export function createKbdDetect({
     const visible = g.visibleHeight;
     const occluded = g.occludedBottom;
     if (occluded > 0) {
+      cancelPendingHostZero();
+      lastPositiveHostGeometry = g;
       hostSawOccluded = true;
       if (!getKeyboardActive()) dbg('host geom occ=' + Math.round(occluded) + ' -> kbd=true');
       setKeyboardActive(true);
@@ -79,29 +137,12 @@ export function createKbdDetect({
     // (hostSawOccluded, the analogue of the VV detector's lastViewportShrink).
     if (getKeyboardOpening()) { dbg('host geom occ=0 ignored (opening)'); return; }
     if (!hostSawOccluded) return; // never occluded -> nothing to dismiss
-    if (nowMs() - getLastInputAt() < 1000) {
-      dbg('host geom occ=0 but recent input -> keep kbd (floating)');
-      clearLift();
-      postViewport(visible, 0);
-      return;
+    pendingHostZero = g; // keep the newest zero, but age from the first one
+    if (lastPositiveHostGeometry) holdHostGeometry(lastPositiveHostGeometry);
+    if (pendingHostZeroTimer === null) {
+      dbg('host geom occ=0 -> hold last positive pending confirmation');
+      pendingHostZeroTimer = setTimeout(confirmHostZero, HOST_ZERO_CONFIRM_MS);
     }
-    dbg('host geom occ=0 -> kbd=false');
-    hostSawOccluded = false; // next keyboard must prove itself again
-    // A host-driven dismissal ends the keyboard session, so it must also drop a
-    // layout-resize latch — otherwise a latch set during THIS session survives
-    // into the next one, where it suppresses the lift and zeroes the pan
-    // extension for a keyboard that really does overlay. dismissKeyboard and
-    // the layout grow-branch were the only two paths that cleared it.
-    layoutResizeMode = false;
-    baselineInnerHeight = window.innerHeight;
-    baselineInnerWidth = window.innerWidth;
-    setKeyboardActive(false);
-    clearLift();
-    hideMirrorBar(); // keyboardActive already false, so onProxyBlur won't do it
-    flagJustDismissed(100);
-    const proxy = getProxy();
-    if (proxy) proxy.blur();
-    postViewport(visible, 0);
   }
 
   // ---- ARBITRATION between the host feed and our own eyes -------------------
@@ -363,6 +404,11 @@ export function createKbdDetect({
     // dismissKeyboard's teardown. hostSawOccluded resets with it, so a keyboard
     // dismissed by any other path can't leave a stale "it was occluding" latch that
     // lets the next heartbeat occ=0 kill the following raise.
-    resetLayoutMode() { layoutResizeMode = false; hostSawOccluded = false; },
+    resetLayoutMode() {
+      cancelPendingHostZero();
+      lastPositiveHostGeometry = null;
+      layoutResizeMode = false;
+      hostSawOccluded = false;
+    },
   };
 }

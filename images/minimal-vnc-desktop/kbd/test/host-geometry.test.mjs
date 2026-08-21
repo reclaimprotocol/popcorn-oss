@@ -17,7 +17,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  installGlobals, freshViewer, fireViewport, setVisualViewportHeight,
+  installGlobals, freshViewer, fire, fireViewport, setVisualViewportHeight,
   parentMessages, fireHostMessage, advanceClock,
 } from './stub-dom.mjs';
 import { createMockRfb } from './mock-rfb.mjs';
@@ -57,16 +57,69 @@ test('host geometry outranks the local visualViewport detector (no double-drive)
   assert.equal(lastViewportMsg(), null, 'local VV detector stayed dormant under host geometry');
 });
 
-test('occludedBottom 0 with no recent input dismisses; the proxy is blurred', async () => {
+test('persistent occludedBottom 0 with no recent input dismisses after confirmation', async () => {
   const { proxy } = await freshViewer(createMockRfb);
   proxy.focus();
   hostGeometry(500, 344);
   advanceClock(3000); // no recent proxy input -> a real dismissal, not a float
   parentMessages.length = 0;
   hostGeometry(844, 0);
+  assert.equal(globalThis.document.activeElement, proxy, 'single zero is held, not acted on');
+  assert.equal(lastViewportMsg(), null, 'no transient zero viewport was published');
+  await new Promise((resolve) => setTimeout(resolve, 750));
   assert.notEqual(globalThis.document.activeElement, proxy, 'proxy blurred on host-reported dismiss');
   const msg = lastViewportMsg();
   assert.equal(msg.occludedBottom, 0);
+});
+
+test('transient host zero after input preserves positive geometry and lift state', async () => {
+  const { proxy } = await freshViewer(createMockRfb);
+  proxy.focus();
+  hostGeometry(500, 344);
+  proxy.value = 'a';
+  fire(proxy, 'input', { inputType: 'insertText' });
+  parentMessages.length = 0;
+
+  hostGeometry(844, 0);
+  const bridge = await import('../host-bridge.js');
+  assert.equal(bridge.hostGeometry().occludedBottom, 344,
+    'last positive geometry remains effective during zero confirmation');
+  assert.equal(lastViewportMsg(), null, 'transient zero is not published');
+  assert.equal(globalThis.document.activeElement, proxy, 'keyboard remains focused');
+
+  hostGeometry(500, 344); // iOS viewport animation settles before confirmation
+  await new Promise((resolve) => setTimeout(resolve, 750));
+  assert.equal(bridge.hostGeometry().occludedBottom, 344, 'positive geometry won');
+  assert.equal(globalThis.document.activeElement, proxy, 'cancelled timer did not dismiss later');
+});
+
+test('persistent host zero with recent input becomes floating without dismissal', async () => {
+  const { proxy } = await freshViewer(createMockRfb);
+  proxy.focus();
+  hostGeometry(500, 344);
+  proxy.value = 'a';
+  fire(proxy, 'input', { inputType: 'insertText' });
+  parentMessages.length = 0;
+
+  hostGeometry(844, 0);
+  await new Promise((resolve) => setTimeout(resolve, 750));
+  assert.equal(globalThis.document.activeElement, proxy, 'floating keyboard remains focused');
+  assert.equal(lastViewportMsg().occludedBottom, 0, 'persistent zero eventually clears the lift');
+});
+
+test('explicit dismissal cancels a pending host-zero confirmation immediately', async () => {
+  const { kbd, proxy } = await freshViewer(createMockRfb);
+  proxy.focus();
+  hostGeometry(500, 344);
+  proxy.value = 'a';
+  fire(proxy, 'input', { inputType: 'insertText' });
+  hostGeometry(844, 0);
+
+  kbd.toggle();
+  assert.notEqual(globalThis.document.activeElement, proxy, 'explicit dismiss does not wait for debounce');
+  parentMessages.length = 0;
+  await new Promise((resolve) => setTimeout(resolve, 750));
+  assert.equal(lastViewportMsg(), null, 'cancelled zero timer emitted no late viewport update');
 });
 
 test('occludedBottom 0 does NOT dismiss when the host never saw an occlusion', async () => {
@@ -89,6 +142,7 @@ test('once the host HAS seen an occlusion, occ=0 dismisses normally', async () =
   hostGeometry(500, 344); // keys arrive
   advanceClock(3000);
   hostGeometry(844, 0);   // real dismissal
+  await new Promise((resolve) => setTimeout(resolve, 750));
   assert.notEqual(globalThis.document.activeElement, proxy, 'proxy blurred on the real dismiss');
 });
 
