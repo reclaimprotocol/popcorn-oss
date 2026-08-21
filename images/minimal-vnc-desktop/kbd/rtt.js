@@ -30,6 +30,8 @@ const PING_MAX_MS = 8000;
 
 let pingSeq = 0;
 let pingTimer = null;
+let lastRtt = null; // latest measured round trip (ms); null until the first pong
+let rttCount = 0;   // pongs measured this page
 let lastSentAt = 0;
 let nextDelayMs = 0;
 const pendingPings = new Map(); // id -> sent time
@@ -74,7 +76,13 @@ export function handlePong(msg) {
   pendingPings.delete(msg.id);
   const rtt = nowMs() - sentAt;
   if (rtt >= 0 && rtt < 20000) {
+    lastRtt = Math.round(rtt);
+    rttCount += 1;
     noteRtt(rtt);
-    recordRttSample(Math.round(rtt));
+    recordRttSample(lastRtt);
   }
 }
+
+// Read by the host bridge to answer POPCORN_RTT_REQUEST.
+export function lastRttMs() { return lastRtt; }
+export function rttSampleCount() { return rttCount; }

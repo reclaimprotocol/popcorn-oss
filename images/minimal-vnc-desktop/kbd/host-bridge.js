@@ -35,6 +35,7 @@
 import { dbg } from './diag.js';
 import { nowMs } from './env.js';
 import { linkLatency } from './latency.js';
+import { lastRttMs, rttSampleCount } from './rtt.js';
 
 // Wire-format version. Bump on any BREAKING change to the message shapes; the
 // embedder receives it in POPCORN_HELLO and should refuse to drive a viewer it
@@ -258,6 +259,18 @@ function onMessage(e) {
     // bridge's authority or leak session state.
     case 'POPCORN_HELLO_REQUEST':
       sayHello();
+      return;
+    // Link-quality read for the embedder (e.g. a connection badge next to the
+    // frame). Returns the tunnel round trip the viewer already measures
+    // (rtt.js) — a host-side postMessage ping could only time the in-device
+    // hop. rttMs is the latest sample (null before the first pong), avgMs the
+    // smoothed link latency. Structural integers only; no session state.
+    case 'POPCORN_RTT_REQUEST':
+      postToHost('POPCORN_RTT', {
+        rttMs: lastRttMs(),
+        avgMs: Math.round(linkLatency()),
+        samples: rttSampleCount(),
+      });
       return;
     case 'POPCORN_HOST_GEOMETRY': {
       const vh = Number(d.visibleHeight);
