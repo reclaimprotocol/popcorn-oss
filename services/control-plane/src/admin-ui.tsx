@@ -1048,6 +1048,15 @@ function formatBucketLabel(iso: string, windowHours: number) {
   return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
 }
 
+// Counts stay exact below 10k; beyond that a 150px KPI tile can't fit the
+// digits, so compact to one decimal (99986 -> "100.0k").
+function formatCount(value: number) {
+  if (!Number.isFinite(value)) return '0';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`;
+  return String(value);
+}
+
 function bucketSizeLabel(windowHours: number, bucketCount: number) {
   const seconds = (windowHours * 3600) / Math.max(1, bucketCount);
   if (seconds < 3600) {
@@ -1404,7 +1413,7 @@ function viewerRttChartSvg(series: AnalyticsData['viewerRttSeries'], windowHours
       ? `<text x="${px(i).toFixed(1)}" y="${(baseY + 16).toFixed(1)}" text-anchor="middle" font-size="10" fill="${VIZ.axis}">${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))}</text>`
       : '';
     const dot = p.measuredSessions > 0
-      ? `<circle class="an-dot" cx="${px(i).toFixed(2)}" cy="${py(p.p50RttMs).toFixed(2)}" r="2.5" fill="${VIZ.line}" stroke="#16181d" stroke-width="1.5"><title>${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · p50 ${Math.round(p.p50RttMs)} ms · p95 ${Math.round(p.p95RttMs)} ms · ${p.measuredSessions} session${p.measuredSessions === 1 ? '' : 's'}</title></circle>`
+      ? `<circle class="an-dot" cx="${px(i).toFixed(2)}" cy="${py(p.p50RttMs).toFixed(2)}" r="2.5" fill="${VIZ.line}" stroke="#16181d" stroke-width="1.5"><title>${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · p50 ${Math.round(p.p50RttMs)} ms · p95 ${Math.round(p.p95RttMs)} ms · ${formatCount(p.measuredSessions)} session${p.measuredSessions === 1 ? '' : 's'}</title></circle>`
       : '';
     return dot + label;
   }).join('');
@@ -1454,7 +1463,7 @@ function ViewerRttByRegion({ regions }: { regions: AnalyticsData['viewerRttByReg
             <div class="bar-row-head">
               <span class="bar-row-label">{r.region}</span>
               <span class="bar-row-value">
-                p50 {Math.round(r.p50RttMs)} ms · p95 {Math.round(r.p95RttMs)} ms · {r.measuredSessions} session{r.measuredSessions === 1 ? '' : 's'}
+                p50 {Math.round(r.p50RttMs)} ms · p95 {Math.round(r.p95RttMs)} ms · {formatCount(r.measuredSessions)} session{r.measuredSessions === 1 ? '' : 's'}
               </span>
             </div>
             <div class="bar-track"><span class="bar-fill" style={`width:${pct}%;background:${VIZ.line}`}></span></div>
@@ -1717,7 +1726,7 @@ export function AnalyticsView({ data, x402, scope = 'fleet' }: { data: Analytics
           value={data.viewerRtt.measuredSessions ? `${Math.round(data.viewerRtt.p50RttMs)} ms` : '—'}
           hint={
             data.viewerRtt.measuredSessions
-              ? `p50 · p95 ${Math.round(data.viewerRtt.p95RttMs)} ms · ${data.viewerRtt.measuredSessions} session${data.viewerRtt.measuredSessions === 1 ? '' : 's'}`
+              ? `p50 · p95 ${Math.round(data.viewerRtt.p95RttMs)} ms · ${formatCount(data.viewerRtt.measuredSessions)} session${data.viewerRtt.measuredSessions === 1 ? '' : 's'}`
               : 'No measured sessions'
           }
           tone="accent"

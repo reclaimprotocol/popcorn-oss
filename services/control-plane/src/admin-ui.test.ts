@@ -307,6 +307,23 @@ describe('analytics viewer RTT', () => {
     expect(html).toContain('No measured sessions in this range.');
   });
 
+  test('compacts large session counts in the KPI hint (exact below 10k)', async () => {
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        ...baseData,
+        viewerRtt: { measuredSessions: 99986, totalSamples: 900000, avgRttMs: 124, p50RttMs: 124, p95RttMs: 690 },
+        viewerRttByRegion: [
+          { region: 'us-east', measuredSessions: 25046, avgRttMs: 60, p50RttMs: 50, p95RttMs: 180 },
+          { region: 'eu-west', measuredSessions: 9999, avgRttMs: 90, p50RttMs: 80, p95RttMs: 240 },
+        ],
+        series: [{ bucket: '2026-08-22T00:00:00Z', created: 3, deleted: 2, expired: 0, ended: 2, avgDurationSeconds: 120 }],
+      },
+    });
+    expect(html).toContain('p50 · p95 690 ms · 100.0k sessions');
+    expect(html).toContain('p50 50 ms · p95 180 ms · 25.0k sessions');
+    expect(html).toContain('p50 80 ms · p95 240 ms · 9999 sessions');
+  });
+
   test('renders the RTT trend chart with p50 line, p95 band, and blank buckets', async () => {
     const html = await renderAnalyticsViewHtml({
       data: {
