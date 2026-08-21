@@ -26,13 +26,16 @@ import { ControlPlaneConfig } from './src/config';
 import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession } from './src/pool-manager';
 import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
-import { buildSessionAllocationEvent, buildSessionAnalyticsMetadata } from './src/session-analytics';
+import { buildSessionAllocationEvent, buildSessionAnalyticsMetadata, normalizeViewerRttSummary } from './src/session-analytics';
 import {
   getActiveSessionCount,
   getSessionsByRegion,
   getSessionAllocationStats,
+  getSessionRttStats,
+  getSessionRttStatsByRegion,
   getSessionTimeSeries,
   getSessionWindowStats,
+  getViewerRttTimeSeries,
   getStaleActiveSessionCount,
   getTopClients,
 } from './src/stats';
@@ -387,6 +390,18 @@ async function deleteRoutedSession(sessionId: string, clientId?: string) {
 
   if (session) {
     await SessionService.endSession(sessionId, 'deleted');
+    // Killed sessions never reach TTL expiry, so their viewer RTT arrives on
+    // the pool-manager's delete response. Best effort: never fails the delete.
+    const viewerRtt = remoteDelete.body && typeof remoteDelete.body === 'object'
+      ? (remoteDelete.body as Record<string, unknown>).viewerRtt
+      : null;
+    if (viewerRtt && typeof viewerRtt === 'object' && !Array.isArray(viewerRtt)) {
+      const summary = normalizeViewerRttSummary(viewerRtt as Record<string, unknown>);
+      if (summary) {
+        await SessionService.recordViewerRttStats(sessionId, summary)
+          .catch((error) => console.error('Failed to record viewer RTT on delete:', error));
+      }
+    }
   }
 
   return {
@@ -745,10 +760,13 @@ async function buildX402AnalyticsPayload(windowHours: number): Promise<X402Analy
 }
 
 async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
-  const [regions, windowStats, allocationStats, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
+  const [regions, windowStats, allocationStats, rttStats, rttByRegion, rttSeries, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
     loadAdminRegions(),
     getSessionWindowStats(windowHours),
     getSessionAllocationStats(windowHours),
+    getSessionRttStats(windowHours),
+    getSessionRttStatsByRegion(windowHours),
+    getViewerRttTimeSeries(windowHours, bucketsForWindow(windowHours)),
     getActiveSessionCount(),
     getStaleActiveSessionCount(),
     getSessionTimeSeries(windowHours, bucketsForWindow(windowHours)),
@@ -784,6 +802,15 @@ async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
     live: { allocated, ready, capacity, activeSessions, staleActiveSessions },
     throughput: { sessionsPerMinute },
     allocation: allocationStats,
+    viewerRtt: {
+      measuredSessions: rttStats.measuredSessions,
+      totalSamples: rttStats.totalSamples,
+      avgRttMs: rttStats.avgRttMs,
+      p50RttMs: rttStats.p50RttMs,
+      p95RttMs: rttStats.p95RttMs,
+    },
+    viewerRttByRegion: rttByRegion,
+    viewerRttSeries: rttSeries,
     window: {
       created: windowStats.created,
       deleted: windowStats.deleted,
@@ -1428,6 +1455,34 @@ app.post('/sessions/:id/end', async (c) => {
     });
   } catch (error) {
     console.error('❌ Error ending session:', error);
+    return c.json({ error: 'Internal server error' }, 500);
+  }
+});
+
+app.post('/sessions/:id/viewer-stats', async (c) => {
+  const unauthorized = requireService(c);
+  if (unauthorized) {
+    console.warn('⚠️ Unauthorized viewer-stats attempt');
+    return unauthorized;
+  }
+
+  try {
+    const sessionId = c.req.param('id');
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'Invalid body' }, 400);
+    }
+    const summary = normalizeViewerRttSummary(body as Record<string, unknown>);
+    if (!summary) return c.json({ error: 'Invalid viewerRtt summary' }, 400);
+
+    await SessionService.recordViewerRttStats(sessionId, summary);
+    return c.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'Session not found') {
+      return c.json({ error: 'Session not found' }, 404);
+    }
+    console.error('❌ Error recording viewer stats:', error);
     return c.json({ error: 'Internal server error' }, 500);
   }
 });

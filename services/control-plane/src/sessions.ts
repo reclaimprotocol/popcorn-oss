@@ -132,6 +132,23 @@ export const SessionService = {
       .where(eq(sessions.sessionId, sessionId));
   },
 
+  // Store the viewer-measured RTT summary (the proxy's /rtstats aggregate).
+  // Callers post the full per-session aggregate, so viewerRtt is a replace —
+  // idempotent under retries. Must stay a single atomic jsonb merge: the
+  // TTL-extend path rewrites metadata concurrently, and read-merge-write here
+  // could resurrect a stale expiresAt or lose viewerRtt.
+  async recordViewerRttStats(
+    sessionId: string,
+    stats: { sampleCount: number; avgMs: number; p50Ms: number; p95Ms: number; maxMs: number },
+  ): Promise<void> {
+    const patch = JSON.stringify({ viewerRtt: { ...stats, updatedAt: new Date().toISOString() } });
+    const updated = await db.update(sessions)
+      .set({ metadata: sql`COALESCE(${sessions.metadata}, '{}'::jsonb) || ${patch}::jsonb` })
+      .where(eq(sessions.sessionId, sessionId))
+      .returning({ sessionId: sessions.sessionId });
+    if (!updated.length) throw new Error('Session not found');
+  },
+
   async reactivateSession(sessionId: string, metadata: Record<string, unknown>): Promise<void> {
     await db.transaction(async (tx) => {
       const [existing] = await tx.select({ status: sessions.status })

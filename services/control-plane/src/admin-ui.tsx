@@ -79,6 +79,26 @@ export interface AnalyticsData {
     p50LatencyMs: number;
     p95LatencyMs: number;
   };
+  viewerRtt: {
+    measuredSessions: number;
+    totalSamples: number;
+    avgRttMs: number;
+    p50RttMs: number;
+    p95RttMs: number;
+  };
+  viewerRttByRegion: Array<{
+    region: string;
+    measuredSessions: number;
+    avgRttMs: number;
+    p50RttMs: number;
+    p95RttMs: number;
+  }>;
+  viewerRttSeries: Array<{
+    bucketStart: string;
+    measuredSessions: number;
+    p50RttMs: number;
+    p95RttMs: number;
+  }>;
   window: {
     created: number;
     deleted: number;
@@ -1322,6 +1342,86 @@ function durationChartSvg(series: AnalyticsSeriesPoint[], windowHours: number, w
     + `${marks}${axis}</svg>`;
 }
 
+// Viewer RTT trend: p50 line over a translucent p95 band. Buckets with no
+// measured session are left blank (segments break), like the duration trend.
+function viewerRttChartSvg(series: AnalyticsData['viewerRttSeries'], windowHours: number) {
+  const W = 760;
+  const H = 250;
+  const padL = 44;
+  const padR = 12;
+  const padT = 16;
+  const padB = 30;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const baseY = padT + plotH;
+  const n = series.length;
+  if (!n) return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img"></svg>`;
+
+  const measured = series.filter((p) => p.measuredSessions > 0);
+  if (!measured.length) {
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" role="img" aria-label="No measured sessions in this range">`
+      + `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="12" fill="${VIZ.axis}">No measured sessions in this range</text></svg>`;
+  }
+
+  const maxY = niceMax(Math.max(1, ...measured.map((p) => p.p95RttMs)));
+  const step = plotW / n;
+  const px = (i: number) => padL + (i + 0.5) * step;
+  const py = (v: number) => baseY - (plotH * Math.min(v, maxY)) / maxY;
+
+  const grid = [0, 1, 2, 3, 4].map((t) => {
+    const v = (maxY * t) / 4;
+    const y = baseY - (plotH * t) / 4;
+    return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + plotW}" y2="${y.toFixed(1)}" stroke="${VIZ.grid}" stroke-width="1"/>`
+      + `<text x="${(padL - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${Math.round(v)}ms</text>`;
+  }).join('');
+
+  const p50Segments: Array<Array<{ x: number; y: number }>> = [];
+  const p95Segments: Array<Array<{ x: number; y: number }>> = [];
+  series.forEach((p, i) => {
+    if (p.measuredSessions <= 0) return;
+    const previous = i > 0 ? series[i - 1] : undefined;
+    if (!previous || previous.measuredSessions <= 0) {
+      p50Segments.push([]);
+      p95Segments.push([]);
+    }
+    p50Segments[p50Segments.length - 1].push({ x: px(i), y: py(p.p50RttMs) });
+    p95Segments[p95Segments.length - 1].push({ x: px(i), y: py(p.p95RttMs) });
+  });
+
+  const bands = p95Segments.map((pts) => {
+    const path = smoothPath(pts);
+    return `<path d="${path} L ${pts[pts.length - 1].x.toFixed(2)} ${baseY} L ${pts[0].x.toFixed(2)} ${baseY} Z" fill="${VIZ.line}" opacity="0.10"/>`;
+  }).join('');
+  const areas = p50Segments.map((pts) => {
+    const path = smoothPath(pts);
+    return `<path d="${path} L ${pts[pts.length - 1].x.toFixed(2)} ${baseY} L ${pts[0].x.toFixed(2)} ${baseY} Z" fill="url(#anRttGrad)"/>`;
+  }).join('');
+  const lines = p50Segments.map((pts) => `<path d="${smoothPath(pts)}" fill="none" stroke="${VIZ.line}" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>`).join('');
+
+  const labelEvery = Math.max(1, Math.ceil(n / 6));
+  const marks = series.map((p, i) => {
+    const label = i % labelEvery === 0
+      ? `<text x="${px(i).toFixed(1)}" y="${(baseY + 16).toFixed(1)}" text-anchor="middle" font-size="10" fill="${VIZ.axis}">${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))}</text>`
+      : '';
+    const dot = p.measuredSessions > 0
+      ? `<circle class="an-dot" cx="${px(i).toFixed(2)}" cy="${py(p.p50RttMs).toFixed(2)}" r="2.5" fill="${VIZ.line}" stroke="#16181d" stroke-width="1.5"><title>${xmlEscape(formatBucketLabel(p.bucketStart, windowHours))} · p50 ${Math.round(p.p50RttMs)} ms · p95 ${Math.round(p.p95RttMs)} ms · ${p.measuredSessions} session${p.measuredSessions === 1 ? '' : 's'}</title></circle>`
+      : '';
+    return dot + label;
+  }).join('');
+
+  const axis = `<line x1="${padL}" y1="${baseY}" x2="${padL + plotW}" y2="${baseY}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>`;
+  const defs = `<defs>`
+    + `<linearGradient id="anRttGrad" x1="0" y1="0" x2="0" y2="1">`
+    + `<stop offset="0%" stop-color="${VIZ.line}" stop-opacity="0.30"/>`
+    + `<stop offset="100%" stop-color="${VIZ.line}" stop-opacity="0"/></linearGradient>`
+    + `<clipPath id="anRttClip"><rect x="${padL}" y="${padT}" width="${plotW}" height="${plotH}"/></clipPath>`
+    + `</defs>`;
+  return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="auto" role="img" aria-label="Viewer RTT per interval">`
+    + `${defs}${grid}`
+    + `<g clip-path="url(#anRttClip)">${bands}${areas}${lines}</g>`
+    + `${marks}${axis}</svg>`;
+}
+
 function LegendItem({ color, label }: { color: string; label: string }) {
   return (
     <span class="viz-legend-item">
@@ -1337,6 +1437,30 @@ function AnKpi({ label, value, hint, tone }: { label: string; value: string; hin
       <span class="an-kpi-label">{label}</span>
       <strong class="an-kpi-value">{value}</strong>
       {hint ? <span class="an-kpi-hint">{hint}</span> : null}
+    </div>
+  );
+}
+
+// Per-region viewer RTT bars, lengths scaled to the slowest region's p50.
+function ViewerRttByRegion({ regions }: { regions: AnalyticsData['viewerRttByRegion'] }) {
+  if (!regions.length) return <div class="viz-empty">No measured sessions in this range.</div>;
+  const maxP50 = Math.max(1, ...regions.map((r) => r.p50RttMs));
+  return (
+    <div class="bar-list">
+      {regions.map((r) => {
+        const pct = Math.max(3, Math.round((r.p50RttMs / maxP50) * 100));
+        return (
+          <div class="bar-row">
+            <div class="bar-row-head">
+              <span class="bar-row-label">{r.region}</span>
+              <span class="bar-row-value">
+                p50 {Math.round(r.p50RttMs)} ms · p95 {Math.round(r.p95RttMs)} ms · {r.measuredSessions} session{r.measuredSessions === 1 ? '' : 's'}
+              </span>
+            </div>
+            <div class="bar-track"><span class="bar-fill" style={`width:${pct}%;background:${VIZ.line}`}></span></div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1588,6 +1712,16 @@ export function AnalyticsView({ data, x402, scope = 'fleet' }: { data: Analytics
           hint={data.allocation.measuredSessions ? `p50 · p95 ${Math.round(data.allocation.p95LatencyMs)} ms` : 'No measured sessions'}
           tone="accent"
         />
+        <AnKpi
+          label="Viewer RTT"
+          value={data.viewerRtt.measuredSessions ? `${Math.round(data.viewerRtt.p50RttMs)} ms` : '—'}
+          hint={
+            data.viewerRtt.measuredSessions
+              ? `p50 · p95 ${Math.round(data.viewerRtt.p95RttMs)} ms · ${data.viewerRtt.measuredSessions} session${data.viewerRtt.measuredSessions === 1 ? '' : 's'}`
+              : 'No measured sessions'
+          }
+          tone="accent"
+        />
       </div>
 
       {hasActivity ? (
@@ -1602,6 +1736,11 @@ export function AnalyticsView({ data, x402, scope = 'fleet' }: { data: Analytics
             {raw(durationChartSvg(series, data.windowHours, window.avgDurationSeconds))}
             <div class="viz-legend"><LegendItem color={VIZ.line} label="Average of sessions ending in each bucket" /><span class="chart-note">Empty buckets are left blank</span></div>
           </div>
+          <div class="an-card">
+            <div class="an-card-head"><h3>Viewer RTT trend</h3><span class="an-card-sub">{bucketSizeLabel(data.windowHours, data.viewerRttSeries.length)}</span></div>
+            {raw(viewerRttChartSvg(data.viewerRttSeries, data.windowHours))}
+            <div class="viz-legend"><LegendItem color={VIZ.line} label="p50 of sessions ending in each bucket" /><LegendItem color="rgba(74,144,226,.35)" label="p95 band" /><span class="chart-note">Empty buckets are left blank</span></div>
+          </div>
           <div class="an-card outcome-card">
             <div class="an-card-head"><h3>Outcome split</h3><span class="an-card-sub">deleted vs expired</span></div>
             <div class="donut-row">{raw(outcomeDonutSvg(window.deleted, window.expired))}<div class="viz-legend outcome-legend"><LegendItem color={VIZ.deleted} label={`Killed · ${window.deleted}`} /><LegendItem color={VIZ.expired} label={`Expired · ${window.expired}`} /></div></div>
@@ -1609,6 +1748,10 @@ export function AnalyticsView({ data, x402, scope = 'fleet' }: { data: Analytics
           <div class="an-card">
             <div class="an-card-head"><h3>Allocation by region</h3><span class="an-card-sub">allocated / capacity</span></div>
             <RegionBreakdown regions={data.byRegion} />
+          </div>
+          <div class="an-card">
+            <div class="an-card-head"><h3>Viewer RTT by region</h3><span class="an-card-sub">p50 per session, sessions grouped by region</span></div>
+            <ViewerRttByRegion regions={data.viewerRttByRegion} />
           </div>
           <div class="an-card">
             <div class="an-card-head"><h3>Top clients</h3><span class="an-card-sub">by sessions created</span></div>

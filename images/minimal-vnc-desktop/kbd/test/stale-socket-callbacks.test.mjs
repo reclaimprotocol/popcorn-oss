@@ -80,6 +80,9 @@ test('/kbd: a stale close after the replacement has started leaves the replaceme
   // The decisive one: the replacement's ping loop must still be running. This is
   // what stopPinging() in the stale handler used to kill, which then starved
   // lastKbdMsgAt and got the healthy socket reaped 45s later.
+  // Pings are jittered per session (rtt.js draws 2–8s between sends), so step the
+  // controllable clock past the largest possible draw before firing the tick.
+  advanceClock(8000);
   tickIntervals();
   const pings = s2.sent.filter((m) => JSON.parse(m).t === 'ping');
   assert.ok(pings.length > 0, 'the replacement is still pinging');

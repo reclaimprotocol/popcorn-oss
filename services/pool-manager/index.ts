@@ -582,12 +582,33 @@ async function getSessionDetails(c: any, sessionId: string, publicBaseUrl?: stri
     return c.json(buildSessionDetails(c, sessionId, session, publicBaseUrl));
 }
 
+// Best-effort read of the pod's viewer RTT aggregate (proxy GET /rtstats).
+// Must run before the GameServer shutdown — the aggregate lives only in pod
+// memory. Short timeout so telemetry never slows a kill.
+async function fetchViewerRttSummary(podUrl: string, sessionId: string): Promise<Record<string, unknown> | null> {
+    try {
+        const res = await fetch(`${podUrl}/rtstats?sid=${encodeURIComponent(sessionId)}`, {
+            signal: AbortSignal.timeout(1500),
+        });
+        if (!res.ok) return null;
+        const body = await res.json();
+        if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+        return Number((body as Record<string, unknown>).sampleCount) >= 1 ? body as Record<string, unknown> : null;
+    } catch {
+        return null;
+    }
+}
+
 async function deleteLocalSession(sessionId: string) {
     const session = await DB.getSession(sessionId);
 
     if (!session) {
-        return { deleted: false, notFound: true, session: null };
+        return { deleted: false, notFound: true, session: null, viewerRtt: null };
     }
+
+    // Killed sessions never reach TTL expiry, so capture the RTT aggregate here
+    // and ride it back on the DELETE response for the control plane to record.
+    const viewerRtt = session.url ? await fetchViewerRttSummary(session.url, sessionId) : null;
 
     const namespace = session.namespace || GAME_SERVER_NAMESPACE;
     const endedAt = new Date().toISOString();
@@ -618,7 +639,7 @@ async function deleteLocalSession(sessionId: string) {
         console.error("❌ Failed to emit session.end OTEL event:", error);
     });
 
-    return { deleted: true, notFound: false, session };
+    return { deleted: true, notFound: false, session, viewerRtt };
 }
 
 async function listServerStatuses() {
@@ -686,7 +707,11 @@ app.delete("/internal/session/:id", async (c) => {
         if (result.notFound) {
             return c.json({ success: false, error: "Session not found" }, 404);
         }
-        return c.json({ success: true, deleted: result.deleted }, 200);
+        return c.json({
+            success: true,
+            deleted: result.deleted,
+            ...(result.viewerRtt ? { viewerRtt: result.viewerRtt } : {}),
+        }, 200);
     } catch (error) {
         console.error("❌ Failed to delete session:", error);
         return c.json({ success: false, error: "Failed to delete session" }, 502);
