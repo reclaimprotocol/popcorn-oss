@@ -493,7 +493,30 @@
       g.layoutBaselineHeight = layoutBaselineHeight;
       g.frameHeight = frameHeightNow();
       g.framePinned = framePinned ? 1 : 0;
+      var f = focusInFrame();
+      if (f !== null) g.focusInFrame = f;
       return g;
+    }
+
+    // WHOSE keyboard is this? An occlusion does not say which document raised it,
+    // and only we can tell: focus attribution does not cross an origin boundary.
+    // Without this the viewer lifts its canvas for keys whose keystrokes are
+    // going to one of OUR inputs.
+    //
+    // One-directional on purpose — the viewer treats 0 as decisive, so anything
+    // short of positive evidence is omitted rather than reported as 0:
+    //   1 = the viewer's iframe has the focus; 0 = one of our elements does;
+    //   null = nothing focused (body/html/none), or an ancestor owns the focus.
+    function focusInFrame() {
+      try {
+        var doc = global.document;
+        if (!doc) return null;
+        if (typeof doc.hasFocus === 'function' && doc.hasFocus() === false) return null;
+        var a = doc.activeElement;
+        if (a === iframeEl) return 1;
+        if (!a || a === doc.body || a === doc.documentElement) return null;
+        return 0;
+      } catch (_) { return null; }
     }
 
     // ---- MEASURE -----------------------------------------------------------
@@ -576,9 +599,12 @@
         return;
       }
       if (g.occludedBottom > 0) everOccluded = true;
+      // A HEIGHT dedupe, so ownership needs comparing too: tapping from one of our
+      // inputs into the viewer changes owner without moving a pixel.
       if (!force && lastSent &&
           Math.abs(g.visibleHeight - lastSent.visibleHeight) < MIN_DELTA_PX &&
-          Math.abs(g.occludedBottom - lastSent.occludedBottom) < MIN_DELTA_PX) {
+          Math.abs(g.occludedBottom - lastSent.occludedBottom) < MIN_DELTA_PX &&
+          g.focusInFrame === lastSent.focusInFrame) {
         return;
       }
       lastSent = g;
@@ -781,6 +807,17 @@
         }
         if (d.type === 'POPCORN_HOST_GEOMETRY') {
           pinFrameForKeyboard(Number(d.occludedBottom) > 0);
+          // Composes down the chain: 1 only if every hop agrees. An ancestor's 0
+          // is final (it can see a sibling input we cannot), so only refine a 1.
+          if (d.focusInFrame === 1 || d.focusInFrame === true) {
+            var mine = focusInFrame();
+            if (mine !== null && mine !== 1) {
+              var copy = {};
+              for (var k in d) { if (Object.prototype.hasOwnProperty.call(d, k)) copy[k] = d[k]; }
+              copy.focusInFrame = mine;
+              d = copy;
+            }
+          }
         }
         post(d.type, d);
       }

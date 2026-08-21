@@ -16,6 +16,7 @@ installGlobals('ios');
 // from a clean slate or an earlier test's report silently swallows it. Imported
 // AFTER installGlobals: kbd/env.js reads window at module scope.
 const { resetHealth } = await import('../health.js');
+const { createWatchdog } = await import('../watchdog.js');
 
 const FIELD_RECT = { x: 100, y: 200, w: 200, h: 40 };
 
@@ -41,6 +42,62 @@ test('proxy focus lost for two ticks -> forced clean dismiss', async () => {
   assert.ok(!proxyParked(proxy), 'one miss is tolerated');
   tickIntervals(); // miss 2 -> dismiss
   assert.ok(proxyParked(proxy), 'watchdog forced the dismiss');
+});
+
+test('positive keyboard geometry prevents a blurred proxy from dismissing a live IME', () => {
+  const proxy = globalThis.document.createElement('div');
+  let dismissed = false;
+  let occluded = true;
+  const watchdog = createWatchdog({
+    getKeyboardActive: () => true,
+    getKeyboardOpening: () => false,
+    getKeyboardJustDismissed: () => false,
+    getProxy: () => proxy,
+    getKeyboardOccluded: () => occluded,
+    dismissKeyboard: () => { dismissed = true; },
+  });
+  globalThis.document.activeElement = null;
+  watchdog.start();
+  tickIntervals();
+  tickIntervals();
+  assert.equal(dismissed, false, 'visible keyboard is not dismissed just because proxy focus moved');
+  occluded = false;
+  tickIntervals();
+  tickIntervals();
+  assert.equal(dismissed, true, 'fallback still dismisses once the keyboard is no longer visible');
+  watchdog.stop();
+});
+
+test('an occluded keyboard whose focus was STOLEN is still reclaimed and reported', () => {
+  // Guard for the occlusion gate's PLACEMENT: a soft keyboard occludes the whole
+  // time it is up, so gating the tick rather than the dismiss silently disables
+  // reclaim and the focus-stolen report for the entire session.
+  const proxy = globalThis.document.createElement('div');
+  const thief = globalThis.document.createElement('input');
+  let reclaims = 0;
+  let stolen = 0;
+  let dismissed = false;
+  const watchdog = createWatchdog({
+    getKeyboardActive: () => true,
+    getKeyboardOpening: () => false,
+    getKeyboardJustDismissed: () => false,
+    getProxy: () => proxy,
+    getKeyboardOccluded: () => true,       // keys visibly up the whole time
+    dismissKeyboard: () => { dismissed = true; },
+    // A real reclaim lands synchronously when the focus was merely moved — that
+    // is what proves the steal (watchdog.js), so model it rather than counting.
+    reclaimFocus: () => { reclaims++; globalThis.document.activeElement = proxy; },
+    onFocusStolen: () => { stolen++; globalThis.document.activeElement = thief; },
+  });
+  globalThis.document.activeElement = thief;
+  watchdog.start();
+  tickIntervals();
+  tickIntervals();
+  tickIntervals();
+  watchdog.stop();
+  assert.ok(reclaims > 0, 'a stolen focus is reclaimed even while the keyboard is occluding');
+  assert.ok(stolen > 0, 'and the embedder-side integration bug is still reported');
+  assert.equal(dismissed, false, 'but the visible keyboard is never torn down');
 });
 
 test('proxy still focused -> watchdog never fires', async () => {

@@ -132,7 +132,9 @@ export function makeHostWindow({ chain = [], iframeStyle, viewport = { w: 411, h
     navigator: {},
     location: { search: '', origin: 'https://portal.test' },
     console: { warn: (m) => warnings.push(String(m)), info: (m) => infos.push(String(m)) },
-    document: { documentElement, body },
+    // Focus attribution is a real branch (annotateGeometry -> focusInFrame), and
+    // "nothing focused" must produce no answer rather than a wrong one.
+    document: { documentElement, body, activeElement: null, hasFocus: () => true },
     parent: { postMessage: (m) => parentPosted.push(m) },
     addEventListener(type, fn) { (listeners[type] || (listeners[type] = [])).push(fn); },
     removeEventListener(type, fn) {

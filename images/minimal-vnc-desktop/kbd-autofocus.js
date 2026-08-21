@@ -79,7 +79,7 @@ import { createFieldSession } from './kbd/field-session.js';
 import { createSignal } from './kbd/signal.js';
 import { createDialog } from './kbd/dialog.js';
 import { createPopupBar } from './kbd/popup-bar.js';
-import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
+import { installHostBridge, postToHost, reportInteraction, hostGeometry } from './kbd/host-bridge.js';
 import { initE2E } from './kbd/e2e.js';
 import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
@@ -90,6 +90,10 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // stale-cache session is provable from the log alone (many "still broken"
   // reports were pages running old JS).
   const BUILD_TAG = 'bundle-80';
+
+  // Least bottom occlusion that counts as a keyboard when inferred locally;
+  // below it is browser chrome or noise.
+  const KBD_OCCLUSION_MIN_PX = 50;
 
   // ---- RFB transport (replaces CDP Input.*) --------------------------------
   // Lives in ./kbd/transport.js: sendText/sendSpecialKey, per-burst WebSocket
@@ -297,6 +301,15 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     getKeyboardOpening: () => keyboardOpening,
     getKeyboardJustDismissed: () => keyboardJustDismissed,
     getProxy: () => proxy,
+    // Don't let the watchdog dismiss a visibly open IME. The host's
+    // occludedBottom, not innerHeight - visibleHeight: host geometry is measured
+    // in the EMBEDDER's viewport and can exceed this iframe's height, where the
+    // subtraction would disable the watchdog outright.
+    getKeyboardOccluded: () => {
+      const hg = hostGeometry();
+      if (hg) return hg.occludedBottom > 0;
+      return (window.innerHeight - currentVisibleBottom()) > KBD_OCCLUSION_MIN_PX;
+    },
     dismissKeyboard,
     // Ask for the focus back before concluding the keyboard is gone. In an embed
     // the page above us runs its own code, and any of it can take focus while the
@@ -483,7 +496,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     if (!isTouch) return;
     setTimeout(() => {
       if (!keyboardActive || document.hidden) return;
-      const shrunk = (window.innerHeight - currentVisibleBottom()) > 50;
+      const shrunk = (window.innerHeight - currentVisibleBottom()) > KBD_OCCLUSION_MIN_PX;
       if (!shrunk) {
         dbg('foreground reconcile: kbd actually down -> dismiss stale state');
         dismissKeyboard();

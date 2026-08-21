@@ -164,6 +164,36 @@ Three defences, so a misconfigured embedder degrades to "no help" rather than
 `host/test-host.html?legacybridge=1` exercises the translation; add `&legacyxlate=0`
 to reproduce the original break.
 
+#### `focusInFrame` — whose keyboard is it?
+
+An occlusion says there are keys on screen. It does not say which document raised
+them, and that distinction is load-bearing: a portal with its own focusable inputs
+(search box, chat composer, coupon field) can have one focused while the viewer owns
+nothing. A viewer that assumes every occlusion is its own lifts its canvas and starts
+its stuck-keyboard watchdog on a keyboard whose keystrokes are going to *your*
+input — the user sees keys, types, and nothing reaches the remote browser.
+
+Only the embedding page can answer this. Focus attribution does not cross an origin
+boundary: `activeElement` is per-document, so the viewer's keeps naming its own
+proxy after the focus has left its frame entirely. So `POPCORN_HOST_GEOMETRY`
+carries an optional `focusInFrame`, which `popcorn-host.js` fills in for you:
+
+| value | meaning |
+| --- | --- |
+| `1` | the viewer's iframe is your document's `activeElement` — the keys are the viewer's |
+| `0` | one of **your** elements holds the focus — the keys are yours, and the viewer will ignore the occlusion and report `host-occlusion-not-ours` |
+| *(absent)* | nothing is focused (`body`/`<html>`/none), or your own document does not have the focus, so an ancestor owns it — the viewer falls back to inferring ownership locally |
+
+The field is deliberately one-directional: the viewer treats an explicit `0` as
+decisive, so "cannot tell" is reported as *absent* rather than as `0`. A browser
+that fails to name a cross-origin iframe as `activeElement` while the focus really
+is inside it therefore degrades to "no answer", never to "not yours" — which would
+suppress the lift and recreate the very failure this feed exists to prevent. In a
+relay chain the answer composes: `1` only survives if every hop agrees, and an
+ancestor's `0` is final, since it can see a sibling input the lower frames cannot.
+
+Hosts that predate the field simply omit it and keep working.
+
 ### `.on('health')` — the viewer's verdict on your integration
 
 Every failure in this chain that has cost real time degraded *silently*: the viewer
@@ -183,6 +213,7 @@ into your own logging.
 | `host-geometry-disagrees` | both sides see a keyboard, with materially different occlusion — usually an iframe that is not full-viewport, so the lift is wrong by the difference |
 | `focus-stolen` | something in your page took the focus while the keyboard was open |
 | `no-virtual-keyboard` | embedded without `allow="virtual-keyboard"`, so your geometry is load-bearing |
+| `host-occlusion-not-ours` | you reported a keyboard the viewer does not own — one of your own inputs has the focus, so those keystrokes are going to your page, not to the remote browser |
 | `remote-unconfirmed` | keystrokes were sent that the remote field never reported holding — a real lost-input signal, as opposed to a slow repaint |
 
 Each code is reported at most once per 30s, and every message carries the

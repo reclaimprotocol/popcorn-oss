@@ -18,7 +18,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   installGlobals, freshViewer, fire, fireViewport, setVisualViewportHeight,
-  parentMessages, fireHostMessage, advanceClock,
+  parentMessages, fireHostMessage, advanceClock, tickIntervals,
 } from './stub-dom.mjs';
 import { createMockRfb } from './mock-rfb.mjs';
 
@@ -31,18 +31,122 @@ function lastViewportMsg() {
   return null;
 }
 
-function hostGeometry(visibleHeight, occludedBottom) {
-  fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight, occludedBottom });
+function hostGeometry(visibleHeight, occludedBottom, extra) {
+  fireHostMessage(Object.assign(
+    { type: 'POPCORN_HOST_GEOMETRY', visibleHeight, occludedBottom }, extra || {}));
 }
 
 test('host geometry latches the keyboard and reports the occlusion it was given', async () => {
-  await freshViewer(createMockRfb);
+  const { proxy } = await freshViewer(createMockRfb);
+  proxy.focus(); // the keyboard is OURS — see the ownership test below
   parentMessages.length = 0;
   hostGeometry(500, 344);
   const msg = lastViewportMsg();
   assert.ok(msg, 'POPCORN_VIEWPORT posted from host geometry');
   assert.equal(msg.visibleHeight, 500);
   assert.equal(msg.occludedBottom, 344);
+});
+
+// Device report sid=5dmfqoah: "host geom occ=283 -> kbd=true" alternating with
+// "watchdog: proxy lost focus -> dismiss" until the session dropped. Whatever
+// makes the host report a keyboard, the watchdog must not close one it can SEE.
+test('a host-reported occlusion is not torn down by the focus watchdog', async () => {
+  const { proxy } = await freshViewer(createMockRfb);
+  proxy.focus();
+  hostGeometry(500, 283);
+  globalThis.document.activeElement = null; // focus gone, keys still on screen
+  parentMessages.length = 0;
+  tickIntervals();
+  tickIntervals();
+  tickIntervals();
+  const dismissed = parentMessages.some((m) => m.type === 'POPCORN_KBD_STATE' && m.active === false);
+  assert.equal(dismissed, false,
+    'the watchdog did not dismiss while the host still reports keys on screen');
+});
+
+// Same report: a stable occ=283 for 12s with NO touch in this frame for the
+// preceding 16s. A soft keyboard only opens for a focused local element and the
+// proxy is the only one here, so those keys were the EMBEDDING page's — and
+// latching them pointed our lift and watchdog at a keyboard we cannot type into.
+test('an occlusion with no focus of ours is the embedder keyboard, not ours', async () => {
+  await freshViewer(createMockRfb);
+  globalThis.document.activeElement = null; // we own no focus, so we raised nothing
+  parentMessages.length = 0;
+  hostGeometry(500, 283);
+  assert.equal(lastViewportMsg(), null,
+    'a keyboard we did not raise never becomes our keyboard state or our lift');
+  // Invisible from up there otherwise. reportHealth() drops codes missing from
+  // its allowlist, so assert the posted message rather than the call.
+  const health = parentMessages.filter((m) => m.type === 'POPCORN_KBD_HEALTH');
+  assert.ok(health.some((m) => m.code === 'host-occlusion-not-ours'),
+    'the integration problem was reported to the host');
+});
+
+test('an occlusion is not ours when the focus has left the FRAME, not just the proxy', async () => {
+  // activeElement keeps naming our proxy after the embedder takes the focus, so
+  // the proxy check alone would call the portal's keyboard ours.
+  const { proxy } = await freshViewer(createMockRfb);
+  proxy.focus();
+  globalThis.document.hasFocus = () => false;   // the portal focused its own input
+  parentMessages.length = 0;
+  hostGeometry(500, 283);
+  assert.equal(lastViewportMsg(), null, 'keys drawn for the page above us are not our keyboard');
+  globalThis.document.hasFocus = () => true;
+  parentMessages.length = 0;
+  hostGeometry(500, 283);
+  assert.ok(lastViewportMsg(), 'and once the focus is genuinely ours again it latches');
+});
+
+// focusInFrame is the embedder ANSWERING ownership instead of us inferring it —
+// and the only signal that survives a webview with no document.hasFocus().
+test('an explicit focusInFrame:false outranks every local signal', async () => {
+  const { proxy } = await freshViewer(createMockRfb);
+  proxy.focus();
+  globalThis.document.hasFocus = () => true;   // locally everything says "ours"
+  parentMessages.length = 0;
+  hostGeometry(500, 283, { focusInFrame: false });
+  assert.equal(lastViewportMsg(), null, 'the host owns the other half of focus — believe it');
+  hostGeometry(500, 283, { focusInFrame: true });
+  assert.ok(lastViewportMsg(), 'and its yes latches normally');
+});
+
+test('focusInFrame:true is enough where document.hasFocus() does not exist', async () => {
+  // The local inference has to fail open where hasFocus is missing, so only the
+  // explicit answer makes the gate trustworthy rather than merely permissive.
+  const { proxy } = await freshViewer(createMockRfb);
+  const saved = globalThis.document.hasFocus;
+  delete globalThis.document.hasFocus;
+  try {
+    proxy.focus();
+    parentMessages.length = 0;
+    hostGeometry(500, 283, { focusInFrame: true });
+    assert.ok(lastViewportMsg(), 'our keyboard, on the host authority alone');
+    parentMessages.length = 0;
+    hostGeometry(500, 283, { focusInFrame: false });
+    assert.equal(lastViewportMsg(), null, 'and not ours when it says so');
+  } finally { globalThis.document.hasFocus = saved; }
+});
+
+test('a malformed focusInFrame is treated as absent, not as an assertion', async () => {
+  const { proxy } = await freshViewer(createMockRfb);
+  proxy.focus();
+  globalThis.document.hasFocus = () => true;
+  parentMessages.length = 0;
+  hostGeometry(500, 283, { focusInFrame: 'nope' });
+  assert.ok(lastViewportMsg(), 'garbage falls back to the local inference, which says ours');
+});
+
+test('a foreign occlusion leaves NO keyboard state behind for its zero to tear down', async () => {
+  // The gate runs BEFORE hostSawOccluded, so the episode is a no-op rather than
+  // a latch plus a dismissal.
+  await freshViewer(createMockRfb);
+  globalThis.document.activeElement = null;
+  parentMessages.length = 0;
+  hostGeometry(500, 283);          // embedder's keyboard
+  hostGeometry(844, 0);            // ...and it closes again
+  await advanceClock(900);         // past HOST_ZERO_CONFIRM_MS
+  assert.equal(lastViewportMsg(), null,
+    'no latch, so no dismissal either — the episode never touched our state');
 });
 
 test('host geometry outranks the local visualViewport detector (no double-drive)', async () => {

@@ -122,7 +122,8 @@ export function onLifecycleAck(handler) {
 /**
  * Last host-reported viewport geometry, or null when none has arrived (or the
  * newest sample has gone stale). visibleHeight is the usable height in CSS px;
- * occludedBottom is the keyboard's height (0 when dismissed).
+ * occludedBottom is the keyboard's height (0 when dismissed); focusInFrame is
+ * the embedder's answer to "is the focus inside this frame", null when unstated.
  */
 export function hostGeometry() {
   const effective = heldGeom || geom;
@@ -286,7 +287,13 @@ function onMessage(e) {
         hostEverOccluded = true;
         dbg('host-bridge: embedder proved it can see the keyboard -> local detectors stand down');
       }
-      geom = { visibleHeight: vh, occludedBottom: ob, at: nowMs() };
+      // Whose keyboard it is; only the embedder can tell (focus attribution does
+      // not cross origins). Optional — anything but true/false/1/0 reads as
+      // absent, so a host bug cannot come through as an assertion.
+      let fif = null;
+      if (d.focusInFrame === true || d.focusInFrame === 1) fif = true;
+      else if (d.focusInFrame === false || d.focusInFrame === 0) fif = false;
+      geom = { visibleHeight: vh, occludedBottom: ob, at: nowMs(), focusInFrame: fif };
       handlers.onGeometry(geom);
       return;
     }

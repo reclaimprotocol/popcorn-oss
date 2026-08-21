@@ -4,7 +4,7 @@ import { dbg } from './diag.js';
 
 export function createWatchdog({
   getKeyboardActive, getKeyboardOpening, getKeyboardJustDismissed, getProxy, dismissKeyboard,
-  reclaimFocus, onFocusStolen,
+  getKeyboardOccluded, reclaimFocus, onFocusStolen,
 }) {
   let watchdogTimer = null;
   let watchdogMiss = 0;
@@ -55,6 +55,9 @@ export function createWatchdog({
         // Give the reclaim one tick to land asynchronously before counting a miss.
         return;
       }
+      // Never tear down while the keys are still visibly occluding — Android can
+      // move focus off the proxy with the IME up. after iframe embed
+      if (getKeyboardOccluded && getKeyboardOccluded()) { watchdogMiss = 0; return; }
       if (++watchdogMiss >= 2) { watchdogMiss = 0; dbg('watchdog: proxy lost focus -> dismiss'); dismissKeyboard(); }
     }, 1000);
   }

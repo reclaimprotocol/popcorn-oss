@@ -47,6 +47,37 @@ export function createKbdDetect({
   let lastPositiveHostGeometry = null;
   let pendingHostZero = null;
   let pendingHostZeroTimer = null;
+  // Ignoring the embedder's own keyboard. Latched because geometry heartbeats:
+  // the diagnostic belongs once per episode, not at 1Hz.
+  let foreignOcclusion = false;
+
+  /**
+   * Does a host-reported occlusion belong to THIS viewer?
+   *
+   * Geometry proves there are keys on screen, not who raised them. An embedder
+   * that focuses one of its own inputs gets a keyboard we cannot type into, and
+   * latching it lifts the canvas and points the stuck-keyboard watchdog at
+   * somebody else's IME (device report sid=5dmfqoah).
+   *
+   * g.focusInFrame is the embedder answering this instead of us inferring it:
+   * better evidence, since focus attribution does not cross an origin boundary,
+   * and the only signal that works in a webview with no document.hasFocus().
+   */
+  function hostOcclusionIsOurs(g) {
+    if (g && g.focusInFrame === false) return false; // decisive, even mid-raise
+    if (getKeyboardOpening()) return true;
+    const proxy = getProxy();
+    if (!proxy || typeof document === 'undefined') return false;
+    if (document.activeElement !== proxy) return false;
+    if (g && g.focusInFrame === true) return true;
+    // Inference for hosts that did not say. activeElement is per-document: it
+    // keeps naming the proxy after focus has left the frame, so hasFocus() is
+    // what separates "has it" from "had it last" (as in watchdog.js). Absent in
+    // some webviews, where cannot-tell has to read as ours.
+    try { if (typeof document.hasFocus === 'function' && document.hasFocus() === false) return false; }
+    catch (_) {}
+    return true;
+  }
 
   function cancelPendingHostZero() {
     if (pendingHostZeroTimer !== null) clearTimeout(pendingHostZeroTimer);
@@ -111,6 +142,17 @@ export function createKbdDetect({
     const visible = g.visibleHeight;
     const occluded = g.occludedBottom;
     if (occluded > 0) {
+      // Before hostSawOccluded: crediting a foreign keyboard would let its keys
+      // going down dismiss a session of ours.
+      if (!hostOcclusionIsOurs(g)) {
+        if (!foreignOcclusion) {
+          foreignOcclusion = true;
+          dbg('host geom occ=' + Math.round(occluded) + ' ignored (not our keyboard)');
+          reportHealth('host-occlusion-not-ours'); // invisible from up there otherwise
+        }
+        return;
+      }
+      foreignOcclusion = false;
       cancelPendingHostZero();
       lastPositiveHostGeometry = g;
       hostSawOccluded = true;
@@ -121,6 +163,7 @@ export function createKbdDetect({
       postViewport(visible, occluded);
       return;
     }
+    foreignOcclusion = false;
     if (!getKeyboardActive()) return;
     // occluded == 0 is NOT automatically a dismissal here, and this is the key
     // difference from the VK branch below. VK's geometrychange only fires when the

@@ -10,6 +10,7 @@ import { postToHost } from './host-bridge.js';
 const REPEAT_MS = 30000;
 const CODES = new Set([
   'host-geometry-blind', 'host-geometry-stale', 'host-geometry-disagrees',
+  'host-occlusion-not-ours',
   'focus-stolen', 'no-virtual-keyboard', 'remote-unconfirmed',
 ]);
 

@@ -25,7 +25,7 @@
 // what a test can vary.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeHostWindow } from './host-stub.mjs';
+import { makeHostWindow, makeEl } from './host-stub.mjs';
 
 const VIEWPORT = { w: 411, h: 732 };
 const KEYBOARD = 332; // 732 - 400, a plausible Pixel-class IME
@@ -162,5 +162,83 @@ test('KNOWN GAP: with pinning off, a late innerHeight collapse double-counts', (
   assert.equal(g.occludedBottom, 342, 'a full keyboard height is still claimed');
   assert.equal(g.framePinned, 0);
   assert.equal(g.frameHeight, 390, 'against a frame that is already keyboard-sized');
+  host.destroy();
+});
+
+// ---- focusInFrame: WHOSE keyboard is this? ---------------------------------
+//
+// An occlusion says there are keys on screen, not which document raised them: a
+// host page with its own focusable inputs can have one focused while the viewer
+// owns nothing, and the viewer then lifts its canvas for keystrokes going to the
+// HOST's element (device report sid=5dmfqoah). Only this document can answer it,
+// so it does — one-directionally: the viewer treats an explicit 0 as decisive,
+// so "cannot tell" must never come out as "not yours".
+
+test('nothing focused -> no answer at all (the safe default)', () => {
+  const { h, host } = measurer();
+  const g = resize(h, { visual: VIEWPORT.h - KEYBOARD });
+  assert.equal(g.occludedBottom, KEYBOARD);
+  assert.equal('focusInFrame' in g, false,
+    'no focused element means no attribution — the viewer falls back to its own inference');
+  host.destroy();
+});
+
+test('the viewer iframe holds the focus -> focusInFrame 1', () => {
+  const { h, host } = measurer();
+  h.win.document.activeElement = h.iframe;
+  const g = resize(h, { visual: VIEWPORT.h - KEYBOARD });
+  assert.equal(g.focusInFrame, 1);
+  host.destroy();
+});
+
+test('one of the HOST page own inputs holds the focus -> focusInFrame 0', () => {
+  const { h, host } = measurer();
+  const search = makeEl('input');
+  h.win.document.body.appendChild(search);
+  h.win.document.activeElement = search;
+  const g = resize(h, { visual: VIEWPORT.h - KEYBOARD });
+  assert.equal(g.focusInFrame, 0,
+    'the viewer must not lift its canvas for a keyboard it cannot type into');
+  host.destroy();
+});
+
+test('body/documentElement count as "nothing focused", not as "not the viewer"', () => {
+  // activeElement often falls back to body rather than null; reading that as a
+  // positive 0 would suppress the lift on every ordinary session.
+  const { h, host } = measurer();
+  h.win.document.activeElement = h.win.document.body;
+  let g = resize(h, { visual: VIEWPORT.h - KEYBOARD });
+  assert.equal('focusInFrame' in g, false, 'body is not an answer');
+  h.win.document.activeElement = h.win.document.documentElement;
+  g = resize(h, { visual: VIEWPORT.h - KEYBOARD - 10 });
+  assert.equal('focusInFrame' in g, false, 'nor is <html>');
+  host.destroy();
+});
+
+test('a host document that does not itself have the focus answers nothing', () => {
+  // An ancestor owns the focus, so any answer about our own subtree is a guess.
+  const { h, host } = measurer();
+  h.win.document.activeElement = h.iframe;
+  h.win.document.hasFocus = () => false;
+  const g = resize(h, { visual: VIEWPORT.h - KEYBOARD });
+  assert.equal('focusInFrame' in g, false);
+  host.destroy();
+});
+
+test('an ownership change is sent even when not a pixel moved', () => {
+  // The dedupe compares heights, so a swallowed handover would leave the viewer
+  // refusing the occlusion indefinitely.
+  const { h, host } = measurer();
+  const search = makeEl('input');
+  h.win.document.body.appendChild(search);
+  h.win.document.activeElement = search;
+  let g = resize(h, { visual: VIEWPORT.h - KEYBOARD });
+  assert.equal(g.focusInFrame, 0, 'our input has it');
+
+  h.win.document.activeElement = h.iframe;   // the user taps the viewer
+  h.fireWindow('resize');                    // same numbers, different owner
+  g = geometry(h);
+  assert.equal(g.focusInFrame, 1, 'the handover reached the viewer');
+  assert.equal(g.occludedBottom, KEYBOARD, 'with the geometry unchanged');
   host.destroy();
 });

@@ -47,6 +47,9 @@ async function kbdUpViewer(sb, sc = null) {
   const v = await freshViewer(createMockRfb);
   const screen = makeScreen();
   const canvas = screen.querySelector('canvas');
+  // OUR keyboard: a host occlusion over an unfocused proxy is the embedder's now
+  // (kbd-detect.js hostOcclusionIsOurs), which is not the state under test.
+  v.proxy.focus();
   fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 300 });
   const state = {
     editable: true, focusKey: 'f1', rect: { x: 20, y: 100, w: 200, h: 40 },
@@ -183,6 +186,7 @@ test('a deferred no-move touch is a tap: synthesized to the remote like the zoom
   const v = await freshViewer(createMockRfb);
   const screen = makeScreen();
   const canvas = screen.querySelector('canvas');
+  v.proxy.focus(); // our keyboard, not the embedder's (see kbdUpViewer)
   fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 300 });
   // No rects on purpose: the tap hit-test stays 'unknown', so this asserts only
   // the synthesis, not the raise/dismiss classification.
@@ -240,13 +244,14 @@ test('rotating while typing does not false-latch layout-resize mode', async () =
   const { proxy } = await freshViewer(createMockRfb);
   const screen = makeScreen();
   const canvas = screen.querySelector('canvas');
-  // Keyboard up via the host, mid-typing.
+  // Keyboard up via the host, mid-typing. Focus first: a raise focuses
+  // in-gesture and the measurement follows.
+  proxy.focus();
   fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 300 });
   pushSignal({
     editable: true, focusKey: 'rot', rect: { x: 20, y: 100, w: 200, h: 40 },
     rects: [{ x: 20, y: 100, w: 200, h: 40 }], vw: 390, vh: 844, sb: 0,
   });
-  proxy.focus();
   // The user is mid-word. This matters: a transient occ=0 arriving within the
   // recent-input window takes the floating-keyboard KEEP branch, so the
   // keyboard stays up and the proxy stays focused — which is exactly what lets
@@ -295,12 +300,12 @@ test('a letterboxed canvas gets no pan extension (nothing hides behind the keys)
   canvas.offsetWidth = 390;
   canvas.offsetHeight = 500;   // letterboxed inside an 844px-tall display
   screen.offsetHeight = 500;
+  proxy.focus();
   fireHostMessage({ type: 'POPCORN_HOST_GEOMETRY', visibleHeight: 544, occludedBottom: 300 });
   pushSignal({
     editable: true, focusKey: 'lb', rect: { x: 20, y: 100, w: 200, h: 40 },
     rects: [{ x: 20, y: 100, w: 200, h: 40 }], vw: 390, vh: 500, sb: 0,
   });
-  proxy.focus();
 
   // Where the centering branch parks a 500px-tall canvas in an 844px display.
   const centred = (844 - 500) / 2;
