@@ -201,6 +201,9 @@ describe('analytics duration trend', () => {
         live: { allocated: 2, ready: 3, capacity: 5, activeSessions: 2, staleActiveSessions: 0 },
         throughput: { sessionsPerMinute: 0.1 },
         allocation: { measuredSessions: 10, avgLatencyMs: 500, p50LatencyMs: 420, p95LatencyMs: 900 },
+        viewerRtt: { measuredSessions: 8, totalSamples: 640, avgRttMs: 62, p50RttMs: 55, p95RttMs: 140 },
+        viewerRttByRegion: [],
+        viewerRttSeries: [],
         window: {
           created: 150,
           deleted: 112,
@@ -223,6 +226,120 @@ describe('analytics duration trend', () => {
     expect(html).toContain('Average of sessions ending in each bucket');
     expect(html).toContain('Empty buckets are left blank');
     expect(html).toContain('stroke-dasharray="5 5"');
+  });
+});
+
+describe('analytics viewer RTT', () => {
+  const baseData = {
+    windowHours: 1,
+    configuredTtlSeconds: 3600,
+    live: { allocated: 2, ready: 3, capacity: 5, activeSessions: 2, staleActiveSessions: 0 },
+    throughput: { sessionsPerMinute: 1 },
+    allocation: { measuredSessions: 10, avgLatencyMs: 500, p50LatencyMs: 420, p95LatencyMs: 900 },
+    window: {
+      created: 15, deleted: 11, expired: 2, ended: 13,
+      avgDurationSeconds: 373, p50DurationSeconds: 157, p95DurationSeconds: 904,
+      totalDurationSeconds: 5222,
+    },
+    byRegion: [],
+    viewerRttByRegion: [],
+    viewerRttSeries: [],
+    topClients: [],
+    series: [],
+  };
+
+  test('shows measured RTT percentiles and session coverage', async () => {
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        ...baseData,
+        viewerRtt: { measuredSessions: 8, totalSamples: 640, avgRttMs: 62, p50RttMs: 55, p95RttMs: 140 },
+      },
+    });
+    expect(html).toContain('Viewer RTT');
+    expect(html).toContain('55 ms');
+    expect(html).toContain('p50 · p95 140 ms · 8 sessions');
+  });
+
+  test('degrades to an explicit empty state when no sessions were measured', async () => {
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        ...baseData,
+        viewerRtt: { measuredSessions: 0, totalSamples: 0, avgRttMs: 0, p50RttMs: 0, p95RttMs: 0 },
+      },
+    });
+    expect(html).toContain('Viewer RTT');
+    expect(html).toContain('No measured sessions');
+  });
+
+  test('renders the per-region RTT breakdown with bars scaled to the slowest region', async () => {
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        ...baseData,
+        // The charts grid only renders when the window saw activity.
+        series: [{ bucket: '2026-08-22T00:00:00Z', created: 3, deleted: 2, expired: 0, ended: 2, avgDurationSeconds: 120 }],
+        viewerRtt: { measuredSessions: 12, totalSamples: 900, avgRttMs: 90, p50RttMs: 80, p95RttMs: 300 },
+        viewerRttByRegion: [
+          { region: 'us-east', measuredSessions: 8, avgRttMs: 60, p50RttMs: 50, p95RttMs: 180 },
+          { region: 'ap-south', measuredSessions: 4, avgRttMs: 210, p50RttMs: 200, p95RttMs: 480 },
+        ],
+      },
+    });
+    expect(html).toContain('Viewer RTT by region');
+    expect(html).toContain('us-east');
+    expect(html).toContain('p50 50 ms · p95 180 ms · 8 sessions');
+    expect(html).toContain('p50 200 ms · p95 480 ms · 4 sessions');
+    // ap-south is the slowest region, so its bar is full width.
+    expect(html).toContain('width:100%');
+    // us-east at 50/200 p50 scales to a quarter-width bar.
+    expect(html).toContain('width:25%');
+  });
+
+  test('per-region breakdown shows an explicit empty state', async () => {
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        ...baseData,
+        series: [{ bucket: '2026-08-22T00:00:00Z', created: 3, deleted: 2, expired: 0, ended: 2, avgDurationSeconds: 120 }],
+        viewerRtt: { measuredSessions: 0, totalSamples: 0, avgRttMs: 0, p50RttMs: 0, p95RttMs: 0 },
+        viewerRttByRegion: [],
+      },
+    });
+    expect(html).toContain('Viewer RTT by region');
+    expect(html).toContain('No measured sessions in this range.');
+  });
+
+  test('renders the RTT trend chart with p50 line, p95 band, and blank buckets', async () => {
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        ...baseData,
+        series: [{ bucket: '2026-08-22T00:00:00Z', created: 3, deleted: 2, expired: 0, ended: 2, avgDurationSeconds: 120 }],
+        viewerRtt: { measuredSessions: 5, totalSamples: 300, avgRttMs: 90, p50RttMs: 80, p95RttMs: 300 },
+        viewerRttSeries: [
+          { bucketStart: '2026-08-22T00:00:00Z', measuredSessions: 3, p50RttMs: 70, p95RttMs: 220 },
+          { bucketStart: '2026-08-22T01:00:00Z', measuredSessions: 0, p50RttMs: 0, p95RttMs: 0 },
+          { bucketStart: '2026-08-22T02:00:00Z', measuredSessions: 2, p50RttMs: 110, p95RttMs: 340 },
+        ],
+      },
+    });
+    expect(html).toContain('Viewer RTT trend');
+    expect(html).toContain('anRttGrad');
+    expect(html).toContain('p50 70 ms · p95 220 ms · 3 sessions');
+    expect(html).toContain('p50 of sessions ending in each bucket');
+    expect(html).toContain('p95 band');
+  });
+
+  test('RTT trend chart shows an explicit empty state', async () => {
+    const html = await renderAnalyticsViewHtml({
+      data: {
+        ...baseData,
+        series: [{ bucket: '2026-08-22T00:00:00Z', created: 3, deleted: 2, expired: 0, ended: 2, avgDurationSeconds: 120 }],
+        viewerRtt: { measuredSessions: 0, totalSamples: 0, avgRttMs: 0, p50RttMs: 0, p95RttMs: 0 },
+        viewerRttSeries: [
+          { bucketStart: '2026-08-22T00:00:00Z', measuredSessions: 0, p50RttMs: 0, p95RttMs: 0 },
+        ],
+      },
+    });
+    expect(html).toContain('Viewer RTT trend');
+    expect(html).toContain('No measured sessions in this range');
   });
 });
 

@@ -31,8 +31,11 @@ import {
   getActiveSessionCount,
   getSessionsByRegion,
   getSessionAllocationStats,
+  getSessionRttStats,
+  getSessionRttStatsByRegion,
   getSessionTimeSeries,
   getSessionWindowStats,
+  getViewerRttTimeSeries,
   getStaleActiveSessionCount,
   getTopClients,
 } from './src/stats';
@@ -757,10 +760,13 @@ async function buildX402AnalyticsPayload(windowHours: number): Promise<X402Analy
 }
 
 async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
-  const [regions, windowStats, allocationStats, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
+  const [regions, windowStats, allocationStats, rttStats, rttByRegion, rttSeries, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
     loadAdminRegions(),
     getSessionWindowStats(windowHours),
     getSessionAllocationStats(windowHours),
+    getSessionRttStats(windowHours),
+    getSessionRttStatsByRegion(windowHours),
+    getViewerRttTimeSeries(windowHours, bucketsForWindow(windowHours)),
     getActiveSessionCount(),
     getStaleActiveSessionCount(),
     getSessionTimeSeries(windowHours, bucketsForWindow(windowHours)),
@@ -796,6 +802,15 @@ async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
     live: { allocated, ready, capacity, activeSessions, staleActiveSessions },
     throughput: { sessionsPerMinute },
     allocation: allocationStats,
+    viewerRtt: {
+      measuredSessions: rttStats.measuredSessions,
+      totalSamples: rttStats.totalSamples,
+      avgRttMs: rttStats.avgRttMs,
+      p50RttMs: rttStats.p50RttMs,
+      p95RttMs: rttStats.p95RttMs,
+    },
+    viewerRttByRegion: rttByRegion,
+    viewerRttSeries: rttSeries,
     window: {
       created: windowStats.created,
       deleted: windowStats.deleted,
