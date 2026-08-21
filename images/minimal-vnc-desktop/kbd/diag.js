@@ -63,6 +63,12 @@ function klogFlush() {
     }
   } catch (_) {}
 }
+
+// A terminal lifecycle event (notably beforeunload) can be emitted after this
+// module's own unload listener has already flushed.  Let the viewer explicitly
+// flush its final attribution marker while sendBeacon is still available.
+export function flushDiagnostics() { klogFlush(); }
+
 function klogEnqueue(entry) {
   if (!KBD_LOG) return;
   klogQueue.push(entry);

@@ -14,7 +14,7 @@
 
 import RFB from './core/rfb.js';
 import './kbd-autofocus.js';          // side-effect: defines window.PopcornKbd
-import { dbg } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
+import { dbg, flushDiagnostics } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
 import { onLifecycleAck, postToHost, sayHello } from './kbd/host-bridge.js';
 import { fbTarget, FB_MAX } from './kbd/fbtarget.js';
 
@@ -187,6 +187,7 @@ function markFirstPaint(connection) {
           const d = ctx.getImageData(x, y, 1, 1).data; // #111 == (17,17,17)
           if (Math.abs(d[0] - 17) > 8 || Math.abs(d[1] - 17) > 8 || Math.abs(d[2] - 17) > 8) {
             firstPaintConnection = connection;
+            firstFrameAt = performance.now();
             dbg('rfb first-frame conn=' + connection + ' wait=' + Math.round(performance.now() - t0) + 'ms fb=' + w + 'x' + h);
             // An embedder gates its "stream is live" UI on real pixels, not on the
             // handshake — a connected-but-blank canvas must stay behind its loading
@@ -216,6 +217,21 @@ let rfbConnection = 0;
 let reconnectAttempt = 0;
 let disconnectedAt = 0;
 let lifecycleSeq = 0;
+// This is deliberately the first confirmed non-placeholder frame, not a
+// per-frame heartbeat.  It tells us whether the connection ever painted, but
+// must not be interpreted as the age of the most recently received frame.
+let firstFrameAt = 0;
+// noVNC's disconnect event does not tell us WHO requested a close.  Preserve
+// the last local request so an incident log can distinguish an iframe unload or
+// watchdog recycle from a close initiated by the remote side/transport.
+let disconnectCause = 'transport-or-remote';
+
+function requestDisconnect(cause, intentional = false) {
+  disconnectCause = cause;
+  if (intentional) intentionalDisconnect = true;
+  dbg('rfb disconnect-request cause=' + cause + ' hidden=' + (document.hidden ? 1 : 0));
+  try { rfb && rfb.disconnect(); } catch (_) {}
+}
 
 function postLifecycle(type, data) {
   const seq = ++lifecycleSeq;
@@ -318,7 +334,7 @@ function connect() {
     if (connected) return; // handshake landed — nothing to do
     if (!everConnected) showUnreachable();
     dbg('boot connect-watchdog: handshake stall -> recycle');
-    try { rfb && rfb.disconnect(); } catch (_) {}
+    requestDisconnect('connect-watchdog');
   }, CONNECT_TIMEOUT_MS);
   rfb.addEventListener('connect', () => {
     // Last-resort cap source: the boot framebuffer, read once and before
@@ -389,7 +405,7 @@ function connect() {
   if (window.PopcornKbd && !rfb.viewOnly) {
     window.PopcornKbd.attach(rfb);
   }
-  rfb.addEventListener('disconnect', () => {
+  rfb.addEventListener('disconnect', (event) => {
     connecting = false;
     connected = false;
     // This attempt resolved (cleanly or not), so retire its stall watchdog; the
@@ -398,10 +414,26 @@ function connect() {
     if (connectWatchdog !== null) { window.clearTimeout(connectWatchdog); connectWatchdog = null; }
     const willReconnect = reconnect && !intentionalDisconnect;
     disconnectedAt = performance.now();
-    dbg('rfb disconnect conn=' + rfbConnection + ' connected=' + (everConnected ? 1 : 0) + ' willReconnect=' + (willReconnect ? 1 : 0));
+    const clean = event && event.detail && typeof event.detail.clean === 'boolean' ? event.detail.clean : null;
+    const firstFrameAgeMs = firstFrameAt ? Math.round(disconnectedAt - firstFrameAt) : null;
+    dbg('rfb disconnect conn=' + rfbConnection + ' cause=' + disconnectCause +
+      ' connected=' + (everConnected ? 1 : 0) + ' willReconnect=' + (willReconnect ? 1 : 0) +
+      ' hidden=' + (document.hidden ? 1 : 0) + ' firstFrameAgeMs=' + (firstFrameAgeMs === null ? '-' : firstFrameAgeMs) +
+      ' clean=' + (clean === null ? '-' : (clean ? 1 : 0)));
     // willReconnect lets the host distinguish a recoverable blip (show its
     // reconnecting overlay, keep the session) from a real teardown.
-    postLifecycle('POPCORN_DISCONNECT', { willReconnect, everConnected, connection: rfbConnection });
+    postLifecycle('POPCORN_DISCONNECT', {
+      willReconnect,
+      everConnected,
+      connection: rfbConnection,
+      cause: disconnectCause,
+      documentHidden: document.hidden,
+      firstFrameAgeMs,
+      clean,
+    });
+    // A subsequent automatic reconnect is a fresh transport attempt. Keep the
+    // final local cause intact only long enough for this lifecycle message.
+    disconnectCause = 'transport-or-remote';
     // A failure before the FIRST successful handshake is the data-saver /
     // blocked-WS signature (Opera's proxy drops the socket fast, so noVNC
     // fires disconnect almost immediately). Surface the overlay after a
@@ -434,7 +466,7 @@ function reconnectNow() {
     // instead of staring at a black screen until the stall watchdog fires.
     if (performance.now() - connectStartedAt > 3000) {
       dbg('boot reconnectNow: stale in-flight connect -> recycle');
-      try { rfb && rfb.disconnect(); } catch (_) {}
+      requestDisconnect('foreground-retry-recycle');
     }
     return;
   }
@@ -445,9 +477,15 @@ window.addEventListener('online', reconnectNow);
 window.addEventListener('pageshow', reconnectNow);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnectNow(); });
 
+window.addEventListener('pagehide', (event) => {
+  dbg('lifecycle pagehide persisted=' + (event.persisted ? 1 : 0) + ' hidden=' + (document.hidden ? 1 : 0));
+  flushDiagnostics();
+});
 window.addEventListener('beforeunload', () => {
-  intentionalDisconnect = true;
-  if (rfb) rfb.disconnect();
+  requestDisconnect('page-unload', true);
+  // diag.js has its own unload listener, registered before this one. Flush the
+  // marker we just emitted so a navigation cannot erase the attribution.
+  flushDiagnostics();
 });
 
 // Announce ourselves to an embedder: the protocol version it's talking to, plus
