@@ -1057,6 +1057,15 @@ function formatCount(value: number) {
   return String(value);
 }
 
+function formatMs(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0ms';
+  if (value >= 1000) {
+    const s = value / 1000;
+    return `${Number.isInteger(s) ? s : s.toFixed(1)}s`;
+  }
+  return `${Math.round(value)}ms`;
+}
+
 function bucketSizeLabel(windowHours: number, bucketCount: number) {
   const seconds = (windowHours * 3600) / Math.max(1, bucketCount);
   if (seconds < 3600) {
@@ -1381,7 +1390,7 @@ function viewerRttChartSvg(series: AnalyticsData['viewerRttSeries'], windowHours
     const v = (maxY * t) / 4;
     const y = baseY - (plotH * t) / 4;
     return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${padL + plotW}" y2="${y.toFixed(1)}" stroke="${VIZ.grid}" stroke-width="1"/>`
-      + `<text x="${(padL - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${Math.round(v)}ms</text>`;
+      + `<text x="${(padL - 8).toFixed(1)}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="10" fill="${VIZ.axis}">${formatMs(v)}</text>`;
   }).join('');
 
   const p50Segments: Array<Array<{ x: number; y: number }>> = [];
