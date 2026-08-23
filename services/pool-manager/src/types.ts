@@ -14,6 +14,13 @@ export interface Pod {
     tokenExpiresAt?: string;
     accessExpiresAt?: string;
     accessPolicy?: SessionAccessPolicy;
+    liveViewE2e?: {
+        version: 1;
+        clientPublicKey?: string;
+        bindingSecretHash?: string;
+        podPublicKey: string;
+        podUid: string;
+    };
 }
 
 export interface AllocationResponse {

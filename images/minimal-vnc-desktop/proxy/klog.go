@@ -42,23 +42,28 @@ func klogHTTPHandler() http.HandlerFunc {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		var p klogPayload
-		if err := json.Unmarshal(body, &p); err != nil {
+		if !ingestKlog(body) {
 			// This endpoint accepts diagnostics only. Never reflect arbitrary request
 			// content into production logs.
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		sid := klogSanitize(p.SID, 24)
-		for _, line := range p.Lines {
-			s := klogSanitize(line, 500)
-			if s == "" {
-				continue
-			}
-			diagLog.Printf("[popcorn-diag sid=%s] %s", sid, s)
-		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func ingestKlog(body []byte) bool {
+	var p klogPayload
+	if json.Unmarshal(body, &p) != nil {
+		return false
+	}
+	sid := klogSanitize(p.SID, 24)
+	for _, line := range p.Lines {
+		if s := klogSanitize(line, 500); s != "" {
+			diagLog.Printf("[popcorn-diag sid=%s] %s", sid, s)
+		}
+	}
+	return true
 }
 
 // klogSanitize collapses newlines/tabs to spaces, drops other control chars

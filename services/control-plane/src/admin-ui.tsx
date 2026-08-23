@@ -955,6 +955,14 @@ export function ClustersView({ regions, selectedRegion = 'all', notice }: {
         >
           <label class="field-label"><span>Session name</span><input name="sessionId" placeholder="Optional label" autocomplete="off" /></label>
           <label class="field-label"><span>Region</span><select name="region" required>{enabledRegions.map((region) => <option value={region.name} selected={region.name === createRegion}>{region.name} · {regionStats(region).ready} ready</option>)}</select></label>
+          <label class="field-label">
+            <span>LiveView encryption</span>
+            <select name="liveViewEncryption" aria-describedby="liveview-encryption-help">
+              <option value="" selected>Default transport</option>
+              <option value="e2e">End-to-end encrypted</option>
+            </select>
+            <small id="liveview-encryption-help" class="field-help">E2E encrypts the user-facing LiveView stream and controls. Server-side CDP remains available over its authenticated TLS route.</small>
+          </label>
           <div class="dialog-actions"><button type="button" class="secondary" data-dialog-close>Cancel</button><button type="submit" disabled={!enabledRegions.length}><ActionIcon name="plus" /> Create session</button></div>
         </form>
       </dialog>

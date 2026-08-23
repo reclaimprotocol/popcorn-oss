@@ -3,6 +3,13 @@ import { Pod } from '../types';
 import { RuntimeConfig } from '../config';
 import { buildK8sFetchRequest, getK8sClusterServer } from './k8s-fetch';
 import { retry } from './retry';
+import {
+    E2E_POD_PUBLIC_KEY_ANNOTATION,
+    E2E_POD_VERSION_ANNOTATION,
+    isBase64UrlX25519PublicKey,
+    type LiveViewE2eBinding,
+    type LiveViewE2eRequest,
+} from '../liveview-e2e';
 
 const kc = new KubeConfig();
 try {
@@ -122,6 +129,43 @@ export const K8s = {
             console.error(`❌ Failed to get Pod metadata for ${podName}:`, e);
         }
         return { uid: null, namespace };
+    },
+
+    // The browser pod generates this key at startup and publishes only the
+    // public half through the local Agones SDK. A pool manager must never
+    // create, receive, or persist a pod private key.
+    async waitForLiveViewE2eBinding(
+        gameServerName: string,
+        request: LiveViewE2eRequest,
+        podUid: string | null,
+        namespace: string = RuntimeConfig.gameServerNamespace,
+    ): Promise<LiveViewE2eBinding> {
+        if (!podUid) throw new Error("Allocated pod has no UID; refusing unbound LiveView E2EE session");
+        return await retry(async () => {
+            const res = await k8sJson(`/apis/agones.dev/v1/namespaces/${namespace}/gameservers/${gameServerName}`, {
+                method: "GET",
+            });
+            if (!res.ok) throw new Error(`Read GameServer failed ${res.status}: ${await res.text()}`);
+            const gameServer = await res.json() as any;
+            const annotations = gameServer.metadata?.annotations || {};
+            if (annotations[E2E_POD_VERSION_ANNOTATION] !== "1") {
+                throw new Error("GameServer has not published LiveView E2EE version 1");
+            }
+            const podPublicKey = annotations[E2E_POD_PUBLIC_KEY_ANNOTATION];
+            if (!isBase64UrlX25519PublicKey(podPublicKey)) {
+                throw new Error("GameServer has not published a valid LiveView E2EE public key");
+            }
+            return {
+                version: 1,
+                ...(request.clientPublicKey ? { clientPublicKey: request.clientPublicKey } : {}),
+                ...(request.bindingSecretHash ? { bindingSecretHash: request.bindingSecretHash } : {}),
+                podPublicKey,
+                podUid,
+            };
+        }, {
+            attempts: 20,
+            delayMs: 250,
+        });
     },
 
     async patchGameServer(namespace: string, name: string, patch: any): Promise<void> {

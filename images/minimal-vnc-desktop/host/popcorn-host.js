@@ -247,7 +247,7 @@
     // (a dropped ?fbscale=2 looks identical to one that had no effect).
     'fbscale',
     // session / transport
-    'password', 'path', 'view_only', 'shared', 'show_dot', 'reconnect', 'reconnect_delay',
+    'password', 'path', 'view_only', 'shared', 'show_dot', 'reconnect', 'reconnect_delay', 'encryption',
     // keyboard / IME behaviour
     'iosbridge', 'stateless', 'mirror', 'mirrorbar',
     // diagnostics (all opt-in, all structural-only)

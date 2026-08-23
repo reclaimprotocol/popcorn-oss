@@ -1,6 +1,7 @@
 export const SESSION_ID_ANNOTATION = "popcorn.dev/session-id";
 export const SESSION_BOUND_AT_ANNOTATION = "popcorn.dev/session-bound-at";
 export const SESSION_BOUND_AT_UNIX_NANO_ANNOTATION = "popcorn.dev/session-bound-at-unix-nano";
+export { E2E_CLIENT_PUBLIC_KEY_ANNOTATION, E2E_VERSION_ANNOTATION } from "./liveview-e2e";
 
 export interface SessionMetadata {
     annotations: Record<string, string>;
@@ -12,7 +13,11 @@ export function unixNanoFromDate(date: Date): string {
     return (BigInt(date.getTime()) * 1000000n).toString();
 }
 
-export function buildSessionMetadata(sessionId: string, boundAtDate = new Date()): SessionMetadata {
+export function buildSessionMetadata(
+    sessionId: string,
+    boundAtDate = new Date(),
+    clientPublicKey?: string,
+): SessionMetadata {
     const boundAt = boundAtDate.toISOString();
     const boundAtUnixNano = unixNanoFromDate(boundAtDate);
 
@@ -21,6 +26,10 @@ export function buildSessionMetadata(sessionId: string, boundAtDate = new Date()
             [SESSION_ID_ANNOTATION]: sessionId,
             [SESSION_BOUND_AT_ANNOTATION]: boundAt,
             [SESSION_BOUND_AT_UNIX_NANO_ANNOTATION]: boundAtUnixNano,
+            ...(clientPublicKey ? {
+                "popcorn.dev/e2e-client-public-key": clientPublicKey,
+                "popcorn.dev/e2e-version": "1",
+            } : {}),
         },
         boundAt,
         boundAtUnixNano,

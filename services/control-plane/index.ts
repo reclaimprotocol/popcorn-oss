@@ -47,6 +47,7 @@ import { X402Store } from './src/x402-store';
 import { selectTrustedClientAddress } from './src/x402-utils';
 import { readBoundedJsonBody } from './src/http-body';
 import { readCountryProxy } from './src/proxy-country';
+import { createLiveViewE2eEnrollment, readLiveViewE2eRequest, readLiveViewEncryption, withLiveViewE2eBootstrapFragment } from './src/liveview-e2e';
 import {
   renderClientSessionsPanelHtml,
   renderAnalyticsViewHtml,
@@ -488,6 +489,16 @@ async function routeSession(
   const expiresAt = ttlSeconds ? expiresAtFromTtlSeconds(ttlSeconds) : undefined;
   const proxy = readCountryProxy(body);
   if ('error' in proxy) return { status: 400, body: { error: proxy.error } };
+  const encryption = readLiveViewEncryption(body?.liveViewEncryption);
+  if (encryption.error) return { status: 400, body: { error: encryption.error } };
+  if (encryption.enabled && body?.liveViewE2e !== undefined) {
+    return { status: 400, body: { error: 'Use liveViewEncryption or liveViewE2e, not both' } };
+  }
+  const enrollment = encryption.enabled ? createLiveViewE2eEnrollment() : undefined;
+  const liveViewE2e = enrollment
+    ? { value: enrollment.request }
+    : readLiveViewE2eRequest(body?.liveViewE2e);
+  if (liveViewE2e.error) return { status: 400, body: { error: liveViewE2e.error } };
 
   const selection = selectRegions(ControlPlaneConfig.regions, body?.regions, identity.allowedClusters);
   if (selection.error) {
@@ -515,6 +526,7 @@ async function routeSession(
       clientId: identity.clientId,
       clientName: identity.clientName,
       expiresAt,
+      ...(liveViewE2e.value ? { liveViewE2e: liveViewE2e.value } : {}),
       ...(proxy.value ? { proxy: proxy.value } : {}),
     }, ControlPlaneConfig.serviceAuthToken);
     attempts.push(result.attempt);
@@ -539,6 +551,13 @@ async function routeSession(
         region.name,
         {
           ...(expiresAt ? { expiresAt } : {}),
+          ...(liveViewE2e.value && result.session.liveViewE2e ? { liveViewE2e: {
+            version: result.session.liveViewE2e.version,
+            ...(liveViewE2e.value.clientPublicKey ? { clientPublicKey: liveViewE2e.value.clientPublicKey } : {}),
+            ...(liveViewE2e.value.bindingSecretHash ? { bindingSecretHash: liveViewE2e.value.bindingSecretHash } : {}),
+            podPublicKey: result.session.liveViewE2e.podPublicKey,
+            podUid: result.session.liveViewE2e.podUid,
+          } } : {}),
           ...analyticsMetadata,
         },
       );
@@ -551,7 +570,31 @@ async function routeSession(
         attempts,
         region: region.name,
       })));
-      return { status: 200, body: { ...result.session, attempts } };
+      const responseSession = {
+        ...result.session,
+        ...(enrollment && result.session.liveViewE2e ? {
+          liveViewE2e: {
+            ...result.session.liveViewE2e,
+            bindingSecret: enrollment.bindingSecret,
+          },
+        } : {}),
+        attempts,
+      };
+      if (enrollment && responseSession.liveViewE2e) {
+        responseSession.url = withLiveViewE2eBootstrapFragment(
+          responseSession.url,
+          sessionId,
+          enrollment.sessionKey,
+          responseSession.liveViewE2e,
+        );
+        responseSession.vncUrl = withLiveViewE2eBootstrapFragment(
+          responseSession.vncUrl,
+          sessionId,
+          enrollment.sessionKey,
+          responseSession.liveViewE2e,
+        );
+      }
+      return { status: 200, body: responseSession };
     } catch (error) {
       await deleteRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken).catch(() => null);
       console.error('❌ Error recording routed session:', error);
@@ -927,7 +970,9 @@ app.use('/v1/x402/*', async (c, next) => {
 
 app.post('/v1/x402/sessions', async (c) => {
   if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
-  const parsed = await readX402JsonBody(c, 64);
+  // An optional LiveView E2EE request carries a 43-character X25519 public
+  // key. Keep this intentionally small while allowing that fixed payload.
+  const parsed = await readX402JsonBody(c, 256);
   if (parsed.error) return parsed.error;
   const result = await X402_CONTROLLER.create({
     idempotencyKey: c.req.header('Idempotency-Key'),
@@ -1271,15 +1316,17 @@ app.post('/admin/ui/sessions', async (c) => {
   const form = await c.req.formData();
   const region = String(form.get('region') || '').trim();
   const sessionId = String(form.get('sessionId') || '').trim();
+  const liveViewEncryption = String(form.get('liveViewEncryption') || '').trim();
   const result = await routeSession({ clientId: ADMIN_CLIENT_ID, clientName: ADMIN_CLIENT_NAME, allowedClusters: null }, {
     regions: region ? [region] : undefined,
     sessionId: sessionId || undefined,
+    liveViewEncryption: liveViewEncryption || undefined,
   });
   const notice: ActionNotice = result.status >= 200 && result.status < 300
     ? {
       tone: 'success',
       title: 'Pod created',
-      message: `Created ${result.body.sessionId} in ${result.body.region}.`,
+      message: `Created ${result.body.sessionId} in ${result.body.region}${liveViewEncryption === 'e2e' ? ' with end-to-end encrypted LiveView' : ''}.`,
       href: result.body.url,
     }
     : {

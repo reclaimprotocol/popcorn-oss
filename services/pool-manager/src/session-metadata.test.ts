@@ -24,4 +24,14 @@ describe("session metadata", () => {
     test("converts Date millisecond precision to unix nanoseconds", () => {
         expect(unixNanoFromDate(new Date("1970-01-01T00:00:01.234Z"))).toBe("1234000000");
     });
+
+    test("binds only the client's public E2EE identity to GameServer metadata", () => {
+        const clientPublicKey = Buffer.alloc(32, 5).toString("base64url");
+        expect(buildSessionMetadata("session-123", new Date("2026-06-04T12:34:56.789Z"), clientPublicKey).annotations)
+            .toMatchObject({
+                "popcorn.dev/session-id": "session-123",
+                "popcorn.dev/e2e-client-public-key": clientPublicKey,
+                "popcorn.dev/e2e-version": "1",
+            });
+    });
 });

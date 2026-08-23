@@ -1,8 +1,7 @@
 # API and gateway reference
 
-This page describes the stable self-hosted interfaces operators need to expose
-or integrate. Pool-manager `/internal/*` routes are implementation APIs and
-must remain private.
+This page lists the public APIs and gateway routes for a self-hosted deployment.
+Pool-manager `/internal/*` routes must remain private.
 
 ## Credentialed client API
 
@@ -29,10 +28,33 @@ Content-Type: application/json
 
 All fields are optional:
 
-- `sessionId`: 1–64 letters, digits, `_`, or `-`; generated when omitted;
-- `ttlSeconds`: positive integer no greater than
-  `controlPlane.sessionMaxTtlSeconds`;
+- `sessionId`: 1 to 64 letters, digits, `_`, or `-`. The server generates it
+  when omitted.
+- `ttlSeconds`: positive integer at or below
+  `controlPlane.sessionMaxTtlSeconds`.
 - `regions`: enabled region names tried in the supplied order.
+- `liveViewEncryption`: requests default to the standard transport; set this to
+  `"e2e"` to require the E2E transport.
+
+The viewer creates its key during the first encrypted connection:
+
+```json
+{
+  "sessionId": "demo",
+  "regions": ["local"],
+  "liveViewEncryption": "e2e"
+}
+```
+
+The create response releases `liveViewE2e.bindingSecret` once. The viewer
+generates an X25519 keypair and sends the secret inside its first encrypted
+Noise handshake. Fetch and TTL responses return persistent session metadata.
+
+The create response puts the bootstrap data in a `#popcorn-e2e=...` fragment on
+`url` and `vncUrl`. The browser keeps the fragment client-side. The viewer stores
+the bootstrap data and client key, then removes the fragment. On reload, the
+viewer route finds the stored allocation record. Recreating the same session ID
+creates a new allocation record and client key.
 
 ### Get a session
 
@@ -89,7 +111,7 @@ cleanup.
 | `url` | canonical interactive LiveView page |
 | `cdpUrl` | restricted client CDP endpoint |
 | `cdpInternalUrl` | trusted full-CDP endpoint |
-| `apiUrl` | generic optional extension API path; it may be unavailable when no matching extension is installed |
+| `apiUrl` | generic extension API path returned when a matching extension is installed |
 | `vncUrl` | compatibility name for the canonical LiveView page |
 | `vncWsUrl` | compatibility name for the RFB WebSocket endpoint |
 | `browserPodId` | allocated Agones GameServer/pod identity |
@@ -97,8 +119,15 @@ cleanup.
 | `region` | selected control-plane region name |
 | `clusterName` | selected cluster access identity |
 
+For an E2E session, `url` and `vncUrl` point to the same LiveView page with
+`encryption=e2e`. The create response also contains `liveViewE2e` metadata and
+the one-time binding secret. `cdpUrl` and `cdpInternalUrl` remain available to
+server integrations. Authenticated WSS protects these server-side connections
+in transit. The [LiveView E2E guide](liveview-e2e-encryption.md) defines the
+handshake and response fields.
+
 `sessionExtensions.*.routing.sessionUrls` may add deployment-owned response
-fields. Extensions cannot replace the core LiveView fields.
+fields. Core LiveView fields take precedence over extension fields.
 
 Treat every full URL as a bearer secret.
 
@@ -109,15 +138,15 @@ Treat every full URL as a bearer secret.
 | 400 | invalid identifier, TTL, region, or request body |
 | 401 | missing or invalid client/admin credentials |
 | 403 | client lacks cluster access or gateway token scope is wrong |
-| 404 | session or route not found, or owned by another client |
+| 404 | unknown session or route, or resource owned by another client |
 | 409 | requested session already exists or state conflicts |
 | 502 | a regional dependency returned an invalid/error response |
-| 503 | no eligible region could allocate a browser |
+| 503 | eligible region allocation failed |
 
-Error bodies and logs provide the specific reason; clients should not infer
-ownership or payment state from status alone.
+Error bodies and logs provide the specific reason. Use them to distinguish
+ownership, payment, and routing failures that share a status code.
 
-## Admin surface
+## Admin API
 
 Admin routes are for trusted operators. The control plane provides a browser UI
 at `/admin` plus JSON routes including:
@@ -144,9 +173,9 @@ curl -fsS -X POST "$CONTROL_PLANE_URL/admin/clients" \
   -d '{"name":"automation","allowedClusters":["popcorn-prod-us"]}'
 ```
 
-`allowedClusters` contains cluster names, not region names. An empty or omitted
-list is deny-all. `null` grants all current and future non-x402 clusters and
-should be used only as an explicit compatibility choice.
+`allowedClusters` accepts cluster names. An empty or omitted list selects
+deny-all. `null` grants all current and future non-x402 clusters and should be
+used only as an explicit compatibility choice.
 
 ## Gateway paths
 
@@ -159,7 +188,7 @@ should be used only as an explicit compatibility choice.
 | `/cdp-internal/<session>/<token>/...` | internal scope | browser `:9226` |
 | `/api/<session>/<token>/...` | internal scope | optional route key `api` |
 | `/proof/<session>?nonce=<hex>` | session route and proof validation | optional attestor `:8085` |
-| `/health` | no session token | gateway health response |
+| `/health` | public access | gateway health response |
 
 The gateway may also serve the older
 `/<browserPodId>/<session>/<token>/...` browser asset path. New integrations
@@ -181,12 +210,12 @@ DELETE /internal/session/:id
 GET    /health
 ```
 
-These routes can allocate and terminate browser workloads. Do not expose them
-as a public client API.
+These routes can allocate and terminate browser workloads. Keep them on the
+private control-plane network.
 
 ## Optional x402 API
 
 The paid API is isolated under `/v1/x402/sessions`. It uses payment challenges
 and capability-style session access rather than client ID/client secret.
-Enabling it does not change `/v1/sessions`. See [x402 API](x402.md) for the
-complete lifecycle and security model.
+`/v1/sessions` keeps its credentialed client behavior when x402 is enabled. See
+[x402 API](x402.md) for the complete lifecycle and security model.

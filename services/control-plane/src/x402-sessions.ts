@@ -30,6 +30,7 @@ import {
   type AuthorizationChainReader,
 } from './x402-chain';
 import { readCountryProxy, type CountryProxy } from './proxy-country';
+import { readLiveViewE2eRequest } from './liveview-e2e';
 
 const PUBLIC_X402_CLIENT_ID = 'x402-public';
 const PUBLIC_X402_CLIENT_NAME = 'Public x402';
@@ -147,7 +148,8 @@ function samePublicSessionEndpoints(left: PublicX402Endpoints, right: PublicX402
   return left.connectUrl === right.connectUrl
     && left.liveViewUrl === right.liveViewUrl
     && left.vncUrl === right.vncUrl
-    && left.vncWsUrl === right.vncWsUrl;
+    && left.vncWsUrl === right.vncWsUrl
+    && JSON.stringify(left.liveViewE2e) === JSON.stringify(right.liveViewE2e);
 }
 
 function normalizeStoredEndpoints(
@@ -160,6 +162,7 @@ function normalizeStoredEndpoints(
     cdpUrl: endpoints.connectUrl,
     vncUrl: endpoints.vncUrl,
     vncWsUrl: endpoints.vncWsUrl,
+    liveViewE2e: endpoints.liveViewE2e,
   }, publicGatewayUrl, sessionId);
 }
 
@@ -546,6 +549,8 @@ export class X402SessionController {
       // same session ID/token and grant the full purchased duration from now.
       expiresAt = new Date(Date.now() + additionalSeconds * 1000).toISOString();
       const proxy = metadataProxy(recovery.previousMetadata);
+      const liveViewE2e = readLiveViewE2eRequest(recovery.previousMetadata.liveViewE2e);
+      if (liveViewE2e.error) throw new Error('Stored x402 session has an invalid LiveView E2EE client identity');
       remote = await reallocateExpiredRegionalSession(
         region,
         row.sessionId,
@@ -560,6 +565,7 @@ export class X402SessionController {
             cdpScope: 'automation',
             accessExpiresAt: expiresAt,
           },
+          ...(liveViewE2e.value ? { liveViewE2e: liveViewE2e.value } : {}),
           ...(proxy ? { proxy } : {}),
         },
       );
@@ -870,13 +876,27 @@ export class X402SessionController {
     if (!('name' in available)) return available;
     const proxy = readCountryProxy(body);
     if ('error' in proxy) return { status: 400, body: { error: proxy.error } };
+    const liveViewE2e = readLiveViewE2eRequest(
+      body && typeof body === 'object' && !Array.isArray(body)
+        ? (body as Record<string, unknown>).liveViewE2e : undefined,
+    );
+    if (liveViewE2e.error) return { status: 400, body: { error: liveViewE2e.error } };
     if (body && typeof body === 'object' && !Array.isArray(body)) {
       const keys = Object.keys(body as Record<string, unknown>);
-      if (keys.some((key) => key !== 'proxy')) return { status: 400, body: { error: 'This endpoint accepts only proxy.country' } };
+      if (keys.some((key) => key !== 'proxy' && key !== 'liveViewE2e')) return { status: 400, body: { error: 'This endpoint accepts only proxy.country and liveViewE2e' } };
     }
     const key = readIdempotencyKey(input.idempotencyKey);
     if (!key.value) return { status: 400, body: { error: key.error! } };
-    const hash = requestHash({ operation: 'create', blocks: 1, region: available.name, network: this.deps.config.network, proxy: proxy.value });
+    const hash = requestHash({
+      operation: 'create',
+      blocks: 1,
+      region: available.name,
+      network: this.deps.config.network,
+      proxy: proxy.value,
+      // Mode and client static key are part of idempotency. This prevents a
+      // replay from silently changing a session between default mode and E2EE.
+      liveViewE2e: liveViewE2e.value || null,
+    });
 
     return await withX402Claims(key.value, undefined, async (lease) => {
       const prepared = await reserveAndOffer({
@@ -943,6 +963,7 @@ export class X402SessionController {
           cdpScope: 'automation',
           accessExpiresAt: expiresAt.toISOString(),
         },
+        ...(liveViewE2e.value ? { liveViewE2e: liveViewE2e.value } : {}),
         ...(proxy.value ? { proxy: proxy.value } : {}),
       }, this.deps.serviceAuthToken);
       if (!allocation.session) {
@@ -985,6 +1006,13 @@ export class X402SessionController {
             expiresAt: expiresAt.toISOString(),
             tokenExpiresAt: expiresAt.toISOString(),
             browserPodId: allocation.session.browserPodId,
+            ...(liveViewE2e.value && allocation.session.liveViewE2e ? { liveViewE2e: {
+              version: 1,
+              ...(liveViewE2e.value.clientPublicKey ? { clientPublicKey: liveViewE2e.value.clientPublicKey } : {}),
+              ...(liveViewE2e.value.bindingSecretHash ? { bindingSecretHash: liveViewE2e.value.bindingSecretHash } : {}),
+              podPublicKey: allocation.session.liveViewE2e.podPublicKey,
+              podUid: allocation.session.liveViewE2e.podUid,
+            } } : {}),
             x402PublicEndpoints: endpoints,
             billing: { type: 'x402', paidBlocks: 1, amountAtomic: prepared.payment.amountAtomic },
             ...(proxy.value ? { proxyCountry: proxy.value.country } : {}),

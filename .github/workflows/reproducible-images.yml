@@ -95,6 +95,7 @@ jobs:
             --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
             --build-arg "UBUNTU_SNAPSHOT=${BROWSER_RUNTIME_UBUNTU_SNAPSHOT}" \
             --build-context "minimal-vnc-artifacts=${RUNNER_TEMP}/minimal-vnc-artifacts" \
+            --build-context "trusted-liveview=${GITHUB_WORKSPACE}/packages/trusted-liveview" \
             --metadata-file "${RUNNER_TEMP}/browser-runtime-metadata.json" \
             --provenance=false \
             "${tag_args[@]}" \

@@ -196,3 +196,14 @@ func BenchmarkRtstatsHandler(b *testing.B) {
 		handler(rec, req)
 	}
 }
+
+func TestE2ERTStatsIngestSharesStore(t *testing.T) {
+	store := newRtstatsStore(func(string, ...interface{}) {})
+	body, _ := json.Marshal(rtstatsPayload{SID: "encrypted", Samples: []rtstatsSample{{At: 0, RTT: 42}}})
+	if _, ok := ingestRTStats(store, body); !ok {
+		t.Fatal("encrypted rtt payload rejected")
+	}
+	if sum, ok := store.summary("encrypted"); !ok || sum.SampleCount != 1 || sum.AvgMs != 42 {
+		t.Fatalf("summary = %+v ok=%v", sum, ok)
+	}
+}
