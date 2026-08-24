@@ -1,0 +1,20 @@
+{
+  "name": "@popcorn/trusted-liveview",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./bootstrap.js"
+  },
+  "scripts": {
+    "test": "node --test noise.test.mjs",
+    "build:check": "esbuild bootstrap.js --bundle --format=esm --outfile=/tmp/trusted-liveview-smoke.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.0.1",
+    "@noble/curves": "2.0.1",
+    "@noble/hashes": "2.0.1"
+  }
+}

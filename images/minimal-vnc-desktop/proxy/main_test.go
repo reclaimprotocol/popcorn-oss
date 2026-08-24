@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/flynn/noise"
 )
 
 func TestCDPReadyGate(t *testing.T) {
@@ -145,6 +148,87 @@ func TestNoVNCMuxRequiresReadyFile(t *testing.T) {
 		t.Fatalf("noVNC before readiness status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 
+}
+
+func TestE2EBindingRejectsPlaintextLiveViewAtPodBoundary(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", ClientKey: client.Public, PodUID: "pod-1"})
+
+	web := t.TempDir()
+	if err := os.WriteFile(filepath.Join(web, "liveview.html"), []byte("viewer shell"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	liveView := noVNCMux(web, "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
+	for _, route := range []string{
+		"/kbd", "/kbdstate", "/dialog", "/emulate", "/geometry", "/input",
+		"/klog", "/rtstats", "/websockify", "/vnc-ws/session", "/liveview-ws/session",
+	} {
+		rec := httptest.NewRecorder()
+		liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example"+route, nil))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want %d", route, rec.Code, http.StatusForbidden)
+		}
+	}
+
+	// The unified viewer shell is public code and must remain loadable. The
+	// selected transport is enforced when it attempts to open a data channel.
+	rec := httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/liveview.html", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("static viewer status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Chromium's extension publishes dialogs over loopback for both transport
+	// modes. External callers cannot use that plaintext control endpoint.
+	loopbackDialog := httptest.NewRequest(http.MethodGet, "http://pod.example/dialog", nil)
+	loopbackDialog.RemoteAddr = "127.0.0.1:12345"
+	rec = httptest.NewRecorder()
+	liveView.ServeHTTP(rec, loopbackDialog)
+	if rec.Code == http.StatusForbidden {
+		t.Fatal("loopback dialog publisher was blocked")
+	}
+
+	cdpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer cdpUpstream.Close()
+	cdp := cdpMux(cdpUpstream.URL, true, readyGate{})
+	rec = httptest.NewRecorder()
+	cdp.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/json/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("server-side CDP status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestUnboundPodKeepsDefaultTransportAvailable(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveView := noVNCMux(t.TempDir(), "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
+	rec := httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/kbdstate", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default control status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer upstream.Close()
+	cdp := cdpMux(upstream.URL, true, readyGate{})
+	rec = httptest.NewRecorder()
+	cdp.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/json/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default CDP status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
 }
 
 // Content negotiation for the precompressed viewer bundle. A client that says it

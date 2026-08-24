@@ -27,7 +27,7 @@ const { PopcornHost } = makeHostWindow();
 // The full set a device test tunes, in the order the forwarder emits them.
 const SEARCH = '?viewer=https%3A%2F%2Fpod.test&nest=1&magnify=1&quality=9&compression=9' +
   '&resize=scale&fill=1&fbcap=411x732&smooth=1&password=p&path=%2Fws&reconnect=0' +
-  '&reconnect_delay=900&stateless=1&mirror=1&diag=1&e2e=1';
+  '&reconnect_delay=900&stateless=1&mirror=1&diag=1&e2e=1&encryption=e2e';
 
 test('every viewer-facing parameter in the URL is forwarded', () => {
   const pass = PopcornHost.forwardParams(SEARCH);
@@ -36,7 +36,7 @@ test('every viewer-facing parameter in the URL is forwarded', () => {
     ['magnify', '1'], ['quality', '9'], ['compression', '9'], ['resize', 'scale'],
     ['fill', '1'], ['fbcap', '411x732'], ['smooth', '1'], ['password', 'p'],
     ['reconnect', '0'], ['reconnect_delay', '900'], ['stateless', '1'],
-    ['mirror', '1'], ['diag', '1'], ['e2e', '1'],
+    ['mirror', '1'], ['diag', '1'], ['e2e', '1'], ['encryption', 'e2e'],
   ]) {
     assert.equal(got.get(k), v, k + ' survived');
   }

@@ -242,6 +242,7 @@ build_browser_runtime_once() {
     --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
     --build-arg "UBUNTU_SNAPSHOT=${ubuntu_snapshot}" \
     --build-context "minimal-vnc-artifacts=${artifact_dir}" \
+    --build-context "trusted-liveview=${REPO_ROOT}/packages/trusted-liveview" \
     --metadata-file "$metadata_file" \
     --provenance=false \
     --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime:${requested_commit},oci-mediatypes=true,compression=gzip,compression-level=9,force-compression=true,rewrite-timestamp=true" \

@@ -247,7 +247,7 @@
     // (a dropped ?fbscale=2 looks identical to one that had no effect).
     'fbscale',
     // session / transport
-    'password', 'path', 'view_only', 'shared', 'show_dot', 'reconnect', 'reconnect_delay',
+    'password', 'path', 'view_only', 'shared', 'show_dot', 'reconnect', 'reconnect_delay', 'encryption',
     // keyboard / IME behaviour
     'iosbridge', 'stateless', 'mirror', 'mirrorbar',
     // diagnostics (all opt-in, all structural-only)
@@ -726,6 +726,7 @@
           case 'POPCORN_KBD_STATE': emit('kbdstate', d); break;
           case 'POPCORN_INPUT_DRIFT': emit('inputdrift', d); break;
           case 'POPCORN_INTERACTION': emit('interaction', d); break;
+          case 'POPCORN_RTT': emit('rtt', d); break;
           case 'POPCORN_KBD_HEALTH': emit('health', d); break;
           // Framebuffer vs CSS vs device-pixel geometry (viewer.js traceScale).
           // The one place a "the stream looks blurry" report becomes a number, and
@@ -883,7 +884,7 @@
     }
 
     return {
-      /** Subscribe to viewer events: hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|health|scale|layout */
+      /** Subscribe to viewer events: hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|health|scale|layout|rtt */
       on: function (name, fn) {
         (listeners[name] || (listeners[name] = [])).push(fn);
         return this;
@@ -899,6 +900,14 @@
       toggleMagnify: function () { post('POPCORN_TOGGLE_MAGNIFY', null); },
       /** Drive the viewer's keyboard toggle from your own button. */
       toggleKeyboard: function () { post('POPCORN_TOGGLE_KBD', null); },
+      /**
+       * Ask for the viewer's measured tunnel round trip; the answer arrives as
+       * .on('rtt', ({rttMs, avgMs, samples}) => ...). rttMs is the latest
+       * viewer<->pod sample (null before the first pong), avgMs the smoothed
+       * link latency. A postMessage ping from this page could only time the
+       * in-device hop, so the viewer's own measurement is the one that matters.
+       */
+      requestRtt: function () { post('POPCORN_RTT_REQUEST', null); },
       /**
        * Paste text into the focused remote field. Read the clipboard HERE, in the
        * gesture handler of your own button: clipboard permission in a nested

@@ -25,6 +25,7 @@
 
 import { nowMs, siblingPath } from './env.js';
 import { linkLatency } from './latency.js';
+import { viewerFetch, viewerSendBeacon } from './liveview-transport.js';
 
 const SAMPLE_MAX = 256;   // ring bound: ~20min of pings at the 5s mean
 const FLUSH_BATCH_MAX = 128;
@@ -75,13 +76,13 @@ function ensureFlushTimer() {
 function post(payload) {
   const body = JSON.stringify(payload);
   try {
-    if (navigator.sendBeacon && body.length < 60000) {
-      if (navigator.sendBeacon(rttPath(), new Blob([body], { type: 'application/json' }))) return true;
+    if (body.length < 60000) {
+      if (viewerSendBeacon(rttPath(), new Blob([body], { type: 'application/json' }))) return true;
     }
   } catch (_) {}
   if (!window.fetch || fetchInFlight) return false;
   fetchInFlight = true;
-  window.fetch(rttPath(), {
+  viewerFetch(rttPath(), {
     method: 'POST', body, keepalive: true,
     headers: { 'Content-Type': 'application/json' },
   }).catch(function () {}).then(function () { fetchInFlight = false; });

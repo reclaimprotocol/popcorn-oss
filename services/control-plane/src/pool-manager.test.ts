@@ -14,9 +14,19 @@ const region = {
   publicGatewayUrl: 'https://gateway.example',
   enabled: true,
 };
+const clientPublicKey = Buffer.alloc(32, 2).toString('base64url');
+const liveViewE2e = {
+  version: 1,
+  protocol: 'Noise_IK_25519_ChaChaPoly_SHA256',
+  clientPublicKey,
+  podPublicKey: Buffer.alloc(32, 1).toString('base64url'),
+  podUid: 'pod-uid-1',
+  e2eRfbUrl: 'wss://gateway.example/liveview-e2e-rfb/session-1/token',
+  e2eControlUrl: 'wss://gateway.example/liveview-e2e-control/session-1/token',
+};
 
 describe('regional pool-manager response contract', () => {
-  test('accepts the required flat compatibility response', () => {
+  test('accepts a default-mode response without an E2EE binding', () => {
     expect(isRoutedSessionResponse({
       success: true,
       sessionId: 'session-1',
@@ -28,20 +38,34 @@ describe('regional pool-manager response contract', () => {
     }, 'session-1')).toBe(true);
   });
 
-  test('derives canonical fields from an older pool-manager response during rolling upgrades', async () => {
-    const legacyResponse = {
+  test('accepts the required flat compatibility response', () => {
+    expect(isRoutedSessionResponse({
       success: true,
       sessionId: 'session-1',
-      url: 'https://legacy-gateway.example/vnc/session-1/restricted.jwt/liveview.html',
-      cdpUrl: 'wss://legacy-gateway.example/cdp/session-1/restricted.jwt/',
-      apiUrl: 'https://legacy-gateway.example/api/session-1/internal.jwt/',
+      url: 'https://gateway.example/liveview/session-1/token/',
+      cdpUrl: 'wss://gateway.example/cdp/session-1/token/',
+      cdpInternalUrl: 'wss://gateway.example/cdp-internal/session-1/internal-token/',
+      apiUrl: 'https://gateway.example/api/session-1/token/',
+      vncUrl: 'https://gateway.example/liveview/session-1/token/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
+      vncWsUrl: 'wss://gateway.example/liveview-ws/session-1/token',
+      liveViewE2e,
+    }, 'session-1')).toBe(true);
+  });
+
+  test('keeps default-mode rolling upgrades working when E2EE was not requested', async () => {
+    const defaultResponse = {
+      success: true,
+      sessionId: 'session-1',
+      url: 'https://default-gateway.example/vnc/session-1/restricted.jwt/liveview.html',
+      cdpUrl: 'wss://default-gateway.example/cdp/session-1/restricted.jwt/',
+      apiUrl: 'https://default-gateway.example/api/session-1/internal.jwt/',
     };
-    expect(withDefaultLiveViewUrls(legacyResponse, 'http://localhost:8080/base/', 'session-1')).toMatchObject({
+    expect(withDefaultLiveViewUrls(defaultResponse, 'http://localhost:8080/base/', 'session-1')).toMatchObject({
       vncUrl: 'http://localhost:8080/base/liveview/session-1/restricted.jwt/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
       vncWsUrl: 'ws://localhost:8080/base/liveview-ws/session-1/restricted.jwt',
     });
 
-    globalThis.fetch = async () => Response.json(legacyResponse);
+    globalThis.fetch = async () => Response.json(defaultResponse);
     const result = await allocateInRegion(region, {
       sessionId: 'session-1',
       clientId: 'client-1',
@@ -51,6 +75,26 @@ describe('regional pool-manager response contract', () => {
       vncUrl: 'https://gateway.example/liveview/session-1/restricted.jwt/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
       vncWsUrl: 'wss://gateway.example/liveview-ws/session-1/restricted.jwt',
     });
+  });
+
+  test('fails closed when an E2EE request is not bound by the pool manager', async () => {
+    globalThis.fetch = async () => Response.json({
+      success: true,
+      sessionId: 'session-1',
+      url: 'https://gateway.example/liveview/session-1/token/',
+      cdpUrl: 'wss://gateway.example/cdp/session-1/token/',
+      apiUrl: 'https://gateway.example/api/session-1/token/',
+      vncUrl: 'https://gateway.example/liveview/session-1/token/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
+      vncWsUrl: 'wss://gateway.example/liveview-ws/session-1/token',
+    });
+    const result = await allocateInRegion(region, {
+      sessionId: 'session-1',
+      clientId: 'client-1',
+      clientName: 'Client 1',
+      liveViewE2e: { version: 1, clientPublicKey },
+    }, 'service-token');
+    expect(result.session).toBeUndefined();
+    expect(result.attempt.error).toContain('did not bind');
   });
 
   test('rejects malformed 2xx bodies and mismatched sessions', () => {
@@ -81,6 +125,7 @@ describe('regional pool-manager response contract', () => {
       sessionId: 'session-1',
       clientId: 'client-1',
       clientName: 'Client 1',
+      liveViewE2e: { version: 1, clientPublicKey },
     }, 'service-token');
 
     expect(result.session).toBeUndefined();
@@ -100,9 +145,11 @@ describe('regional pool-manager response contract', () => {
         sessionId: 'session-1',
         url: 'https://gateway.example/liveview/session-1/token/',
         cdpUrl: 'wss://gateway.example/cdp-agent/session-1/token/',
+        cdpInternalUrl: 'wss://gateway.example/cdp-internal/session-1/internal-token/',
         apiUrl: 'https://gateway.example/api/session-1/token/',
         vncUrl: 'https://gateway.example/liveview/session-1/token/liveview.html?resize=scale&reconnect=1&reconnect_delay=2000',
         vncWsUrl: 'wss://gateway.example/liveview-ws/session-1/token',
+        liveViewE2e,
       });
     };
     const expiresAt = new Date(Date.now() + 300_000).toISOString();
@@ -110,6 +157,7 @@ describe('regional pool-manager response contract', () => {
       sessionId: 'session-1',
       clientId: 'x402-public',
       clientName: 'Public x402',
+      liveViewE2e: { version: 1, clientPublicKey },
       expiresAt,
       tokenExpiresAt: expiresAt,
       accessPolicy: {
