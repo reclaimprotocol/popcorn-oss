@@ -54,6 +54,7 @@
     #geom { font-family: ui-monospace, Menlo, monospace; color: #7ee787; margin-bottom: 4px; }
     #log { font-family: ui-monospace, Menlo, monospace; font-size: 11px; white-space: pre-wrap;
            color: #9aa4b2; margin: 0; }
+    body.clean #panel { display: none; }
     .warn { color: #f0883e; }
   </style>
 </head>
@@ -79,6 +80,9 @@
        three-level chain). On a phone, replace localhost with your machine's LAN
        IP in BOTH the address bar and ?viewer=.
 
+       Add &panel=0 when collecting unobstructed visual evidence. The option is
+       forwarded through ?nest=1 so neither host layer covers the viewer.
+
        Sharpness A/B (the reported Android blur), same pod and same session:
          ...&quality=9&compression=9              -> the layout contract applied
          ...&quality=9&compression=9&badlayout=1  -> iframe left in a flex +
@@ -101,10 +105,12 @@
     <pre id="log"></pre>
   </div>
 
-  <script src="popcorn-host.js"></script>
+  <!-- Cache-busted so a harness rerun cannot silently reuse an older host. -->
+  <script src="popcorn-host.js?v=mobile-harness-1"></script>
   <script>
     (function () {
       var q = new URLSearchParams(location.search);
+      if (q.get('panel') === '0') document.body.classList.add('clean');
       var logEl = document.getElementById('log');
       var geomEl = document.getElementById('geom');
       var lines = [];
@@ -165,7 +171,7 @@
         // frame defaulted the translation back ON and the keyboard worked, which is
         // the OPPOSITE of what that URL claims to demonstrate. (A parameter dying at
         // a hop, in the page whose comments warn about parameters dying at hops.)
-        ['viewerpage', 'magnify', 'noorigin', 'badlayout', 'legacyxlate'].forEach(function (k) {
+        ['viewerpage', 'magnify', 'noorigin', 'badlayout', 'legacyxlate', 'panel'].forEach(function (k) {
           var v = q.get(k);
           if (v !== null) nestExtra.push(k + '=' + encodeURIComponent(v));
         });

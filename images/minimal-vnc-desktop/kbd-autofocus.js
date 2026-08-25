@@ -79,6 +79,8 @@ import { createFieldSession } from './kbd/field-session.js';
 import { createSignal } from './kbd/signal.js';
 import { createDialog } from './kbd/dialog.js';
 import { createPopupBar } from './kbd/popup-bar.js';
+import { createNativeSelectProxy } from './kbd/native-select.js';
+import { createNativePickerProxy } from './kbd/native-picker.js';
 import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
 import { initE2E } from './kbd/e2e.js';
 import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
@@ -89,7 +91,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // Deploy stamp, logged in the "setup env" klog line. Bump on every deploy so a
   // stale-cache session is provable from the log alone (many "still broken"
   // reports were pages running old JS).
-  const BUILD_TAG = 'bundle-80';
+  const BUILD_TAG = 'bundle-83-native-temporal-pickers';
 
   // ---- RFB transport (replaces CDP Input.*) --------------------------------
   // Lives in ./kbd/transport.js: sendText/sendSpecialKey, per-burst WebSocket
@@ -500,6 +502,11 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
   function screenElement() { return document.getElementById('screen'); }
 
+  // Assigned after the field session is constructed. viewport-transform and
+  // tap receive deferred closures because they are instantiated earlier.
+  let nativeSelect = null;
+  let nativePicker = null;
+
   const vt = createViewportTransform({
     getScreenElement: () => screenElement(),
     getCurrentRect: () => session.rect(),
@@ -513,6 +520,10 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // Deferred (fit is instantiated below): a CSS zoom must freeze the remote
     // framebuffer size, since noVNC derives it from #screen's transformed rect.
     onZoomFreeze: (on) => fit.setZoomFreeze(on),
+    onTransform: () => {
+      if (nativeSelect) nativeSelect.refresh();
+      if (nativePicker) nativePicker.refresh();
+    },
   });
   const zoomToField = vt.zoomToField;
   const beginPinch = vt.beginPinch;
@@ -614,7 +625,8 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     flushPendingMove: tc.flushPendingMove,
     touchToRemote,
     onMagButton: (t) => onMagButton(t),        // controls alias (defined earlier — arrow for uniform deferral)
-    onDialogSheet: (t) => dialog.owns(t) || popupBar.owns(t), // viewer chrome (sheet or popup close bar), not the remote's
+    onDialogSheet: (t) => (nativeSelect && nativeSelect.owns(t)) ||
+      (nativePicker && nativePicker.owns(t)) || dialog.owns(t) || popupBar.owns(t), // viewer chrome, not remote touch
     pasteFromDevice: () => pasteFromDevice(),
     flushLocalClipboard,
     raiseKeyboard, dismissKeyboard, parkProxyOffscreen, // hoisted
@@ -749,7 +761,21 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     getZoomedToField: () => zoomedToField,
     setZoomedToField: (v) => { zoomedToField = v; },
   });
-  const applySignal = session.applySignal;
+  nativeSelect = createNativeSelectProxy({
+    enabled: isTouch && MAGNIFY,
+    getScreenElement: () => screenElement(),
+    sendChoice: (choice) => sig.sendControl({ selectChoice: choice }),
+  });
+  nativePicker = createNativePickerProxy({
+    enabled: isTouch && MAGNIFY,
+    getScreenElement: () => screenElement(),
+    sendChoice: (choice) => sig.sendControl({ pickerChoice: choice }),
+  });
+  const applySignal = (state) => {
+    session.applySignal(state);
+    nativeSelect.applySignal(state);
+    nativePicker.applySignal(state);
+  };
   const armDismiss = session.armDismiss;
 
   // The /kbd focus-signal WebSocket transport (connect, backoff-reconnect, the
@@ -778,6 +804,10 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     applyPopup: (p) => popupBar.apply(p),
     kickInput: tc.kick,
     getInputSock: tc.getInputSock,
+    onConnection: (open) => {
+      nativeSelect.setTransportReady(open);
+      nativePicker.setTransportReady(open);
+    },
   });
   const connectSignal = sig.connectSignal;
   const kickReconnects = sig.kickReconnects;
@@ -1092,7 +1122,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
       // floating over a dead stream, but a SOFT detach keeps it — the popup is
       // still open on the remote across a 3G blip, and the hub resyncs it on
       // reconnect, so tearing it down would hide the user's only way out.
-      if (!(opts && opts.soft)) { dialog.reset(); popupBar.reset(); }
+      if (!(opts && opts.soft)) { dialog.reset(); popupBar.reset(); nativeSelect.reset(); nativePicker.reset(); }
       // Soft detach (auto-reconnect): keep the keyboard up and the proxy focused
       // so a 3G blip doesn't dismiss the keyboard mid-typing. Keys typed during
       // the gap queue and replay on the next 'connect'. The full detach (real

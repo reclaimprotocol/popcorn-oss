@@ -246,6 +246,7 @@ COPY liveview.html /usr/share/novnc/liveview.html
 COPY kbd-autofocus.js /usr/share/novnc/kbd-autofocus.js
 COPY kbd /usr/share/novnc/kbd
 COPY viewer.js /usr/share/novnc/viewer.js
+COPY mobile-harness/fixture /usr/share/novnc/harness
 COPY locks/esbuild.lock /tmp/esbuild.lock
 
 # Bundle the viewer (noVNC core/* + the kbd/* IME layer + viewer.js) into a single
@@ -301,7 +302,7 @@ RUN set -eux; \
         /usr/share/novnc/viewer.js \
         /usr/share/novnc/viewer-*.bundle.js \
         /usr/share/novnc/viewer-*.bundle.js.gz; \
-    find /usr/share/novnc/kbd /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+    find /usr/share/novnc/kbd /usr/share/novnc/harness /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 USER kernel
 EXPOSE 6080 9222 9226

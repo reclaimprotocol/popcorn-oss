@@ -215,6 +215,11 @@
     if (!dx && !dy) return state;
     if (state.rect) state.rect = px({ x: state.rect.x + dx, y: state.rect.y + dy, w: state.rect.w, h: state.rect.h });
     if (Array.isArray(state.rects)) state.rects = state.rects.map((r) => px({ x: r.x + dx, y: r.y + dy, w: r.w, h: r.h }));
+    if (Array.isArray(state.selects)) {
+      state.selects = state.selects.map((s) => Object.assign({}, s, {
+        r: px({ x: s.r.x + dx, y: s.r.y + dy, w: s.r.w, h: s.r.h }),
+      }));
+    }
     return state;
   }
 
@@ -245,7 +250,15 @@
   }
 
   let cachedRects = [];
-  function refreshRects() { cachedRects = collectRects(); }
+  let cachedSelects = [];
+  let cachedPickers = [];
+  const selectElements = new Map(); // stable key -> select in THIS isolated frame
+  const pickerElements = new Map(); // stable key -> temporal input in THIS frame
+  function refreshRects() {
+    cachedRects = collectRects();
+    cachedSelects = collectSelects();
+    cachedPickers = collectPickers();
+  }
 
   // The top window's CSS viewport size (best-effort). The viewer maps a rect
   // through cr.height / vh, which is correct regardless of the remote device
@@ -280,6 +293,123 @@
     let k = focusKeyMap.get(el);
     if (!k) { k = FOCUS_KEY_FRAME + ':' + (++focusKeySeq); focusKeyMap.set(el, k); }
     return k;
+  }
+
+  // Native select proxies in the LOCAL viewer need their descriptors BEFORE the
+  // tap: iOS will only open a picker synchronously from a real local <select>
+  // receiving that gesture. Publish a bounded set of ordinary single-selects with
+  // stable keys, top-window geometry, labels, and option structure. The merged
+  // publisher enforces a 24 KiB wire budget and atomically drops the descriptor
+  // set if it cannot fit, so a normal country-sized list can use the platform
+  // picker without risking loss of keyboard state. Truly huge lists still fall
+  // back to the existing in-page searchable picker.
+  const MAX_NATIVE_SELECTS = 8;
+  const MAX_NATIVE_SELECT_OPTIONS = 250;
+  const MAX_NATIVE_SELECT_OPTIONS_TOTAL = 250;
+  const MAX_SELECT_TEXT = 120;
+
+  function plainSelect(el) {
+    return !!(el && el.tagName === 'SELECT' && !el.multiple && !el.disabled && el.size <= 1);
+  }
+
+  function optionHidden(opt) {
+    if (!opt) return true;
+    if (opt.hidden) return true;
+    const group = opt.parentElement;
+    if (group && group.tagName === 'OPTGROUP' && group.hidden) return true;
+    try { return opt.style && opt.style.display === 'none'; } catch (_) { return false; }
+  }
+
+  function collectSelects() {
+    const out = [];
+    const nextElements = new Map();
+    let optionBudget = MAX_NATIVE_SELECT_OPTIONS_TOTAL;
+    let els;
+    try { els = document.querySelectorAll('select'); } catch (_) { return out; }
+    for (const sel of els) {
+      if (out.length >= MAX_NATIVE_SELECTS || optionBudget <= 0) break;
+      if (!plainSelect(sel)) continue;
+      let r;
+      try { r = sel.getBoundingClientRect(); } catch (_) { continue; }
+      if (r.width <= 0 || r.height <= 0) continue;
+      const count = sel.options ? sel.options.length : 0;
+      if (count < 1 || count > MAX_NATIVE_SELECT_OPTIONS || count > optionBudget) continue;
+      const options = [];
+      let selectedIncluded = false;
+      for (let i = 0; i < count; i++) {
+        const opt = sel.options[i];
+        if (optionHidden(opt)) continue;
+        const group = opt.parentElement && opt.parentElement.tagName === 'OPTGROUP'
+          ? opt.parentElement
+          : null;
+        options.push({
+          i,
+          t: String(opt.textContent || opt.label || '').slice(0, MAX_SELECT_TEXT),
+          d: !!(opt.disabled || (group && group.disabled)),
+          g: group ? String(group.label || '').slice(0, MAX_SELECT_TEXT) : undefined,
+          gd: group ? !!group.disabled : undefined,
+        });
+        if (i === sel.selectedIndex) selectedIncluded = true;
+      }
+      // A hidden selected option cannot be represented faithfully by the local
+      // control. Fall back instead of opening a picker with the wrong checkmark.
+      if (!options.length || !selectedIncluded) continue;
+      const key = focusKeyFor(sel);
+      nextElements.set(key, sel);
+      out.push({
+        k: key,
+        r: px({ x: r.left, y: r.top, w: r.width, h: r.height }),
+        s: sel.selectedIndex,
+        a: String((sel.getAttribute && sel.getAttribute('aria-label')) || labelText(sel) || '').slice(0, MAX_SELECT_TEXT),
+        o: options,
+      });
+      optionBudget -= count;
+    }
+    selectElements.clear();
+    for (const [key, sel] of nextElements) selectElements.set(key, sel);
+    return out;
+  }
+
+  // Temporal inputs have the same mobile problem as <select>: Chromium's remote
+  // picker is not part of the useful framebuffer/touch surface. Publish a small
+  // structural descriptor so the viewer can place a real LOCAL date input over
+  // the streamed pixels and let iOS own the platform UI.
+  const MAX_NATIVE_PICKERS = 8;
+  const NATIVE_PICKER_TYPES = new Set(['date', 'time', 'datetime-local', 'month', 'week']);
+
+  function nativePickerInput(el) {
+    return !!(el && el.tagName === 'INPUT' && NATIVE_PICKER_TYPES.has(String(el.type || '').toLowerCase()) &&
+      !el.disabled && !el.readOnly);
+  }
+
+  function collectPickers() {
+    const out = [];
+    const nextElements = new Map();
+    let els;
+    try { els = document.querySelectorAll('input[type="date"],input[type="time"],input[type="datetime-local"],input[type="month"],input[type="week"]'); } catch (_) { return out; }
+    for (const input of els) {
+      if (out.length >= MAX_NATIVE_PICKERS) break;
+      if (!nativePickerInput(input)) continue;
+      let r;
+      try { r = input.getBoundingClientRect(); } catch (_) { continue; }
+      if (r.width <= 0 || r.height <= 0) continue;
+      const key = focusKeyFor(input);
+      nextElements.set(key, input);
+      out.push({
+        k: key,
+        t: String(input.type || '').toLowerCase(),
+        r: px({ x: r.left, y: r.top, w: r.width, h: r.height }),
+        v: String(input.value || '').slice(0, 64),
+        min: String(input.min || '').slice(0, 64),
+        max: String(input.max || '').slice(0, 64),
+        step: String(input.step || '').slice(0, 32),
+        req: !!input.required,
+        a: String((input.getAttribute && input.getAttribute('aria-label')) || labelText(input) || '').slice(0, MAX_SELECT_TEXT),
+      });
+    }
+    pickerElements.clear();
+    for (const [key, input] of nextElements) pickerElements.set(key, input);
+    return out;
   }
 
   // A <select> change reflows the form and can reveal a text field right under
@@ -484,21 +614,21 @@
     } catch (_) { return { ol: 0, olw: 0 }; }
   }
 
-  // Whether the page has NO usable viewport meta. Real mobile browsers lay such
-  // pages out at a ~980px desktop width scaled to fit (not reflowed to the device
-  // width); the viewer replicates that. A responsive page sets width=device-width;
-  // a fixed-width or missing width means the desktop fallback applies.
-  function noViewportMeta() {
+  // Whether the page needs the legacy ~980px desktop layout viewport used by
+  // mobile Safari for pages that do not declare mobile viewport behaviour.
+  // Safari also infers a device-sized width from initial-scale when width is
+  // omitted, so width=device-width is not the only usable declaration.
+  function declaredLayoutViewportWidth() {
     try {
       const metas = document.getElementsByTagName('meta');
       for (let i = 0; i < metas.length; i++) {
         if ((metas[i].name || '').toLowerCase() === 'viewport') {
-          const c = (metas[i].getAttribute('content') || '').toLowerCase();
-          return !/width\s*=\s*device-width/.test(c);
+          const c = metas[i].getAttribute('content') || '';
+          return globalThis.__POPCORN_VIEWPORT_META__.declaredLayoutWidth(c);
         }
       }
-      return true;
-    } catch (_) { return false; }
+      return 980;
+    } catch (_) { return null; }
   }
 
   // --- Sensitive-field detection --------------------------------------------
@@ -574,12 +704,14 @@
     const vp = topViewportSize();
     // rects/vw/vh ride on every message (even editable:false) so the viewer can
     // hit-test taps and dismiss reliably regardless of focus state.
-    const base = { vw: vp.w, vh: vp.h, rects: cachedRects };
+    const base = { vw: vp.w, vh: vp.h, rects: cachedRects, selects: cachedSelects, pickers: cachedPickers };
     // sw (content width, for fit-to-width) and pid (per-document id, reset
     // fit-mode on navigation) only make sense from the TOP document — a per-frame
     // FOCUS_KEY_FRAME from a subframe would otherwise look like a navigation.
     if (IS_TOP) {
-      base.sw = docScrollWidth(); base.pid = FOCUS_KEY_FRAME; base.novp = noViewportMeta();
+      const viewportWidth = declaredLayoutViewportWidth();
+      base.sw = docScrollWidth(); base.pid = FOCUS_KEY_FRAME; base.novp = viewportWidth !== null;
+      if (viewportWidth !== null) base.vpw = viewportWidth;
       // sb: distance to the scroll bottom — drives the viewer's keyboard-
       // occlusion pan (see docScrollBottom). 0 is the load-bearing value.
       base.sb = docScrollBottom();
@@ -851,6 +983,60 @@
     emit(state);
   }
 
+  // A choice originates in a real <select> in the LOCAL viewer. The background
+  // routes only to the active tab/frame that most recently published this key;
+  // revalidate everything again here because the page may have replaced the
+  // element or disabled an option while the native picker was open.
+  try {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (!message) return false;
+      if (message.type === 'PCN_PICKER_CHOICE') {
+        const key = message.key;
+        const value = message.value;
+        const input = typeof key === 'string' ? pickerElements.get(key) : null;
+        if (!input || !input.isConnected || !nativePickerInput(input) ||
+            typeof value !== 'string' || value.length > 64) {
+          if (sendResponse) sendResponse({ ok: false });
+          return false;
+        }
+        const previous = input.value;
+        input.value = value;
+        let valid = input.value === value;
+        try { valid = valid && input.checkValidity(); } catch (_) {}
+        if (!valid) {
+          input.value = previous;
+          if (sendResponse) sendResponse({ ok: false });
+          return false;
+        }
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        report(deepActiveElement(), true);
+        if (sendResponse) sendResponse({ ok: true });
+        return false;
+      }
+      if (message.type !== 'PCN_SELECT_CHOICE') return false;
+      const key = message.key;
+      const index = message.index;
+      const sel = typeof key === 'string' ? selectElements.get(key) : null;
+      if (!sel || !sel.isConnected || !plainSelect(sel) || !Number.isInteger(index) || index < 0 || index >= sel.options.length) {
+        if (sendResponse) sendResponse({ ok: false });
+        return false;
+      }
+      const opt = sel.options[index];
+      const group = opt && opt.parentElement && opt.parentElement.tagName === 'OPTGROUP' ? opt.parentElement : null;
+      if (!opt || optionHidden(opt) || opt.disabled || (group && group.disabled)) {
+        if (sendResponse) sendResponse({ ok: false });
+        return false;
+      }
+      sel.selectedIndex = index;
+      sel.dispatchEvent(new Event('input', { bubbles: true }));
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      report(deepActiveElement(), true);
+      if (sendResponse) sendResponse({ ok: true });
+      return false;
+    });
+  } catch (_) {}
+
   window.addEventListener('message', (e) => {
     const m = e && e.data;
     if (!m) return;
@@ -920,7 +1106,7 @@
   // wedged up on a field that no longer exists after the remote page changes.
   if (IS_TOP) {
     window.addEventListener('pagehide', () => {
-      try { emit({ editable: false, rects: [] }); } catch (_) {}
+      try { emit({ editable: false, rects: [], selects: [], pickers: [] }); } catch (_) {}
     });
   }
 
@@ -985,7 +1171,8 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'src', 'width', 'height'],
+      attributeFilter: ['class', 'style', 'hidden', 'aria-hidden', 'src', 'width', 'height',
+        'type', 'value', 'min', 'max', 'step', 'required', 'disabled', 'readonly'],
     });
   } catch (_) {}
 

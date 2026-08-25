@@ -51,6 +51,9 @@ const FIT_TRIGGER = 1.15; // content must overflow the viewport by >15% to fit
 // phone (and the whole page is reachable — its mobile-reflow layout often can't
 // be touch-scrolled). This is browser-standard behavior, not a heuristic.
 const NO_VIEWPORT_W = 980;
+function declaredViewportWidth(state) {
+  return (state && Number.isFinite(state.vpw) && state.vpw > 0) ? state.vpw : NO_VIEWPORT_W;
+}
 // The reload a resize triggers can land up to ~3s later, so the settle window
 // must be longer than that or the reload's pid bump reads as a real nav.
 const FIT_SETTLE_MS = 4500;
@@ -551,9 +554,10 @@ export function createFit({
         // when the replacement document has the same no-viewport signature.
         // Responsive destinations still leave fit immediately, so the previous
         // page's desktop layout cannot persist into a normal mobile page.
-        if (state.novp && state.vw > 0 && window.innerWidth < NO_VIEWPORT_W) {
-          if (fitLayoutW !== NO_VIEWPORT_W) {
-            enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false, true, true);
+        const viewportWidth = declaredViewportWidth(state);
+        if (state.novp && state.vw > 0 && window.innerWidth < viewportWidth) {
+          if (fitLayoutW !== viewportWidth) {
+            enterFit(viewportWidth, state.sw || viewportWidth, false, true, true);
           } else {
             dbg('fit retained across no-viewport navigation');
           }
@@ -561,7 +565,7 @@ export function createFit({
           exitFit();
         }
       }
-    } else if (state.novp && state.vw > 0 && window.innerWidth < NO_VIEWPORT_W) {
+    } else if (state.novp && state.vw > 0 && window.innerWidth < declaredViewportWidth(state)) {
       // No viewport meta → replicate the browser's ~980px desktop-fallback layout
       // scaled to fit (see NO_VIEWPORT_W). Open ZOOMED OUT (whole page) like mobile
       // Safari shows it; the whole page is reachable and the zoom button reads in.
@@ -573,7 +577,8 @@ export function createFit({
       // the view already sits at readable zoom, so tapping a field no longer frames
       // it. Blur is a framebuffer-DENSITY problem, not a zoom-level one; fixing it
       // here just traded one complaint for two.
-      enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false, true, true);
+      const viewportWidth = declaredViewportWidth(state);
+      enterFit(viewportWidth, state.sw || viewportWidth, false, true, true);
     } else if (FIXEDW > 0 && state.vw > 0 && overflowsViewport(state)) {
       // A "Pinterest-like" page: RESPONSIVE (it declares width=device-width, so the
       // novp branch above passed it over) yet its content still overflows the phone.

@@ -164,6 +164,11 @@ const FRAME_STALE_MS = 6000;
 // Ceiling on the MERGED rect list (content.js MAX_RECTS is per frame). Keeps the focus message well inside
 // the hub's per-frame limit; a tap outside these falls back to the viewer's optimistic path.
 const MERGED_MAX_RECTS = 120;
+// Local native-select proxies are a usability enhancement, never allowed to
+// crowd the keyboard/focus state out of the bounded /kbd frame. Content scripts
+// already cap options per frame; this is the cross-frame ceiling.
+const MERGED_MAX_SELECTS = 12;
+const MERGED_MAX_PICKERS = 12;
 const kbdFrames = new Map(); // "tabId:frameId" -> { tabId, state, ts }
 
 // The tab whose frames we publish. Ownership is claimed by a top-frame report
@@ -233,9 +238,13 @@ try {
 function mergeFrames() {
   const now = Date.now();
   let editable = false, rect = null, hints = null, sync = null, focusKey = null;
-  let vw = 0, vh = 0, sw = 0, sb = -1, sc = null, pid = null, origin = null, novp = false, ol = 0, olw = 0, xf = null;
+  let vw = 0, vh = 0, sw = 0, sb = -1, sc = null, pid = null, origin = null, novp = false, vpw = 0, ol = 0, olw = 0, xf = null;
   const rects = [];
+  const selects = [];
+  const pickers = [];
   let rtrunc = false; // merged list hit MERGED_MAX_RECTS -> the viewer must not read a miss as off-field
+  let strunc = false;
+  let ptrunc = false;
   // Some frame reported that it HAS editable fields but cannot place them yet
   // (content.js emitBlind: a cross-origin frame still waiting to be positioned).
   // Same meaning as rtrunc for the viewer — our rect coverage is known-incomplete,
@@ -253,6 +262,18 @@ function mergeFrames() {
       for (const r of s.rects) {
         if (rects.length >= MERGED_MAX_RECTS) { rtrunc = true; break; }
         rects.push(r);
+      }
+    }
+    if (Array.isArray(s.selects)) {
+      for (const descriptor of s.selects) {
+        if (selects.length >= MERGED_MAX_SELECTS) { strunc = true; break; }
+        selects.push(descriptor);
+      }
+    }
+    if (Array.isArray(s.pickers)) {
+      for (const descriptor of s.pickers) {
+        if (pickers.length >= MERGED_MAX_PICKERS) { ptrunc = true; break; }
+        pickers.push(descriptor);
       }
     }
     // The focused field comes from the one frame reporting editable:true. Only
@@ -284,6 +305,7 @@ function mergeFrames() {
       // forwarding paths or query strings (which may contain OAuth credentials).
       if (typeof s.origin === 'string' && s.origin) origin = s.origin;
       if (typeof s.novp === 'boolean') novp = s.novp; // no-viewport-meta → desktop-fallback fit
+      if (typeof s.vpw === 'number' && s.vpw > 0) vpw = s.vpw;
       // ol: left-overflow px (content.js leftOverflow) — content sw cannot see.
       // This merge is a WHITELIST, so a field the content script adds is DROPPED
       // unless it is named here. That is how an earlier version of this signal
@@ -301,8 +323,10 @@ function mergeFrames() {
       if (Array.isArray(s.xf)) xf = s.xf;
     }
   }
-  const merged = { editable, rects, vw, vh };
+  const merged = { editable, rects, selects, pickers, vw, vh };
   if (rtrunc) merged.rtrunc = true; // whitelist field, like every other one below
+  if (strunc) merged.strunc = true;
+  if (ptrunc) merged.ptrunc = true;
   if (blind) merged.blind = true;   // ditto — an unwhitelisted field is dropped here
   if (sw > 0) merged.sw = sw;
   if (sb >= 0) merged.sb = sb; // 0 must survive the merge — see the whitelist note above
@@ -310,11 +334,91 @@ function mergeFrames() {
   if (pid) merged.pid = pid;
   if (origin) merged.origin = origin;
   if (novp) merged.novp = true;
+  if (vpw > 0) merged.vpw = vpw;
   if (ol > 0) merged.ol = ol;
   if (olw > 0) merged.olw = olw;
   if (xf && xf.length) merged.xf = xf;
   if (editable) { merged.rect = rect; merged.hints = hints; merged.sync = sync; merged.focusKey = focusKey; }
   return merged;
+}
+
+// A viewer may choose only an option in the state we are CURRENTLY advertising.
+// Do not apply FRAME_STALE_MS here: a static form can remain valid indefinitely
+// without a mutation/scroll/focus report, while kbdLastState is deliberately
+// re-sent to viewers. Rejecting its choice after six seconds made an offered
+// native picker unable to commit. Navigation clears/replaces the advertised
+// state, the per-document random key expires naturally, and content.js performs
+// the final live-element/disabled check at commit time.
+function routeSelectChoice(choice) {
+  if (!choice || typeof choice.key !== 'string' || choice.key.length < 1 || choice.key.length > 128 ||
+      !Number.isInteger(choice.index) || choice.index < 0 || choice.index > 65535 || kbdActiveTab < 0) return;
+  const advertised = Array.isArray(kbdLastState && kbdLastState.selects)
+    ? kbdLastState.selects.find((s) => s && s.k === choice.key)
+    : null;
+  const advertisedOption = advertised && Array.isArray(advertised.o)
+    ? advertised.o.find((o) => o && o.i === choice.index)
+    : null;
+  if (!advertisedOption || advertisedOption.d) return;
+  for (const [mapKey, entry] of kbdFrames) {
+    if (entry.tabId !== kbdActiveTab) continue;
+    const list = Array.isArray(entry.state && entry.state.selects) ? entry.state.selects : [];
+    const descriptor = list.find((s) => s && s.k === choice.key);
+    if (!descriptor) continue;
+    const option = Array.isArray(descriptor.o)
+      ? descriptor.o.find((o) => o && o.i === choice.index)
+      : null;
+    if (!option || option.d) return;
+    const frameId = Number(mapKey.slice(mapKey.indexOf(':') + 1));
+    try {
+      chrome.tabs.sendMessage(
+        kbdActiveTab,
+        { type: 'PCN_SELECT_CHOICE', key: choice.key, index: choice.index },
+        { frameId },
+        () => { void chrome.runtime.lastError; },
+      );
+    } catch (_) {}
+    return;
+  }
+}
+
+const PICKER_VALUE_PATTERNS = {
+  date: /^\d{4,6}-\d{2}-\d{2}$/,
+  time: /^(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?$/,
+  'datetime-local': /^\d{4,6}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?$/,
+  month: /^\d{4,6}-(?:0[1-9]|1[0-2])$/,
+  week: /^\d{4,6}-W(?:0[1-9]|[1-4]\d|5[0-3])$/,
+};
+
+function validPickerValue(type, value) {
+  return value === '' || !!(PICKER_VALUE_PATTERNS[type] && PICKER_VALUE_PATTERNS[type].test(value));
+}
+
+// A temporal value is accepted only for a picker descriptor that the active page is
+// still advertising. The content script performs the final live-element and
+// min/max/step validity check before dispatching input/change.
+function routePickerChoice(choice) {
+  if (!choice || typeof choice.key !== 'string' || choice.key.length < 1 || choice.key.length > 128 ||
+      typeof choice.value !== 'string' || choice.value.length > 64 || kbdActiveTab < 0) return;
+  const advertised = Array.isArray(kbdLastState && kbdLastState.pickers)
+    ? kbdLastState.pickers.find((p) => p && p.k === choice.key)
+    : null;
+  if (!advertised || !validPickerValue(advertised.t, choice.value)) return;
+  for (const [mapKey, entry] of kbdFrames) {
+    if (entry.tabId !== kbdActiveTab) continue;
+    const list = Array.isArray(entry.state && entry.state.pickers) ? entry.state.pickers : [];
+    const descriptor = list.find((p) => p && p.k === choice.key && p.t === advertised.t);
+    if (!descriptor) continue;
+    const frameId = Number(mapKey.slice(mapKey.indexOf(':') + 1));
+    try {
+      chrome.tabs.sendMessage(
+        kbdActiveTab,
+        { type: 'PCN_PICKER_CHOICE', key: choice.key, value: choice.value },
+        { frameId },
+        () => { void chrome.runtime.lastError; },
+      );
+    } catch (_) {}
+    return;
+  }
 }
 
 function kbdClearPing() {
@@ -380,13 +484,15 @@ function kbdConnect() {
   sock.onclose = onDown;
   sock.onerror = onDown;
 
-  // Viewers are the only consumers; the extension ignores anything inbound.
-  // The hub is a fan-out for viewers, so the publisher receives only the two
-  // control messages addressed to it: the dialog-bridge token and the mirror flag.
+  // Viewers consume focus state. The publisher receives only explicitly
+  // addressed control messages: bridge token, mirror flag, and a native-select
+  // choice that the background revalidates against its active-frame cache.
   sock.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
       if (msg && typeof msg.bridgeToken === 'string') dialogBridgeToken = msg.bridgeToken;
+      if (msg && msg.selectChoice) routeSelectChoice(msg.selectChoice);
+      if (msg && msg.pickerChoice) routePickerChoice(msg.pickerChoice);
       if (msg && typeof msg.mirror === 'boolean' && msg.mirror !== kbdMirror) {
         kbdMirror = msg.mirror;
         // Republish immediately: turning mirroring ON has to deliver the focused
@@ -432,7 +538,19 @@ function kbdWire(state) {
 
   // Over budget. Shed in order of what the viewer can most afford to lose.
   out = Object.assign({}, out);
-  // 1. Rects are a tap hit-test OPTIMIZATION with a documented fallback (the
+  // 1. Native controls have complete remote fallbacks. Drop each descriptor set
+  //    atomically; a partial option list or stale picker geometry is incorrect.
+  if (Array.isArray(out.selects) && out.selects.length) {
+    out.selects = [];
+    out.strunc = true;
+    s = JSON.stringify(out);
+  }
+  if (wireBytes(s) > MERGED_MAX_BYTES && Array.isArray(out.pickers) && out.pickers.length) {
+    out.pickers = [];
+    out.ptrunc = true;
+    s = JSON.stringify(out);
+  }
+  // 2. Rects are a tap hit-test OPTIMIZATION with a documented fallback (the
   //    viewer's optimistic raise), so halve them until it fits. rtrunc tells the
   //    viewer a miss must not be read as "not a field".
   if (Array.isArray(out.rects)) {
@@ -442,7 +560,7 @@ function kbdWire(state) {
       s = JSON.stringify(out);
     }
   }
-  // 2. Then the mirror seed text. DROPPED, never truncated: the viewer diffs edits
+  // 3. Then the mirror seed text. DROPPED, never truncated: the viewer diffs edits
   //    against this value, and a silently shortened one would desync every keystroke.
   //    Without it mirroring just doesn't seed, and the next report can seed again.
   if (wireBytes(s) > MERGED_MAX_BYTES && out.sync && typeof out.sync.val === 'string') {
@@ -451,7 +569,7 @@ function kbdWire(state) {
     out.sync = sync;
     s = JSON.stringify(out);
   }
-  // 3. Still over: the remaining bulk is page-controlled hint strings on the focused
+  // 4. Still over: the remaining bulk is page-controlled hint strings on the focused
   //    field. Losing the state entirely is worse than losing the hints, so send the
   //    field without them rather than let the hub drop the frame.
   if (wireBytes(s) > MERGED_MAX_BYTES && out.hints) {

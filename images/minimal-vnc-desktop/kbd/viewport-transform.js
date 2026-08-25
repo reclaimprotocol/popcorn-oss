@@ -37,7 +37,7 @@ const LAYER_IDLE_MS = 200;
 export function createViewportTransform({
   getScreenElement, getCurrentRect, getCurrentViewport, getLayoutResizeMode,
   getZoomedToField, positionMirrorBar, getReadableZoom, onZoomSettled, getFitMode,
-  onZoomFreeze,
+  onZoomFreeze, onTransform,
 }) {
   // Edge-triggered so the per-frame compose doesn't spam the (rfb-touching) setter.
   let zoomFrozen = false;
@@ -115,6 +115,7 @@ export function createViewportTransform({
     if (tx !== 0 || ty !== 0) parts.push('translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)');
     if (zoomScale !== 1) parts.push('scale(' + zoomScale.toFixed(4) + ')');
     screen.style.transform = parts.join(' ');
+    if (onTransform) onTransform();
     restoreCanvasInterpolation();
     // Any zoom away from 1:1 must freeze the remote framebuffer size, because
     // noVNC sizes it from this element's (now transformed) bounding rect. Reported
