@@ -293,6 +293,23 @@ test('the viewer\'s scale report is relayed UP to the embedder', () => {
   assert.ok(h.parentPosted.some((m) => m.type === 'POPCORN_SCALE'), 'and keeps it travelling up');
 });
 
+test('boot diagnostics are emitted locally and relayed through a portal', () => {
+  const h = makeHostWindow({ top: false, ...COMPLIANT });
+  const host = h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test', relay: true });
+  const boots = [];
+  const errors = [];
+  host.on('boot', (d) => boots.push(d));
+  host.on('booterror', (d) => errors.push(d));
+
+  h.fromChild({ type: 'POPCORN_BOOT', unsupported: null, ua: 'viewer-ua' });
+  h.fromChild({ type: 'POPCORN_BOOT_ERROR', msg: 'SyntaxError', src: 'liveview.html', line: 206 });
+
+  assert.equal(boots.length, 1, 'the embedding page can observe that the viewer page ran');
+  assert.equal(errors.length, 1, 'the embedding page can observe module evaluation failures');
+  assert.deepEqual(h.parentPosted.map((m) => m.type), ['POPCORN_BOOT', 'POPCORN_BOOT_ERROR'],
+    'both diagnostics continue through a relay frame');
+});
+
 test('keyboard health is relayed through a portal hop', () => {
   const h = makeHostWindow({ top: false, ...COMPLIANT });
   const host = h.PopcornHost.attach(h.iframe, { childOrigin: 'https://pod.test', relay: true });
