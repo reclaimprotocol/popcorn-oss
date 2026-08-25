@@ -1,6 +1,16 @@
 node_modules/
 .appium/
-artifacts/
+# Keep generated reports and logs local, but retain the compact touch videos used
+# as review evidence for each published baseline/candidate pair.
+artifacts/*
+!artifacts/*/
+artifacts/*/*
+!artifacts/*/baseline/
+!artifacts/*/candidate/
+artifacts/*/baseline/*
+artifacts/*/candidate/*
+!artifacts/*/baseline/screen-touches.mp4
+!artifacts/*/candidate/screen-touches.mp4
 environments/local.json
 environments/*.local.json
 *.log
