@@ -1,0 +1,30 @@
+{
+  "name": "popcorn-liveview-mobile-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.5.1",
+  "engines": {
+    "node": "24.5.0",
+    "npm": ">=11.5.1 <12"
+  },
+  "scripts": {
+    "setup:ios": "node src/setup-ios.mjs",
+    "doctor": "node src/cli.mjs doctor",
+    "pair": "node src/cli.mjs pair",
+    "sequence": "node src/cli.mjs sequence",
+    "parallel": "node src/cli.mjs parallel",
+    "report": "node src/cli.mjs report",
+    "dashboard": "node src/dashboard.mjs",
+    "test": "node --test test/*.test.mjs",
+    "run": "node src/cli.mjs run",
+    "judge": "node src/cli.mjs judge",
+    "compare": "node src/cli.mjs compare"
+  },
+  "devDependencies": {
+    "appium": "3.6.0",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0",
+    "webdriverio": "9.29.1"
+  }
+}

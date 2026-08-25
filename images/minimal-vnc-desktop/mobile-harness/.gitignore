@@ -1,0 +1,6 @@
+node_modules/
+.appium/
+artifacts/
+environments/local.json
+environments/*.local.json
+*.log

@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "name": "replace-with-environment-name",
+  "defaultSimulator": "primary",
+  "simulators": {
+    "primary": {
+      "device": {
+        "udid": "REPLACE_WITH_SIMULATOR_UDID",
+        "name": "iPhone model",
+        "platformVersion": "iOS version"
+      },
+      "appiumPort": 4723,
+      "wdaLocalPort": 8100,
+      "mjpegServerPort": 9100,
+      "derivedDataPath": "/tmp/popcorn-wda-primary"
+    }
+  },
+  "fixtures": {
+    "baseUrl": "http://fixture-host.example/mobile-harness/fixture/"
+  },
+  "popcorn": {
+    "sessionProvider": {
+      "ssh": "user@popcorn-host.example",
+      "controlPlaneUrl": "http://127.0.0.1:8081",
+      "adminTokenEnv": "POPCORN_ADMIN_TOKEN",
+      "cluster": "local",
+      "region": "local"
+    },
+    "liveview": {
+      "gatewayOrigin": "http://popcorn-host.example:8080",
+      "hostPage": "http://fixture-host.example/host/test-host.html",
+      "hostParams": {
+        "nest": 1,
+        "magnify": 1,
+        "panel": 0
+      }
+    }
+  },
+  "defaults": {
+    "settleMs": 7000,
+    "candidateSettleMs": 10000,
+    "recordingLeadInMs": 250,
+    "nativeOpenUrl": true
+  },
+  "healthChecks": [
+    {
+      "name": "fixture host",
+      "url": "http://fixture-host.example/mobile-harness/fixture/",
+      "acceptStatuses": [200]
+    },
+    {
+      "name": "Popcorn control plane",
+      "via": "ssh",
+      "ssh": "user@popcorn-host.example",
+      "url": "http://127.0.0.1:8081/health",
+      "acceptStatuses": [200]
+    },
+    {
+      "name": "Popcorn gateway",
+      "url": "http://popcorn-host.example:8080/",
+      "acceptStatuses": [200, 404]
+    }
+  ]
+}
