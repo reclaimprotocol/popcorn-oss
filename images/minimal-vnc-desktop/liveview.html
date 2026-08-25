@@ -159,6 +159,72 @@
           'This browser is too old to run the live viewer. Update your OS/browser, or open this link in the latest Safari or Chrome.'
         );
       }
+
+      // Report that the page ran before the viewer module completes its handshake.
+      try {
+        parent.postMessage({
+          type: 'POPCORN_BOOT',
+          unsupported: window.__viewerUnsupported || null,
+          ua: navigator.userAgent
+        }, '*');
+      } catch (e) { /* no parent, or a parent that refuses '*' */ }
+
+      // Surface module evaluation failures to cross-origin embedders.
+      if (window.addEventListener) {
+        window.addEventListener('error', function (event) {
+          try {
+            parent.postMessage({
+              type: 'POPCORN_BOOT_ERROR',
+              msg: String((event && event.message) || ''),
+              src: String((event && event.filename) || ''),
+              line: (event && event.lineno) || 0
+            }, '*');
+          } catch (e) { /* see above */ }
+        });
+      }
+
+      // Reload a stalled viewer a bounded number of times; unsupported browsers skip it.
+      var BOOT_DEADLINE_MS = 6000;
+      var BOOT_MAX_RETRIES = 2;
+      var pcnrMatch = /[?&]__pcnr=(\d+)/.exec(location.search);
+      var bootAttempt = pcnrMatch ? (parseInt(pcnrMatch[1], 10) || 0) : 0;
+
+      // Preserve viewer parameters while updating the retry counter.
+      function bootUrlForAttempt(n) {
+        var base = location.href.split('#')[0].split('?')[0];
+        var qs = location.search.replace(/^\?/, '');
+        var keep = [];
+        if (qs) {
+          var parts = qs.split('&');
+          for (var i = 0; i < parts.length; i++) {
+            if (parts[i] && parts[i].indexOf('__pcnr=') !== 0) keep.push(parts[i]);
+          }
+        }
+        if (n > 0) keep.push('__pcnr=' + n);
+        return base + (keep.length ? '?' + keep.join('&') : '') + location.hash;
+      }
+
+      if (!window.__viewerUnsupported && window.setTimeout) {
+        setTimeout(function () {
+          if (window.__viewerBooted) return;
+          var willRetry = bootAttempt < BOOT_MAX_RETRIES;
+          try {
+            parent.postMessage({
+              type: 'POPCORN_BOOT_STALL', attempt: bootAttempt, retrying: willRetry
+            }, '*');
+          } catch (e) { /* no parent, or a parent that refuses '*' */ }
+          if (!willRetry) {
+            window.__viewerOverlay(
+              'Live view couldn\u2019t start',
+              'The viewer didn\u2019t finish loading. Check your connection and try again.',
+              function () { location.replace(bootUrlForAttempt(0)); }
+            );
+            return;
+          }
+          // replace(), not assign(): a failed attempt must not become a history entry.
+          location.replace(bootUrlForAttempt(bootAttempt + 1));
+        }, BOOT_DEADLINE_MS);
+      }
     })();
   </script>
 

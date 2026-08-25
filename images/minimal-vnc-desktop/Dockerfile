@@ -271,20 +271,24 @@ RUN set -eux; \
         --minify-whitespace --minify-syntax \
         --outfile=/usr/share/novnc/viewer.bundle.js; \
     rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock; \
-    # Content-hash the bundle so novnc-proxy can serve it immutably (max-age=1y):
-    # a content change yields a NEW url, so a reconnect/reopen skips re-downloading
-    # it entirely — with zero staleness risk (the reason liveview.html itself stays
-    # no-store, pointing at whatever hash is current). Deterministic: the hash is of
-    # esbuild's deterministic output. Rewrite the <script src> to the hashed name.
-    bundle_hash="$(sha256sum /usr/share/novnc/viewer.bundle.js | cut -c1-12)"; \
-    mv /usr/share/novnc/viewer.bundle.js "/usr/share/novnc/viewer-${bundle_hash}.bundle.js"; \
-    sed -i "s#src=\"viewer\.bundle\.js\"#src=\"viewer-${bundle_hash}.bundle.js\"#" \
-        /usr/share/novnc/liveview.html; \
-    # Precompress the (hashed) bundle: it's the cold-start bottleneck over the
-    # tunnel and novnc-proxy serves the .gz via Accept-Encoding negotiation. -n
-    # drops the name/mtime from the gzip header so the output is deterministic;
-    # -k keeps the raw file for clients without gzip.
-    gzip -9 -n -k -f "/usr/share/novnc/viewer-${bundle_hash}.bundle.js"
+    # Inline the bundle to avoid a second critical request before the viewer handshake.
+    # Reject a bundle that could close its enclosing script element.
+    if grep -qF '</script' /usr/share/novnc/viewer.bundle.js; then \
+        echo "bundle contains '</script' — would terminate the inline element early" >&2; exit 1; \
+    fi; \
+    awk 'FNR==NR { js = js $0 ORS; next } \
+         /<script type="module" src="viewer\.bundle\.js"><\/script>/ { \
+             print "  <script type=\"module\">"; printf "%s", js; print "  </script>"; next } \
+         { print }' \
+        /usr/share/novnc/viewer.bundle.js /usr/share/novnc/liveview.html \
+        > /usr/share/novnc/liveview.html.new; \
+    # Assert the bundle was spliced into the page.
+    grep -q 'BUILD_TAG' /usr/share/novnc/liveview.html.new; \
+    ! grep -q 'src="viewer.bundle.js"' /usr/share/novnc/liveview.html.new; \
+    mv /usr/share/novnc/liveview.html.new /usr/share/novnc/liveview.html; \
+    rm -f /usr/share/novnc/viewer.bundle.js; \
+    # The proxy serves only precompressed siblings; keep a deterministic gzip variant.
+    gzip -9 -n -k -f /usr/share/novnc/liveview.html
 
 COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress
 COPY --chown=kernel:kernel extensions/proxy /home/kernel/extensions/proxy
@@ -298,10 +302,9 @@ RUN set -eux; \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
         /usr/share/novnc/liveview.html \
+        /usr/share/novnc/liveview.html.gz \
         /usr/share/novnc/kbd-autofocus.js \
-        /usr/share/novnc/viewer.js \
-        /usr/share/novnc/viewer-*.bundle.js \
-        /usr/share/novnc/viewer-*.bundle.js.gz; \
+        /usr/share/novnc/viewer.js; \
     find /usr/share/novnc/kbd /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 USER kernel

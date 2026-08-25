@@ -458,6 +458,9 @@ window.addEventListener('beforeunload', () => {
 // unconditionally (not just when ?parentOrigin= is set) so a host can discover a
 // viewer that wasn't configured for it and log the misconfiguration loudly rather
 // than silently mis-driving the keyboard.
+// Cancel the boot watchdog once the viewer module has evaluated.
+window.__viewerBooted = true;
+
 sayHello({
   magnify,
   vk: !!navigator.virtualKeyboard,

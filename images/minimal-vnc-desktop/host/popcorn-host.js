@@ -685,6 +685,9 @@
             emit('hello', d);
             reportLayout('hello');
             break;
+          // The preflight ran; the full viewer handshake may still fail.
+          case 'POPCORN_BOOT': emit('boot', d); break;
+          case 'POPCORN_BOOT_ERROR': emit('booterror', d); break;
           case 'POPCORN_VIEWPORT': emit('viewport', d); break;
           case 'POPCORN_CONNECT': emit('connect', d); break;
           case 'POPCORN_FRAME':
@@ -847,7 +850,7 @@
     }
 
     return {
-      /** Subscribe to viewer events: hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|health|scale|layout|rtt */
+      /** Subscribe to viewer events: boot|booterror|hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|health|scale|layout|rtt */
       on: function (name, fn) {
         (listeners[name] || (listeners[name] = [])).push(fn);
         return this;
