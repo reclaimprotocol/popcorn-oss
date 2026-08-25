@@ -184,7 +184,13 @@
       }
 
       // Reload a stalled viewer a bounded number of times; unsupported browsers skip it.
-      var BOOT_DEADLINE_MS = 6000;
+      // 10s, not something tighter. Worst realistic cold boot is ~114KB gzip over a bad
+      // 3G link (~2.5s) plus parsing ~412KB of JS on a slow phone (~1-2s). A deadline
+      // near that budget would reload devices that were merely SLOW — and since each
+      // reload restarts the download, that makes those sessions strictly worse, not
+      // better. Three attempts at 10s still gives up ~22s before the ~52s stream
+      // timeout that this replaces.
+      var BOOT_DEADLINE_MS = 10000;
       var BOOT_MAX_RETRIES = 2;
       var pcnrMatch = /[?&]__pcnr=(\d+)/.exec(location.search);
       var bootAttempt = pcnrMatch ? (parseInt(pcnrMatch[1], 10) || 0) : 0;
