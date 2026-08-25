@@ -396,9 +396,19 @@ func staticHandler(root string, ready readyGate) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		// Build mtimes are fixed for reproducibility, so unversioned viewer assets must
-		// not be revalidated from a stale Last-Modified value. liveview.html contains
-		// the viewer bundle and must always be fetched fresh.
+		// The content-hashed viewer bundle (viewer-<hash>.bundle.js) is safe to cache
+		// forever: a content change yields a new filename, so the browser can never
+		// serve stale logic. Caching it immutably lets a reconnect/reopen skip the
+		// re-download entirely (the win over plain no-store). The .gz sibling served
+		// below inherits this via the same clean path.
+		//
+		// Everything else in the viewer shell (HTML + the raw input/keyboard logic)
+		// changes constantly and is NOT content-hashed. The Dockerfile pins these
+		// files' mtimes to a fixed epoch for reproducible builds, so their
+		// Last-Modified never changes and a browser would 304 to its stale cached
+		// copy forever — even across rebuilds. Force a fresh fetch so a device always
+		// runs the current logic. In particular liveview.html MUST stay no-store: it
+		// carries the current bundle hash, so it has to be re-read every load.
 		base := path.Base(clean)
 		switch {
 		case strings.HasPrefix(base, "viewer-") && strings.HasSuffix(base, ".bundle.js"):
