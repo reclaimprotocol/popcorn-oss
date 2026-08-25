@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Sticky header modal input cycle</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui,sans-serif; color: #172554; }
+    * { box-sizing: border-box; }
+    html,body { margin: 0; min-height: 1750px; background: #e0f2fe; }
+    body { overflow-x: hidden; }
+    header { position: fixed; z-index: 50; inset: 0 0 auto; height: 76px; display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: #172554; color: white; font-weight: 950; box-shadow: 0 3px 14px #0f172a55; }
+    header .title { flex: 1; font-size: 14px; } header small { display: block; color: #bfdbfe; font-size: 10px; margin-top: 4px; }
+    button { border: 0; border-radius: 10px; font: 900 12px system-ui,sans-serif; }
+    #open { width: 64px; height: 45px; background: #a855f7; color: white; } #dismiss { width: 64px; height: 45px; background: #64748b; color: white; }
+    main { padding: 104px 14px 180px; }
+    .hero { height: 360px; padding: 22px; border-radius: 20px; background: linear-gradient(150deg,#bfdbfe,#fef3c7); font-weight: 850; line-height: 1.35; }
+    .story { margin-top: 20px; min-height: 980px; padding: 22px; border: 4px dashed #0ea5e9; border-radius: 20px; background: white; }
+    .story h2 { margin-top: 0; } .story p { margin: 42px 0; line-height: 1.5; font-weight: 700; }
+    #phase { position: fixed; z-index: 60; top: 10px; left: 10px; width: 42px; height: 42px; display: grid; place-items: center; border: 3px solid white; border-radius: 9px; color: white; font: 900 10px ui-monospace,monospace; background: #2b005f; }
+    #phase[data-phase="modal"] { background: #00cfff; color: #082f49; } #phase[data-phase="focus"] { background: #ff00d8; } #phase[data-phase="typed"] { background: #b5ff00; color: #111827; } #phase[data-phase="dismissed"] { background: #f97316; color: #431407; } #phase[data-phase="complete"] { background: #00d084; color: #082f1a; }
+    #modal { position: fixed; z-index: 45; inset: 88px 12px auto; min-height: 420px; display: none; padding: 18px 14px; border: 4px solid #7c3aed; border-radius: 20px; background: #fff; box-shadow: 0 20px 60px #0f172a66; }
+    body.modal-open #modal { display: block; } body.modal-open main { filter: saturate(.75); }
+    .field { position: relative; margin: 18px 0; padding-right: 39px; } label { display:block; margin-bottom: 5px; font-size: 11px; font-weight: 950; }
+    input { width: 100%; height: 56px; border: 4px solid #475569; border-radius: 12px; padding: 9px; font: 700 18px system-ui,sans-serif; } input:focus { outline: 4px solid #f59e0b; border-color: #b45309; }
+    .target { position:absolute; right:26px; bottom:14px; width:27px; height:27px; border:2px solid white; border-radius:7px; box-shadow:0 0 0 2px #334155; pointer-events:none; }
+    #modal-dismiss { float:right; padding:9px 12px; background:#f97316; color:#431407; } #modal-dismiss[data-state="dismissed"] { background:#fb923c; }
+    .one { background:#0369a1; } .two { background:#be123c; } .three { background:#06b6d4; } .one[data-state="focus"] { background:#f0abfc; } .two[data-state="focus"] { background:#38bdf8; } .three[data-state="focus"] { background:#fb7185; } .one[data-state="typed"] { background:#84cc16; } .two[data-state="typed"] { background:#65a30d; } .three[data-state="typed"] { background:#4d7c0f; }
+    #modal-status { margin: 10px 0 0; color: #475569; font-size: 11px; font-weight: 900; } #done { display:none; margin-top: 8px; padding: 12px; border-radius: 10px; background:#d1fae5; color:#065f46; font-weight:950; } #done.visible { display:block; }
+  </style>
+</head>
+<body>
+  <header><div class="title">STICKY HEADER · MODAL INPUT CYCLE<small id="status">READY · scroll, open, switch, dismiss, reopen</small></div><button id="open" aria-label="open modal">OPEN</button><button id="dismiss" aria-label="dismiss keyboard">CLOSE</button></header>
+  <div id="phase" data-phase="ready" aria-label="visible phase marker">R</div>
+  <main><section class="hero">The sticky header stays visible while the page moves underneath it. Open the modal after scrolling, move between fields while the keyboard is open, dismiss it from the header, then reopen and continue.</section><section class="story"><h2>Long page content</h2><p>Scroll this content behind the sticky header. The modal must not inherit the page's old offset.</p><p>Repeated focus changes are intentional. A field may be below the keyboard before iOS scrolls it into view.</p><p>Keep the phase marker and active input visible as the layout settles.</p></section></main>
+  <section id="modal" aria-label="modal form"><button id="modal-dismiss" aria-label="dismiss keyboard">DISMISS</button><h2>Quick details</h2><div class="field"><label for="one">1 · ACCOUNT NAME</label><input id="one" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="name"><span class="target one" aria-hidden="true"></span></div><div class="field"><label for="two">2 · EMAIL</label><input id="two" type="email" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="email"><span class="target two" aria-hidden="true"></span></div><div class="field"><label for="three">3 · PHONE</label><input id="three" type="tel" autocomplete="off" placeholder="phone"><span class="target three" aria-hidden="true"></span></div><p id="modal-status">MODAL READY</p><div id="done">CYCLE COMPLETE · VALUES RETAINED</div></section>
+  <script>
+    const phase = document.querySelector('#phase'); const status = document.querySelector('#status'); const modal = document.querySelector('#modal'); const done = document.querySelector('#done');
+    const inputs = [['one','NAME','.one'],['two','EMAIL','.two'],['three','PHONE','.three']]; let typed = new Set();
+    function resetFields(){typed.clear();inputs.forEach(([id,,selector])=>{document.getElementById(id).value='';document.querySelector(selector).removeAttribute('data-state')});document.querySelector('#modal-dismiss').removeAttribute('data-state');document.body.classList.remove('modal-open');done.classList.remove('visible');mark('READY','ready')} resetFields();window.addEventListener('pageshow',resetFields);
+    function mark(kind, state) { phase.dataset.phase = state; phase.textContent = state === 'focus' ? 'F' : state === 'typed' ? 'T' : state === 'modal' ? 'M' : state === 'dismissed' ? 'D' : state === 'complete' ? '✓' : 'R'; status.textContent = `${kind} · ${state.toUpperCase()} · ${typed.size}/3 VALUES`; }
+    document.querySelector('#open').addEventListener('click', () => { document.body.classList.add('modal-open'); mark('MODAL','modal'); });
+    document.querySelector('#modal-dismiss').addEventListener('click', () => { document.activeElement?.blur(); document.querySelector('#modal-dismiss').dataset.state = 'dismissed'; mark('KEYBOARD','dismissed'); });
+    inputs.forEach(([id,label,selector]) => { const input=document.getElementById(id); const target=document.querySelector(selector); input.addEventListener('focus',()=>{target.dataset.state='focus';mark(label,'focus');}); input.addEventListener('input',()=>{target.dataset.state='typed';typed.add(id);mark(label,'typed');if(typed.size===3){phase.dataset.phase='complete';phase.textContent='✓';done.classList.add('visible');}}); });
+  </script>
+</body>
+</html>

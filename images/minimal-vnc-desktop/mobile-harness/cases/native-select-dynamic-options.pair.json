@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "native-select-dynamic-options",
+  "testDescription": "A native select picker opened before asynchronous option data changes must not commit a stale option index; after Business moves, choosing Business must still select Business.",
+  "testPage": "cases/native-select-dynamic-options.html",
+  "baseline": {"fixturePath": "cases/native-select-dynamic-options.html"},
+  "candidate": {"setupActions": []},
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": {"name": "case-ready", "color": "#2b005f", "timeoutMs": 30000},
+  "actions": [
+    {"type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000},
+    {"type": "screenshot", "name": "before-picker", "syncWith": "ready"},
+    {"type": "tapRelativeToColor", "name": "arm-dynamic-update", "color": "#ff8a00", "tolerance": 8},
+    {"type": "wait", "ms": 250},
+    {"type": "tapRelativeToColor", "name": "open-select", "color": "#fef3c7", "tolerance": 8},
+    {"type": "waitForColor", "name": "data-updated", "color": "#0057ff", "timeoutMs": 10000},
+    {"type": "wait", "ms": 500},
+    {"type": "screenshot", "name": "picker-after-data-update"},
+    {"type": "tap", "name": "choose-moved-business-option", "x": 200, "y": 400},
+    {"type": "wait", "ms": 900},
+    {"type": "screenshot", "name": "after-choice"},
+    {"type": "waitForColor", "name": "business-selected", "color": "#00d084", "timeoutMs": 12000},
+    {"type": "screenshot", "name": "after-selection", "syncWith": "business-selected"}
+  ],
+  "compare": {"profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2}
+}

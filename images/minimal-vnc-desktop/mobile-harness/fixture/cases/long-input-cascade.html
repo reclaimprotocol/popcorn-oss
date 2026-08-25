@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Long input cascade</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172554; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 1320px; background: #f8fafc; }
+    body { overflow-x: hidden; }
+    header { position: fixed; z-index: 20; inset: 0 0 auto; height: 56px; padding: 8px 14px; background: #172554; color: white; font-size: 14px; font-weight: 900; }
+    header small { display: block; margin-top: 2px; color: #bfdbfe; font-size: 10px; }
+    main { padding: 70px 12px 120px; }
+    .intro { min-height: 86px; padding: 11px 13px; border-radius: 14px; background: linear-gradient(135deg,#dbeafe,#fef3c7); font-size: 12px; font-weight: 800; line-height: 1.3; }
+    .form { max-width: 620px; margin: 12px auto 0; padding: 8px 10px; border: 3px solid #1e3a8a; border-radius: 17px; background: white; box-shadow: 0 10px 28px #1e3a8a22; }
+    .field { position: relative; margin: 12px 0; padding-right: 31px; scroll-margin-top: 68px; }
+    label { display: block; margin-bottom: 3px; font-size: 10px; font-weight: 950; }
+    input, textarea { width: 100%; border: 3px solid #475569; border-radius: 10px; padding: 7px 9px; background: white; font: 700 16px/1.2 system-ui,sans-serif; }
+    input { height: 45px; }
+    textarea { min-height: 68px; resize: none; }
+    input:focus, textarea:focus { outline: 3px solid #f59e0b; border-color: #b45309; }
+    /* Keep the marker centre inside the actual control rectangle. The harness
+       taps the marker centre, and LiveView's local keyboard bridge hit-tests
+       that same point against the published remote input rectangles. */
+    .target { position: absolute; right: 37px; bottom: 9px; width: 24px; height: 24px; border: 2px solid white; border-radius: 6px; box-shadow: 0 0 0 2px #334155; pointer-events: none; }
+    textarea + .target { bottom: 22px; }
+    .name { background: #7c3aed; } .email { background: #0369a1; } .phone { background: #be123c; } .note { background: #06b6d4; } .zip { background: #c2410c; }
+    .name[data-state="focus"] { background: #f0abfc; } .email[data-state="focus"] { background: #38bdf8; }
+    .phone[data-state="focus"] { background: #fb7185; } .note[data-state="focus"] { background: #4ade80; } .zip[data-state="focus"] { background: #fb923c; }
+    .name[data-state="typed"] { background: #84cc16; } .email[data-state="typed"] { background: #65a30d; }
+    .phone[data-state="typed"] { background: #4d7c0f; } .note[data-state="typed"] { background: #3f6212; } .zip[data-state="typed"] { background: #365314; }
+    #phase { position: fixed; z-index: 30; top: 13px; right: 13px; width: 39px; height: 39px; display: grid; place-items: center; border: 3px solid white; border-radius: 9px; color: white; font: 900 10px ui-monospace,monospace; background: #2b005f; }
+    #phase[data-phase="focus"] { background: #ff00d8; } #phase[data-phase="typed"] { background: #b5ff00; color: #111827; } #phase[data-phase="complete"] { background: #00d084; color: #082f1a; }
+    .gesture { position: fixed; z-index: 25; left: 7px; width: 22px; height: 22px; border: 2px solid white; border-radius: 6px; box-shadow: 0 0 0 2px #334155; pointer-events: none; }
+    #gesture-start { top: 410px; background: #ff8a00; } #gesture-end { top: 230px; background: #ffb000; }
+    #complete { height: 50px; display: grid; place-items: center; margin-top: 12px; border-radius: 11px; background: #d1fae5; color: #065f46; font-size: 12px; font-weight: 950; }
+  </style>
+</head>
+<body>
+  <header>LONG FORM INPUT CASCADE<small id="status">READY · scroll, focus, type, switch, return</small></header>
+  <div id="phase" data-phase="ready" aria-label="visible phase marker">R</div>
+  <div id="gesture-start" class="gesture" aria-hidden="true"></div><div id="gesture-end" class="gesture" aria-hidden="true"></div>
+  <main>
+    <section class="intro">A long form deliberately places several controls above and below the keyboard. Type in each control, scroll while the keyboard is open, switch directly, and return to the earlier fields.</section>
+    <section class="form">
+      <div class="field"><label for="name">1 · FULL NAME</label><input id="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="name"><span class="target name" aria-hidden="true"></span></div>
+      <div class="field"><label for="email">2 · EMAIL</label><input id="email" type="email" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="email"><span class="target email" aria-hidden="true"></span></div>
+      <div class="field"><label for="phone">3 · TELEPHONE</label><input id="phone" type="tel" autocomplete="off" placeholder="telephone"><span class="target phone" aria-hidden="true"></span></div>
+      <div class="field"><label for="note">4 · NOTES</label><textarea id="note" autocomplete="off" spellcheck="false" placeholder="notes"></textarea><span class="target note" aria-hidden="true"></span></div>
+      <div class="field"><label for="zip">5 · POSTAL CODE</label><input id="zip" type="number" inputmode="numeric" autocomplete="off" placeholder="postal code"><span class="target zip" aria-hidden="true"></span></div>
+      <div id="complete">FORM COMPLETE · ALL FIELDS RETAINED</div>
+    </section>
+  </main>
+  <script>
+    const phase = document.querySelector('#phase');
+    const status = document.querySelector('#status');
+    const fields = [
+      ['name', 'NAME', '.name'], ['email', 'EMAIL', '.email'], ['phone', 'PHONE', '.phone'],
+      ['note', 'NOTES', '.note'], ['zip', 'ZIP', '.zip'],
+    ];
+    let typedCount = 0;
+    function resetFields() { typedCount = 0; fields.forEach(([id, , selector]) => { document.getElementById(id).value = ''; document.querySelector(selector).removeAttribute('data-state'); }); phase.dataset.phase = 'ready'; phase.textContent = 'R'; status.textContent = 'READY · scroll, focus, type, switch, return'; }
+    resetFields(); window.addEventListener('pageshow', resetFields);
+    function setPhase(kind, state) {
+      phase.dataset.phase = state === 'typed' && typedCount === fields.length ? 'complete' : state;
+      phase.textContent = state === 'typed' ? 'T' : state === 'focus' ? 'F' : 'R';
+      status.textContent = `${kind} · ${state === 'typed' ? 'VALUE RECEIVED' : 'FOCUSED'} · ${typedCount}/${fields.length} COMPLETE`;
+    }
+    fields.forEach(([id, label, selector]) => {
+      const input = document.getElementById(id); const marker = document.querySelector(selector);
+      input.addEventListener('focus', () => { marker.dataset.state = 'focus'; setPhase(label, 'focus'); });
+      input.addEventListener('input', () => { if (!marker.dataset.state || marker.dataset.state !== 'typed') typedCount += 1; marker.dataset.state = 'typed'; setPhase(label, 'typed'); });
+    });
+  </script>
+</body>
+</html>

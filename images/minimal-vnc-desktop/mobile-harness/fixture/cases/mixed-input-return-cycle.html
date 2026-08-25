@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Mixed input return cycle</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui,sans-serif; color: #172554; }
+    * { box-sizing:border-box; } html,body { margin:0; min-height:2200px; background:#f8fafc; } body { overflow-x:hidden; }
+    header { position:fixed; z-index:30; inset:0 0 auto; height:68px; padding:12px 16px; background:#0f172a; color:#fff; font-weight:950; } header small{display:block;color:#cbd5e1;font-size:10px;margin-top:4px}
+    main { padding:92px 14px 190px; } .intro { min-height:210px; padding:20px; border-radius:18px; background:linear-gradient(145deg,#dbeafe,#fce7f3); font-weight:850; line-height:1.4; }
+    .form { margin:26px auto; max-width:620px; padding:16px 14px; border:4px solid #1e3a8a; border-radius:21px; background:#fff; }
+    .field { position:relative; margin:14px 0; padding-right:40px; scroll-margin-top:90px; } label{display:block;margin-bottom:6px;font-size:11px;font-weight:950} input,textarea{width:100%;border:4px solid #475569;border-radius:12px;padding:9px;font:700 18px system-ui,sans-serif;background:#fff} input{height:58px} textarea{height:120px;resize:none} input:focus,textarea:focus{outline:4px solid #f59e0b;border-color:#b45309}
+    .target{position:absolute;right:26px;bottom:15px;width:28px;height:28px;border:2px solid white;border-radius:7px;box-shadow:0 0 0 2px #334155;pointer-events:none}.target.text{background:#7c3aed}.target.email{background:#0369a1}.target.tel{background:#be123c}.target.note{background:#06b6d4}.target.text[data-state="focus"]{background:#f0abfc}.target.email[data-state="focus"]{background:#38bdf8}.target.tel[data-state="focus"]{background:#fb7185}.target.note[data-state="focus"]{background:#4ade80}.target.text[data-state="typed"]{background:#84cc16}.target.email[data-state="typed"]{background:#65a30d}.target.tel[data-state="typed"]{background:#4d7c0f}.target.note[data-state="typed"]{background:#3f6212}
+    #phase{position:fixed;z-index:40;top:12px;right:13px;width:38px;height:38px;display:grid;place-items:center;border:3px solid white;border-radius:9px;color:white;font:900 10px ui-monospace,monospace;background:#2b005f}#phase[data-phase="focus"]{background:#ff00d8}#phase[data-phase="typed"]{background:#b5ff00;color:#111827}#phase[data-phase="return"]{background:#f97316;color:#431407}#phase[data-phase="complete"]{background:#00d084;color:#082f1a}
+    .rail{position:fixed;z-index:35;left:7px;width:22px;height:22px;border:2px solid white;border-radius:6px;box-shadow:0 0 0 2px #334155;pointer-events:none}.up-start{top:380px;background:#ff8a00}.up-end{top:220px;background:#ffb000}.down-start{top:220px;right:7px;left:auto;background:#22c55e}.down-end{top:380px;right:7px;left:auto;background:#16a34a}
+    #complete{height:66px;display:grid;place-items:center;margin-top:28px;border-radius:14px;background:#d1fae5;color:#065f46;font-weight:950}
+  </style>
+</head>
+<body>
+  <header>MIXED INPUT RETURN CYCLE<small id="status">READY · scroll down, switch fields, return to first field</small></header>
+  <div id="phase" data-phase="ready" aria-label="visible phase marker">R</div>
+  <div class="rail up-start" aria-hidden="true"></div><div class="rail up-end" aria-hidden="true"></div><div class="rail down-start" aria-hidden="true"></div><div class="rail down-end" aria-hidden="true"></div>
+  <main><section class="intro">This page intentionally requires repeated direct taps. Scroll to the lower fields, type across text, email, telephone, and textarea inputs, then scroll back and type again in the first field. The keyboard should not make the page jump into a black or stale region.</section><section class="form"><div class="field"><label for="text">1 · SEARCH TEXT</label><input id="text" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="search"><span class="target text" aria-hidden="true"></span></div><div class="field"><label for="email">2 · EMAIL</label><input id="email" type="email" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="email"><span class="target email" aria-hidden="true"></span></div><div class="field"><label for="tel">3 · TELEPHONE</label><input id="tel" type="tel" autocomplete="off" placeholder="telephone"><span class="target tel" aria-hidden="true"></span></div><div class="field"><label for="note">4 · MESSAGE</label><textarea id="note" autocomplete="off" spellcheck="false" placeholder="message"></textarea><span class="target note" aria-hidden="true"></span></div><div id="complete">RETURN CYCLE COMPLETE · TEXT RETAINED</div></section></main>
+  <script>
+    const phase=document.querySelector('#phase'),status=document.querySelector('#status');const fields=[['text','TEXT','.text'],['email','EMAIL','.email'],['tel','TELEPHONE','.tel'],['note','MESSAGE','.note']];const typed=new Set();
+    function resetFields(){typed.clear();fields.forEach(([id,,selector])=>{document.getElementById(id).value='';document.querySelector(selector).removeAttribute('data-state')});phase.dataset.phase='ready';phase.textContent='R';status.textContent='READY · scroll down, switch fields, return to first field'} resetFields();window.addEventListener('pageshow',resetFields);
+    function mark(label,state){phase.dataset.phase=state;phase.textContent=state==='focus'?'F':state==='typed'?'T':state==='return'?'↩':state==='complete'?'✓':'R';status.textContent=`${label} · ${state.toUpperCase()} · ${typed.size}/4 VALUES`;}
+    fields.forEach(([id,label,selector])=>{const input=document.getElementById(id),target=document.querySelector(selector);input.addEventListener('focus',()=>{target.dataset.state='focus';mark(label,'focus')});input.addEventListener('input',()=>{target.dataset.state='typed';typed.add(id);mark(label,'typed');if(typed.size===4){phase.dataset.phase='complete';phase.textContent='✓'}})});
+    let scrolled=false; window.addEventListener('scroll',()=>{if(window.scrollY>300&&!scrolled){scrolled=true;phase.dataset.phase='return';phase.textContent='↓';status.textContent='LOWER FIELDS AVAILABLE · KEYBOARD-SAFE SWITCHING'}});
+  </script>
+</body>
+</html>

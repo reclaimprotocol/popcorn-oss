@@ -1,0 +1,5 @@
+{
+  "schemaVersion":1,"name":"native-month-picker","testDescription":"A month input must open the iOS month/year wheels in Safari and LiveView and commit September 2026.","testPage":"cases/native-month-picker.html","baseline":{"fixturePath":"cases/native-month-picker.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-picker","syncWith":"ready"},{"type":"tapRelativeToColor","name":"open-month-picker","color":"#dcfce7","tolerance":8},{"type":"wait","ms":800},{"type":"screenshot","name":"picker-open"},{"type":"tap","name":"choose-september","x":128,"y":429},{"type":"tap","name":"confirm-month","x":319,"y":537},{"type":"waitForColor","name":"month-selected","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-selection","syncWith":"month-selected"}],
+  "compare":{"profile":"relative-transition-diff","from":"before-picker","to":"after-selection","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

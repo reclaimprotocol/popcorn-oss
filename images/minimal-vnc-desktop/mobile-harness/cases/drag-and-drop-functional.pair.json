@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "name": "drag-and-drop-functional",
+  "testDescription": "Drag the visible card into the visible drop zone using one continuous native touch gesture. Safari and LiveView may render at different scales or positions, but both must show the dragging state, accept the drop, and reach the visible dropped marker.",
+  "testPage": "cases/drag-and-drop-functional.html",
+  "baseline": {
+    "fixturePath": "cases/drag-and-drop-functional.html"
+  },
+  "candidate": {
+    "setupActions": []
+  },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": {
+    "name": "case-ready",
+    "color": "#2b005f",
+    "timeoutMs": 30000
+  },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "ready", "syncWith": "ready" },
+    {
+      "type": "dragRelativeToColors",
+      "name": "drag-card-to-drop-zone",
+      "sourceColor": "#6b004f",
+      "targetColor": "#006f5b",
+      "holdMs": 220,
+      "durationMs": 1100,
+      "releasePauseMs": 140,
+      "steps": 14
+    },
+    { "type": "waitForColor", "name": "dropped", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 800 },
+    { "type": "waitForColor", "name": "drop-settled", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "dropped", "syncWith": "drop-settled" }
+  ],
+  "compare": {
+    "profile": "relative-transition-diff",
+    "from": "ready",
+    "to": "dropped",
+    "pixelThreshold": 0.15,
+    "maxTransitionRatioDelta": 0.2
+  }
+}

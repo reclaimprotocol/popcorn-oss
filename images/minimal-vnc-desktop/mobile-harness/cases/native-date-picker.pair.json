@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "name": "native-date-picker",
+  "testDescription": "A date input must open the iOS calendar in Safari and LiveView, preserve its constraints, and commit August 29 to the remote page.",
+  "testPage": "cases/native-date-picker.html",
+  "baseline": {"fixturePath": "cases/native-date-picker.html"},
+  "candidate": {"setupActions": []},
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": {"name": "case-ready", "color": "#2b005f", "timeoutMs": 30000},
+  "actions": [
+    {"type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000},
+    {"type": "screenshot", "name": "before-picker", "syncWith": "ready"},
+    {"type": "tapRelativeToColor", "name": "open-date-picker", "color": "#dcfce7", "tolerance": 8},
+    {"type": "wait", "ms": 900},
+    {"type": "screenshot", "name": "picker-open"},
+    {"type": "tap", "name": "choose-august-29", "x": 337, "y": 493},
+    {"type": "tap", "name": "confirm-date", "x": 319, "y": 594},
+    {"type": "waitForColor", "name": "august-29-selected", "color": "#00d084", "timeoutMs": 30000},
+    {"type": "screenshot", "name": "after-selection", "syncWith": "august-29-selected"}
+  ],
+  "compare": {"profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2}
+}

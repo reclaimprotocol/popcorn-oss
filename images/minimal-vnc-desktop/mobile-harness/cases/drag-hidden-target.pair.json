@@ -1,0 +1,5 @@
+{
+  "schemaVersion":1,"name":"drag-hidden-target","testDescription":"Dragging an object toward the viewport edge must autoscroll the page and allow dropping on a target that was initially off-screen.","testPage":"cases/drag-hidden-target.html","baseline":{"fixturePath":"cases/drag-hidden-target.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-drag","syncWith":"ready"},{"type":"dragRelativeToColorByOffset","name":"drag-to-hidden-target","sourceColor":"#e6007a","deltaY":500,"durationMs":1800,"holdMs":200,"releasePauseMs":400,"steps":26},{"type":"wait","ms":600},{"type":"waitForColor","name":"hidden-drop-success","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-drop","syncWith":"hidden-drop-success"}],
+  "compare":{"profile":"relative-transition-diff","from":"before-drag","to":"after-drop","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

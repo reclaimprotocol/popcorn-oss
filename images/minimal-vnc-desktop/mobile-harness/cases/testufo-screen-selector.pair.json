@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "name": "testufo-screen-selector",
+  "testDescription": "On the live TestUFO website, tapping the large Screen Selector must open the native iOS select UI, allow choosing a different motion test, dismiss cleanly, and leave the newly selected screen visible and interactive.",
+  "testPage": "https://testufo.com/",
+  "baseline": {
+    "url": "https://testufo.com/"
+  },
+  "candidate": {
+    "setupActions": []
+  },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": {
+    "name": "testufo-ready",
+    "color": "#00ff00",
+    "tolerance": 48,
+    "minPixels": 100,
+    "timeoutMs": 45000
+  },
+  "actions": [
+    {
+      "type": "waitForColor",
+      "name": "initial-screen-visible",
+      "color": "#00ff00",
+      "tolerance": 48,
+      "minPixels": 100,
+      "timeoutMs": 30000
+    },
+    {
+      "type": "screenshot",
+      "name": "before-selection",
+      "syncWith": "initial-screen-visible"
+    },
+    {
+      "type": "tapRelativeToColor",
+      "name": "open-screen-selector",
+      "color": "#40ff00",
+      "tolerance": 3,
+      "minPixels": 1000
+    },
+    {
+      "type": "wait",
+      "ms": 900
+    },
+    {
+      "type": "screenshot",
+      "name": "native-picker-open"
+    },
+    {
+      "type": "tap",
+      "name": "choose-vertical-scrolling-test",
+      "x": 200,
+      "y": 320
+    },
+    {
+      "type": "wait",
+      "ms": 4000
+    },
+    {
+      "type": "waitForColor",
+      "name": "selected-screen-visible",
+      "color": "#00ff00",
+      "tolerance": 48,
+      "minPixels": 100,
+      "timeoutMs": 30000
+    },
+    {
+      "type": "screenshot",
+      "name": "after-selection",
+      "syncWith": "selected-screen-visible"
+    }
+  ],
+  "compare": {
+    "profile": "relative-transition-diff",
+    "from": "before-selection",
+    "to": "after-selection",
+    "pixelThreshold": 0.15,
+    "maxTransitionRatioDelta": 0.25,
+    "viewportVision": {
+      "checkpoints": ["before-selection"],
+      "minimumMatches": 8,
+      "minimumScale": 0.72,
+      "maximumScale": 1.4,
+      "enforce": true
+    }
+  }
+}

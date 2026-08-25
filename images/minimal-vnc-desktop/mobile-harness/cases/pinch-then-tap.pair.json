@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "name": "pinch-then-tap",
+  "testDescription": "A bounded two-finger pinch must enlarge the inner target while two markers outside the pinch area remain fixed, then a marker-resolved tap must still activate the intended control.",
+  "testPage": "cases/pinch-then-tap.html",
+  "baseline": { "fixturePath": "cases/pinch-then-tap.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "waitForColor", "name": "before-target-visible", "color": "#00d084", "tolerance": 12, "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-pinch", "syncWith": "before-target-visible" },
+    { "type": "pinchRelativeToColor", "name": "bounded-pinch-out", "color": "#00d084", "tolerance": 12, "startRadius": 45, "endRadius": 78, "durationMs": 900, "holdMs": 140, "steps": 16 },
+    { "type": "wait", "ms": 1000 },
+    { "type": "waitForColor", "name": "zoom-target-visible", "color": "#00d084", "tolerance": 12, "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-pinch", "syncWith": "zoom-target-visible" },
+    { "type": "tapRelativeToColor", "name": "tap-in-zoomed-view", "color": "#007aff", "tolerance": 12 },
+    { "type": "waitForColor", "name": "zoomed-tap-success", "color": "#b5ff00", "tolerance": 12, "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-zoomed-tap", "syncWith": "zoomed-tap-success" }
+  ],
+  "compare": {
+    "profile": "pinch-zoom-integrity",
+    "from": "before-pinch",
+    "to": "after-pinch",
+    "pixelThreshold": 0.15,
+    "zoomColor": "#00d084",
+    "zoomColorTolerance": 12,
+    "minZoomAreaRatio": 1.8,
+    "maxZoomAreaRatioDelta": 0.15,
+    "stableColors": ["#ff2d55", "#00cfff"],
+    "maxStableMarkerAreaRatioDelta": 0.12,
+    "maxStableMarkerMovementPixels": 15
+  }
+}

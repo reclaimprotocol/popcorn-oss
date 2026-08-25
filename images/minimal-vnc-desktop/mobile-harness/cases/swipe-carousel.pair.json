@@ -1,0 +1,12 @@
+{
+  "schemaVersion":1,"name":"swipe-carousel","testDescription":"A native horizontal swipe must advance the carousel exactly one slide. Exact scale and swipe distance may differ.","testPage":"cases/swipe-carousel.html",
+  "baseline":{"fixturePath":"cases/swipe-carousel.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL",
+  "recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[
+    {"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},
+    {"type":"screenshot","name":"before-swipe","syncWith":"ready"},
+    {"type":"swipeRelativeToColors","name":"swipe-one-slide","sourceColor":"#ff2d55","targetColor":"#007aff","durationMs":500},
+    {"type":"wait","ms":600},{"type":"waitForColor","name":"slide-two-active","color":"#00d084","timeoutMs":30000},
+    {"type":"screenshot","name":"after-swipe","syncWith":"slide-two-active"}
+  ],"compare":{"profile":"relative-transition-diff","from":"before-swipe","to":"after-swipe","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

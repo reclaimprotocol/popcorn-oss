@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Drag and drop: functional transition</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172554; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; overscroll-behavior: none; }
+    body { background: #eff6ff; touch-action: none; }
+    header { height: 62px; padding: 10px 16px; background: #172554; color: white;
+      font-weight: 900; letter-spacing: .035em; }
+    #status { display: block; margin-top: 3px; color: #bfdbfe; font-size: 11px; letter-spacing: 0; }
+    main { padding: 16px 14px; }
+    .description { margin: 0 auto 14px; max-width: 560px; color: #334155; font-size: 13px;
+      font-weight: 750; line-height: 1.35; }
+    #board { position: relative; width: 100%; height: 390px; overflow: hidden; border: 4px solid #2563eb;
+      border-radius: 20px; background: white; box-shadow: 0 16px 44px rgb(30 64 175 / .18);
+      touch-action: none; user-select: none; -webkit-user-select: none; }
+    #phase { position: absolute; z-index: 8; top: 12px; left: 50%; width: 42px; height: 42px;
+      translate: -50% 0; display: grid; place-items: center; border: 3px solid white; border-radius: 9px;
+      background: #2b005f; color: white; font: 900 11px/1 ui-monospace, monospace;
+      box-shadow: 0 0 0 2px #172554; pointer-events: none; }
+    #phase[data-state="dragging"] { background: #ff7a00; }
+    #phase[data-state="dropped"] { background: #00d084; color: #052e16; }
+    .lane { position: absolute; left: 18px; right: 18px; top: 76px; bottom: 24px; border-radius: 16px;
+      background: repeating-linear-gradient(90deg,#dbeafe 0 18px,#eff6ff 18px 36px); }
+    .caption { position: absolute; top: 12px; width: 120px; text-align: center; color: #334155;
+      font-size: 12px; font-weight: 900; }
+    .source-caption { left: 8px; }
+    .target-caption { right: 8px; }
+    #source { position: absolute; z-index: 5; left: 30px; top: 126px; width: 92px; height: 92px;
+      display: grid; place-items: center; border: 4px solid white; border-radius: 18px;
+      background: #6b004f; color: white; font-weight: 950; box-shadow: 0 0 0 4px #312e81,0 12px 28px #1e3a8a55;
+      touch-action: none; cursor: grab; }
+    #source.dragging { background: #ff7a00; cursor: grabbing; box-shadow: 0 0 0 5px #7c2d12,0 18px 32px #0005; }
+    #source.dropped { background: #00d084; color: #052e16; box-shadow: 0 0 0 5px #166534,0 12px 25px #0003; }
+    #target { position: absolute; z-index: 2; right: 28px; top: 112px; width: 112px; height: 120px;
+      display: grid; place-items: center; border: 5px dashed #064e3b; border-radius: 22px;
+      background: #006f5b; color: white; text-align: center; font-weight: 950; }
+    #target.active { outline: 7px solid #fbbf24; }
+    #proof { position: absolute; left: 20px; right: 20px; bottom: 12px; height: 32px; display: grid;
+      place-items: center; border-radius: 8px; background: #cbd5e1; color: #334155;
+      font: 900 12px/1 ui-monospace, monospace; }
+    #proof.dropped { background: #00d084; color: #052e16; }
+  </style>
+</head>
+<body>
+  <header>DRAG AND DROP <span id="status">READY: DRAG THE CARD INTO THE DROP ZONE</span></header>
+  <main>
+    <p class="description">Press the purple card, keep the finger down while moving it into the green target, then release. Rendering scale and exact travel distance may differ.</p>
+    <section id="board" aria-label="drag and drop test board">
+      <div id="phase" data-state="ready">R</div>
+      <div class="lane" aria-hidden="true"></div>
+      <div class="caption source-caption">DRAG SOURCE</div>
+      <div class="caption target-caption">DROP TARGET</div>
+      <div id="source" role="button" aria-label="draggable card">DRAG</div>
+      <div id="target" aria-label="drop zone">DROP<br>HERE</div>
+      <div id="proof">WAITING FOR DROP</div>
+    </section>
+  </main>
+  <script>
+    const board = document.querySelector('#board');
+    const source = document.querySelector('#source');
+    const target = document.querySelector('#target');
+    const phase = document.querySelector('#phase');
+    const proof = document.querySelector('#proof');
+    const status = document.querySelector('#status');
+    let drag = null;
+
+    source.addEventListener('pointerdown', (event) => {
+      if (source.classList.contains('dropped')) return;
+      const rect = source.getBoundingClientRect();
+      drag = { pointerId: event.pointerId, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top };
+      source.setPointerCapture(event.pointerId);
+      source.classList.add('dragging');
+      target.classList.add('active');
+      phase.dataset.state = 'dragging';
+      phase.textContent = 'D';
+      status.textContent = 'DRAGGING: KEEP CONTACT UNTIL THE TARGET';
+      event.preventDefault();
+    });
+
+    source.addEventListener('pointermove', (event) => {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const boardRect = board.getBoundingClientRect();
+      const left = event.clientX - boardRect.left - drag.offsetX;
+      const top = event.clientY - boardRect.top - drag.offsetY;
+      source.style.left = `${Math.max(0, Math.min(board.clientWidth - source.offsetWidth, left))}px`;
+      source.style.top = `${Math.max(58, Math.min(board.clientHeight - source.offsetHeight - 48, top))}px`;
+      event.preventDefault();
+    });
+
+    function finish(event) {
+      if (!drag || drag.pointerId !== event.pointerId) return;
+      const targetRect = target.getBoundingClientRect();
+      const inside = event.clientX >= targetRect.left && event.clientX <= targetRect.right
+        && event.clientY >= targetRect.top && event.clientY <= targetRect.bottom;
+      drag = null;
+      source.classList.remove('dragging');
+      target.classList.remove('active');
+      if (inside) {
+        source.classList.add('dropped');
+        source.style.left = `${target.offsetLeft + (target.offsetWidth - source.offsetWidth) / 2}px`;
+        source.style.top = `${target.offsetTop + (target.offsetHeight - source.offsetHeight) / 2}px`;
+        phase.dataset.state = 'dropped';
+        phase.textContent = 'OK';
+        proof.classList.add('dropped');
+        proof.textContent = 'DROP ACCEPTED';
+        status.textContent = 'SUCCESS: NATIVE TOUCH DROP ACCEPTED';
+      } else {
+        phase.dataset.state = 'ready';
+        phase.textContent = 'R';
+        status.textContent = 'MISS: DROP OUTSIDE TARGET';
+      }
+      event.preventDefault();
+    }
+    source.addEventListener('pointerup', finish);
+    source.addEventListener('pointercancel', finish);
+  </script>
+</body>
+</html>

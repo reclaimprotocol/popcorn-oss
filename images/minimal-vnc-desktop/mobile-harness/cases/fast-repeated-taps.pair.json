@@ -1,0 +1,7 @@
+{
+  "schemaVersion":1,"name":"fast-repeated-taps","testDescription":"Eight rapid native taps on one control must produce exactly eight activation events without loss or duplication.","testPage":"cases/fast-repeated-taps.html",
+  "baseline":{"fixturePath":"cases/fast-repeated-taps.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL",
+  "recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-taps","syncWith":"ready"},{"type":"repeatedTapRelativeToColor","name":"tap-eight-times","color":"#e6007a","count":8,"intervalMs":55},{"type":"wait","ms":500},{"type":"waitForColor","name":"eight-taps-received","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-taps","syncWith":"eight-taps-received"}],
+  "compare":{"profile":"relative-transition-diff","from":"before-taps","to":"after-taps","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}
