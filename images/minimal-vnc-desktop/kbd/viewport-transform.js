@@ -1,13 +1,11 @@
 // viewport-transform.js — the #screen CSS transform: pinch-zoom, pan, and the
 // keyboard field-lift, composed in one place.
 //
-// Pinch-zoom is done ENTIRELY viewer-side, exactly like a real mobile browser:
-// we scale/translate #screen with a CSS transform, instantly and with no remote
-// round-trip. Forwarding pinch to the remote (the old behavior) needed the
-// network AND desynced tap coordinates (visual vs layout viewport), which left
-// fingers stuck and zoomed the remote forever. getBoundingClientRect() on the
-// canvas reflects this transform, so the screen->remote tap mapping
-// (touchToRemote / screenToRemote) keeps working unchanged at any zoom.
+// Viewer-side pinch is the fallback when the native touch channel is unavailable.
+// With that channel connected, ordinary two-finger gestures are forwarded to the
+// remote website so maps, canvases, and touch handlers receive native multi-touch.
+// The local path scales/translates #screen instantly; getBoundingClientRect() on
+// the canvas reflects the transform, so screen->remote tap mapping remains valid.
 //
 // Owns: zoomScale / panX / panY / minZoom / appliedLift and the pinch/pan
 // gesture state machines. Gesture CLASSIFICATION (which touch means what) stays

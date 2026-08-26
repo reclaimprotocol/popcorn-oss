@@ -987,10 +987,9 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     });
     parkProxyOffscreen(); // start off-screen; raiseKeyboard brings it in when needed
 
-    // Kill the browser's OWN pinch-zoom / double-tap-zoom on the stream in every
-    // touch mode (magnify AND plain desktop-scale). Without this, in desktop mode
-    // a pinch zoomed the whole viewer PAGE, which desynced tap->remote coordinates
-    // and the keyboard proxy. We provide controlled client zoom instead.
+    // Kill the viewer browser's own page zoom on the stream. Native two-finger
+    // gestures are routed through /input to the remote website; when that channel
+    // is unavailable, the controlled client transform is the fallback.
     if (isTouch) { try { const sc = screenElement(); if (sc) sc.style.touchAction = 'none'; } catch (_) {} }
     if (isTouch) makeMagnifyButton(); // floating zoom/fit toggle (mobile only)
 

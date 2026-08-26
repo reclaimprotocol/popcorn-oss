@@ -1,7 +1,6 @@
-// viewport-gestures.test.mjs — characterization: client-side pinch-zoom + pan
-// on the #screen transform (magnify mode). Gestures are driven through the real
-// document-level touch handlers; assertions read the transform string written to
-// the (stubbed) #screen element.
+// viewport-gestures.test.mjs — characterization: native two-finger forwarding,
+// with client-side pinch-zoom + pan as the offline fallback. Gestures are driven
+// through the real document-level touch handlers.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installGlobals, freshViewer, fireDoc, makeScreen, webSockets } from './stub-dom.mjs';
@@ -16,6 +15,8 @@ function touches(...pts) {
 async function zoomedViewer() {
   const v = await freshViewer(createMockRfb);
   const screen = makeScreen();
+  // Force the documented offline fallback instead of the native /input route.
+  webSockets.filter((s) => s.url.endsWith('/input')).at(-1).readyState = 0;
   // Pinch out: two fingers spread from 100px apart to 200px apart → 2x zoom.
   fireDoc('touchstart', { touches: touches([100, 300], [200, 300]), changedTouches: touches([100, 300]) });
   fireDoc('touchmove', { touches: touches([50, 300], [250, 300]), changedTouches: touches([50, 300]) });
@@ -23,7 +24,7 @@ async function zoomedViewer() {
   return { ...v, screen };
 }
 
-test('two-finger pinch scales #screen via CSS transform (no remote round-trip)', async () => {
+test('two-finger pinch scales #screen only when the native channel is unavailable', async () => {
   const { screen } = await zoomedViewer();
   assert.match(screen.style.transform, /scale\(2\.0000\)/);
   assert.equal(screen.style.transformOrigin, '0 0');
@@ -32,6 +33,7 @@ test('two-finger pinch scales #screen via CSS transform (no remote round-trip)',
 test('pinching down near the fit floor snaps cleanly back to no-zoom', async () => {
   const v = await freshViewer(createMockRfb);
   const screen = makeScreen();
+  webSockets.filter((s) => s.url.endsWith('/input')).at(-1).readyState = 0;
   fireDoc('touchstart', { touches: touches([50, 300], [250, 300]), changedTouches: touches([50, 300]) });
   // Fingers close to 51% of start distance → scale 0.51 clamps to minZoom 1;
   // 1 < 1*1.06 so endPinch snaps to exactly the floor.
@@ -60,10 +62,26 @@ test('single finger while zoomed pans locally and clamps to content bounds', asy
 test('touchcancel settles the gesture without losing the zoom level', async () => {
   const v = await freshViewer(createMockRfb);
   const screen = makeScreen();
+  webSockets.filter((s) => s.url.endsWith('/input')).at(-1).readyState = 0;
   fireDoc('touchstart', { touches: touches([100, 300], [200, 300]), changedTouches: touches([100, 300]) });
   fireDoc('touchmove', { touches: touches([50, 300], [250, 300]), changedTouches: touches([50, 300]) });
   fireDoc('touchcancel', { touches: [], changedTouches: [] });
   assert.match(screen.style.transform, /scale\(2\.0000\)/); // kept, not snapped to 1
+});
+
+test('two fingers are forwarded to the remote website when /input is ready', async () => {
+  const v = await freshViewer(createMockRfb);
+  const screen = makeScreen();
+  const inputSock = webSockets.filter((s) => s.url.endsWith('/input')).at(-1);
+  const before = inputSock.sent.length;
+  fireDoc('touchstart', { touches: touches([100, 300], [200, 300]), changedTouches: touches([100, 300]), target: screen });
+  fireDoc('touchmove', { touches: touches([50, 300], [250, 300]), changedTouches: touches([50, 300]), target: screen });
+  fireDoc('touchend', { touches: [], changedTouches: touches([50, 300], [250, 300]), target: screen });
+  const messages = inputSock.sent.slice(before).map((message) => JSON.parse(message));
+  assert.equal(messages[0].t, 'start');
+  assert.equal(messages[0].points.length, 2);
+  assert.ok(messages.some((message) => message.t === 'move' && message.points.length === 2));
+  assert.equal(messages.at(-1).t, 'end');
 });
 
 test('single finger NOT zoomed forwards native touch to the /input channel (no pan)', async () => {

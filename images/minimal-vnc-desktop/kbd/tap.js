@@ -153,13 +153,23 @@ export function createTap({
     const n = e.touches ? e.touches.length : 1;
     if (isTouch) {
       if (n === 2) {
-        // EXACTLY two fingers = client pinch-zoom, handled locally in BOTH magnify
-        // and desktop mode (noVNC gives the base fit via scaleViewport; our CSS
-        // transform zooms on top). Cancel any remote touch the first finger began.
+        // A normal two-finger gesture belongs to the remote website whenever the
+        // native touch channel is available. The first finger may already be down;
+        // a second touchStart containing the current point set adds the new contact
+        // without converting the gesture into viewer zoom.
         cancelPendingMove();
-        if (remoteTouchActive) { sendTouch('cancel', []); remoteTouchActive = false; }
-        tapStart = null; kbdPan = null; vt.clearPan();
-        beginPinch(e);
+        if (TOUCH_INPUT && inputReady()) {
+          vt.clearGesture();
+          sendTouch('start', collectPoints(e));
+          remoteTouchActive = true;
+          tapStart = null; kbdPan = null;
+        } else {
+          // Offline/non-native fallback: keep the viewer usable by handling the
+          // pinch locally. Cancel a partial remote stream before taking it over.
+          if (remoteTouchActive) { sendTouch('cancel', []); remoteTouchActive = false; }
+          tapStart = null; kbdPan = null; vt.clearPan();
+          beginPinch(e);
+        }
         e.stopPropagation();
         if (e.cancelable) e.preventDefault();
         return;
