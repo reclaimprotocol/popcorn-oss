@@ -172,6 +172,9 @@
       // Surface module evaluation failures to cross-origin embedders.
       if (window.addEventListener) {
         window.addEventListener('error', function (event) {
+          // Runtime errors after startup belong to the viewer's own lifecycle,
+          // not the boot-failure channel.
+          if (window.__viewerBooted) return;
           try {
             parent.postMessage({
               type: 'POPCORN_BOOT_ERROR',
