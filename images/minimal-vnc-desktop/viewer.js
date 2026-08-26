@@ -14,7 +14,7 @@
 
 import RFB from './core/rfb.js';
 import './kbd-autofocus.js';          // side-effect: defines window.PopcornKbd
-import { dbg } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
+import { dbg, KBD_LOG, KBD_SID } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
 import { onLifecycleAck, postToHost, sayHello } from './kbd/host-bridge.js';
 import { fbTarget, FB_MAX } from './kbd/fbtarget.js';
 
@@ -273,7 +273,13 @@ function connect() {
   // state-losing reload on reload-on-resize sites). Plain viewers never resize,
   // so they do want the reset — it is how they get the full desktop.
   const wsPath = websocketPath();
-  const wsQuery = magnify ? (wsPath.includes('?') ? '&keep=1' : '?keep=1') : '';
+  const wsQueryParts = [];
+  if (magnify) wsQueryParts.push('keep=1');
+  // Correlate opt-in browser and proxy diagnostics with a random page-load id.
+  if (KBD_LOG) wsQueryParts.push(`diag_sid=${encodeURIComponent(KBD_SID)}`);
+  const wsQuery = wsQueryParts.length
+    ? `${wsPath.includes('?') ? '&' : '?'}${wsQueryParts.join('&')}`
+    : '';
   rfb = new RFB(screen, `${protocol}//${window.location.host}${wsPath}${wsQuery}`, {
     credentials: { password },
   });

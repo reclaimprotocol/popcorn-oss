@@ -186,62 +186,89 @@
         });
       }
 
-      // Reload a stalled viewer a bounded number of times; unsupported browsers skip it.
-      // 10s, not something tighter. Worst realistic cold boot is ~114KB gzip over a bad
-      // 3G link (~2.5s) plus parsing ~412KB of JS on a slow phone (~1-2s). A deadline
-      // near that budget would reload devices that were merely SLOW — and since each
-      // reload restarts the download, that makes those sessions strictly worse, not
-      // better. Three attempts at 10s still gives up ~22s before the ~52s stream
-      // timeout that this replaces.
+      // Retry the asset, not this document: the primary, a query-busted retry,
+      // then a distinct no-cache fallback. Ten seconds avoids restarting slow boots.
       var BOOT_DEADLINE_MS = 10000;
-      var BOOT_MAX_RETRIES = 2;
-      var pcnrMatch = /[?&]__pcnr=(\d+)/.exec(location.search);
-      var bootAttempt = pcnrMatch ? (parseInt(pcnrMatch[1], 10) || 0) : 0;
+      var bootAttempt = 0;
+      var assetPaths = [
+        'viewer.bundle.js',
+        'viewer.bundle.js?__pcna=1',
+        'viewer-fallback.bundle.js'
+      ];
+      var assetScript;
+      var assetSettled = false;
 
-      // Preserve viewer parameters while updating the retry counter.
-      function bootUrlForAttempt(n) {
-        var base = location.href.split('#')[0].split('?')[0];
-        var qs = location.search.replace(/^\?/, '');
-        var keep = [];
-        if (qs) {
-          var parts = qs.split('&');
-          for (var i = 0; i < parts.length; i++) {
-            if (parts[i] && parts[i].indexOf('__pcnr=') !== 0) keep.push(parts[i]);
-          }
+      // Rewritten by the Docker build with hashed paths and SRI.
+      var assetIntegrity = 'sha384-__VIEWER_BUNDLE_SRI__';
+
+      function reportStall(retrying) {
+        try {
+          parent.postMessage({
+            type: 'POPCORN_BOOT_STALL', stage: 'asset', attempt: bootAttempt, retrying: retrying,
+            path: assetPaths[bootAttempt]
+          }, '*');
+        } catch (e) { /* no parent, or a parent that refuses '*' */ }
+      }
+
+      function terminalAssetFailure() {
+        reportStall(false);
+        window.__viewerOverlay(
+          'Live view couldn\u2019t start',
+          'The viewer didn\u2019t finish loading. Check your connection and try again.',
+          function () { location.reload(); }
+        );
+      }
+
+      function loadViewerAsset() {
+        if (window.__viewerBooted || assetSettled) return;
+        if (bootAttempt >= assetPaths.length) {
+          assetSettled = true;
+          terminalAssetFailure();
+          return;
         }
-        if (n > 0) keep.push('__pcnr=' + n);
-        return base + (keep.length ? '?' + keep.join('&') : '') + location.hash;
+        if (assetScript && assetScript.parentNode) assetScript.parentNode.removeChild(assetScript);
+        assetScript = document.createElement('script');
+        assetScript.type = 'module';
+        assetScript.src = assetPaths[bootAttempt];
+        assetScript.integrity = assetIntegrity;
+        assetScript.onerror = function () {
+          if (window.__viewerBooted || assetSettled) return;
+          try {
+            parent.postMessage({
+              type: 'POPCORN_BOOT_ERROR', msg: 'Viewer bundle request failed',
+              src: assetPaths[bootAttempt], line: 0
+            }, '*');
+          } catch (e) { /* see above */ }
+          if (bootAttempt + 1 >= assetPaths.length) {
+            assetSettled = true;
+            terminalAssetFailure();
+            return;
+          }
+          reportStall(true);
+          bootAttempt++;
+          loadViewerAsset();
+        };
+        document.head.appendChild(assetScript);
       }
 
       if (!window.__viewerUnsupported && window.setTimeout) {
-        setTimeout(function () {
-          if (window.__viewerBooted) return;
-          var willRetry = bootAttempt < BOOT_MAX_RETRIES;
-          try {
-            parent.postMessage({
-              type: 'POPCORN_BOOT_STALL', stage: 'module', attempt: bootAttempt, retrying: willRetry
-            }, '*');
-          } catch (e) { /* no parent, or a parent that refuses '*' */ }
-          if (!willRetry) {
-            window.__viewerOverlay(
-              'Live view couldn\u2019t start',
-              'The viewer didn\u2019t finish loading. Check your connection and try again.',
-              function () { location.replace(bootUrlForAttempt(0)); }
-            );
+        loadViewerAsset();
+        setTimeout(function watchdog() {
+          if (window.__viewerBooted || assetSettled) return;
+          if (bootAttempt + 1 >= assetPaths.length) {
+            assetSettled = true;
+            terminalAssetFailure();
             return;
           }
-          // replace(), not assign(): a failed attempt must not become a history entry.
-          location.replace(bootUrlForAttempt(bootAttempt + 1));
+          reportStall(true);
+          bootAttempt++;
+          loadViewerAsset();
+          setTimeout(watchdog, BOOT_DEADLINE_MS);
         }, BOOT_DEADLINE_MS);
       }
     })();
   </script>
 
-  <!-- The entire viewer — noVNC core + the kbd/IME layer + this page's
-       controller — is bundled by esbuild at build time into one file (see
-       viewer.js + the Dockerfile bundler step), so it loads in a single request
-       instead of a ~70-module ES-graph waterfall. Served no-store; a module
-       script is deferred, so the classic preflight above runs first. -->
-  <script type="module" src="viewer.bundle.js"></script>
+  <!-- The asset loader above starts the content-addressed viewer module. -->
 </body>
 </html>
