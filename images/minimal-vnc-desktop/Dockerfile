@@ -271,20 +271,19 @@ RUN set -eux; \
         --minify-whitespace --minify-syntax \
         --outfile=/usr/share/novnc/viewer.bundle.js; \
     rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock; \
-    # Content-hash the bundle so novnc-proxy can serve it immutably (max-age=1y):
-    # a content change yields a NEW url, so a reconnect/reopen skips re-downloading
-    # it entirely — with zero staleness risk (the reason liveview.html itself stays
-    # no-store, pointing at whatever hash is current). Deterministic: the hash is of
-    # esbuild's deterministic output. Rewrite the <script src> to the hashed name.
+    # Immutable primary bundle plus a no-cache fallback; generate SRI from its bytes.
     bundle_hash="$(sha256sum /usr/share/novnc/viewer.bundle.js | cut -c1-12)"; \
+    bundle_sri="$(openssl dgst -sha384 -binary /usr/share/novnc/viewer.bundle.js | base64 | tr -d '\n')"; \
     mv /usr/share/novnc/viewer.bundle.js "/usr/share/novnc/viewer-${bundle_hash}.bundle.js"; \
-    sed -i "s#src=\"viewer\.bundle\.js\"#src=\"viewer-${bundle_hash}.bundle.js\"#" \
+    cp "/usr/share/novnc/viewer-${bundle_hash}.bundle.js" "/usr/share/novnc/viewer-fallback-${bundle_hash}.bundle.js"; \
+    sed -i "s#viewer\.bundle\.js#viewer-${bundle_hash}.bundle.js#g; s#viewer-fallback\.bundle\.js#viewer-fallback-${bundle_hash}.bundle.js#g; s#sha384-__VIEWER_BUNDLE_SRI__#sha384-${bundle_sri}#g" \
         /usr/share/novnc/liveview.html; \
     # Precompress the (hashed) bundle: it's the cold-start bottleneck over the
     # tunnel and novnc-proxy serves the .gz via Accept-Encoding negotiation. -n
     # drops the name/mtime from the gzip header so the output is deterministic;
     # -k keeps the raw file for clients without gzip.
-    gzip -9 -n -k -f "/usr/share/novnc/viewer-${bundle_hash}.bundle.js"
+    gzip -9 -n -k -f "/usr/share/novnc/viewer-${bundle_hash}.bundle.js" \
+        "/usr/share/novnc/viewer-fallback-${bundle_hash}.bundle.js"
 
 COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress
 COPY --chown=kernel:kernel extensions/proxy /home/kernel/extensions/proxy

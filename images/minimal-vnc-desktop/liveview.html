@@ -159,14 +159,116 @@
           'This browser is too old to run the live viewer. Update your OS/browser, or open this link in the latest Safari or Chrome.'
         );
       }
+
+      // Report that the page ran before the viewer module completes its handshake.
+      try {
+        parent.postMessage({
+          type: 'POPCORN_BOOT',
+          unsupported: window.__viewerUnsupported || null,
+          ua: navigator.userAgent
+        }, '*');
+      } catch (e) { /* no parent, or a parent that refuses '*' */ }
+
+      // Surface module evaluation failures to cross-origin embedders.
+      if (window.addEventListener) {
+        window.addEventListener('error', function (event) {
+          // Runtime errors after startup belong to the viewer's own lifecycle,
+          // not the boot-failure channel.
+          if (window.__viewerBooted) return;
+          try {
+            parent.postMessage({
+              type: 'POPCORN_BOOT_ERROR',
+              msg: String((event && event.message) || ''),
+              src: String((event && event.filename) || ''),
+              line: (event && event.lineno) || 0
+            }, '*');
+          } catch (e) { /* see above */ }
+        });
+      }
+
+      // Retry the asset, not this document: the primary, a query-busted retry,
+      // then a distinct no-cache fallback. Ten seconds avoids restarting slow boots.
+      var BOOT_DEADLINE_MS = 10000;
+      var bootAttempt = 0;
+      var assetPaths = [
+        'viewer.bundle.js',
+        'viewer.bundle.js?__pcna=1',
+        'viewer-fallback.bundle.js'
+      ];
+      var assetScript;
+      var assetSettled = false;
+
+      // Rewritten by the Docker build with hashed paths and SRI.
+      var assetIntegrity = 'sha384-__VIEWER_BUNDLE_SRI__';
+
+      function reportStall(retrying) {
+        try {
+          parent.postMessage({
+            type: 'POPCORN_BOOT_STALL', stage: 'asset', attempt: bootAttempt, retrying: retrying,
+            path: assetPaths[bootAttempt]
+          }, '*');
+        } catch (e) { /* no parent, or a parent that refuses '*' */ }
+      }
+
+      function terminalAssetFailure() {
+        reportStall(false);
+        window.__viewerOverlay(
+          'Live view couldn\u2019t start',
+          'The viewer didn\u2019t finish loading. Check your connection and try again.',
+          function () { location.reload(); }
+        );
+      }
+
+      function loadViewerAsset() {
+        if (window.__viewerBooted || assetSettled) return;
+        if (bootAttempt >= assetPaths.length) {
+          assetSettled = true;
+          terminalAssetFailure();
+          return;
+        }
+        if (assetScript && assetScript.parentNode) assetScript.parentNode.removeChild(assetScript);
+        assetScript = document.createElement('script');
+        assetScript.type = 'module';
+        assetScript.src = assetPaths[bootAttempt];
+        assetScript.integrity = assetIntegrity;
+        assetScript.onerror = function () {
+          if (window.__viewerBooted || assetSettled) return;
+          try {
+            parent.postMessage({
+              type: 'POPCORN_BOOT_ERROR', msg: 'Viewer bundle request failed',
+              src: assetPaths[bootAttempt], line: 0
+            }, '*');
+          } catch (e) { /* see above */ }
+          if (bootAttempt + 1 >= assetPaths.length) {
+            assetSettled = true;
+            terminalAssetFailure();
+            return;
+          }
+          reportStall(true);
+          bootAttempt++;
+          loadViewerAsset();
+        };
+        document.head.appendChild(assetScript);
+      }
+
+      if (!window.__viewerUnsupported && window.setTimeout) {
+        loadViewerAsset();
+        setTimeout(function watchdog() {
+          if (window.__viewerBooted || assetSettled) return;
+          if (bootAttempt + 1 >= assetPaths.length) {
+            assetSettled = true;
+            terminalAssetFailure();
+            return;
+          }
+          reportStall(true);
+          bootAttempt++;
+          loadViewerAsset();
+          setTimeout(watchdog, BOOT_DEADLINE_MS);
+        }, BOOT_DEADLINE_MS);
+      }
     })();
   </script>
 
-  <!-- The entire viewer — noVNC core + the kbd/IME layer + this page's
-       controller — is bundled by esbuild at build time into one file (see
-       viewer.js + the Dockerfile bundler step), so it loads in a single request
-       instead of a ~70-module ES-graph waterfall. Served no-store; a module
-       script is deferred, so the classic preflight above runs first. -->
-  <script type="module" src="viewer.bundle.js"></script>
+  <!-- The asset loader above starts the content-addressed viewer module. -->
 </body>
 </html>

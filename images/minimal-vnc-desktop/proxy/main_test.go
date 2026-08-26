@@ -61,6 +61,39 @@ func TestCDPReadyGate(t *testing.T) {
 	}
 }
 
+func TestViewerBundleCachePolicies(t *testing.T) {
+	dir := t.TempDir()
+	readyFile := filepath.Join(dir, "ready")
+	if err := os.WriteFile(readyFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{
+		"viewer-deadbeef.bundle.js",
+		"viewer-fallback-deadbeef.bundle.js",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("export {};"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := staticHandler(dir, readyGate{file: readyFile})
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"/viewer-deadbeef.bundle.js", "public, max-age=31536000, immutable"},
+		{"/viewer-fallback-deadbeef.bundle.js", "no-store, max-age=0, must-revalidate"},
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.example"+tc.path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", tc.path, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != tc.want {
+			t.Errorf("%s Cache-Control = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestCDPDiscoveryURLsIncludeGatewayPrefix(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -396,4 +429,17 @@ func TestRestrictedBridgeForwardsAllowedCommand(t *testing.T) {
 	}
 	_ = client.Close()
 	<-done
+}
+
+func TestWebsocketCloseInfo(t *testing.T) {
+	code, reason := websocketCloseInfo([]byte{0x03, 0xE8, 'b', 'y', 'e', '\n', 'x'})
+	if code != 1000 {
+		t.Fatalf("code = %d, want 1000", code)
+	}
+	if reason != "bye x" {
+		t.Fatalf("reason = %q, want sanitized close text", reason)
+	}
+	if code, reason := websocketCloseInfo([]byte{1}); code != 0 || reason != "" {
+		t.Fatalf("short payload = (%d, %q), want empty", code, reason)
+	}
 }
