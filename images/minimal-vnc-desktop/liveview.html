@@ -159,6 +159,33 @@
           'This browser is too old to run the live viewer. Update your OS/browser, or open this link in the latest Safari or Chrome.'
         );
       }
+
+      // Report that the page ran before the viewer module completes its handshake.
+      try {
+        parent.postMessage({
+          type: 'POPCORN_BOOT',
+          unsupported: window.__viewerUnsupported || null,
+          ua: navigator.userAgent
+        }, '*');
+      } catch (e) { /* no parent, or a parent that refuses '*' */ }
+
+      // Surface module evaluation failures to cross-origin embedders.
+      if (window.addEventListener) {
+        window.addEventListener('error', function (event) {
+          // Runtime errors after startup belong to the viewer's own lifecycle,
+          // not the boot-failure channel.
+          if (window.__viewerBooted) return;
+          try {
+            parent.postMessage({
+              type: 'POPCORN_BOOT_ERROR',
+              msg: String((event && event.message) || ''),
+              src: String((event && event.filename) || ''),
+              line: (event && event.lineno) || 0
+            }, '*');
+          } catch (e) { /* see above */ }
+        });
+      }
+
     })();
   </script>
 

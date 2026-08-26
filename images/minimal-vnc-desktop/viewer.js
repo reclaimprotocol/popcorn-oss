@@ -458,6 +458,13 @@ window.addEventListener('beforeunload', () => {
 // unconditionally (not just when ?parentOrigin= is set) so a host can discover a
 // viewer that wasn't configured for it and log the misconfiguration loudly rather
 // than silently mis-driving the keyboard.
+// Cancel the ES5 boot watchdog in liveview.html. Reaching this line proves the
+// whole module graph evaluated (noVNC included) — everything that kills us before
+// it (blocked fetch, truncated body, uncaught throw, a renderer that stalls mid
+// evaluation) is externally indistinguishable from silence, so the watchdog treats
+// a still-false flag as "never booted" and reloads once.
+window.__viewerBooted = true;
+
 sayHello({
   magnify,
   vk: !!navigator.virtualKeyboard,
