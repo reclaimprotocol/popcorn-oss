@@ -23,10 +23,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+var websocketBridgeSequence atomic.Uint64
 
 func main() {
 	listen := flag.String("listen", envDefault("NOVNC_LISTEN", ":6080"), "HTTP listen address")
@@ -445,6 +448,9 @@ func staticHandler(root string, ready readyGate) http.HandlerFunc {
 		// carries the current bundle hash, so it has to be re-read every load.
 		base := path.Base(clean)
 		switch {
+		case strings.HasPrefix(base, "viewer-fallback-") && strings.HasSuffix(base, ".bundle.js"):
+			// The recovery path must not inherit the primary's immutable cache.
+			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
 		case strings.HasPrefix(base, "viewer-") && strings.HasSuffix(base, ".bundle.js"):
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		case strings.HasSuffix(clean, "/liveview.html") || strings.HasSuffix(clean, "/kbd-autofocus.js") ||
@@ -1087,25 +1093,38 @@ func websocketKey() (string, error) {
 }
 
 func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
+	sid := websocketDiagSID(r)
 	if !isWebsocketRequest(r) {
+		if sid != "" {
+			log.Printf("[websockify sid=%s] rejected: websocket upgrade required", sid)
+		}
 		http.Error(w, "websocket upgrade required", http.StatusBadRequest)
 		return
 	}
 
 	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
 	if key == "" {
+		if sid != "" {
+			log.Printf("[websockify sid=%s] rejected: missing Sec-WebSocket-Key", sid)
+		}
 		http.Error(w, "missing Sec-WebSocket-Key", http.StatusBadRequest)
 		return
 	}
 
 	vncConn, err := net.DialTimeout("tcp", upstream, 5*time.Second)
 	if err != nil {
+		if sid != "" {
+			log.Printf("[websockify sid=%s] VNC dial %s failed: %v", sid, upstream, err)
+		}
 		http.Error(w, fmt.Sprintf("failed to connect to VNC upstream: %v", err), http.StatusBadGateway)
 		return
 	}
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
+		if sid != "" {
+			log.Printf("[websockify sid=%s] rejected: hijacking unsupported", sid)
+		}
 		_ = vncConn.Close()
 		http.Error(w, "hijacking unsupported", http.StatusInternalServerError)
 		return
@@ -1113,6 +1132,9 @@ func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
 
 	clientConn, rw, err := hijacker.Hijack()
 	if err != nil {
+		if sid != "" {
+			log.Printf("[websockify sid=%s] client hijack failed: %v", sid, err)
+		}
 		_ = vncConn.Close()
 		return
 	}
@@ -1139,7 +1161,22 @@ func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
 		reader: rw.Reader,
 		vnc:    vncConn,
 	}
-	bridge.run()
+	bridgeID := websocketBridgeSequence.Add(1)
+	if sid != "" {
+		log.Printf("[websockify sid=%s bridge=%d] upgraded upstream=%s", sid, bridgeID, upstream)
+	}
+	result := bridge.run()
+	if sid != "" {
+		if result.closeCode != 0 {
+			log.Printf("[websockify sid=%s bridge=%d] closed direction=%s code=%d reason=%q", sid, bridgeID, result.direction, result.closeCode, result.closeReason)
+		} else {
+			log.Printf("[websockify sid=%s bridge=%d] closed direction=%s err=%v", sid, bridgeID, result.direction, result.err)
+		}
+	}
+}
+
+func websocketDiagSID(r *http.Request) string {
+	return klogSanitize(r.URL.Query().Get("diag_sid"), 24)
 }
 
 func isWebsocketRequest(r *http.Request) bool {
@@ -1185,26 +1222,32 @@ type wsBridge struct {
 	mu     sync.Mutex
 }
 
-func (b *wsBridge) run() {
-	done := make(chan struct{}, 2)
+type wsBridgeResult struct {
+	direction   string
+	err         error
+	closeCode   int
+	closeReason string
+}
+
+func (b *wsBridge) run() wsBridgeResult {
+	done := make(chan wsBridgeResult, 2)
 	stopPing := make(chan struct{})
 
 	go func() {
-		b.copyWebsocketToVNC()
-		done <- struct{}{}
+		done <- b.copyWebsocketToVNC()
 	}()
 
 	go func() {
-		b.copyVNCToWebsocket()
-		done <- struct{}{}
+		done <- b.copyVNCToWebsocket()
 	}()
 
 	go b.pingLoop(stopPing)
 
-	<-done
+	result := <-done
 	close(stopPing)
 	_ = b.client.Close()
 	_ = b.vnc.Close()
+	return result
 }
 
 // pingLoop sends server->client WS pings so idle-but-alive connections stay warm
@@ -1224,7 +1267,7 @@ func (b *wsBridge) pingLoop(stop <-chan struct{}) {
 	}
 }
 
-func (b *wsBridge) copyWebsocketToVNC() {
+func (b *wsBridge) copyWebsocketToVNC() wsBridgeResult {
 	for {
 		// Refresh the read deadline on every frame (client keystrokes AND the
 		// auto-pongs to our pings count as liveness), so a silent half-open
@@ -1235,7 +1278,7 @@ func (b *wsBridge) copyWebsocketToVNC() {
 			continue // e.g. an enormous clipboard paste: drop the message, keep the session
 		}
 		if err != nil {
-			return
+			return wsBridgeResult{direction: "client-read", err: err}
 		}
 
 		switch opcode {
@@ -1244,37 +1287,46 @@ func (b *wsBridge) copyWebsocketToVNC() {
 				continue
 			}
 			if _, err := b.vnc.Write(payload); err != nil {
-				return
+				return wsBridgeResult{direction: "vnc-write", err: err}
 			}
 		case 0x8:
 			_ = b.writeFrame(0x8, payload)
-			return
+			code, reason := websocketCloseInfo(payload)
+			return wsBridgeResult{direction: "client-close", closeCode: code, closeReason: reason}
 		case 0x9:
 			_ = b.writeFrame(0xA, payload)
 		case 0xA:
 		default:
 			_ = b.writeFrame(0x8, []byte{0x03, 0xEA})
-			return
+			return wsBridgeResult{direction: "client-protocol", err: fmt.Errorf("unsupported opcode %d", opcode)}
 		}
 	}
 }
 
-func (b *wsBridge) copyVNCToWebsocket() {
+func (b *wsBridge) copyVNCToWebsocket() wsBridgeResult {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := b.vnc.Read(buf)
 		if n > 0 {
 			if writeErr := b.writeFrame(0x2, buf[:n]); writeErr != nil {
-				return
+				return wsBridgeResult{direction: "client-write", err: writeErr}
 			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				_ = b.writeFrame(0x8, nil)
 			}
-			return
+			return wsBridgeResult{direction: "vnc-read", err: err}
 		}
 	}
+}
+
+func websocketCloseInfo(payload []byte) (int, string) {
+	if len(payload) < 2 {
+		return 0, ""
+	}
+	code := int(binary.BigEndian.Uint16(payload[:2]))
+	return code, klogSanitize(string(payload[2:]), 120)
 }
 
 func (b *wsBridge) writeFrame(opcode byte, payload []byte) error {

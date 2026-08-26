@@ -685,6 +685,14 @@
             emit('hello', d);
             reportLayout('hello');
             break;
+          // The preflight ran; the full viewer handshake may still fail.
+          case 'POPCORN_BOOT': emit('boot', d); break;
+          case 'POPCORN_BOOT_ERROR': emit('booterror', d); break;
+          // The watchdog gave up waiting for the module. attempt/retrying separate a
+          // session that RECOVERED on reload from one that never booted at all —
+          // without it both look identical downstream, which is what made this class
+          // of stall invisible for five days.
+          case 'POPCORN_BOOT_STALL': emit('bootstall', d); break;
           case 'POPCORN_VIEWPORT': emit('viewport', d); break;
           case 'POPCORN_CONNECT': emit('connect', d); break;
           case 'POPCORN_FRAME':
@@ -847,7 +855,7 @@
     }
 
     return {
-      /** Subscribe to viewer events: hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|health|scale|layout|rtt */
+      /** Subscribe to viewer events: boot|booterror|bootstall|hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|health|scale|layout|rtt */
       on: function (name, fn) {
         (listeners[name] || (listeners[name] = [])).push(fn);
         return this;

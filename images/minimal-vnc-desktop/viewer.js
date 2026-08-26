@@ -15,7 +15,7 @@
 import RFB from './core/rfb.js';
 import { createEmbeddedLiveViewE2EClient } from './e2e/bootstrap.js';
 import './kbd-autofocus.js';          // side-effect: defines window.PopcornKbd
-import { dbg } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
+import { dbg, KBD_LOG, KBD_SID } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
 import { onLifecycleAck, postToHost, sayHello } from './kbd/host-bridge.js';
 import { fbTarget, FB_MAX } from './kbd/fbtarget.js';
 import { configureEncryptedControl, encryptedTransportRequested, viewerFetch } from './kbd/liveview-transport.js';
@@ -295,7 +295,13 @@ async function connect() {
   // state-losing reload on reload-on-resize sites). Plain viewers never resize,
   // so they do want the reset — it is how they get the full desktop.
   const wsPath = websocketPath();
-  const wsQuery = magnify ? (wsPath.includes('?') ? '&keep=1' : '?keep=1') : '';
+  const wsQueryParts = [];
+  if (magnify) wsQueryParts.push('keep=1');
+  // Correlate opt-in browser and proxy diagnostics with a random page-load id.
+  if (KBD_LOG) wsQueryParts.push(`diag_sid=${encodeURIComponent(KBD_SID)}`);
+  const wsQuery = wsQueryParts.length
+    ? `${wsPath.includes('?') ? '&' : '?'}${wsQueryParts.join('&')}`
+    : '';
   let rfbTransport = `${protocol}//${window.location.host}${wsPath}${wsQuery}`;
   if (encryptedMode) {
     try {
@@ -501,6 +507,13 @@ window.addEventListener('beforeunload', () => {
 // unconditionally (not just when ?parentOrigin= is set) so a host can discover a
 // viewer that wasn't configured for it and log the misconfiguration loudly rather
 // than silently mis-driving the keyboard.
+// Cancel the ES5 boot watchdog in liveview.html. Reaching this line proves the
+// whole module graph evaluated (noVNC included) — everything that kills us before
+// it (blocked fetch, truncated body, uncaught throw, a renderer that stalls mid
+// evaluation) is externally indistinguishable from silence, so the watchdog treats
+// a still-false flag as "never booted" and reloads once.
+window.__viewerBooted = true;
+
 sayHello({
   magnify,
   vk: !!navigator.virtualKeyboard,
