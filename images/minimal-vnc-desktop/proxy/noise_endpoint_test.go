@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/flynn/noise"
 )
@@ -80,10 +81,45 @@ func TestNoiseIKTransportAndBinding(t *testing.T) {
 	if err != nil || !bytes.Equal(decoded, plain) {
 		t.Fatalf("decrypt max frame: %v", err)
 	}
-	if _, err = rr.Encrypt(nil, nil, []byte("server direction")); err != nil {
+	var outbound bytes.Buffer
+	writeConn := &deadlineCountingConn{Conn: &nopConn{w: &outbound}}
+	secureWriter := &noiseCipherConn{conn: writeConn, send: rr}
+	if _, err = secureWriter.Write([]byte("server direction")); err != nil {
 		t.Fatal(err)
 	}
+	if writeConn.readDeadlineCalls != 1 {
+		t.Fatalf("write refreshed read deadline %d times", writeConn.readDeadlineCalls)
+	}
+
+	inboundCiphertext, err := iw.Encrypt(nil, nil, []byte("client direction"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inbound bytes.Buffer
+	if err = writeFrameToConn(&nopConn{w: &inbound}, &sync.Mutex{}, 2, inboundCiphertext, false, true); err != nil {
+		t.Fatal(err)
+	}
+	readConn := &deadlineCountingConn{Conn: &nopConn{w: &bytes.Buffer{}}}
+	secureReader := &noiseCipherConn{conn: readConn, reader: bufio.NewReader(&inbound), recv: rw}
+	readPlaintext := make([]byte, 32)
+	n, err := secureReader.Read(readPlaintext)
+	if err != nil || string(readPlaintext[:n]) != "client direction" {
+		t.Fatalf("read encrypted frame: %q %v", readPlaintext[:n], err)
+	}
+	if readConn.readDeadlineCalls != 1 {
+		t.Fatalf("read refreshed deadline %d times", readConn.readDeadlineCalls)
+	}
 	_ = ir // initiator read state is exercised by the response handshake above.
+}
+
+type deadlineCountingConn struct {
+	net.Conn
+	readDeadlineCalls int
+}
+
+func (c *deadlineCountingConn) SetReadDeadline(_ time.Time) error {
+	c.readDeadlineCalls++
+	return nil
 }
 
 func TestNoiseBindingFailsClosed(t *testing.T) {
@@ -130,6 +166,99 @@ func TestNoiseFirstConnectionEnrollsExactlyOneClientKey(t *testing.T) {
 	}
 	if e.acceptPeer(binding, other.Public, secret) {
 		t.Fatal("rebound an enrolled session to a different client")
+	}
+}
+
+func TestNoiseEnrollmentPersistsClientKeyAndConsumesSecret(t *testing.T) {
+	client, _ := noise.DH25519.GenerateKeypair(rand.Reader)
+	secret := bytes.Repeat([]byte{0x42}, 32)
+	digest := sha256.Sum256(secret)
+	annotations := map[string]string{
+		"popcorn.dev/session-id":              "durable-session",
+		"popcorn.dev/e2e-version":             "1",
+		"popcorn.dev/e2e-binding-secret-hash": encodePublicKey(digest[:]),
+	}
+	var annotationMu sync.Mutex
+	sdk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		annotationMu.Lock()
+		defer annotationMu.Unlock()
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/gameserver":
+			copyAnnotations := make(map[string]string, len(annotations))
+			for key, value := range annotations {
+				copyAnnotations[key] = value
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"object_meta": map[string]any{"uid": "gameserver-uid", "annotations": copyAnnotations}})
+		case r.Method == http.MethodPut && r.URL.Path == "/metadata/annotation":
+			var body struct {
+				Key   string `json:"key"`
+				Value string `json:"value"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			annotations["agones.dev/sdk-"+body.Key] = body.Value
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer sdk.Close()
+
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.sdkURL = sdk.URL
+	e.kubernetes = true
+	binding := noiseBinding{SessionID: "durable-session", BindingSecretHash: digest[:], PodUID: "pod-uid"}
+	e.setBinding(binding)
+	if !e.acceptPeer(binding, client.Public, secret) {
+		t.Fatal("valid enrollment failed")
+	}
+
+	annotationMu.Lock()
+	gotKey := annotations["agones.dev/sdk-e2e-client-public-key"]
+	gotConsumed := annotations["agones.dev/sdk-e2e-binding-consumed"]
+	annotationMu.Unlock()
+	if gotKey != encodePublicKey(client.Public) || gotConsumed != "1" {
+		t.Fatalf("durable enrollment annotations: key=%q consumed=%q", gotKey, gotConsumed)
+	}
+
+	restarted, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.sdkURL = sdk.URL
+	restarted.kubernetes = true
+	restarted.setBinding(noiseBinding{PodUID: "pod-uid"})
+	reloaded, err := restarted.validateBinding()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(reloaded.ClientKey, client.Public) || len(reloaded.BindingSecretHash) != 0 {
+		t.Fatalf("reloaded binding: %+v", reloaded)
+	}
+}
+
+func TestE2EAllocationClosesExistingPlaintextConnections(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, gateway := net.Pipe()
+	defer gateway.Close()
+	release := e.trackPlaintextConn(proxy)
+	defer release()
+	if err := gateway.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	secretHash := bytes.Repeat([]byte{0x23}, 32)
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", BindingSecretHash: secretHash, PodUID: "pod-uid"})
+	if _, err := gateway.Read(make([]byte, 1)); err == nil {
+		t.Fatal("plaintext connection survived E2E allocation")
 	}
 }
 

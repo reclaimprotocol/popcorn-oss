@@ -207,6 +207,54 @@ func TestE2EBindingRejectsPlaintextLiveViewAtPodBoundary(t *testing.T) {
 	}
 }
 
+func TestE2EAllocationTerminatesPlaintextWebSocketOpenedWhilePodWasIdle(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	handler := liveViewTransportGuard(e, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		close(started)
+		_, _ = conn.Read(make([]byte, 1))
+		close(finished)
+	}))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	viewer, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	if _, err = viewer.Write([]byte("GET /websockify HTTP/1.1\r\nHost: " + u.Host + "\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("plaintext handler did not start")
+	}
+	if err = viewer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", BindingSecretHash: make([]byte, 32), PodUID: "pod-uid"})
+	if _, err = viewer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("plaintext WebSocket survived E2E allocation")
+	}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("plaintext handler remained open")
+	}
+}
+
 func TestUnboundPodKeepsDefaultTransportAvailable(t *testing.T) {
 	e, err := newNoiseEndpoint()
 	if err != nil {

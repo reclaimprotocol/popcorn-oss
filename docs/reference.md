@@ -48,7 +48,9 @@ The viewer creates its key during the first encrypted connection:
 
 The create response releases `liveViewE2e.bindingSecret` once. The viewer
 generates an X25519 keypair and sends the secret inside its first encrypted
-Noise handshake. Fetch and TTL responses return persistent session metadata.
+Noise handshake. After the pod persists the enrolled public key, the viewer
+removes the secret from reconnect storage. Fetch and TTL responses return
+persistent session metadata.
 
 The create response puts the bootstrap data in a `#popcorn-e2e=...` fragment on
 `url` and `vncUrl`. The browser keeps the fragment client-side. The viewer stores

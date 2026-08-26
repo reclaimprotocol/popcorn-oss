@@ -42,6 +42,7 @@ func main() {
 		log.Fatal(err)
 	}
 	if strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")) != "" && strings.TrimSpace(os.Getenv("POD_NAME")) != "" {
+		go noiseEndpoint.watchAllocationBinding()
 		log.Printf("liveview e2ee pod key generated (%s), public key %s", noiseProtocolName, noiseEndpoint.publicKeyString())
 		if err := noiseEndpoint.publishPublicKey(); err != nil {
 			// Encrypted allocation will fail closed while waiting for this
@@ -317,16 +318,49 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 // user-facing transport guard.
 func liveViewTransportGuard(e *noiseEndpoint, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !isPlaintextLiveViewPath(r.URL.Path) || !e.requiresE2E() {
+		if !isPlaintextLiveViewPath(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.URL.Path == "/dialog" && isLoopbackRemote(r.RemoteAddr) {
-			next.ServeHTTP(w, r)
+		if e.requiresE2E() {
+			if r.URL.Path == "/dialog" && isLoopbackRemote(r.RemoteAddr) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "encrypted LiveView session requires E2E transport", http.StatusForbidden)
 			return
 		}
-		http.Error(w, "encrypted LiveView session requires E2E transport", http.StatusForbidden)
+		tracked := &plaintextTrackingWriter{ResponseWriter: w, endpoint: e}
+		defer tracked.release()
+		next.ServeHTTP(tracked, r)
 	})
+}
+
+type plaintextTrackingWriter struct {
+	http.ResponseWriter
+	endpoint *noiseEndpoint
+	cleanup  func()
+}
+
+func (w *plaintextTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("hijacking unsupported")
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err == nil {
+		w.cleanup = w.endpoint.trackPlaintextConn(conn)
+	}
+	return conn, rw, err
+}
+
+func (w *plaintextTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *plaintextTrackingWriter) release() {
+	if w.cleanup != nil {
+		w.cleanup()
+		w.cleanup = nil
+	}
 }
 
 func isPlaintextLiveViewPath(p string) bool {

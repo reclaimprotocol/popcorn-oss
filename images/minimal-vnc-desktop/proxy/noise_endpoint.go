@@ -50,10 +50,12 @@ type noiseBinding struct {
 // noiseEndpoint owns one pod static key for its entire process lifetime.  It
 // is never serialized and is not included in GameServer metadata.
 type noiseEndpoint struct {
-	static  noise.DHKey
-	public  []byte
-	mu      sync.RWMutex
-	binding noiseBinding
+	static         noise.DHKey
+	public         []byte
+	mu             sync.RWMutex
+	binding        noiseBinding
+	plaintextConns map[net.Conn]struct{}
+	kubernetes     bool
 	// bindingFile is useful for local development and for runtimes that mount an
 	// allocation result. In Kubernetes the SDK GameServer metadata is preferred.
 	bindingFile string
@@ -68,9 +70,11 @@ func newNoiseEndpoint() (*noiseEndpoint, error) {
 	}
 	e := &noiseEndpoint{
 		static: key, public: append([]byte(nil), key.Public...),
-		bindingFile: strings.TrimSpace(os.Getenv("LIVEVIEW_E2E_BINDING_FILE")),
-		uid:         strings.TrimSpace(os.Getenv("POD_UID")),
-		sdkURL:      "http://" + envDefault("AGONES_SDK_HOST", "127.0.0.1") + ":" + envDefault("AGONES_SDK_HTTP_PORT", "9358"),
+		plaintextConns: make(map[net.Conn]struct{}),
+		bindingFile:    strings.TrimSpace(os.Getenv("LIVEVIEW_E2E_BINDING_FILE")),
+		uid:            strings.TrimSpace(os.Getenv("POD_UID")),
+		sdkURL:         "http://" + envDefault("AGONES_SDK_HOST", "127.0.0.1") + ":" + envDefault("AGONES_SDK_HTTP_PORT", "9358"),
+		kubernetes:     strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")) != "" && strings.TrimSpace(os.Getenv("POD_NAME")) != "",
 	}
 	// An explicit binding in the environment is primarily for one-process pod
 	// tests. It is also a safe fallback when the allocator injects env values.
@@ -139,21 +143,32 @@ func (e *noiseEndpoint) loadBinding() noiseBinding {
 		}
 	}
 	if gs, err := e.gameServer(); err == nil {
-		if value := strings.TrimSpace(gs.ObjectMeta.Annotations["popcorn.dev/session-id"]); value != "" {
-			b.SessionID = value
-		}
-		if value := decodePublicKey(gs.ObjectMeta.Annotations["popcorn.dev/e2e-client-public-key"]); value != nil {
+		b = e.bindingFromGameServer(b, gs)
+	}
+	return b
+}
+
+func (e *noiseEndpoint) bindingFromGameServer(b noiseBinding, gs agonesGameServer) noiseBinding {
+	if value := strings.TrimSpace(gs.ObjectMeta.Annotations["popcorn.dev/session-id"]); value != "" {
+		b.SessionID = value
+	}
+	if value := decodePublicKey(gs.ObjectMeta.Annotations["popcorn.dev/e2e-client-public-key"]); value != nil {
+		b.ClientKey = value
+	}
+	if value := decodePublicKey(gs.ObjectMeta.Annotations["popcorn.dev/e2e-binding-secret-hash"]); value != nil {
+		b.BindingSecretHash = value
+	}
+	if strings.TrimSpace(gs.ObjectMeta.Annotations["agones.dev/sdk-e2e-binding-consumed"]) == "1" {
+		if value := decodePublicKey(gs.ObjectMeta.Annotations["agones.dev/sdk-e2e-client-public-key"]); value != nil {
 			b.ClientKey = value
+			b.BindingSecretHash = nil
 		}
-		if value := decodePublicKey(gs.ObjectMeta.Annotations["popcorn.dev/e2e-binding-secret-hash"]); value != nil {
-			b.BindingSecretHash = value
-		}
-		// The control plane authenticates the Kubernetes Pod UID in the Noise
-		// prologue. Agones returns the GameServer object's different UID here, so
-		// use it only outside Kubernetes when POD_UID was not injected.
-		if value := strings.TrimSpace(gs.ObjectMeta.UID); b.PodUID == "" && value != "" {
-			b.PodUID = value
-		}
+	}
+	// The control plane authenticates the Kubernetes Pod UID in the Noise
+	// prologue. Agones returns the GameServer object's different UID here, so
+	// use it only outside Kubernetes when POD_UID was not injected.
+	if value := strings.TrimSpace(gs.ObjectMeta.UID); b.PodUID == "" && value != "" {
+		b.PodUID = value
 	}
 	return b
 }
@@ -205,10 +220,69 @@ func (e *noiseEndpoint) publishAnnotation(key, value string) error {
 	return nil
 }
 
+func bindingRequiresE2E(binding noiseBinding) bool {
+	return binding.SessionID != "" && (len(binding.ClientKey) == 32 || len(binding.BindingSecretHash) == 32)
+}
+
 func (e *noiseEndpoint) setBinding(binding noiseBinding) {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.binding = noiseBinding{SessionID: strings.TrimSpace(binding.SessionID), ClientKey: append([]byte(nil), binding.ClientKey...), BindingSecretHash: append([]byte(nil), binding.BindingSecretHash...), PodUID: strings.TrimSpace(binding.PodUID)}
+	var stale []net.Conn
+	if bindingRequiresE2E(e.binding) {
+		stale = make([]net.Conn, 0, len(e.plaintextConns))
+		for conn := range e.plaintextConns {
+			stale = append(stale, conn)
+			delete(e.plaintextConns, conn)
+		}
+	}
+	e.mu.Unlock()
+	for _, conn := range stale {
+		_ = conn.Close()
+	}
+}
+
+func (e *noiseEndpoint) trackPlaintextConn(conn net.Conn) func() {
+	e.mu.Lock()
+	if bindingRequiresE2E(e.binding) {
+		e.mu.Unlock()
+		_ = conn.Close()
+		return func() {}
+	}
+	e.plaintextConns[conn] = struct{}{}
+	e.mu.Unlock()
+	return func() {
+		e.mu.Lock()
+		delete(e.plaintextConns, conn)
+		e.mu.Unlock()
+	}
+}
+
+// watchAllocationBinding observes the allocation metadata before a route is
+// published. It closes any plaintext WebSocket opened against the idle pool pod
+// as soon as Agones assigns that pod to an encrypted session.
+func (e *noiseEndpoint) watchAllocationBinding() {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		gs, err := e.gameServer()
+		if err == nil {
+			annotations := gs.ObjectMeta.Annotations
+			if strings.TrimSpace(annotations["popcorn.dev/session-id"]) != "" {
+				if strings.TrimSpace(annotations["popcorn.dev/e2e-version"]) != "1" {
+					return
+				}
+				e.mu.RLock()
+				base := noiseBinding{SessionID: e.binding.SessionID, ClientKey: append([]byte(nil), e.binding.ClientKey...), BindingSecretHash: append([]byte(nil), e.binding.BindingSecretHash...), PodUID: e.binding.PodUID}
+				e.mu.RUnlock()
+				binding := e.bindingFromGameServer(base, gs)
+				if bindingRequiresE2E(binding) {
+					e.setBinding(binding)
+					return
+				}
+			}
+		}
+		<-ticker.C
+	}
 }
 
 // requiresE2E answers whether this allocation has been bound to the encrypted
@@ -220,7 +294,7 @@ func (e *noiseEndpoint) requiresE2E() bool {
 		return false
 	}
 	e.mu.RLock()
-	bound := e.binding.SessionID != "" && (len(e.binding.ClientKey) == 32 || len(e.binding.BindingSecretHash) == 32)
+	bound := bindingRequiresE2E(e.binding)
 	e.mu.RUnlock()
 	if bound {
 		return true
@@ -252,12 +326,23 @@ func (e *noiseEndpoint) acceptPeer(b noiseBinding, peerStatic, enrollmentSecret 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if len(e.binding.ClientKey) == 32 {
-		return bytes.Equal(e.binding.ClientKey, peerStatic)
+		if !bytes.Equal(e.binding.ClientKey, peerStatic) {
+			return false
+		}
+		if len(e.binding.BindingSecretHash) == 32 && !e.persistEnrolledPeer(peerStatic) {
+			return false
+		}
+		e.binding.BindingSecretHash = nil
+		return true
 	}
 	if len(b.ClientKey) == 32 {
 		if !bytes.Equal(b.ClientKey, peerStatic) {
 			return false
 		}
+		if len(b.BindingSecretHash) == 32 && !e.persistEnrolledPeer(peerStatic) {
+			return false
+		}
+		b.BindingSecretHash = nil
 		e.binding = b
 		return true
 	}
@@ -268,11 +353,29 @@ func (e *noiseEndpoint) acceptPeer(b noiseBinding, peerStatic, enrollmentSecret 
 	if subtle.ConstantTimeCompare(digest[:], b.BindingSecretHash) != 1 {
 		return false
 	}
+	if !e.persistEnrolledPeer(peerStatic) {
+		return false
+	}
 	b.ClientKey = append([]byte(nil), peerStatic...)
 	// The secret is needed only for enrollment. Parallel handshakes that have
 	// already decrypted it are accepted only when they carry this same key.
 	b.BindingSecretHash = nil
 	e.binding = b
+	return true
+}
+
+func (e *noiseEndpoint) persistEnrolledPeer(peerStatic []byte) bool {
+	if !e.kubernetes {
+		return true
+	}
+	if err := e.publishAnnotation("e2e-client-public-key", encodePublicKey(peerStatic)); err != nil {
+		log.Printf("liveview e2ee client-key publication failed: %v", err)
+		return false
+	}
+	if err := e.publishAnnotation("e2e-binding-consumed", "1"); err != nil {
+		log.Printf("liveview e2ee enrollment-secret consumption failed: %v", err)
+		return false
+	}
 	return true
 }
 
@@ -282,7 +385,7 @@ func noisePrologueFor(b noiseBinding, channel string) []byte {
 
 // serve terminates the standard Noise IK handshake. The session ID and both
 // static keys come exclusively from allocator/pod state, never gateway input.
-func (e *noiseEndpoint) serve(w http.ResponseWriter, r *http.Request, channel string, handler func(net.Conn, *bufio.Reader, *noise.CipherState, *noise.CipherState)) {
+func (e *noiseEndpoint) serve(w http.ResponseWriter, r *http.Request, channel string, handler func(net.Conn, *bufio.Reader, *sync.Mutex, *noise.CipherState, *noise.CipherState)) {
 	if !isWebsocketRequest(r) {
 		http.Error(w, "websocket upgrade required", http.StatusBadRequest)
 		return
@@ -334,7 +437,26 @@ func (e *noiseEndpoint) serve(w http.ResponseWriter, r *http.Request, channel st
 		return
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(wsClientReadDeadline))
-	handler(conn, rw.Reader, r1, r0)
+	stopPings := make(chan struct{})
+	go sendNoiseWebSocketPings(conn, &writeMu, stopPings)
+	handler(conn, rw.Reader, &writeMu, r1, r0)
+	close(stopPings)
+}
+
+func sendNoiseWebSocketPings(conn net.Conn, writeMu *sync.Mutex, stop <-chan struct{}) {
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := writeFrameToConn(conn, writeMu, 9, nil, false, true); err != nil {
+				_ = conn.Close()
+				return
+			}
+		case <-stop:
+			return
+		}
+	}
 }
 
 // noiseCipherConn adapts a Noise transport to an existing VNC TCP bridge.
@@ -343,8 +465,16 @@ type noiseCipherConn struct {
 	reader     *bufio.Reader
 	send, recv *noise.CipherState
 	mu         sync.Mutex
+	sharedMu   *sync.Mutex
 	cipherMu   sync.Mutex
 	pending    []byte
+}
+
+func (c *noiseCipherConn) frameWriteMutex() *sync.Mutex {
+	if c.sharedMu != nil {
+		return c.sharedMu
+	}
+	return &c.mu
 }
 
 func (c *noiseCipherConn) Read(p []byte) (int, error) {
@@ -358,8 +488,9 @@ func (c *noiseCipherConn) Read(p []byte) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		_ = c.conn.SetReadDeadline(time.Now().Add(wsClientReadDeadline))
 		if op == 9 {
-			_ = writeFrameToConn(c.conn, &c.mu, 10, b, false, true)
+			_ = writeFrameToConn(c.conn, c.frameWriteMutex(), 10, b, false, true)
 			continue
 		}
 		if op == 10 {
@@ -401,9 +532,10 @@ func (c *noiseCipherConn) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err = writeFrameToConn(c.conn, &c.mu, 2, enc, false, true); err != nil {
+	if err = writeFrameToConn(c.conn, c.frameWriteMutex(), 2, enc, false, true); err != nil {
 		return 0, err
 	}
+	_ = c.conn.SetReadDeadline(time.Now().Add(wsClientReadDeadline))
 	return len(p), nil
 }
 func (c *noiseCipherConn) Close() error                       { return c.conn.Close() }
@@ -418,7 +550,7 @@ func serveNoiseRFB(e *noiseEndpoint, w http.ResponseWriter, r *http.Request, ups
 		http.Error(w, "app is not ready", http.StatusServiceUnavailable)
 		return
 	}
-	e.serve(w, r, "rfb", func(conn net.Conn, reader *bufio.Reader, send, recv *noise.CipherState) {
+	e.serve(w, r, "rfb", func(conn net.Conn, reader *bufio.Reader, writeMu *sync.Mutex, send, recv *noise.CipherState) {
 		if keeper != nil {
 			keeper.connect(false)
 			defer keeper.disconnect()
@@ -428,7 +560,7 @@ func serveNoiseRFB(e *noiseEndpoint, w http.ResponseWriter, r *http.Request, ups
 			return
 		}
 		defer vnc.Close()
-		secure := &noiseCipherConn{conn: conn, reader: reader, send: send, recv: recv}
+		secure := &noiseCipherConn{conn: conn, reader: reader, sharedMu: writeMu, send: send, recv: recv}
 		done := make(chan struct{}, 2)
 		go func() { _, _ = io.Copy(vnc, secure); done <- struct{}{} }()
 		go func() { _, _ = io.Copy(secure, vnc); done <- struct{}{} }()
@@ -637,8 +769,8 @@ func serveNoiseControlSession(e *noiseEndpoint, w http.ResponseWriter, r *http.R
 		http.Error(w, "app is not ready", http.StatusServiceUnavailable)
 		return
 	}
-	e.serve(w, r, "control", func(conn net.Conn, reader *bufio.Reader, send, recv *noise.CipherState) {
-		c := &e2eControlClient{secure: &noiseCipherConn{conn: conn, reader: reader, send: send, recv: recv}, hub: hub, em: em, rtstats: rtstats, onViewer: onViewer, out: make(chan []byte, 32), done: make(chan struct{})}
+	e.serve(w, r, "control", func(conn net.Conn, reader *bufio.Reader, writeMu *sync.Mutex, send, recv *noise.CipherState) {
+		c := &e2eControlClient{secure: &noiseCipherConn{conn: conn, reader: reader, sharedMu: writeMu, send: send, recv: recv}, hub: hub, em: em, rtstats: rtstats, onViewer: onViewer, out: make(chan []byte, 32), done: make(chan struct{})}
 		c.run()
 	})
 }

@@ -67,13 +67,17 @@ class CipherState {
     plaintext = bytes(plaintext);
     if (plaintext.length > MAX_PLAINTEXT_FRAME) throw new Error('Noise message exceeds 65535 bytes');
     if (!this.key) return plaintext;
-    return chachaEncrypt(this.key, nonceFor(this.nonce++), plaintext, aad);
+    const encrypted = chachaEncrypt(this.key, nonceFor(this.nonce), plaintext, aad);
+    this.nonce++;
+    return encrypted;
   }
   decrypt(ciphertext, aad = new Uint8Array()) {
     ciphertext = bytes(ciphertext);
     if (ciphertext.length > MAX_NOISE_MESSAGE) throw new Error('Noise message exceeds 65535 bytes');
     if (!this.key) return ciphertext;
-    return chachaDecrypt(this.key, nonceFor(this.nonce++), ciphertext, aad);
+    const plaintext = chachaDecrypt(this.key, nonceFor(this.nonce), ciphertext, aad);
+    this.nonce++;
+    return plaintext;
   }
 }
 class SymmetricState {
@@ -183,15 +187,28 @@ class NoiseChannel {
     // perform the open transition twice.
     this.protocol = ''; this.readyState = WebSocket.OPEN; this.onopen = null;
     this._onmessage = this._onclose = this._onerror = null;
-    this._pendingPlaintexts = []; this._drainScheduled = false; this._receiveChain = Promise.resolve();
+    this._pendingPlaintexts = []; this._drainScheduled = false; this._receiveChain = Promise.resolve(); this._failed = false;
+    this._fail = (error) => {
+      if (this._failed) return;
+      this._failed = true;
+      this._pendingPlaintexts.length = 0;
+      this._onerror?.({ error });
+      this.close(1008, 'Noise authentication failed');
+    };
     this._handleCiphertext = (value) => {
+      if (this._failed) return;
       // Blob conversion can be asynchronous. Serialize it with decryption so
       // Noise nonces always follow WebSocket message order.
       this._receiveChain = this._receiveChain.then(async () => {
+        if (this._failed) return;
         const plaintext = receive.decrypt(await eventBytes({ data: value }));
+        if (this._failed) return;
         this._pendingPlaintexts.push(plaintext.buffer.slice(plaintext.byteOffset, plaintext.byteOffset + plaintext.byteLength));
         this._scheduleDrain();
-      }).catch((error) => { this._onerror?.({ error }); this.close(1008, 'Noise authentication failed'); });
+      });
+      // Observe the rejection without replacing _receiveChain. A rejected
+      // chain prevents every later record from reaching decryption.
+      this._receiveChain.catch((error) => this._fail(error));
     };
     ws.onmessage = (event) => this._handleCiphertext(event.data);
     ws.onerror = (event) => this._onerror?.(event);
@@ -205,11 +222,15 @@ class NoiseChannel {
   get onerror() { return this._onerror; }
   set onerror(fn) { this._onerror = fn; }
   _scheduleDrain() {
-    if (this._drainScheduled || typeof this._onmessage !== 'function' || this._pendingPlaintexts.length === 0) return;
+    if (this._failed || this._drainScheduled || typeof this._onmessage !== 'function' || this._pendingPlaintexts.length === 0) return;
     this._drainScheduled = true;
     queueMicrotask(() => {
       this._drainScheduled = false;
-      while (typeof this._onmessage === 'function' && this._pendingPlaintexts.length > 0) {
+      if (this._failed) {
+        this._pendingPlaintexts.length = 0;
+        return;
+      }
+      while (!this._failed && typeof this._onmessage === 'function' && this._pendingPlaintexts.length > 0) {
         this._onmessage({ data: this._pendingPlaintexts.shift() });
       }
     });
@@ -270,5 +291,10 @@ export async function openNoiseWebSocket(url, options) {
   await frameChain;
   if (frameError) throw frameError;
   if (ws.readyState !== WebSocket.OPEN) throw new Error('Noise WebSocket closed after handshake');
-  return new NoiseChannel(ws, keys.send, keys.receive, pendingCiphertexts);
+  const channel = new NoiseChannel(ws, keys.send, keys.receive, pendingCiphertexts);
+  // Authenticate every record received during the handshake before exposing
+  // the channel. Plaintexts remain queued until the consumer installs its
+  // onmessage handler.
+  await channel._receiveChain;
+  return channel;
 }

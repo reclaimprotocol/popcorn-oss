@@ -224,6 +224,8 @@ Enable one optional area at a time after the core acceptance test passes:
 - `ttlController.enabled`: recommended session cleanup.
 - `otel.enabled`: browser log collection and session lifecycle export.
 - `imagePrepuller.enabled`: reduce cold pull time on browser nodes.
+- `networkPolicy.ingressEnabled`: restrict browser ingress to the configured
+  gateway and pool-manager namespaces;
 - `networkPolicy.enabled`: restrict browser egress; review cluster-specific
   DNS and Kubernetes API CIDRs first.
 - `browserRuntimeAttestor.enabled` and `ccDevicePlugin.enabled`: confidential

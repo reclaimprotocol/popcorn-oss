@@ -59,8 +59,10 @@ test('Noise rejects a wrong static binding, tampering, replay, and a mismatched 
   const server = await new NoiseIKResponder({ ...ids, podPrivateKey: pod.privateKey, podPublicKey: pod.publicKey, expectedClientPublicKey: client.publicKey }).respond(await fresh.start());
   const browser = await fresh.finish(server.response);
   const frame = browser.send.encrypt(new Uint8Array([7, 8, 9]));
-  frame[0] ^= 1;
-  assert.throws(() => server.receive.decrypt(frame), /authentication/);
+  const corrupted = frame.slice();
+  corrupted[0] ^= 1;
+  assert.throws(() => server.receive.decrypt(corrupted), /authentication/);
+  assert.deepEqual(Array.from(server.receive.decrypt(frame)), [7, 8, 9]);
 
   const valid = browser.send.encrypt(new Uint8Array([1]));
   assert.deepEqual(Array.from(server.receive.decrypt(valid)), [1]);
@@ -68,6 +70,38 @@ test('Noise rejects a wrong static binding, tampering, replay, and a mismatched 
 
   const prologueMismatch = new NoiseIKInitiator({ ...ids, podPublicKey: pod.publicKey, clientPrivateKey: client.privateKey, clientPublicKey: client.publicKey });
   await assert.rejects(new NoiseIKResponder({ ...ids, channel: 'control', podPrivateKey: pod.privateKey, podPublicKey: pod.publicKey, expectedClientPublicKey: client.publicKey }).respond(await prologueMismatch.start()), /authentication/);
+});
+
+test('an authentication error permanently closes the Noise WebSocket and discards queued records', async () => {
+  const originalWebSocket = globalThis.WebSocket;
+  const client = await generateClientStaticKeyPair(); const pod = await generateClientStaticKeyPair();
+  const responder = new NoiseIKResponder({ ...ids, podPrivateKey: pod.privateKey, podPublicKey: pod.publicKey, expectedClientPublicKey: client.publicKey });
+  let createdSocket;
+  class FakeWebSocket {
+    static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+    constructor() { createdSocket = this; this.readyState = FakeWebSocket.CONNECTING; queueMicrotask(() => { this.readyState = FakeWebSocket.OPEN; this.onopen?.({}); }); }
+    async send(value) {
+      if (this.serverKeys) return;
+      this.serverKeys = await responder.respond(value);
+      this.onmessage?.({ data: this.serverKeys.response });
+      const corrupted = this.serverKeys.send.encrypt(new TextEncoder().encode('discard me'));
+      corrupted[0] ^= 1;
+      this.onmessage?.({ data: corrupted });
+      this.onmessage?.({ data: this.serverKeys.send.encrypt(new TextEncoder().encode('also discard me')) });
+    }
+    close(code, reason) { this.closeCode = code; this.closeReason = reason; this.readyState = FakeWebSocket.CLOSED; this.onclose?.({ code, reason }); }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    await assert.rejects(
+      openNoiseWebSocket('wss://gateway.example/e2e', { ...ids, podPublicKey: pod.publicKey, clientPrivateKey: client.privateKey, clientPublicKey: client.publicKey }),
+      /authentication/,
+    );
+    assert.equal(createdSocket.closeCode, 1008);
+    assert.equal(createdSocket.readyState, FakeWebSocket.CLOSED);
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
 });
 
 test('fresh handshakes produce different transport ciphertexts and enforce the Noise frame limit', async () => {
@@ -181,6 +215,34 @@ test('direct URL fragment scopes retained device keys to a fresh allocation sess
   assert.equal(values.get('popcorn.liveview.e2e.route.v1:/liveview/demo/token/liveview.html'), sessionKey);
   assert.equal(values.size, 2);
 
+  const originalWebSocket = globalThis.WebSocket;
+  const responder = new NoiseIKResponder({
+    sessionId: 'demo', podUid: 'pod-demo', channel: 'rfb', podPrivateKey: pod.privateKey,
+    podPublicKey: pod.publicKey, expectedClientPublicKey: first.metadata.clientPublicKey,
+    expectedBindingSecret: bindingSecret,
+  });
+  class FakeWebSocket {
+    static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+    constructor() { this.readyState = FakeWebSocket.CONNECTING; queueMicrotask(() => { this.readyState = FakeWebSocket.OPEN; this.onopen?.({}); }); }
+    async send(value) {
+      if (this.serverKeys) return;
+      this.serverKeys = await responder.respond(value);
+      this.onmessage?.({ data: this.serverKeys.response });
+    }
+    close(code, reason) { this.readyState = FakeWebSocket.CLOSED; this.onclose?.({ code, reason }); }
+  }
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const channel = await first.connectRfb();
+    channel.close(1000, 'test complete');
+  } finally {
+    globalThis.WebSocket = originalWebSocket;
+  }
+  assert.equal(first.metadata.bindingSecret, null);
+  const retained = JSON.parse(values.get(`popcorn.liveview.e2e.v1:${sessionKey}`));
+  assert.equal(retained.response.liveViewE2e.bindingSecret, undefined);
+  assert.equal(retained.response.liveViewE2e.clientPublicKey, first.metadata.clientPublicKey);
+
   const refreshedWindow = {
     location: { hostname: 'localhost', pathname: '/liveview/demo/token/liveview.html', search: '?encryption=e2e', hash: '' },
     localStorage,
@@ -188,7 +250,7 @@ test('direct URL fragment scopes retained device keys to a fresh allocation sess
   };
   const refreshed = await createEmbeddedLiveViewE2EClient(refreshedWindow);
   assert.equal(refreshed.metadata.clientPublicKey, first.metadata.clientPublicKey);
-  assert.equal(refreshed.metadata.bindingSecret, bindingSecret);
+  assert.equal(refreshed.metadata.bindingSecret, null);
 
   const nextSessionKey = Buffer.alloc(32, 0x25).toString('base64url');
   const nextResponse = { sessionId: 'demo', sessionKey: nextSessionKey, liveViewE2e: {

@@ -10,6 +10,11 @@ session status and TTL requests in transit. The gateway terminates TLS and
 processes both. A server holding a valid CDP token can inspect and control the
 browser, as required by CDP.
 
+The browser-fleet chart isolates browser pod ingress by default. It admits
+connections from labeled gateway and pool-manager pods in the configured
+namespaces. Redis route values identify pod upstreams; the ingress policy limits
+which workloads can reach those addresses.
+
 ## Viewer and mode selection
 
 Both modes use `images/minimal-vnc-desktop/viewer.js`. They share the noVNC UI,
@@ -49,7 +54,8 @@ Keys and enrollment values use unpadded base64url for exactly 32 raw bytes. The
 standard viewer stores the bootstrap response and client key in same-origin
 `localStorage` so it can reconnect. This storage holds plaintext. Any script
 running on the viewer origin can read it. Restrict the viewer origin to trusted
-scripts.
+scripts. Before enrollment, the record also holds the one-time enrollment
+secret.
 
 The create-response URL carries bootstrap metadata in its fragment. The browser
 keeps fragments client-side. After storing the reconnect record, the viewer
@@ -69,11 +75,19 @@ annotations, control-plane records, and logs store hashes or public binding
 data. The create response carries the raw enrollment secret to the viewer. The
 viewer and pod process hold their own private keys.
 
+After the first authenticated handshake, the pod writes the enrolled client
+public key and a consumed marker to GameServer annotations. That durable key
+takes precedence over the allocation's enrollment hash. The viewer then
+rewrites its reconnect record with the client public key and removes the raw
+enrollment secret. A proxy process restart reloads the enrolled public key from
+GameServer metadata.
+
 The browser proxy enforces the mode inside the pod. Once it sees an E2E binding,
 it rejects plaintext RFB and user-facing control requests for the rest of the
-process lifetime. Those paths stay closed after an Agones SDK disconnect.
-Static viewer files, both Noise endpoints, and the separate CDP ports stay
-available.
+process lifetime. It watches Agones allocation metadata and closes plaintext
+WebSockets opened while the pod was idle when an E2E allocation arrives. Those
+paths stay closed after an Agones SDK disconnect. Static viewer files, both
+Noise endpoints, and the separate CDP ports stay available.
 
 ## Session response
 

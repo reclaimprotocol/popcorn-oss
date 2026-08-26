@@ -56,8 +56,10 @@ platform key store.
 The create response releases `liveViewE2e.bindingSecret` once. Status and TTL
 responses return persistent session metadata. The viewer sends the secret
 inside the encrypted Noise IK payload, where the pod uses it to bind the first
-client public key. Keep the secret in the create-response fragment and
-encrypted enrollment payload.
+client public key. After a successful handshake, the pod persists that public
+key in GameServer metadata and the viewer removes the secret from reconnect
+storage. Keep the secret in the create-response fragment and encrypted
+enrollment payload.
 
 Production E2E endpoints must use `wss://`. The bootstrap accepts `ws://` only
 when the viewer and endpoint both use loopback addresses.

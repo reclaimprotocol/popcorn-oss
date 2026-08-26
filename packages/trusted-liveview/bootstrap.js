@@ -62,11 +62,31 @@ export function validateLiveViewE2E(metadata, retainedKey, { allowInsecureLoopba
 
 export function createLiveViewE2EClient(metadata, retainedKey, options) {
   const config = validateLiveViewE2E(metadata, retainedKey, options);
-  const connect = (channel) => openNoiseWebSocket(channel === 'rfb' ? config.e2eRfbUrl : config.e2eControlUrl, {
-    sessionId: config.sessionId, podUid: config.podUid, channel, podPublicKey: config.podPublicKey,
-    clientPublicKey: config.clientPublicKey, clientPrivateKey: config.clientPrivateKey, bindingSecret: config.bindingSecret,
+  let bindingSecret = config.bindingSecret;
+  let publicMetadata = config;
+  const connect = async (channel) => {
+    const enrollmentSecret = bindingSecret;
+    const socket = await openNoiseWebSocket(channel === 'rfb' ? config.e2eRfbUrl : config.e2eControlUrl, {
+      sessionId: config.sessionId, podUid: config.podUid, channel, podPublicKey: config.podPublicKey,
+      clientPublicKey: config.clientPublicKey, clientPrivateKey: config.clientPrivateKey, bindingSecret: enrollmentSecret,
+    });
+    if (enrollmentSecret !== null && bindingSecret !== null) {
+      bindingSecret = null;
+      publicMetadata = Object.freeze({ ...config, bindingSecret: null });
+      try {
+        options?.onEnrollmentComplete?.(config.clientPublicKey);
+      } catch (error) {
+        socket.close(1011, 'failed to retain enrolled device binding');
+        throw error;
+      }
+    }
+    return socket;
+  };
+  return Object.freeze({
+    get metadata() { return publicMetadata; },
+    connectRfb: () => connect('rfb'),
+    connectControl: () => connect('control'),
   });
-  return Object.freeze({ metadata: config, connectRfb: () => connect('rfb'), connectControl: () => connect('control') });
 }
 
 // Install the encrypted transport into the one shared LiveView controller.
@@ -128,6 +148,17 @@ function readStoredSession(storage, routeKey) {
   }
 }
 
+function enrolledResponse(response, clientPublicKey) {
+  if (response?.liveViewE2e) {
+    const liveViewE2e = { ...response.liveViewE2e, clientPublicKey };
+    delete liveViewE2e.bindingSecret;
+    return { ...response, liveViewE2e };
+  }
+  const enrolled = { ...response, clientPublicKey };
+  delete enrolled.bindingSecret;
+  return enrolled;
+}
+
 // Direct create-response URLs carry their one-time bootstrap only in the URL
 // fragment, which browsers do not send to the gateway. The viewer validates it,
 // generates a per-session device key, persists the binding for refresh, and
@@ -156,11 +187,20 @@ export async function createEmbeddedLiveViewE2EClient(target = globalThis.window
   }
   if (!response || !key || !sessionKey) throw new Error('LiveView E2EE bootstrap is missing for this device');
 
-  const client = createLiveViewE2EClient(response, key, { allowInsecureLoopback: isLoopbackViewer(target) });
+  const persist = () => {
+    storage.setItem(STORAGE_PREFIX + sessionKey, JSON.stringify({ version: 1, sessionKey, response, key }));
+    storage.setItem(ROUTE_INDEX_PREFIX + routeKey, sessionKey);
+  };
+  const client = createLiveViewE2EClient(response, key, {
+    allowInsecureLoopback: isLoopbackViewer(target),
+    onEnrollmentComplete: (clientPublicKey) => {
+      response = enrolledResponse(response, clientPublicKey);
+      try { persist(); } catch (_) { throw new Error('LiveView E2EE device binding could not be retained'); }
+    },
+  });
   if (fragmentResponse) {
     try {
-      storage.setItem(STORAGE_PREFIX + sessionKey, JSON.stringify({ version: 1, sessionKey, response, key }));
-      storage.setItem(ROUTE_INDEX_PREFIX + routeKey, sessionKey);
+      persist();
     } catch (_) {
       throw new Error('LiveView E2EE device binding could not be retained');
     }

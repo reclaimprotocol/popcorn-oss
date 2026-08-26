@@ -40,6 +40,9 @@ serviceAccount:
 
 networkPolicy:
   enabled: false
+  ingressEnabled: true
+  gatewayNamespace: ""
+  poolManagerNamespace: ""
   kubernetesApiCidr: ""
 
 browserRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime:latest
