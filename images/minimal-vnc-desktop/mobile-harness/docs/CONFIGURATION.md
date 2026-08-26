@@ -15,8 +15,8 @@ Configure:
 
 | Section | Purpose |
 |---|---|
-| `simulators.<name>.device` | Simulator UDID, display name, and iOS version |
-| `simulators.<name>.*Port` | Isolated Appium, WDA, and MJPEG ports |
+| `simulators.<name>.device` | Platform, UDID or emulator serial, display name, OS version, and optional Android AVD |
+| `simulators.<name>.*Port` | Isolated Appium, WDA, and MJPEG ports for iOS profiles |
 | `simulators.<name>.derivedDataPath` | Per-simulator WebDriverAgent build directory |
 | `defaultSimulator` | Profile used when `--simulator` is omitted |
 | `fixtures.baseUrl` | Base URL used to resolve a case's `baseline.fixturePath` |
@@ -31,6 +31,9 @@ Store the admin token in the variable named by `adminTokenEnv`:
 ```bash
 export POPCORN_ADMIN_TOKEN='replace-me'
 ```
+
+Set `popcorn.sessionProvider.ssh` to `local` when the harness runs on the same
+machine as the control-plane endpoint. Other values remain normal SSH targets.
 
 The checked-in example contains no machine-specific address or credential.
 Local environment files are ignored by Git. A case definition should remain
@@ -96,8 +99,8 @@ pair. OCR is a geometry signal, not a text-content assertion.
 npm run doctor -- --environment environments/local.json
 ```
 
-The command checks the active Node runtime, Xcode tools, Appium/XCUITest, booted
-simulators, fixture host, Popcorn control plane, and gateway. A pair repeats the
+The command checks the active Node runtime, platform tools, XCUITest for iOS,
+ADB for Android, connected devices, fixture host, Popcorn control plane, and gateway. A pair repeats the
 environment health checks before starting its baseline, preventing a dead
 cluster from producing a misleading partial test.
 
@@ -124,13 +127,14 @@ npm run parallel -- \
   --environment environments/local.json
 ```
 
-Profiles must have unique UDIDs, Appium/WDA/MJPEG ports, and derived-data
-paths. Those values remain outside behavior cases.
+Profiles must have unique UDIDs. iOS profiles must also use distinct
+Appium/WDA/MJPEG ports and derived-data paths. Those values remain outside
+behavior cases.
 
 ## Comparison configuration
 
-The built-in `checkpoint-pixel-diff` profile compares direct Safari and
-LiveView screenshots captured at the same visible-marker checkpoint.
+The built-in `checkpoint-pixel-diff` profile compares the direct device browser
+and LiveView screenshots captured at the same visible-marker checkpoint.
 
 | Field | Purpose |
 |---|---|

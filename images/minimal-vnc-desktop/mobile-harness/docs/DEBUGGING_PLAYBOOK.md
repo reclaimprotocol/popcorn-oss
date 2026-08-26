@@ -1,7 +1,7 @@
 # Mobile UI discrepancy testing guide
 
 Use this guide to find visible or interaction differences between a website in
-native mobile Safari and the same website through Popcorn LiveView.
+native mobile Safari or Chrome and the same website through Popcorn LiveView.
 
 The simulator framebuffer is the product truth. Do not use the remote browser's
 DOM, Chrome CDP, web selectors, or accessibility tree to decide whether the UI
@@ -42,7 +42,7 @@ good and known bad cases correctly.
 The pair must use:
 
 - the same simulator model and orientation;
-- direct Safari as the baseline and LiveView as the candidate;
+- direct Safari (iOS) or Chrome (Android) as the baseline and LiveView as the candidate;
 - the same test page and native action array;
 - the exact Popcorn build and feature flags being evaluated;
 - built-in setup navigation to the baseline fixture before recording begins;
@@ -76,12 +76,15 @@ npm run pair -- \
   --environment environments/local.json
 ```
 
-Use Appium only for native actions: absolute taps, swipes, rotation, and real
-keyboard interaction. Do not switch Appium into a web context or locate remote
+On Android, use ADB framebuffer capture plus native `input`/`uinput` touch
+injection only; no WebDriver session or UI hierarchy is allowed. On iOS, use
+Appium/XCUITest only for native actions such as taps, swipes, rotation, and real
+keyboard interaction. Never switch Appium into a web context or locate remote
 elements with selectors.
 
-Parallel runs are useful only after the case is stable. Each worker needs a
-separate simulator, Appium port, WDA port, MJPEG port, and derived-data path.
+Parallel runs are useful only after the case is stable. Each iOS worker needs a
+separate simulator, Appium port, WDA port, MJPEG port, and derived-data path;
+each Android worker needs a separate emulator serial.
 
 ### 6. Validate the test before judging the product
 
@@ -91,10 +94,10 @@ Inspect `pair.json`, both `run.json` files, and
 - both sides reached every required visible marker;
 - both sides executed the same actions in the same semantic order;
 - taps and swipes match the intended coordinates;
-- no implicit or unexpected Appium gesture occurred;
+- no implicit or unexpected native gesture occurred;
 - screenshots and videos cover the intended interaction;
 - the candidate used the intended build and flags;
-- no simulator, recorder, Appium, WDA, or session error occurred.
+- no emulator/simulator, recorder, ADB/Appium/WDA, or session error occurred.
 
 Use `screen-touches.mp4` to audit gestures and as the complete framebuffer
 timeline. Touch circles are composited only near recorded native gestures, so
@@ -220,8 +223,8 @@ Do not collect every possible log before confirming that a discrepancy exists.
 
 | Question or symptom | Use first | Use next to isolate the cause |
 |---|---|---|
-| Did the run start and finish correctly? | `pair.json`, `run.json`, Appium/WDA and runtime logs | `npm run doctor -- --environment ...` and session lifecycle logs |
-| Did the harness perform an unintended tap, swipe, or scroll? | `screen-touches.mp4` and action timestamps | Appium log and decoded frames around the gesture |
+| Did the run start and finish correctly? | `pair.json`, `run.json`, native transport and runtime logs | `npm run doctor -- --environment ...` and session lifecycle logs |
+| Did the harness perform an unintended tap, swipe, or scroll? | `screen-touches.mp4` and action timestamps | ADB/Appium evidence and decoded frames around the gesture |
 | Are baseline and candidate showing different semantic moments? | Visible phase-marker observations | Checkpoint timestamps and `comparison.json` |
 | Is there a jump, blank region, resize, flicker, blur, or wrong page scale? | Complete `screen-touches.mp4` timeline | `ffmpeg` frame scan, then geometry/Vision OCR and `pngjs`/`pixelmatch` measurements |
 | Did the tap reach the intended visible control? | Touch-overlay video | Marker/landmark coordinates and action-to-paint timing |
@@ -234,8 +237,9 @@ Do not collect every possible log before confirming that a discrepancy exists.
 
 The tools fit into this order:
 
-1. **Run:** `xcrun simctl` controls the simulator and records the framebuffer;
-   Appium/XCUITest supplies native touches, rotation, and real keyboard input.
+1. **Run:** Android uses `adb exec-out screencap`/`screenrecord` plus native
+   `input` and `uinput`; iOS uses `xcrun simctl` for the framebuffer and
+   Appium/XCUITest for native touches, rotation, and real keyboard input.
 2. **Synchronize:** visible color markers align baseline and candidate by UI
    state rather than elapsed time.
 3. **Measure:** `ffmpeg`/`ffprobe` decode the full timeline; Node with

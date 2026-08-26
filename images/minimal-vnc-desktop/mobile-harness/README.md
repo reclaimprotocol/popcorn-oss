@@ -1,10 +1,12 @@
 # Popcorn LiveView mobile harness
 
-This harness compares a website opened directly in mobile Safari with the same
-website rendered through Popcorn LiveView. It drives only native simulator
-input and treats the simulator framebuffer as the source of truth. It does not
-use Chrome CDP, the remote DOM, web selectors, or a remote accessibility tree
-to judge correctness.
+This harness compares a website opened directly in the device browser with the
+same website rendered through Popcorn LiveView. It runs Safari on iOS and
+Chrome on Android. Both sides of an Android pair run in Chrome. The runner
+drives native mobile input and treats the device framebuffer as the source of
+truth. Android uses only ADB framebuffer capture and native touch injection; it
+does not open a WebDriver session. The harness does not use browser CDP, the
+remote DOM, web selectors, or a remote accessibility tree to judge correctness.
 
 The repository intentionally starts with no active test cases and an empty
 dashboard. Cases and dashboard entries are explicit, so historical artifacts
@@ -31,6 +33,7 @@ Install Node `24.5.0`, then run:
 ```bash
 npm install
 npm run setup:ios
+npm run setup:android
 ```
 
 `package.json` declares Node `24.5.0`, npm `>=11.5.1 <12`, and the preferred
@@ -44,8 +47,8 @@ cp environments/example.json environments/local.json
 export POPCORN_ADMIN_TOKEN='replace-me'
 ```
 
-Edit the ignored local file with the simulator, ports, fixture host, Popcorn
-cluster, gateway, control plane, and shared LiveView flags to use. Keep
+Edit the ignored local file with the iOS simulator or Android emulator, ports,
+fixture host, Popcorn cluster, gateway, control plane, and shared LiveView flags. Keep
 credentials in environment variables. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
 Check the complete environment before recording anything:
@@ -76,9 +79,13 @@ npm run pair -- \
 
 The runner checks environment health first, loads the page before recording,
 waits for the visible ready marker, records the simulator framebuffer, renders
-one compressed touch-overlay video, removes the temporary raw recording,
+one compressed 30 fps touch-overlay video, continuously tracks every native
+pointer (including both fingers of a pinch), removes the temporary raw recording,
 performs the same native actions on both sides, and compares
 marker-synchronized checkpoints.
+
+Dashboard video URLs include the evidence artifact digest, so rerunning a case
+cannot leave an older recording in the browser cache under the same path.
 
 For provisioned Popcorn sessions, the harness automatically navigates the
 remote kiosk browser to the baseline fixture before recording. Cases and normal
@@ -160,9 +167,10 @@ npm run sequence -- \
   --environment environments/local.json
 ```
 
-After each case is stable, assign each pair a named simulator profile from the
-environment. The profiles hold separate simulator UDIDs, Appium/WDA/MJPEG
-ports, and derived-data paths:
+After each case is stable, assign each pair a named device profile from the
+environment. iOS profiles hold simulator UDIDs, Appium/WDA/MJPEG ports, and
+derived-data paths. Android profiles hold an emulator serial and optional AVD
+name; Android screenshots and touches travel directly through ADB:
 
 ```bash
 npm run parallel -- \

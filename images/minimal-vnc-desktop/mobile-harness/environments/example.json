@@ -5,6 +5,7 @@
   "simulators": {
     "primary": {
       "device": {
+        "platformName": "iOS",
         "udid": "REPLACE_WITH_SIMULATOR_UDID",
         "name": "iPhone model",
         "platformVersion": "iOS version"
@@ -13,6 +14,15 @@
       "wdaLocalPort": 8100,
       "mjpegServerPort": 9100,
       "derivedDataPath": "/tmp/popcorn-wda-primary"
+    },
+    "android": {
+      "device": {
+        "platformName": "Android",
+        "udid": "emulator-5554",
+        "name": "Pixel model",
+        "platformVersion": "Android version",
+        "avd": "REPLACE_WITH_ANDROID_AVD_NAME"
+      }
     }
   },
   "fixtures": {
