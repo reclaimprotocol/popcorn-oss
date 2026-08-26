@@ -66,10 +66,53 @@
       "syncWith": "text-typed"
     },
     {
+      "type": "wait",
+      "name": "reveal-email-on-android-candidate",
+      "ms": 0,
+      "platformTargetOverrides": {
+        "Android": {
+          "candidate": {
+            "type": "swipe",
+            "fromX": 550,
+            "fromY": 1320,
+            "toX": 550,
+            "toY": 900,
+            "durationMs": 650
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "ms": 700
+    },
+    {
       "type": "tap",
       "name": "native-next-to-email",
       "x": 95,
-      "y": 506
+      "y": 506,
+      "platformOverrides": {
+        "Android": {
+          "x": 995,
+          "y": 2180
+        }
+      },
+      "platformTargetOverrides": {
+        "Android": {
+          "baseline": {
+            "type": "tapRelativeToColor",
+            "color": "#008a99",
+            "offsetX": -430,
+            "tolerance": 50
+          },
+          "candidate": {
+            "type": "tapRelativeToColor",
+            "color": "#008a99",
+            "offsetX": -430,
+            "tolerance": 50
+          }
+        }
+      }
     },
     {
       "type": "waitForColor",
@@ -104,10 +147,53 @@
       "syncWith": "email-typed"
     },
     {
+      "type": "wait",
+      "name": "reveal-telephone-on-android-candidate",
+      "ms": 0,
+      "platformTargetOverrides": {
+        "Android": {
+          "candidate": {
+            "type": "swipe",
+            "fromX": 550,
+            "fromY": 1320,
+            "toX": 550,
+            "toY": 900,
+            "durationMs": 650
+          }
+        }
+      }
+    },
+    {
+      "type": "wait",
+      "ms": 700
+    },
+    {
       "type": "tap",
       "name": "native-next-to-telephone",
       "x": 95,
-      "y": 506
+      "y": 506,
+      "platformOverrides": {
+        "Android": {
+          "x": 995,
+          "y": 2180
+        }
+      },
+      "platformTargetOverrides": {
+        "Android": {
+          "baseline": {
+            "type": "tapRelativeToColor",
+            "color": "#7a3e00",
+            "offsetX": -430,
+            "tolerance": 50
+          },
+          "candidate": {
+            "type": "tapRelativeToColor",
+            "color": "#7a3e00",
+            "offsetX": -430,
+            "tolerance": 50
+          }
+        }
+      }
     },
     {
       "type": "waitForColor",

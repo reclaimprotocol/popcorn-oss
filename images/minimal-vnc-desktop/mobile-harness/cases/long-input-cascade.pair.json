@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "long-input-cascade",
-  "testDescription": "A compact long form with text, email, telephone, textarea, and numeric inputs must keep each directly tapped field clear of Safari browser chrome and above the keyboard while the user scrolls, switches fields, and types without placement drift or a black band.",
+  "testDescription": "A compact long form with text, email, telephone, textarea, and numeric inputs must keep each directly tapped field clear of mobile browser chrome and above the keyboard while the user scrolls, switches fields, and types without placement drift or a black band.",
   "testPage": "cases/long-input-cascade.html",
   "baseline": { "fixturePath": "cases/long-input-cascade.html" },
   "candidate": { "setupActions": [] },
@@ -37,7 +37,7 @@
     { "type": "screenshot", "name": "phone-typed", "syncWith": "phone-typed" },
     { "type": "dragRelativeToColorByOffset", "name": "scroll-to-notes", "sourceColor": "#4d7c0f", "deltaX": 0, "deltaY": -100, "durationMs": 750, "steps": 10, "tolerance": 35 },
     { "type": "waitForColor", "name": "notes-visible", "color": "#06b6d4", "timeoutMs": 30000 },
-    { "type": "tapRelativeToColor", "name": "focus-notes", "color": "#06b6d4", "offsetX": 0, "offsetY": 0, "tolerance": 35 },
+    { "type": "tapRelativeToColor", "name": "focus-notes", "color": "#06b6d4", "offsetX": 0, "offsetY": 0, "tolerance": 35, "platformOverrides": { "Android": { "offsetX": -200 } } },
     { "type": "waitForColor", "name": "notes-focused", "color": "#4ade80", "timeoutMs": 30000 },
     { "type": "screenshot", "name": "notes-focused", "syncWith": "notes-focused" },
     { "type": "wait", "name": "notes-keyboard-settle", "ms": 1000 },

@@ -40,6 +40,19 @@
       "timeoutMs": 30000
     },
     {
+      "type": "tapRelativeToColor",
+      "name": "confirm-native-focus",
+      "color": "#f59e0b",
+      "offsetX": 0,
+      "offsetY": 0,
+      "platformTargetOverrides": {
+        "iOS": {
+          "baseline": { "type": "wait", "ms": 0 },
+          "candidate": { "type": "wait", "ms": 0 }
+        }
+      }
+    },
+    {
       "type": "wait",
       "ms": 1500
     },

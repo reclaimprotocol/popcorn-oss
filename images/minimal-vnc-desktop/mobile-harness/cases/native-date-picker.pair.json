@@ -13,8 +13,8 @@
     {"type": "tapRelativeToColor", "name": "open-date-picker", "color": "#dcfce7", "tolerance": 8},
     {"type": "wait", "ms": 900},
     {"type": "screenshot", "name": "picker-open"},
-    {"type": "tap", "name": "choose-august-29", "x": 337, "y": 493},
-    {"type": "tap", "name": "confirm-date", "x": 319, "y": 594},
+    {"type": "tap", "name": "choose-august-29", "x": 337, "y": 493, "platformOverrides": {"Android": {"x": 810, "y": 1530}}},
+    {"type": "tap", "name": "confirm-date", "x": 319, "y": 594, "platformOverrides": {"Android": {"x": 800, "y": 1760}}},
     {"type": "waitForColor", "name": "august-29-selected", "color": "#00d084", "timeoutMs": 30000},
     {"type": "screenshot", "name": "after-selection", "syncWith": "august-29-selected"}
   ],

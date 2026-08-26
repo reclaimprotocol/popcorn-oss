@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "name": "multiple-input-types-direct-tap",
-  "testDescription": "With the iOS keyboard open, tapping each next field directly—Text to Email to Telephone—must focus that exact field, show its input-specific keyboard, accept a visible value, and avoid use of the native previous/next arrows.",
+  "testDescription": "With the native keyboard open, tapping each next field directly—Text to Email to Telephone—must focus that exact field, show its input-specific keyboard, accept a visible value, and avoid use of native previous/next controls.",
   "testPage": "cases/multiple-input-types-direct-tap.html",
   "baseline": {
     "fixturePath": "cases/multiple-input-types-direct-tap.html"
@@ -30,6 +30,17 @@
     { "type": "screenshot", "name": "email-focused", "syncWith": "email-focused" },
     { "type": "tap", "name": "type-email-q", "x": 23, "y": 613 },
     { "type": "waitForColor", "name": "email-typed", "color": "#00ff70", "timeoutMs": 30000 },
+    {
+      "type": "wait",
+      "name": "reveal-telephone-with-native-swipe",
+      "ms": 0,
+      "platformTargetOverrides": {
+        "Android": {
+          "baseline": { "type": "swipe", "fromX": 540, "fromY": 1200, "toX": 540, "toY": 700, "durationMs": 450 },
+          "candidate": { "type": "swipe", "fromX": 540, "fromY": 1200, "toX": 540, "toY": 700, "durationMs": 450 }
+        }
+      }
+    },
     { "type": "waitForColor", "name": "telephone-target-visible", "color": "#743800", "timeoutMs": 30000 },
     { "type": "screenshot", "name": "telephone-before-direct-tap", "syncWith": "telephone-target-visible" },
     { "type": "tapRelativeToColor", "name": "tap-telephone-field-directly", "color": "#743800", "offsetX": -205, "offsetY": -15 },

@@ -34,7 +34,8 @@
       "fromY": 440,
       "toX": 200,
       "toY": 280,
-      "durationMs": 700
+      "durationMs": 700,
+      "platformOverrides": { "Android": { "durationMs": 300 } }
     },
     { "type": "wait", "ms": 350 },
     {
@@ -44,7 +45,8 @@
       "fromY": 440,
       "toX": 200,
       "toY": 280,
-      "durationMs": 700
+      "durationMs": 700,
+      "platformOverrides": { "Android": { "durationMs": 300 } }
     },
     { "type": "wait", "ms": 350 },
     {
@@ -54,7 +56,8 @@
       "fromY": 440,
       "toX": 200,
       "toY": 280,
-      "durationMs": 700
+      "durationMs": 700,
+      "platformOverrides": { "Android": { "durationMs": 300 } }
     },
     { "type": "wait", "ms": 350 },
     {
@@ -64,7 +67,8 @@
       "fromY": 280,
       "toX": 200,
       "toY": 400,
-      "durationMs": 650
+      "durationMs": 650,
+      "platformOverrides": { "Android": { "durationMs": 300 } }
     },
     { "type": "wait", "ms": 350 },
     {
@@ -74,7 +78,8 @@
       "fromY": 440,
       "toX": 200,
       "toY": 260,
-      "durationMs": 700
+      "durationMs": 700,
+      "platformOverrides": { "Android": { "durationMs": 300 } }
     },
     {
       "type": "waitForColor",

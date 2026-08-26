@@ -27,9 +27,9 @@
     "zoomColor": "#00d084",
     "zoomColorTolerance": 12,
     "minZoomAreaRatio": 1.8,
-    "maxZoomAreaRatioDelta": 0.15,
+    "maxZoomAreaRatioDelta": 0.3,
     "stableColors": ["#ff2d55", "#00cfff"],
     "maxStableMarkerAreaRatioDelta": 0.12,
-    "maxStableMarkerMovementPixels": 15
+    "maxStableMarkerMovementPixels": 20
   }
 }

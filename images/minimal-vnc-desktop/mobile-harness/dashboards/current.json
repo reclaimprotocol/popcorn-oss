@@ -202,6 +202,206 @@
       "manifest": "../artifacts/mixed-input-return-cycle/pair.json",
       "label": "mixed-input-return-cycle",
       "tags": []
+    },
+    {
+      "manifest": "../artifacts/multiple-input-types-switching-android/pair.json",
+      "label": "multiple-input-types-switching",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-date-time-pickers-android/pair.json",
+      "label": "native-date-time-pickers",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-datetime-local-picker-android/pair.json",
+      "label": "native-datetime-local-picker",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/keyboard-open-page-scroll-android/pair.json",
+      "label": "keyboard-open-page-scroll",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-month-picker-android/pair.json",
+      "label": "native-month-picker",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-select-dynamic-options-android/pair.json",
+      "label": "native-select-dynamic-options",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-time-picker-android/pair.json",
+      "label": "native-time-picker",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/otp-segmented-inputs-android/pair.json",
+      "label": "otp-segmented-inputs",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/viewport-dynamic-meta-android/pair.json",
+      "label": "viewport-dynamic-meta",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/desktop-horizontal-login-focus-android/pair.json",
+      "label": "desktop-horizontal-login-focus",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/direct-field-switch-after-scroll-android/pair.json",
+      "label": "direct-field-switch-after-scroll",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/drag-and-drop-functional-android/pair.json",
+      "label": "drag-and-drop-functional",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/fast-repeated-taps-android/pair.json",
+      "label": "fast-repeated-taps",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/infinite-list-loading-android/pair.json",
+      "label": "infinite-list-loading",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/modal-input-workflow-android/pair.json",
+      "label": "modal-input-workflow",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-date-picker-android/pair.json",
+      "label": "native-date-picker",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-select-picker-android/pair.json",
+      "label": "native-select-picker",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-week-picker-android/pair.json",
+      "label": "native-week-picker",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/reorder-autoscroll-android/pair.json",
+      "label": "reorder-autoscroll",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/slider-scrubbing-android/pair.json",
+      "label": "slider-scrubbing",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/sticky-footer-keyboard-android/pair.json",
+      "label": "sticky-footer-keyboard",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/sticky-modal-input-cycle-android/pair.json",
+      "label": "sticky-modal-input-cycle",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/swipe-carousel-android/pair.json",
+      "label": "swipe-carousel",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/native-select-all-countries-android/pair.json",
+      "label": "native-select-all-countries",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/password-reveal-focus-android/pair.json",
+      "label": "password-reveal-focus",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/drag-hidden-target-android/pair.json",
+      "label": "drag-hidden-target",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/mixed-input-return-cycle-android/pair.json",
+      "label": "mixed-input-return-cycle",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/nested-scrolling-android/pair.json",
+      "label": "nested-scrolling",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/long-input-cascade-android/pair.json",
+      "label": "long-input-cascade",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/input-near-bottom-typing-stability-android/pair.json",
+      "label": "input-near-bottom-typing-stability",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/multiple-input-types-direct-tap-android/pair.json",
+      "label": "multiple-input-types-direct-tap",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/map-pan-pinch-marker-android/pair.json",
+      "label": "map-pan-pinch-marker",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/testufo-screen-selector-android/pair.json",
+      "label": "testufo-screen-selector",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/viewport-no-meta-fallback-android/pair.json",
+      "label": "viewport-no-meta-fallback",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/viewport-fixed-width-720-android/pair.json",
+      "label": "viewport-fixed-width-720",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/viewport-initial-scale-only-android/pair.json",
+      "label": "viewport-initial-scale-only",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/bottom-sheet-snap-android/pair.json",
+      "label": "bottom-sheet-snap",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/contenteditable-editor-android/pair.json",
+      "label": "contenteditable-editor",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/pinch-then-tap-android/pair.json",
+      "label": "pinch-then-tap",
+      "tags": []
+    },
+    {
+      "manifest": "../artifacts/double-tap-no-zoom-android/pair.json",
+      "label": "double-tap-no-zoom",
+      "tags": []
     }
   ]
 }
