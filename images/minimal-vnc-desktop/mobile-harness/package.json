@@ -10,6 +10,7 @@
   },
   "scripts": {
     "setup:ios": "node src/setup-ios.mjs",
+    "setup:android": "node src/setup-android.mjs",
     "doctor": "node src/cli.mjs doctor",
     "pair": "node src/cli.mjs pair",
     "sequence": "node src/cli.mjs sequence",

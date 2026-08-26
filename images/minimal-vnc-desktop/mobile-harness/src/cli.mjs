@@ -14,7 +14,6 @@ import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
-import { remote } from 'webdriverio';
 import {
   publishCompletedDirectory,
   removeStaleStagingDirectories,
@@ -23,6 +22,7 @@ import {
 import { checkEnvironment, loadEnvironment, materializePair } from './environment.mjs';
 import { actionsForTarget } from './pair-actions.mjs';
 import { colorGeometry } from './pinch-integrity.mjs';
+import { buildTouchTracks, coordinateExpression } from './touch-tracks.mjs';
 import { analyzeViewportScreenshots } from './viewport-vision.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -65,6 +65,44 @@ function bootedSimulator(udid) {
   return { udid: device.udid, name: device.name, state: device.state };
 }
 
+function platformName(device) {
+  const value = String(device?.platformName ?? 'iOS').toLowerCase();
+  if (value === 'ios') return 'iOS';
+  if (value === 'android') return 'Android';
+  throw new Error(`Unsupported mobile platform ${device?.platformName}`);
+}
+
+function browserName(device) {
+  return platformName(device) === 'Android' ? 'Chrome' : 'Safari';
+}
+
+function bootedAndroidDevice(udid) {
+  const state = spawnSync('adb', ['-s', udid, 'get-state'], { encoding: 'utf8', timeout: 10000 });
+  if (state.status !== 0 || state.stdout.trim() !== 'device') {
+    throw new Error(`Assigned Android device ${udid} is not connected: ${(state.stderr || state.stdout || 'adb get-state failed').trim()}`);
+  }
+  const boot = spawnSync('adb', ['-s', udid, 'shell', 'getprop', 'sys.boot_completed'], { encoding: 'utf8', timeout: 10000 });
+  if (boot.status !== 0 || boot.stdout.trim() !== '1') throw new Error(`Assigned Android device ${udid} has not finished booting`);
+  const model = spawnSync('adb', ['-s', udid, 'shell', 'getprop', 'ro.product.model'], { encoding: 'utf8', timeout: 10000 });
+  return { udid, name: model.stdout.trim() || udid, state: 'Booted' };
+}
+
+function bootedMobileDevice(device) {
+  return platformName(device) === 'Android' ? bootedAndroidDevice(device.udid) : bootedSimulator(device.udid);
+}
+
+function prepareAndroidNativeInput(udid) {
+  spawnSync('adb', ['-s', udid, 'shell', 'pm', 'disable-user', '--user', '0', 'com.google.android.apps.wellbeing'], {
+    encoding: 'utf8', timeout: 10000,
+  });
+  const setting = spawnSync('adb', ['-s', udid, 'shell', 'settings', 'put', 'secure', 'show_ime_with_hard_keyboard', '1'], {
+    encoding: 'utf8', timeout: 10000,
+  });
+  if (setting.status !== 0) {
+    throw new Error(`Could not enable the Android software keyboard: ${(setting.stderr || setting.stdout).trim()}`);
+  }
+}
+
 function redactUrl(raw) {
   try {
     const u = new URL(raw);
@@ -94,7 +132,7 @@ function saveManifest(file, manifest) {
 }
 
 function refreshCurrentDashboard(pairManifestFile, pairManifest) {
-  if (pairManifest.status !== 'COMPLETE') return null;
+  if (!['COMPLETE', 'INFRA_ERROR'].includes(pairManifest.status)) return null;
   const configFile = path.join(root, 'dashboards', 'current.json');
   const config = existsSync(configFile)
     ? JSON.parse(readFileSync(configFile, 'utf8'))
@@ -102,13 +140,7 @@ function refreshCurrentDashboard(pairManifestFile, pairManifest) {
   const manifest = path.relative(path.dirname(configFile), pairManifestFile);
   config.entries = (config.entries ?? []).filter((entry) => {
     const relative = typeof entry === 'string' ? entry : entry.manifest;
-    if (relative === manifest) return false;
-    try {
-      const existing = JSON.parse(readFileSync(path.resolve(path.dirname(configFile), relative), 'utf8'));
-      return existing.name !== pairManifest.name;
-    } catch {
-      return true;
-    }
+    return relative !== manifest;
   });
   config.entries.push({ manifest, label: pairManifest.name, tags: [] });
   saveManifest(configFile, config);
@@ -170,7 +202,8 @@ async function waitForServer(port, processHandle, timeoutMs = 90000) {
 
 function startAppium(port, logFile) {
   const output = createWriteStream(logFile, { flags: 'a', mode: 0o600 });
-  const child = spawn(appiumBin, ['--port', String(port), '--base-path', '/', '--log-timestamp'], {
+  const appiumArgs = ['--port', String(port), '--base-path', '/', '--log-timestamp'];
+  const child = spawn(appiumBin, appiumArgs, {
     cwd: root,
     env: { ...process.env, APPIUM_HOME: appiumHome },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -216,6 +249,254 @@ async function startVideo(udid, file) {
     });
   });
   return child;
+}
+
+async function startAndroidVideo(udid, file) {
+  const remoteFile = `/sdcard/popcorn-harness-${process.pid}-${Date.now()}.mp4`;
+  const recordingStartedAt = new Date().toISOString();
+  const child = spawn('adb', ['-s', udid, 'shell', 'screenrecord', '--bit-rate', '6000000', remoteFile], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let errorText = '';
+  child.stderr.on('data', (chunk) => { errorText += chunk.toString(); });
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (child.exitCode === null) resolve();
+      else reject(new Error(`Android screen recorder exited with ${child.exitCode}: ${errorText}`));
+    }, 750);
+    child.once('error', (error) => { clearTimeout(timer); reject(error); });
+    child.once('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`Android screen recorder exited with ${code}: ${errorText}`));
+    });
+  });
+  child.recordingStartedAt = recordingStartedAt;
+  child.finishRecording = async () => {
+    // Very short Android recordings can be finalized before screenrecord writes
+    // usable duration metadata. Keep at least five seconds on the recorder clock
+    // so ffprobe and the mandatory touch overlay have a complete MP4 timeline.
+    const elapsedMs = Date.now() - Date.parse(child.recordingStartedAt);
+    if (elapsedMs < 5000) await new Promise((resolve) => setTimeout(resolve, 5000 - elapsedMs));
+    const recorder = spawnSync('adb', ['-s', udid, 'shell', 'pidof', 'screenrecord'], { encoding: 'utf8', timeout: 10000 });
+    const recorderPids = recorder.stdout.trim().split(/\s+/).filter(Boolean);
+    if (recorderPids.length) {
+      spawnSync('adb', ['-s', udid, 'shell', 'kill', '-2', ...recorderPids], { encoding: 'utf8', timeout: 10000 });
+      const closed = new Promise((resolve) => child.once('close', resolve));
+      await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 20000))]);
+    }
+    await stopProcess(child, 'SIGTERM', 5000);
+    const pull = spawnSync('adb', ['-s', udid, 'pull', remoteFile, file], { encoding: 'utf8', timeout: 60000 });
+    spawnSync('adb', ['-s', udid, 'shell', 'rm', '-f', remoteFile], { encoding: 'utf8', timeout: 10000 });
+    if (pull.status !== 0) throw new Error(`adb pull recording failed: ${(pull.stderr || pull.stdout).trim()}`);
+  };
+  return child;
+}
+
+async function startMobileVideo(device, file) {
+  return platformName(device) === 'Android' ? startAndroidVideo(device.udid, file) : startVideo(device.udid, file);
+}
+
+async function finishMobileVideo(video) {
+  if (!video) return;
+  if (video.finishRecording) await video.finishRecording();
+  else await stopProcess(video, 'SIGINT', 20000);
+}
+
+function adbCommand(udid, args, label, options = {}) {
+  const result = spawnSync('adb', ['-s', udid, ...args], {
+    encoding: options.binary ? null : 'utf8',
+    timeout: options.timeout ?? 30000,
+    maxBuffer: options.maxBuffer ?? 20 * 1024 * 1024,
+  });
+  if (result.error?.code === 'ETIMEDOUT') throw new Error(`${label} timed out`);
+  if (result.status !== 0) {
+    const detail = Buffer.isBuffer(result.stderr)
+      ? result.stderr.toString('utf8')
+      : (result.stderr || result.stdout || 'unknown adb error');
+    throw new Error(`${label} failed: ${String(detail).trim()}`);
+  }
+  return result.stdout;
+}
+
+function pointerGestures(pointer) {
+  let x;
+  let y;
+  let down = false;
+  let fromX;
+  let fromY;
+  let durationMs = 0;
+  let delayBeforeMs = 0;
+  const gestures = [];
+  for (const action of pointer.actions ?? []) {
+    if (action.type === 'pointerMove') {
+      x = Number(action.x);
+      y = Number(action.y);
+      if (down) durationMs += Math.max(0, Number(action.duration ?? 0));
+    } else if (action.type === 'pointerDown') {
+      down = true;
+      fromX = x;
+      fromY = y;
+      durationMs = 0;
+    } else if (action.type === 'pause') {
+      if (down) durationMs += Math.max(0, Number(action.duration ?? 0));
+      else delayBeforeMs += Math.max(0, Number(action.duration ?? 0));
+    } else if (action.type === 'pointerUp' && down) {
+      gestures.push({ fromX, fromY, toX: x, toY: y, durationMs, delayBeforeMs });
+      down = false;
+      delayBeforeMs = 0;
+    }
+  }
+  return gestures;
+}
+
+function uinputCommand(id, command, values = {}) {
+  return `${JSON.stringify({ id, command, ...values })}\n`;
+}
+
+function androidMultiTouchPayload(gestures, width, height) {
+  const id = 1;
+  const slotMaximum = Math.max(1, gestures.length - 1);
+  const axis = (code, maximum) => ({
+    code,
+    info: { value: 0, minimum: 0, maximum, fuzz: 0, flat: 0, resolution: 1 },
+  });
+  let payload = uinputCommand(id, 'register', {
+    name: 'Popcorn Native Multi-Touch',
+    vid: 0x18d1,
+    pid: 0x4ee7,
+    bus: 'virtual',
+    configuration: [
+      { type: 'UI_SET_EVBIT', data: ['EV_KEY', 'EV_ABS'] },
+      { type: 'UI_SET_KEYBIT', data: ['BTN_TOUCH'] },
+      { type: 'UI_SET_ABSBIT', data: [
+        'ABS_MT_SLOT', 'ABS_MT_POSITION_X', 'ABS_MT_POSITION_Y',
+        'ABS_MT_TRACKING_ID', 'ABS_MT_TOOL_TYPE', 'ABS_MT_TOUCH_MAJOR', 'ABS_MT_PRESSURE',
+      ] },
+      { type: 'UI_SET_PROPBIT', data: ['INPUT_PROP_DIRECT'] },
+    ],
+    abs_info: [
+      axis('ABS_MT_SLOT', slotMaximum),
+      axis('ABS_MT_POSITION_X', width - 1),
+      axis('ABS_MT_POSITION_Y', height - 1),
+      axis('ABS_MT_TRACKING_ID', 65535),
+      axis('ABS_MT_TOOL_TYPE', 15),
+      axis('ABS_MT_TOUCH_MAJOR', Math.max(width, height) - 1),
+      axis('ABS_MT_PRESSURE', 255),
+    ],
+  });
+  payload += uinputCommand(id, 'delay', { duration: 600 });
+
+  const event = (type, code, value) => [type, code, value];
+  const startEvents = [event('EV_KEY', 'BTN_TOUCH', 1)];
+  gestures.forEach((gesture, slot) => {
+    startEvents.push(
+      event('EV_ABS', 'ABS_MT_SLOT', slot),
+      event('EV_ABS', 'ABS_MT_TRACKING_ID', 100 + slot),
+      event('EV_ABS', 'ABS_MT_TOOL_TYPE', 0),
+      event('EV_ABS', 'ABS_MT_POSITION_X', Math.round(gesture.fromX)),
+      event('EV_ABS', 'ABS_MT_POSITION_Y', Math.round(gesture.fromY)),
+      event('EV_ABS', 'ABS_MT_TOUCH_MAJOR', 24),
+      event('EV_ABS', 'ABS_MT_PRESSURE', 200),
+    );
+  });
+  startEvents.push(event('EV_SYN', 'SYN_REPORT', 0));
+  payload += uinputCommand(id, 'inject', { events: startEvents.flat() });
+  const holdMs = Math.max(0, Math.max(...gestures.map((gesture) => Number(gesture.delayBeforeMs ?? 0))));
+  if (holdMs) payload += uinputCommand(id, 'delay', { duration: holdMs });
+
+  const steps = 16;
+  const durationMs = Math.max(100, Math.max(...gestures.map((gesture) => Number(gesture.durationMs || 450))));
+  for (let step = 1; step <= steps; step += 1) {
+    const progress = step / steps;
+    const moveEvents = [];
+    gestures.forEach((gesture, slot) => {
+      moveEvents.push(
+        event('EV_ABS', 'ABS_MT_SLOT', slot),
+        event('EV_ABS', 'ABS_MT_POSITION_X', Math.round(gesture.fromX + (gesture.toX - gesture.fromX) * progress)),
+        event('EV_ABS', 'ABS_MT_POSITION_Y', Math.round(gesture.fromY + (gesture.toY - gesture.fromY) * progress)),
+      );
+    });
+    moveEvents.push(event('EV_SYN', 'SYN_REPORT', 0));
+    payload += uinputCommand(id, 'inject', { events: moveEvents.flat() });
+    payload += uinputCommand(id, 'delay', { duration: Math.max(8, Math.round(durationMs / steps)) });
+  }
+
+  const endEvents = [];
+  gestures.forEach((gesture, slot) => {
+    endEvents.push(
+      event('EV_ABS', 'ABS_MT_SLOT', slot),
+      event('EV_ABS', 'ABS_MT_TRACKING_ID', -1),
+    );
+  });
+  endEvents.push(event('EV_KEY', 'BTN_TOUCH', 0), event('EV_SYN', 'SYN_REPORT', 0));
+  payload += uinputCommand(id, 'inject', { events: endEvents.flat() });
+  payload += uinputCommand(id, 'delay', { duration: 100 });
+  return payload;
+}
+
+async function createAndroidAdbTransport(udid) {
+  const screenshot = () => adbCommand(udid, ['exec-out', 'screencap', '-p'], 'Android framebuffer capture', {
+    binary: true,
+    timeout: 30000,
+  });
+  const dimensions = PNG.sync.read(screenshot());
+  const tap = (x, y) => adbCommand(udid, [
+    'shell', 'input', 'touchscreen', 'tap', String(Math.round(x)), String(Math.round(y)),
+  ], 'Android native tap');
+  const swipe = (gesture) => adbCommand(udid, [
+    'shell', 'input', 'touchscreen', 'swipe',
+    String(Math.round(gesture.fromX)), String(Math.round(gesture.fromY)),
+    String(Math.round(gesture.toX)), String(Math.round(gesture.toY)),
+    String(Math.max(100, Math.round(gesture.durationMs || 450))),
+  ], 'Android native swipe');
+  return {
+    capabilities: { platformName: 'Android', transport: 'adb-native' },
+    async takeScreenshot() { return screenshot().toString('base64'); },
+    async pause(ms) { await new Promise((resolve) => setTimeout(resolve, ms)); },
+    async getWindowRect() { return { x: 0, y: 0, width: dimensions.width, height: dimensions.height }; },
+    async performActions(pointers) {
+      const gestureSets = pointers.map(pointerGestures);
+      if (gestureSets.length === 1) {
+        for (const gesture of gestureSets[0]) {
+          if (gesture.delayBeforeMs) await new Promise((resolve) => setTimeout(resolve, gesture.delayBeforeMs));
+          if (gesture.fromX === gesture.toX && gesture.fromY === gesture.toY) tap(gesture.fromX, gesture.fromY);
+          else swipe(gesture);
+        }
+        return;
+      }
+      const gestures = gestureSets.map((set) => set[0]);
+      if (gestures.some((gesture) => !gesture)) throw new Error('Android multi-touch action is incomplete');
+      const result = spawnSync('adb', ['-s', udid, 'shell', 'uinput', '-'], {
+        input: androidMultiTouchPayload(gestures, dimensions.width, dimensions.height),
+        encoding: 'utf8',
+        timeout: 30000,
+        maxBuffer: 4 * 1024 * 1024,
+      });
+      if (result.error?.code === 'ETIMEDOUT') throw new Error('Android native multi-touch timed out');
+      if (result.status !== 0) {
+        throw new Error(`Android native multi-touch failed: ${(result.stderr || result.stdout || 'unknown uinput error').trim()}`);
+      }
+    },
+    async releaseActions() {},
+    async execute(command, args) {
+      if (command === 'mobile: tap') {
+        tap(args.x, args.y);
+        return;
+      }
+      if (command === 'mobile: doubleClickGesture' || command === 'mobile: doubleTap') {
+        tap(args.x, args.y);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        tap(args.x, args.y);
+        return;
+      }
+      throw new Error(`${command} is not available through the Android ADB touch transport`);
+    },
+    async setOrientation(orientation) {
+      adbCommand(udid, ['shell', 'settings', 'put', 'system', 'accelerometer_rotation', '0'], 'Disable Android auto-rotation');
+      adbCommand(udid, ['shell', 'settings', 'put', 'system', 'user_rotation', orientation === 'LANDSCAPE' ? '1' : '0'], 'Set Android orientation');
+    },
+    async deleteSession() {},
+  };
 }
 
 async function nativeTap(driver, x, y) {
@@ -264,6 +545,7 @@ async function nativeSwipe(driver, action) {
     ],
   }]);
   await driver.releaseActions();
+  if (action.settleMs) await driver.pause(Math.max(0, Number(action.settleMs)));
   return [
     { kind: 'swipe-start', x: action.fromX, y: action.fromY, at: startedAt },
     { kind: 'swipe-end', x: action.toX, y: action.toY, at: new Date().toISOString() },
@@ -366,8 +648,8 @@ function writeTouchIndicator(file) {
 }
 
 function renderTouchVideo(videoFile, outputFile, indicatorFile, manifest) {
-  const touches = manifest.actions.flatMap((action) => action.touches ?? (action.observation?.touch ? [action.observation.touch] : []));
-  if (!touches.length) return { status: 'SKIPPED', reason: 'No recorded native touches' };
+  const hasTouches = manifest.actions.some((action) => action.touches?.length || action.observation?.touch || action.observation?.touches?.length);
+  if (!hasTouches) return { status: 'SKIPPED', reason: 'No recorded native touches' };
   if (!manifest.video?.startedAt || !manifest.window?.width || !manifest.window?.height) {
     return { status: 'SKIPPED', reason: 'Missing video timeline or native window dimensions' };
   }
@@ -376,46 +658,63 @@ function renderTouchVideo(videoFile, outputFile, indicatorFile, manifest) {
   }
   const probe = spawnSync('ffprobe', [
     '-v', 'error', '-select_streams', 'v:0',
-    '-show_entries', 'stream=width,height:format=duration', '-of', 'json', videoFile,
+    '-show_entries', 'stream=width,height,nb_frames:format=duration', '-of', 'json', videoFile,
   ], { encoding: 'utf8' });
   if (probe.status !== 0) throw new Error(`ffprobe failed: ${probe.stderr.trim()}`);
   const metadata = JSON.parse(probe.stdout);
   const width = Number(metadata.streams?.[0]?.width);
   const height = Number(metadata.streams?.[0]?.height);
-  const duration = Number(metadata.format?.duration);
-  if (!width || !height || !duration) throw new Error('ffprobe returned incomplete video metadata');
   const origin = Date.parse(manifest.video.startedAt);
-  const events = touches.map((touch) => ({
-    ...touch,
-    start: Math.max(0, (Date.parse(touch.at) - origin) / 1000 - 0.12),
-    end: Math.min(duration, (Date.parse(touch.at) - origin) / 1000 + 0.6),
-    videoX: Math.round(touch.x * width / manifest.window.width - 48),
-    videoY: Math.round(touch.y * height / manifest.window.height - 48),
-  })).filter((touch) => Number.isFinite(touch.start) && touch.end > touch.start);
-  if (!events.length) return { status: 'SKIPPED', reason: 'No touches fell inside the recorded timeline' };
+  const recordedDuration = Number(metadata.format?.duration);
+  const sourceFrames = Number(metadata.streams?.[0]?.nb_frames);
+  const lastActionAt = Math.max(origin, ...manifest.actions.map((action) => Date.parse(action.completedAt ?? action.startedAt)).filter(Number.isFinite));
+  const staticRecording = !Number.isFinite(recordedDuration) || recordedDuration <= 0 || sourceFrames <= 1;
+  const duration = staticRecording ? Math.max(1, (lastActionAt - origin) / 1000 + 0.5) : recordedDuration;
+  if (!width || !height || !Number.isFinite(origin)) throw new Error('ffprobe returned incomplete video metadata');
+  const tracks = buildTouchTracks(manifest.actions, {
+    origin,
+    duration,
+    videoWidth: width,
+    videoHeight: height,
+    windowWidth: Number(manifest.window.width),
+    windowHeight: Number(manifest.window.height),
+  });
+  if (!tracks.length) return { status: 'SKIPPED', reason: 'No touches fell inside the recorded timeline' };
   writeTouchIndicator(indicatorFile);
-  const labels = events.map((_, index) => `[dot${index}]`).join('');
-  const filters = [];
-  if (events.length === 1) filters.push(`[1:v]format=rgba${labels}`);
-  else filters.push(`[1:v]format=rgba,split=${events.length}${labels}`);
-  let input = '[0:v]';
-  events.forEach((event, index) => {
+  const labels = tracks.map((_, index) => `[dot${index}]`).join('');
+  const filters = [staticRecording
+    ? '[0:v]loop=loop=-1:size=1:start=0,setpts=N/30/TB[base]'
+    : '[0:v]fps=30,setpts=PTS-STARTPTS[base]'];
+  if (tracks.length === 1) filters.push(`[1:v]format=rgba${labels}`);
+  else filters.push(`[1:v]format=rgba,split=${tracks.length}${labels}`);
+  let input = '[base]';
+  tracks.forEach((track, index) => {
     const output = `[touch${index}]`;
-    filters.push(`${input}[dot${index}]overlay=x=${event.videoX}:y=${event.videoY}:enable='between(t,${event.start.toFixed(3)},${event.end.toFixed(3)})':eof_action=pass${output}`);
+    filters.push(`${input}[dot${index}]overlay=x='${coordinateExpression(track, 'x')}':y='${coordinateExpression(track, 'y')}':enable='between(t,${track.visibleStart.toFixed(3)},${track.visibleEnd.toFixed(3)})':eof_action=pass${output}`);
     input = output;
   });
   const rendered = spawnSync('ffmpeg', [
     '-hide_banner', '-loglevel', 'error', '-i', videoFile,
     '-loop', '1', '-framerate', '30', '-i', indicatorFile,
     '-filter_complex', filters.join(';'), '-map', input, '-map', '0:a?',
-    '-t', String(duration), '-c:v', 'libx264', '-preset', 'medium', '-crf', '28',
+    '-t', String(duration), '-r', '30', '-c:v', 'libx264', '-preset', 'medium', '-crf', '28',
     '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', '-y', outputFile,
   ], { encoding: 'utf8', maxBuffer: 10 * 1024 * 1024 });
   if (rendered.status !== 0) throw new Error(`ffmpeg touch overlay failed: ${rendered.stderr.trim()}`);
   return {
     status: 'COMPLETE',
-    events: events.map(({ kind, x, y, at, start, end }) => ({ kind, x, y, at, startSeconds: start, endSeconds: end })),
+    events: tracks.map((track) => ({
+      kind: track.kind,
+      action: track.action,
+      startSeconds: track.visibleStart,
+      endSeconds: track.visibleEnd,
+      points: track.points.map(({ kind, x, y, at, seconds }) => ({ kind, x, y, at, seconds })),
+    })),
     touchVideo: path.basename(outputFile),
+    staticSourceExtended: staticRecording,
+    sourceFrames: Number.isFinite(sourceFrames) ? sourceFrames : null,
+    outputFrameRate: 30,
+    tracking: 'continuous-linear',
     compression: { codec: 'h264', preset: 'medium', crf: 28, fastStart: true },
   };
 }
@@ -631,7 +930,9 @@ async function doubleTapRelativeToVisibleColor(driver, action, rect) {
   checkPoint(x, rect.width, 'double tap x');
   checkPoint(y, rect.height, 'double tap y');
   const at = new Date().toISOString();
-  await driver.execute('mobile: doubleTap', { x, y });
+  const driverPlatform = String(driver.capabilities?.platformName ?? '').toLowerCase();
+  if (driverPlatform === 'android') await driver.execute('mobile: doubleClickGesture', { x, y });
+  else await driver.execute('mobile: doubleTap', { x, y });
   return { color: action.color.toLowerCase(), anchor, resolved: { x, y }, touches: [{ kind: 'tap', x, y, at }, { kind: 'tap', x, y, at: new Date().toISOString() }] };
 }
 
@@ -679,6 +980,7 @@ async function runSetupActions(driver, actions, rect, manifest, manifestFile) {
           checkPoint(action.x, rect.width, 'setup tap x');
           checkPoint(action.y, rect.height, 'setup tap y');
           record.touch = await nativeTap(driver, Math.round(action.x), Math.round(action.y));
+          if (action.settleMs) await driver.pause(Math.max(0, Number(action.settleMs)));
           break;
         case 'tapRelativeToColor':
           record.observation = await tapRelativeToVisibleColor(driver, action, rect);
@@ -751,6 +1053,7 @@ async function runScenario(scenarioFile, outputOverride, quiet = false) {
     testDescription: scenario.testDescription ?? null,
     testPage: scenario.testPage ?? null,
     device: scenario.device,
+    browser: { name: browserName(scenario.device), platformName: platformName(scenario.device) },
     window: null,
     setupActions: [],
     recordingStart: null,
@@ -771,44 +1074,66 @@ async function runScenario(scenarioFile, outputOverride, quiet = false) {
   let postRunError;
 
   try {
-    manifest.simulatorPreflight = bootedSimulator(scenario.device.udid);
+    manifest.devicePreflight = bootedMobileDevice(scenario.device);
     saveManifest(manifestFile, manifest);
-    appium = startAppium(port, appiumLog);
-    await waitForServer(port, appium);
-    const capabilities = {
-      platformName: 'iOS',
-      browserName: 'Safari',
-      'appium:automationName': 'XCUITest',
-      'appium:udid': scenario.device.udid,
-      'appium:deviceName': scenario.device.name,
-      'appium:platformVersion': scenario.device.platformVersion,
-      'appium:safariInitialUrl': scenario.url,
-      'appium:connectHardwareKeyboard': false,
-      'appium:showXcodeLog': true,
-      'appium:wdaLaunchTimeout': 120000,
-      'appium:webviewConnectTimeout': Number(scenario.webviewConnectTimeout ?? 20000),
-      'appium:newCommandTimeout': 180,
-      'appium:noReset': true,
-    };
-    if (scenario.wdaLocalPort) capabilities['appium:wdaLocalPort'] = Number(scenario.wdaLocalPort);
-    if (scenario.mjpegServerPort) capabilities['appium:mjpegServerPort'] = Number(scenario.mjpegServerPort);
-    if (scenario.derivedDataPath) capabilities['appium:derivedDataPath'] = scenario.derivedDataPath;
-    driver = await remote({
-      hostname: '127.0.0.1',
-      port,
-      path: '/',
-      logLevel: 'warn',
-      connectionRetryCount: 0,
-      connectionRetryTimeout: 180000,
-      capabilities,
-    });
-
-    const contexts = await driver.getContexts();
-    if (contexts.includes('NATIVE_APP')) await driver.switchContext('NATIVE_APP');
+    const mobilePlatform = platformName(scenario.device);
+    if (mobilePlatform === 'Android') {
+      prepareAndroidNativeInput(scenario.device.udid);
+      driver = await createAndroidAdbTransport(scenario.device.udid);
+      manifest.transport = {
+        kind: 'adb-native',
+        screenshots: 'adb-exec-out-screencap',
+        touches: 'adb-shell-input',
+        elementAccess: false,
+        webdriverConnection: false,
+      };
+    } else {
+      appium = startAppium(port, appiumLog);
+      await waitForServer(port, appium);
+      const capabilities = {
+        platformName: mobilePlatform,
+        browserName: browserName(scenario.device),
+        'appium:automationName': 'XCUITest',
+        'appium:udid': scenario.device.udid,
+        'appium:deviceName': scenario.device.name,
+        'appium:platformVersion': scenario.device.platformVersion,
+        'appium:newCommandTimeout': 180,
+        'appium:noReset': true,
+      };
+      Object.assign(capabilities, {
+        'appium:safariInitialUrl': scenario.url,
+        'appium:connectHardwareKeyboard': false,
+        'appium:showXcodeLog': true,
+        'appium:wdaLaunchTimeout': 120000,
+        'appium:webviewConnectTimeout': Number(scenario.webviewConnectTimeout ?? 20000),
+      });
+      if (scenario.wdaLocalPort) capabilities['appium:wdaLocalPort'] = Number(scenario.wdaLocalPort);
+      if (scenario.mjpegServerPort) capabilities['appium:mjpegServerPort'] = Number(scenario.mjpegServerPort);
+      if (scenario.derivedDataPath) capabilities['appium:derivedDataPath'] = scenario.derivedDataPath;
+      const { remote } = await import('webdriverio');
+      driver = await remote({
+        hostname: '127.0.0.1',
+        port,
+        path: '/',
+        logLevel: 'warn',
+        connectionRetryCount: 0,
+        connectionRetryTimeout: 180000,
+        capabilities,
+      });
+      const contexts = await driver.getContexts();
+      if (contexts.includes('NATIVE_APP')) await driver.switchContext('NATIVE_APP');
+      manifest.transport = { kind: 'appium-xcuitest', elementAccess: false };
+    }
     if (scenario.nativeOpenUrl) {
-      const opened = spawnSync('xcrun', ['simctl', 'openurl', scenario.device.udid, scenario.url], { encoding: 'utf8' });
-      if (opened.status !== 0) throw new Error(`simctl openurl failed: ${opened.stderr.trim()}`);
-      manifest.navigation = { method: 'simctl-openurl', url: redactUrl(scenario.url) };
+      if (mobilePlatform === 'Android') {
+        adbCommand(scenario.device.udid, ['shell', 'am', 'force-stop', 'com.android.chrome'], 'Reset Android Chrome');
+        await driver.pause(500);
+      }
+      const opened = mobilePlatform === 'Android'
+        ? spawnSync('adb', ['-s', scenario.device.udid, 'shell', `am start -W -a android.intent.action.VIEW -p com.android.chrome -d ${shellQuote(scenario.url)}`], { encoding: 'utf8' })
+        : spawnSync('xcrun', ['simctl', 'openurl', scenario.device.udid, scenario.url], { encoding: 'utf8' });
+      if (opened.status !== 0) throw new Error(`${mobilePlatform === 'Android' ? 'adb Chrome open' : 'simctl openurl'} failed: ${opened.stderr.trim()}`);
+      manifest.navigation = { method: mobilePlatform === 'Android' ? 'adb-chrome-openurl' : 'simctl-openurl', url: redactUrl(scenario.url) };
     }
     const rect = await driver.getWindowRect();
     manifest.window = rect;
@@ -835,7 +1160,7 @@ async function runScenario(scenarioFile, outputOverride, quiet = false) {
         saveManifest(manifestFile, manifest);
       }
     }
-    video = await startVideo(scenario.device.udid, videoFile);
+    video = await startMobileVideo(scenario.device, videoFile);
     manifest.video = {
       file: 'screen.mp4',
       startedAt: video.recordingStartedAt,
@@ -864,6 +1189,7 @@ async function runScenario(scenarioFile, outputOverride, quiet = false) {
             checkPoint(action.x, rect.width, 'x');
             checkPoint(action.y, rect.height, 'y');
             record.touches = [await nativeTap(driver, Math.round(action.x), Math.round(action.y))];
+            if (action.settleMs) await driver.pause(Math.max(0, Number(action.settleMs)));
             break;
           case 'tapRelativeToColor':
             record.observation = await tapRelativeToVisibleColor(driver, action, rect);
@@ -939,7 +1265,16 @@ async function runScenario(scenarioFile, outputOverride, quiet = false) {
     throw error;
   } finally {
     if (driver) await driver.deleteSession().catch(() => {});
-    await stopProcess(video, 'SIGINT', 20000);
+    try {
+      await finishMobileVideo(video);
+    } catch (recordingError) {
+      manifest.recordingError = recordingError instanceof Error ? recordingError.message : String(recordingError);
+      if (manifest.status === 'COMPLETE') {
+        manifest.status = 'INFRA_ERROR';
+        manifest.verdict = 'INFRA_ERROR';
+        manifest.reason = manifest.recordingError;
+      }
+    }
     await stopProcess(appium, 'SIGTERM', 10000);
     if (existsSync(videoFile)) {
       manifest.video ??= { file: 'screen.mp4', startedAt: null, startsAfterCaseReady: false, touchOverlay: 'PENDING' };
@@ -960,8 +1295,13 @@ async function runScenario(scenarioFile, outputOverride, quiet = false) {
         manifest.artifacts.push({ type: 'video', variant: 'touch-evidence', file: 'screen-touches.mp4', sha256: sha256(touchVideoFile) });
       }
       // Raw simulator video and the generated touch sprite are build inputs,
-      // never durable evidence. The annotated, compressed video is sufficient.
-      if (existsSync(videoFile)) unlinkSync(videoFile);
+      // unless overlay generation failed and the raw file is needed to diagnose
+      // the recorder. Successful runs retain only the annotated evidence video.
+      if (existsSync(videoFile) && manifest.video.touchOverlay?.status === 'COMPLETE') unlinkSync(videoFile);
+      else if (existsSync(videoFile)) {
+        manifest.video.rawRecordingRetained = true;
+        manifest.artifacts.push({ type: 'video', variant: 'raw-diagnostic', file: 'screen.mp4', sha256: sha256(videoFile) });
+      }
       if (existsSync(touchIndicatorFile)) unlinkSync(touchIndicatorFile);
     }
     if (existsSync(appiumLog)) {
@@ -978,9 +1318,15 @@ async function runScenario(scenarioFile, outputOverride, quiet = false) {
 
 function doctor(environmentFile) {
   const loadedEnvironment = loadEnvironment(environmentFile);
+  const profiles = loadedEnvironment
+    ? Object.values(loadedEnvironment.value.simulators ?? { default: loadedEnvironment.value.simulator }).filter(Boolean)
+    : [];
+  const platforms = new Set(profiles.map((profile) => platformName(profile.device)));
+  if (!platforms.size) platforms.add('iOS');
   const checks = {
     node: process.version,
     xcrun: commandExists('xcrun'),
+    adb: commandExists('adb'),
     swiftVision: commandExists('swift'),
     appiumBinary: existsSync(appiumBin),
     appiumHome: existsSync(appiumHome),
@@ -1000,10 +1346,19 @@ function doctor(environmentFile) {
     });
     checks.xcuitestInstalled = list.status === 0 && /"xcuitest"/.test(list.stdout);
   }
-  const sims = spawnSync('xcrun', ['simctl', 'list', 'devices', 'booted', '--json'], { encoding: 'utf8' });
-  checks.bootedSimulators = sims.status === 0 ? JSON.parse(sims.stdout).devices : {};
+  if (platforms.has('iOS')) {
+    const sims = spawnSync('xcrun', ['simctl', 'list', 'devices', 'booted', '--json'], { encoding: 'utf8' });
+    checks.bootedSimulators = sims.status === 0 ? JSON.parse(sims.stdout).devices : {};
+  }
+  if (platforms.has('Android')) {
+    const devices = spawnSync('adb', ['devices', '-l'], { encoding: 'utf8' });
+    checks.androidDevices = devices.status === 0 ? devices.stdout.trim().split(/\r?\n/).slice(1).filter(Boolean) : [];
+  }
   console.log(JSON.stringify(checks, null, 2));
-  if (!checks.xcrun || !checks.swiftVision || !checks.appiumBinary || !checks.xcuitestInstalled
+  const iosFailed = platforms.has('iOS') && (!checks.xcrun || !checks.swiftVision || !checks.xcuitestInstalled);
+  const androidFailed = platforms.has('Android') && !checks.adb;
+  const appiumFailed = platforms.has('iOS') && !checks.appiumBinary;
+  if (iosFailed || androidFailed || appiumFailed
     || checks.environment?.health.some((check) => !check.ok)) process.exit(1);
 }
 
@@ -1206,16 +1561,17 @@ function reportImagePath(outputDir, file) {
 function writeComparisonReport(comparison, baselineFile, candidateFile, outputDir) {
   const baselineManifest = JSON.parse(readFileSync(baselineFile, 'utf8'));
   const candidateManifest = JSON.parse(readFileSync(candidateFile, 'utf8'));
+  const baselineLabel = `Direct ${baselineManifest.browser?.name ?? 'Safari'}`;
   const checkpoint = (runFile, manifest, name) => path.join(path.dirname(runFile), screenshotArtifact(manifest, name).file);
   const evidencePanels = [
-    ['Direct Safari', comparison.from, checkpoint(baselineFile, baselineManifest, comparison.from)],
+    [baselineLabel, comparison.from, checkpoint(baselineFile, baselineManifest, comparison.from)],
     ['LiveView', comparison.from, checkpoint(candidateFile, candidateManifest, comparison.from)],
-    ['Direct Safari', comparison.to, checkpoint(baselineFile, baselineManifest, comparison.to)],
+    [baselineLabel, comparison.to, checkpoint(baselineFile, baselineManifest, comparison.to)],
     ['LiveView', comparison.to, checkpoint(candidateFile, candidateManifest, comparison.to)],
   ];
   const diffPanels = ['relative-transition-diff', 'pinch-zoom-integrity'].includes(comparison.profile)
     ? [
-      ['Direct Safari relative change', `${comparison.from} → ${comparison.to}`, path.join(outputDir, comparison.transitions.baseline.diffFile)],
+      [`${baselineLabel} relative change`, `${comparison.from} → ${comparison.to}`, path.join(outputDir, comparison.transitions.baseline.diffFile)],
       ['LiveView relative change', `${comparison.from} → ${comparison.to}`, path.join(outputDir, comparison.transitions.candidate.diffFile)],
     ]
     : [
@@ -1244,6 +1600,7 @@ ${comparison.summaryMetrics.map((item) => metric(item.label, item.value)).join('
 
 function compareRuns(baselineFile, candidateFile, fromName, toName, outputOverride, options = {}, quiet = false) {
   const outputDir = path.resolve(outputOverride || path.join(root, 'artifacts', 'comparison'));
+  const baselineBrowser = JSON.parse(readFileSync(baselineFile, 'utf8')).browser?.name ?? 'Safari';
   mkdirSync(outputDir, { recursive: true, mode: 0o700 });
   const profile = options.profile ?? 'checkpoint-pixel-diff';
   if (!['checkpoint-pixel-diff', 'relative-transition-diff', 'pinch-zoom-integrity'].includes(profile)) throw new Error(`Unknown comparison profile ${profile}`);
@@ -1291,17 +1648,17 @@ function compareRuns(baselineFile, candidateFile, fromName, toName, outputOverri
     const failures = [];
     if (!timelineSync.aligned) failures.push('visible checkpoints were not synchronized');
     if (!zoomPassed) failures.push(`zoom target did not grow by at least ${minZoomAreaRatio.toFixed(2)}× on both sides`);
-    if (!relativeZoomPassed) failures.push(`Safari and LiveView zoom ratios differed by more than ${maxZoomAreaRatioDelta.toFixed(2)}`);
+    if (!relativeZoomPassed) failures.push(`${baselineBrowser} and LiveView zoom ratios differed by more than ${maxZoomAreaRatioDelta.toFixed(2)}`);
     if (!isolationPassed) failures.push('one or more markers outside the bounded pinch area moved, scaled, or disappeared');
     const reason = failures.length
       ? `Pinch integrity failed: ${failures.join('; ')}`
       : `Pinch stayed inside the bounded area, produced equivalent relative magnification, and preserved tap mapping`;
     const summaryMetrics = [
       { label: 'Timeline synchronized', value: timelineSync.aligned ? 'Yes' : 'No' },
-      { label: 'Safari target area', value: `${baseline.zoomGeometry.areaRatio.toFixed(2)}×` },
+      { label: `${baselineBrowser} target area`, value: `${baseline.zoomGeometry.areaRatio.toFixed(2)}×` },
       { label: 'LiveView target area', value: `${candidate.zoomGeometry.areaRatio.toFixed(2)}×` },
       { label: 'Cross-side zoom delta', value: zoomAreaRatioDelta.toFixed(3) },
-      { label: 'Safari outer markers', value: baselineIsolationPassed ? 'Stable' : 'Changed' },
+      { label: `${baselineBrowser} outer markers`, value: baselineIsolationPassed ? 'Stable' : 'Changed' },
       { label: 'LiveView outer markers', value: candidateIsolationPassed ? 'Stable' : 'Changed' },
     ];
     const comparison = {
@@ -1368,7 +1725,7 @@ function compareRuns(baselineFile, candidateFile, fromName, toName, outputOverri
           : `Relative transition delta ${(transitionRatioDelta * 100).toFixed(2)}% stayed within the configured ${(configuredLimit * 100).toFixed(2)}% limit`;
     const summaryMetrics = [
       { label: 'Timeline synchronized', value: timelineSync.aligned ? 'Yes' : 'No' },
-      { label: 'Safari relative change', value: `${(baseline.changedPixelRatio * 100).toFixed(2)}%` },
+      { label: `${baselineBrowser} relative change`, value: `${(baseline.changedPixelRatio * 100).toFixed(2)}%` },
       { label: 'LiveView relative change', value: `${(candidate.changedPixelRatio * 100).toFixed(2)}%` },
       { label: 'Transition ratio delta', value: `${(transitionRatioDelta * 100).toFixed(2)}%` },
     ];
@@ -1545,12 +1902,13 @@ function shellQuote(value) {
 }
 
 function runRemoteScript(sshTarget, script) {
-  const result = spawnSync('ssh', [sshTarget, 'bash', '-s'], {
+  const command = sshTarget === 'local' ? ['bash', ['-s']] : ['ssh', [sshTarget, 'bash', '-s']];
+  const result = spawnSync(command[0], command[1], {
     input: script,
     encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
   });
-  if (result.status !== 0) throw new Error(`Remote session command failed: ${result.stderr.trim() || `exit ${result.status}`}`);
+  if (result.status !== 0) throw new Error(`Session command failed: ${result.stderr.trim() || `exit ${result.status}`}`);
   return result.stdout.trim();
 }
 
@@ -1686,7 +2044,7 @@ function pairScenario(pair, targetName, pairFile, sessionFileOverride) {
     setupActions: target.setupActions ?? pair.setupActions ?? [],
     recordingStart: target.recordingStart ?? pair.recordingStart,
     recordingLeadInMs: target.recordingLeadInMs ?? pair.recordingLeadInMs,
-    actions: actionsForTarget(pair.actions, targetName),
+    actions: actionsForTarget(pair.actions, targetName, platformName(pair.device), pair.actionCoordinateScale),
     ...(target.url ? { url: target.url } : {}),
     ...(liveview ? { liveview } : {}),
   };
@@ -1726,7 +2084,11 @@ async function runPair(pairFile, outputOverride, environmentFile, simulatorName)
   if (!pair.name || !pair.device?.udid) throw new Error('Pair requires name and device.udid');
   if (!Array.isArray(pair.actions) || pair.actions.length === 0) throw new Error('Pair requires a shared non-empty actions array');
   validatePairCheckpoints(pair);
-  const finalOutputDir = path.resolve(outputOverride || path.join(root, 'artifacts', slug(pair.name)));
+  const pairPlatform = platformName(pair.device);
+  const defaultOutputName = pairPlatform === 'Android'
+    ? `${slug(pair.name)}-android`
+    : slug(pair.name);
+  const finalOutputDir = path.resolve(outputOverride || path.join(root, 'artifacts', defaultOutputName));
   const staleStaging = removeStaleStagingDirectories(finalOutputDir);
   const outputDir = stagingDirectory(finalOutputDir);
   mkdirSync(outputDir, { recursive: true, mode: 0o700 });
@@ -1737,6 +2099,9 @@ async function runPair(pairFile, outputOverride, environmentFile, simulatorName)
     caseId: pair.caseId ?? null,
     testDescription: pair.testDescription ?? null,
     testPage: pair.testPage ?? null,
+    platform: pairPlatform,
+    browser: browserName(pair.device),
+    device: pair.device,
     environment: pair.environment ?? null,
     environmentHealth,
     startedAt: new Date().toISOString(),
@@ -1847,7 +2212,7 @@ async function runPair(pairFile, outputOverride, environmentFile, simulatorName)
     pairManifest.completedAt = new Date().toISOString();
     const replacedPrevious = existsSync(finalOutputDir);
     pairManifest.artifactRetention = {
-      policy: 'one-completed-directory-per-case',
+      policy: 'one-completed-directory-per-case-and-platform',
       status: 'COMPLETE',
       replacedPrevious,
       removedStaleStagingDirectories: staleStaging.length,
@@ -1877,6 +2242,55 @@ function uniqueParallelField(entries, field, required = true) {
   if (new Set(present.map(String)).size !== present.length) throw new Error(`Parallel pairs have duplicate ${field}`);
 }
 
+function bootAssignedDevice(device) {
+  if (platformName(device) === 'iOS') {
+    spawnSync('xcrun', ['simctl', 'boot', device.udid], { encoding: 'utf8' });
+    const boot = spawnSync('xcrun', ['simctl', 'bootstatus', device.udid, '-b'], {
+      encoding: 'utf8', timeout: 120000, maxBuffer: 10 * 1024 * 1024,
+    });
+    if (boot.error?.code === 'ETIMEDOUT') throw new Error(`Simulator ${device.udid} boot timed out`);
+    if (boot.status !== 0) throw new Error(`Simulator ${device.udid} boot failed: ${(boot.stderr || boot.stdout).trim()}`);
+    bootedSimulator(device.udid);
+    return { launched: true };
+  }
+
+    try {
+      bootedAndroidDevice(device.udid);
+      if (device.bootSettleMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(device.bootSettleMs));
+      prepareAndroidNativeInput(device.udid);
+      return { launched: false };
+  } catch (error) {
+    if (!device.avd) throw error;
+  }
+  const emulator = spawn('emulator', ['-avd', device.avd, '-no-snapshot-save', ...(device.emulatorArgs ?? [])], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  emulator.unref();
+  const wait = spawnSync('adb', ['-s', device.udid, 'wait-for-device'], { encoding: 'utf8', timeout: 120000 });
+  if (wait.error?.code === 'ETIMEDOUT' || wait.status !== 0) throw new Error(`Android emulator ${device.avd} did not connect as ${device.udid}`);
+  const started = Date.now();
+  while (Date.now() - started < 120000) {
+    try {
+      bootedAndroidDevice(device.udid);
+      if (device.bootSettleMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(device.bootSettleMs));
+      prepareAndroidNativeInput(device.udid);
+      return { launched: true };
+    } catch {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);
+    }
+  }
+  throw new Error(`Android emulator ${device.avd} did not finish booting`);
+}
+
+function shutdownAssignedDevice(device, launch) {
+  if (platformName(device) === 'iOS') {
+    spawnSync('xcrun', ['simctl', 'shutdown', device.udid], { encoding: 'utf8', timeout: 30000 });
+  } else if (launch?.launched) {
+    spawnSync('adb', ['-s', device.udid, 'emu', 'kill'], { encoding: 'utf8', timeout: 30000 });
+  }
+}
+
 async function runPairsParallel(pairList, outputOverride, environmentFile, simulatorList) {
   const pairFiles = pairList.split(',').map((item) => path.resolve(item.trim())).filter(Boolean);
   if (pairFiles.length < 2) throw new Error('parallel requires at least two comma-separated pair files');
@@ -1892,10 +2306,14 @@ async function runPairsParallel(pairList, outputOverride, environmentFile, simul
     pair: materializePair(JSON.parse(readFileSync(file, 'utf8')), file, loadedEnvironment, simulatorNames[index]),
   }));
   uniqueParallelField(entries.map((entry) => ({ pair: entry.pair.device })), 'udid');
-  for (const field of ['appiumPort', 'wdaLocalPort', 'mjpegServerPort', 'derivedDataPath']) {
-    uniqueParallelField(entries, field);
+  const iosEntries = entries.filter((entry) => platformName(entry.pair.device) === 'iOS');
+  if (iosEntries.length) {
+    uniqueParallelField(iosEntries, 'appiumPort');
+    for (const field of ['wdaLocalPort', 'mjpegServerPort', 'derivedDataPath']) {
+      uniqueParallelField(iosEntries, field, false);
+    }
   }
-  for (const { pair } of entries) bootedSimulator(pair.device.udid);
+  for (const { pair } of entries) bootedMobileDevice(pair.device);
 
   const outputDir = path.resolve(outputOverride || path.join(root, 'artifacts', 'parallel-batch'));
   mkdirSync(outputDir, { recursive: true, mode: 0o700 });
@@ -1972,14 +2390,9 @@ async function runPairsSequential(pairList, outputOverride, environmentFile, sim
     entry.status = 'BOOTING';
     entry.startedAt = new Date().toISOString();
     saveManifest(manifestFile, manifest);
+    let launch;
     try {
-      spawnSync('xcrun', ['simctl', 'boot', pair.device.udid], { encoding: 'utf8' });
-      const boot = spawnSync('xcrun', ['simctl', 'bootstatus', pair.device.udid, '-b'], {
-        encoding: 'utf8', timeout: 120000, maxBuffer: 10 * 1024 * 1024,
-      });
-      if (boot.error?.code === 'ETIMEDOUT') throw new Error(`Simulator ${pair.device.udid} boot timed out`);
-      if (boot.status !== 0) throw new Error(`Simulator ${pair.device.udid} boot failed: ${(boot.stderr || boot.stdout).trim()}`);
-      bootedSimulator(pair.device.udid);
+      launch = bootAssignedDevice(pair.device);
       entry.status = 'RUNNING';
       saveManifest(manifestFile, manifest);
       const pairManifest = await runPair(file, undefined, environmentFile, simulatorName);
@@ -1992,7 +2405,7 @@ async function runPairsSequential(pairList, outputOverride, environmentFile, sim
       entry.status = 'INFRA_ERROR';
       entry.reason = error instanceof Error ? error.message : String(error);
     } finally {
-      spawnSync('xcrun', ['simctl', 'shutdown', pair.device.udid], { encoding: 'utf8', timeout: 30000 });
+      shutdownAssignedDevice(pair.device, launch);
       entry.completedAt = new Date().toISOString();
       saveManifest(manifestFile, manifest);
     }

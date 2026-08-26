@@ -30,3 +30,52 @@ test('target overrides cannot change action identity', () => {
     /cannot change type or name/,
   );
 });
+
+test('platform coordinates are applied before target-specific calibration', () => {
+  const actions = [{
+    type: 'tap',
+    name: 'type-q',
+    x: 23,
+    y: 613,
+    platformOverrides: { Android: { x: 60, y: 1715 } },
+    targetOverrides: { candidate: { y: 1700 } },
+  }];
+
+  assert.deepEqual(actionsForTarget(actions, 'baseline', 'Android'), [
+    { type: 'tap', name: 'type-q', x: 60, y: 1715 },
+  ]);
+  assert.deepEqual(actionsForTarget(actions, 'candidate', 'Android'), [
+    { type: 'tap', name: 'type-q', x: 60, y: 1700 },
+  ]);
+  assert.deepEqual(actionsForTarget(actions, 'baseline', 'iOS'), [
+    { type: 'tap', name: 'type-q', x: 23, y: 613 },
+  ]);
+});
+
+test('environment coordinate scale maps shared mobile actions to the Android screen', () => {
+  const actions = [{
+    type: 'swipe', name: 'scroll', fromX: 200, fromY: 700, toX: 200, toY: 320,
+  }];
+
+  assert.deepEqual(actionsForTarget(actions, 'baseline', 'Android', { x: 1080 / 393, y: 2400 / 852 }), [
+    { type: 'swipe', name: 'scroll', fromX: 550, fromY: 1972, toX: 550, toY: 901 },
+  ]);
+});
+
+test('platform-target override can replace a tap with a calibrated native swipe', () => {
+  const actions = [{
+    type: 'tap', name: 'choose-month', x: 128, y: 429,
+    platformOverrides: { Android: { x: 410, y: 1085 } },
+    platformTargetOverrides: { Android: { baseline: {
+      type: 'swipe', fromX: 410, fromY: 1145, toX: 410, toY: 1015, durationMs: 450,
+    } } },
+  }];
+
+  assert.deepEqual(actionsForTarget(actions, 'baseline', 'Android', { x: 2, y: 3 }), [{
+    type: 'swipe', name: 'choose-month', x: 410, y: 1085,
+    fromX: 410, fromY: 1145, toX: 410, toY: 1015, durationMs: 450,
+  }]);
+  assert.deepEqual(actionsForTarget(actions, 'candidate', 'Android', { x: 2, y: 3 }), [{
+    type: 'tap', name: 'choose-month', x: 410, y: 1085,
+  }]);
+});

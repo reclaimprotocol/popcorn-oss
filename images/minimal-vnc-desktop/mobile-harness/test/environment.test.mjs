@@ -53,6 +53,7 @@ test('environment supplies infrastructure without changing the case', () => {
 
   assert.deepEqual(pair, original);
   assert.equal(resolved.device.udid, 'SIMULATOR-1');
+  assert.equal(resolved.device.platformName, 'iOS');
   assert.equal(resolved.appiumPort, 4723);
   assert.equal(resolved.baseline.url, 'http://fixtures.example/harness/fixture/cases/focus.html');
   assert.deepEqual(resolved.candidate.liveview.hostParams, { magnify: 1, panel: 0, quality: 7 });
@@ -66,6 +67,34 @@ test('environment supplies infrastructure without changing the case', () => {
   assert.equal(secondary.device.udid, 'SIMULATOR-2');
   assert.equal(secondary.appiumPort, 4724);
   assert.equal(secondary.environment.simulator, 'secondary');
+});
+
+test('environment keeps an Android device profile and Chrome selection', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'popcorn-harness-android-'));
+  const environmentFile = path.join(directory, 'android.local.json');
+  writeFileSync(environmentFile, JSON.stringify({
+    schemaVersion: 1,
+    name: 'android-lab',
+    simulator: {
+      device: {
+        platformName: 'Android',
+        udid: 'emulator-5554',
+        name: 'Pixel 9',
+        platformVersion: '16',
+        avd: 'Pixel_9_API_36',
+      },
+    },
+  }));
+
+  const resolved = materializePair(
+    { name: 'android-chrome' },
+    path.join(directory, 'case.pair.json'),
+    loadEnvironment(environmentFile, {}),
+  );
+
+  assert.equal(resolved.device.platformName, 'Android');
+  assert.equal(resolved.device.udid, 'emulator-5554');
+  assert.equal(resolved.device.avd, 'Pixel_9_API_36');
 });
 
 test('case can explicitly override built-in Popcorn startup navigation', () => {

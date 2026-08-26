@@ -76,10 +76,11 @@ export function materializePair(pair, pairFile, loadedEnvironment, simulatorName
   const popcorn = environment.popcorn ?? {};
 
   result.device = merge(simulator.value.device ?? {}, result.device ?? {});
+  result.device.platformName ??= 'iOS';
   for (const key of ['appiumPort', 'wdaLocalPort', 'mjpegServerPort', 'derivedDataPath']) {
     if (result[key] === undefined && simulator.value[key] !== undefined) result[key] = simulator.value[key];
   }
-  for (const key of ['settleMs', 'recordingLeadInMs', 'nativeOpenUrl']) {
+  for (const key of ['settleMs', 'recordingLeadInMs', 'nativeOpenUrl', 'actionCoordinateScale']) {
     if (result[key] === undefined && defaults[key] !== undefined) result[key] = defaults[key];
   }
 

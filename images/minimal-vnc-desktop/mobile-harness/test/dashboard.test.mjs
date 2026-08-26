@@ -27,7 +27,21 @@ test('dashboard includes only explicitly selected pair manifests', () => {
     name: 'selected-visible-case',
     testDescription: 'Selected evidence only.',
     verdict: 'PASS',
+    baseline: 'baseline/run.json',
   });
+  mkdirSync(path.join(selectedDirectory, 'baseline'));
+  writeJson(path.join(selectedDirectory, 'baseline', 'run.json'), {
+    schemaVersion: 1,
+    device: { platformName: 'Android', name: 'Pixel test device', platformVersion: '16' },
+    browser: { name: 'Chrome', platformName: 'Android' },
+    artifacts: [{
+      type: 'video',
+      variant: 'touch-evidence',
+      file: 'screen-touches.mp4',
+      sha256: '1234567890abcdefcafebabefeedface',
+    }],
+  });
+  writeFileSync(path.join(selectedDirectory, 'baseline', 'screen-touches.mp4'), 'test video');
   writeJson(path.join(ignoredDirectory, 'pair.json'), {
     schemaVersion: 1,
     name: 'must-not-be-discovered',
@@ -47,6 +61,11 @@ test('dashboard includes only explicitly selected pair manifests', () => {
 
   assert.match(html, /Chosen result/);
   assert.match(html, /Selected evidence only/);
+  assert.match(html, /data-platform="Android"/);
+  assert.match(html, /Chrome · Pixel test device · Android 16/);
+  assert.match(html, /All platforms/);
+  assert.match(html, /Both views/);
+  assert.match(html, /screen-touches\.mp4\?v=1234567890abcdef/);
   assert.doesNotMatch(html, /must-not-be-discovered/);
   assert.equal(manifest.entries.length, 1);
   assert.match(manifest.entries[0], /selected\/pair\.json$/);
