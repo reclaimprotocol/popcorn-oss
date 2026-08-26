@@ -216,7 +216,7 @@
           var willRetry = bootAttempt < BOOT_MAX_RETRIES;
           try {
             parent.postMessage({
-              type: 'POPCORN_BOOT_STALL', attempt: bootAttempt, retrying: willRetry
+              type: 'POPCORN_BOOT_STALL', stage: 'module', attempt: bootAttempt, retrying: willRetry
             }, '*');
           } catch (e) { /* no parent, or a parent that refuses '*' */ }
           if (!willRetry) {

@@ -280,6 +280,17 @@ func TestPrecompressedVariantSkipsRefusedEncoding(t *testing.T) {
 	}
 }
 
+func TestWebsocketCloseInfo(t *testing.T) {
+	code, text := websocketCloseInfo([]byte{0x03, 0xe8, 'b', 'y', 'e', '\n'})
+	if code != 1000 || text != "bye" {
+		t.Fatalf("close info = (%d, %q), want (1000, %q)", code, text, "bye")
+	}
+	code, text = websocketCloseInfo([]byte{0x03})
+	if code != 0 || text != "" {
+		t.Fatalf("short close info = (%d, %q)", code, text)
+	}
+}
+
 func TestRestrictedCDPFilter(t *testing.T) {
 	bridge := &cdpBridge{allowed: allowedCDPCommands()}
 

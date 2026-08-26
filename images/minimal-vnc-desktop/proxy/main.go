@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -368,6 +369,7 @@ func (g readyGate) ready() bool {
 
 func serveWebsocket(w http.ResponseWriter, r *http.Request, upstream string, ready readyGate, keeper *screenKeeper) {
 	if !ready.ready() {
+		log.Printf("[websockify sid=%s] rejected: pod not ready", websocketDiagSID(r))
 		http.Error(w, "app is not ready", http.StatusServiceUnavailable)
 		return
 	}
@@ -378,6 +380,10 @@ func serveWebsocket(w http.ResponseWriter, r *http.Request, upstream string, rea
 	keeper.connect(r.URL.Query().Get("keep") == "1")
 	defer keeper.disconnect()
 	proxyWebsocket(w, r, upstream)
+}
+
+func websocketDiagSID(r *http.Request) string {
+	return klogSanitize(r.URL.Query().Get("diag_sid"), 24)
 }
 
 func staticHandler(root string, ready readyGate) http.HandlerFunc {
@@ -1053,19 +1059,23 @@ func websocketKey() (string, error) {
 }
 
 func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
+	sid := websocketDiagSID(r)
 	if !isWebsocketRequest(r) {
+		log.Printf("[websockify sid=%s] rejected: upgrade required", sid)
 		http.Error(w, "websocket upgrade required", http.StatusBadRequest)
 		return
 	}
 
 	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
 	if key == "" {
+		log.Printf("[websockify sid=%s] rejected: missing websocket key", sid)
 		http.Error(w, "missing Sec-WebSocket-Key", http.StatusBadRequest)
 		return
 	}
 
 	vncConn, err := net.DialTimeout("tcp", upstream, 5*time.Second)
 	if err != nil {
+		log.Printf("[websockify sid=%s] upstream dial %s failed: %v", sid, upstream, err)
 		http.Error(w, fmt.Sprintf("failed to connect to VNC upstream: %v", err), http.StatusBadGateway)
 		return
 	}
@@ -1079,6 +1089,7 @@ func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
 
 	clientConn, rw, err := hijacker.Hijack()
 	if err != nil {
+		log.Printf("[websockify sid=%s] client hijack failed: %v", sid, err)
 		_ = vncConn.Close()
 		return
 	}
@@ -1100,10 +1111,20 @@ func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
 	_, _ = fmt.Fprint(rw, "\r\n")
 	_ = rw.Flush()
 
+	var bridgeLogf func(format string, args ...interface{})
+	if sid != "" {
+		bridgeLogf = log.Printf
+	}
 	bridge := &wsBridge{
 		client: clientConn,
 		reader: rw.Reader,
 		vnc:    vncConn,
+		sid:    sid,
+		id:     nextWSBridgeID.Add(1),
+		logf:   bridgeLogf,
+	}
+	if bridgeLogf != nil {
+		log.Printf("[websockify sid=%s bridge=%d] upgraded upstream=%s", sid, bridge.id, upstream)
 	}
 	bridge.run()
 }
@@ -1149,28 +1170,45 @@ type wsBridge struct {
 	reader *bufio.Reader
 	vnc    net.Conn
 	mu     sync.Mutex
+	sid    string
+	id     uint64
+	logf   func(format string, args ...interface{})
+}
+
+var nextWSBridgeID atomic.Uint64
+
+type wsBridgeResult struct {
+	direction string
+	err       error
+	closeCode int
+	closeText string
 }
 
 func (b *wsBridge) run() {
-	done := make(chan struct{}, 2)
+	done := make(chan wsBridgeResult, 2)
 	stopPing := make(chan struct{})
 
 	go func() {
-		b.copyWebsocketToVNC()
-		done <- struct{}{}
+		done <- b.copyWebsocketToVNC()
 	}()
 
 	go func() {
-		b.copyVNCToWebsocket()
-		done <- struct{}{}
+		done <- b.copyVNCToWebsocket()
 	}()
 
 	go b.pingLoop(stopPing)
 
-	<-done
+	result := <-done
 	close(stopPing)
 	_ = b.client.Close()
 	_ = b.vnc.Close()
+	if b.logf != nil {
+		if result.closeCode != 0 {
+			b.logf("[websockify sid=%s bridge=%d] closed direction=%s code=%d reason=%q", b.sid, b.id, result.direction, result.closeCode, result.closeText)
+		} else {
+			b.logf("[websockify sid=%s bridge=%d] closed direction=%s err=%v", b.sid, b.id, result.direction, result.err)
+		}
+	}
 }
 
 // pingLoop sends server->client WS pings so idle-but-alive connections stay warm
@@ -1190,7 +1228,7 @@ func (b *wsBridge) pingLoop(stop <-chan struct{}) {
 	}
 }
 
-func (b *wsBridge) copyWebsocketToVNC() {
+func (b *wsBridge) copyWebsocketToVNC() wsBridgeResult {
 	for {
 		// Refresh the read deadline on every frame (client keystrokes AND the
 		// auto-pongs to our pings count as liveness), so a silent half-open
@@ -1201,7 +1239,7 @@ func (b *wsBridge) copyWebsocketToVNC() {
 			continue // e.g. an enormous clipboard paste: drop the message, keep the session
 		}
 		if err != nil {
-			return
+			return wsBridgeResult{direction: "client-read", err: err}
 		}
 
 		switch opcode {
@@ -1210,37 +1248,45 @@ func (b *wsBridge) copyWebsocketToVNC() {
 				continue
 			}
 			if _, err := b.vnc.Write(payload); err != nil {
-				return
+				return wsBridgeResult{direction: "vnc-write", err: err}
 			}
 		case 0x8:
 			_ = b.writeFrame(0x8, payload)
-			return
+			code, text := websocketCloseInfo(payload)
+			return wsBridgeResult{direction: "client-close", closeCode: code, closeText: text}
 		case 0x9:
 			_ = b.writeFrame(0xA, payload)
 		case 0xA:
 		default:
 			_ = b.writeFrame(0x8, []byte{0x03, 0xEA})
-			return
+			return wsBridgeResult{direction: "client-protocol", err: fmt.Errorf("unsupported websocket opcode %d", opcode)}
 		}
 	}
 }
 
-func (b *wsBridge) copyVNCToWebsocket() {
+func (b *wsBridge) copyVNCToWebsocket() wsBridgeResult {
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := b.vnc.Read(buf)
 		if n > 0 {
 			if writeErr := b.writeFrame(0x2, buf[:n]); writeErr != nil {
-				return
+				return wsBridgeResult{direction: "client-write", err: writeErr}
 			}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				_ = b.writeFrame(0x8, nil)
 			}
-			return
+			return wsBridgeResult{direction: "vnc-read", err: err}
 		}
 	}
+}
+
+func websocketCloseInfo(payload []byte) (int, string) {
+	if len(payload) < 2 {
+		return 0, ""
+	}
+	return int(binary.BigEndian.Uint16(payload[:2])), klogSanitize(string(payload[2:]), 120)
 }
 
 func (b *wsBridge) writeFrame(opcode byte, payload []byte) error {
