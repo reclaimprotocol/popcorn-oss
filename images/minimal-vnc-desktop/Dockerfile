@@ -256,11 +256,15 @@ COPY locks/esbuild.lock /tmp/esbuild.lock
 # Stays --format=esm because noVNC's core/util/browser.js uses top-level await,
 # which the iife format cannot express (it fails the build outright).
 # esbuild is a standalone Go binary — no Node — pinned by sha256 exactly like noVNC.
-# --minify-whitespace/--minify-syntax strip whitespace + fold dead code (~-22% on
-# the wire after gzip) WITHOUT mangling identifiers, so function names stay in
-# stack traces and the BUILD_TAG string stays greppable — the bundle stays
-# debuggable. (Full --minify would mangle names; deliberately not used.) esbuild's
-# output is deterministic (no embedded timestamps), preserving reproducibility.
+# Full --minify (mangles identifiers too). Measured on the real v1.6.0 bundle:
+#   whitespace+syntax  392.9K raw  108.1K gz  91.0K br
+#   --minify           294.8K raw   94.6K gz  79.7K br   ← -12.4% brotli
+# This used to stop at --minify-whitespace/--minify-syntax to keep the BUILD_TAG
+# string greppable, but mangling renames identifiers and leaves string LITERALS
+# alone: 'bundle-80' still appears verbatim in the output and still logs correctly.
+# The real cost is function names in stack traces, which inlining already reduced
+# to liveview.html:<line>. Reverting is one word if a stack trace ever needs them.
+# esbuild's output is deterministic (no embedded timestamps), preserving reproducibility.
 RUN set -eux; \
     esb_url="$(awk -F '=' '$1 == "url" { print $2 }' /tmp/esbuild.lock)"; \
     esb_sha256="$(awk -F '=' '$1 == "sha256" { print $2 }' /tmp/esbuild.lock)"; \
@@ -271,7 +275,7 @@ RUN set -eux; \
     mkdir -p /tmp/esbuild-src; \
     tar -xzf /tmp/esbuild.tgz --strip-components=1 -C /tmp/esbuild-src package/bin/esbuild; \
     /tmp/esbuild-src/bin/esbuild /usr/share/novnc/viewer.js --bundle --format=esm \
-        --minify-whitespace --minify-syntax \
+        --minify \
         --outfile=/tmp/viewer.inline.js; \
     rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock; \
     # Escape a literal closing script tag before inserting generated JavaScript.
@@ -281,6 +285,8 @@ RUN set -eux; \
     # The no-store document is large after inlining; keep a deterministic gzip
     # sibling so clients that accept gzip transfer the compressed representation.
     gzip -9 -n -k -f /usr/share/novnc/liveview.html; \
+    brotli -q 11 -k -f /usr/share/novnc/liveview.html; \
+    ls -l /usr/share/novnc/liveview.html /usr/share/novnc/liveview.html.gz /usr/share/novnc/liveview.html.br; \
     rm -f /tmp/viewer.inline.js /tmp/viewer.inline.safe.js
 
 COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress
@@ -296,6 +302,7 @@ RUN set -eux; \
         /usr/local/bin/start-chromium \
         /usr/share/novnc/liveview.html \
         /usr/share/novnc/liveview.html.gz \
+        /usr/share/novnc/liveview.html.br \
         /usr/share/novnc/kbd-autofocus.js \
         /usr/share/novnc/viewer.js; \
     find /usr/share/novnc/kbd /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
