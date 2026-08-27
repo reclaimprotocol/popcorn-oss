@@ -333,26 +333,8 @@ func staticHandler(root string, ready readyGate) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		// The content-hashed viewer bundle (viewer-<hash>.bundle.js) is safe to cache
-		// forever: a content change yields a new filename, so the browser can never
-		// serve stale logic. Caching it immutably lets a reconnect/reopen skip the
-		// re-download entirely (the win over plain no-store). The .gz sibling served
-		// below inherits this via the same clean path.
-		//
-		// Everything else in the viewer shell (HTML + the raw input/keyboard logic)
-		// changes constantly and is NOT content-hashed. The Dockerfile pins these
-		// files' mtimes to a fixed epoch for reproducible builds, so their
-		// Last-Modified never changes and a browser would 304 to its stale cached
-		// copy forever — even across rebuilds. Force a fresh fetch so a device always
-		// runs the current logic. In particular liveview.html MUST stay no-store: it
-		// carries the current bundle hash, so it has to be re-read every load.
-		base := path.Base(clean)
+		// The complete viewer is in liveview.html, so always fetch the current shell.
 		switch {
-		case strings.HasPrefix(base, "viewer-fallback-") && strings.HasSuffix(base, ".bundle.js"):
-			// The recovery path must not inherit the primary's immutable cache.
-			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
-		case strings.HasPrefix(base, "viewer-") && strings.HasSuffix(base, ".bundle.js"):
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		case strings.HasSuffix(clean, "/liveview.html") || strings.HasSuffix(clean, "/kbd-autofocus.js") ||
 			strings.HasPrefix(clean, "/kbd/"):
 			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
