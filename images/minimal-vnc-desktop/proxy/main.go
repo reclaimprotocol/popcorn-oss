@@ -333,10 +333,24 @@ func staticHandler(root string, ready readyGate) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		// The complete viewer is in liveview.html, so always fetch the current shell.
+		// liveview.html now carries the whole inlined viewer, which inverts what the
+		// right cache policy is. no-store made sense when the shell was ~8KB and the
+		// content-hashed bundle beside it held the bytes; now no-store means every
+		// remount re-downloads the entire viewer (a 3-mount session paid ~240KB).
+		//
+		// The URL is session-scoped (/liveview/<sid>/<jwt>/liveview.html), so a cached
+		// entry is reusable only by the session that fetched it, and the shell cannot
+		// change underneath that session — the pod runs one fixed image for its whole
+		// life. `private` keeps the JWT-bearing URL out of shared caches.
+		//
+		// A short max-age (not no-cache) is deliberate: no-cache would still send a
+		// revalidation request on every remount, and a request that can be sent is a
+		// request that can hang — which is the failure this inlining exists to remove.
+		// Serving remounts from cache means they issue no request at all.
 		switch {
-		case strings.HasSuffix(clean, "/liveview.html") || strings.HasSuffix(clean, "/kbd-autofocus.js") ||
-			strings.HasPrefix(clean, "/kbd/"):
+		case strings.HasSuffix(clean, "/liveview.html"):
+			w.Header().Set("Cache-Control", "private, max-age=300")
+		case strings.HasSuffix(clean, "/kbd-autofocus.js") || strings.HasPrefix(clean, "/kbd/"):
 			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
 		}
 		// Serve a precompressed sibling (.br/.gz) when the client accepts that

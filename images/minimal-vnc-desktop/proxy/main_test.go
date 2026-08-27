@@ -61,13 +61,24 @@ func TestCDPReadyGate(t *testing.T) {
 	}
 }
 
-func TestViewerShellIsNotCached(t *testing.T) {
+// The shell carries the whole inlined viewer, so it is cached for the life of a
+// session (its URL is session-scoped) while the separately-served input layer,
+// which is not part of that payload, still must never be cached.
+func TestViewerShellCachePolicies(t *testing.T) {
 	dir := t.TempDir()
 	readyFile := filepath.Join(dir, "ready")
 	if err := os.WriteFile(readyFile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "liveview.html"), []byte("<!doctype html>"), 0o600); err != nil {
+	for _, name := range []string{"liveview.html", "kbd-autofocus.js"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("<!doctype html>"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "kbd"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "kbd", "tap.js"), []byte("export {};"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	handler := staticHandler(dir, readyGate{file: readyFile})
@@ -75,7 +86,9 @@ func TestViewerShellIsNotCached(t *testing.T) {
 		path string
 		want string
 	}{
-		{"/liveview.html", "no-store, max-age=0, must-revalidate"},
+		{"/liveview.html", "private, max-age=300"},
+		{"/kbd-autofocus.js", "no-store, max-age=0, must-revalidate"},
+		{"/kbd/tap.js", "no-store, max-age=0, must-revalidate"},
 	} {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://proxy.example"+tc.path, nil))
