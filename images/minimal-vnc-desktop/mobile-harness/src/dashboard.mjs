@@ -129,7 +129,13 @@ function card(outputDir, entry) {
   </article>`;
 }
 
-export function buildDashboard({ configFile, manifests = [], outputFile }) {
+function entrySpecPath(spec, baseDir) {
+  const relative = typeof spec === 'string' ? spec : spec.manifest;
+  if (!relative) throw new Error('Every dashboard entry requires a manifest path');
+  return path.resolve(baseDir, relative);
+}
+
+export function buildDashboard({ configFile, manifests = [], outputFile, skipMissing = false }) {
   const configPath = configFile ? path.resolve(configFile) : null;
   const config = configPath
     ? readJson(configPath, 'dashboard config')
@@ -137,7 +143,22 @@ export function buildDashboard({ configFile, manifests = [], outputFile }) {
   if (config.schemaVersion !== 1) throw new Error('Dashboard config schemaVersion must be 1');
   const configDir = configPath ? path.dirname(configPath) : process.cwd();
   const specs = [...(config.entries ?? []), ...manifests];
-  const entries = specs.map((spec) => loadEntry(spec, configDir));
+  // A listed manifest that cannot be read is an error: the selection is
+  // explicit on purpose. `skipMissing` covers only the one case where that is
+  // unhelpful - a manifest whose file is gone, which cannot be rendered at all -
+  // and every skip is reported in the page and in dashboard-manifest.json
+  // rather than dropped quietly.
+  const skipped = [];
+  const kept = [];
+  for (const spec of specs) {
+    const file = entrySpecPath(spec, configDir);
+    if (skipMissing && !existsSync(file)) {
+      skipped.push({ manifest: path.relative(configDir, file), label: typeof spec === 'object' ? spec.label ?? null : null });
+      continue;
+    }
+    kept.push(spec);
+  }
+  const entries = kept.map((spec) => loadEntry(spec, configDir));
   const absoluteOutput = path.resolve(outputFile ?? path.join(root, 'artifacts', 'index.html'));
   const outputDir = path.dirname(absoluteOutput);
   mkdirSync(outputDir, { recursive: true, mode: 0o700 });
@@ -147,8 +168,9 @@ export function buildDashboard({ configFile, manifests = [], outputFile }) {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(config.title)}</title>
 <style>
-:root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#e5e7eb;background:#080b12}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#080b12,#111827 55%,#172554);min-height:100vh}main{width:min(1500px,calc(100% - 28px));margin:auto;padding:30px 0 60px}.hero,.result{border:1px solid #334155;border-radius:18px;background:#0f172aed;box-shadow:0 20px 55px #0005}.hero{padding:26px}.eyebrow{color:#67e8f9;font-size:12px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}h1{margin:8px 0}.hero p,.meta{color:#94a3b8}.summary{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}.summary span{padding:9px 12px;border:1px solid #334155;border-radius:10px;background:#111827}.toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;padding:14px 0;background:#0b1020e8;backdrop-filter:blur(10px)}input,select{border:1px solid #475569;border-radius:9px;background:#111827;color:white;padding:10px 12px;font:inherit}input{flex:1}.visible-count{min-width:max-content;color:#94a3b8;font-size:13px}.results{display:grid;gap:18px}.result{padding:20px;min-width:0;overflow:hidden}.result header{display:flex;justify-content:space-between;gap:14px}.result-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.result h2{display:inline;margin:0;font-size:21px}.badge,.platform{padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900}.badge-pass{background:#166534}.badge-fail{background:#991b1b}.badge-review{background:#475569}.badge-infra_error{background:#92400e}.platform{border:1px solid #475569;background:#1e293b}.platform-android{border-color:#4ade80;color:#bbf7d0}.platform-ios{border-color:#60a5fa;color:#bfdbfe}.description{padding:10px 12px;border-left:4px solid #22d3ee;background:#0c4a6e55}.meta,.links{display:flex;flex-wrap:wrap;gap:10px}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0}.metrics div,.video{padding:12px;border:1px solid #334155;border-radius:12px;background:#020617}.metrics b{display:block;font-size:22px}.metrics span{color:#94a3b8}.videos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}body[data-evidence-view="baseline"] .video[data-view="candidate"],body[data-evidence-view="candidate"] .video[data-view="baseline"]{display:none}body[data-evidence-view="baseline"] .videos,body[data-evidence-view="candidate"] .videos{grid-template-columns:1fr}.video video{display:block;width:100%;max-height:620px;background:#000;border-radius:8px}.video h3{margin-top:0}.video .links{margin-top:9px}.missing{display:flex;min-height:180px;flex-direction:column;justify-content:center;color:#94a3b8}a{color:#93c5fd;text-decoration:none}a:hover{text-decoration:underline}a.primary{padding:7px 10px;border-radius:8px;background:#2563eb;color:white;font-weight:800}.empty{padding:50px 20px;text-align:center;border:1px dashed #475569;border-radius:16px;color:#94a3b8}@media(max-width:900px){.result header{display:block}.result header .links{margin-top:12px}.metrics,.videos{grid-template-columns:1fr}.toolbar{align-items:stretch;flex-direction:column}.visible-count{padding:0 4px}}
+:root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#e5e7eb;background:#080b12}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#080b12,#111827 55%,#172554);min-height:100vh}main{width:min(1500px,calc(100% - 28px));margin:auto;padding:30px 0 60px}.hero,.result{border:1px solid #334155;border-radius:18px;background:#0f172aed;box-shadow:0 20px 55px #0005}.hero{padding:26px}.eyebrow{color:#67e8f9;font-size:12px;font-weight:900;letter-spacing:.12em;text-transform:uppercase}h1{margin:8px 0}.hero p,.meta{color:#94a3b8}.summary{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}.summary span{padding:9px 12px;border:1px solid #334155;border-radius:10px;background:#111827}.toolbar{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;padding:14px 0;background:#0b1020e8;backdrop-filter:blur(10px)}input,select{border:1px solid #475569;border-radius:9px;background:#111827;color:white;padding:10px 12px;font:inherit}input{flex:1}.visible-count{min-width:max-content;color:#94a3b8;font-size:13px}.results{display:grid;gap:18px}.result{padding:20px;min-width:0;overflow:hidden}.result header{display:flex;justify-content:space-between;gap:14px}.result-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px}.result h2{display:inline;margin:0;font-size:21px}.badge,.platform{padding:6px 9px;border-radius:999px;font-size:12px;font-weight:900}.badge-pass{background:#166534}.badge-fail{background:#991b1b}.badge-review{background:#475569}.badge-infra_error{background:#92400e}.platform{border:1px solid #475569;background:#1e293b}.platform-android{border-color:#4ade80;color:#bbf7d0}.platform-ios{border-color:#60a5fa;color:#bfdbfe}.description{padding:10px 12px;border-left:4px solid #22d3ee;background:#0c4a6e55}.meta,.links{display:flex;flex-wrap:wrap;gap:10px}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0}.metrics div,.video{padding:12px;border:1px solid #334155;border-radius:12px;background:#020617}.metrics b{display:block;font-size:22px}.metrics span{color:#94a3b8}.videos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}body[data-evidence-view="baseline"] .video[data-view="candidate"],body[data-evidence-view="candidate"] .video[data-view="baseline"]{display:none}body[data-evidence-view="baseline"] .videos,body[data-evidence-view="candidate"] .videos{grid-template-columns:1fr}.video video{display:block;width:100%;max-height:620px;background:#000;border-radius:8px}.video h3{margin-top:0}.video .links{margin-top:9px}.missing{display:flex;min-height:180px;flex-direction:column;justify-content:center;color:#94a3b8}a{color:#93c5fd;text-decoration:none}a:hover{text-decoration:underline}a.primary{padding:7px 10px;border-radius:8px;background:#2563eb;color:white;font-weight:800}.hero.skipped{margin-bottom:18px;border-color:#92400e;background:#78350f55}.hero.skipped ul{margin:8px 0 0;padding-left:20px}.empty{padding:50px 20px;text-align:center;border:1px dashed #475569;border-radius:16px;color:#94a3b8}@media(max-width:900px){.result header{display:block}.result header .links{margin-top:12px}.metrics,.videos{grid-template-columns:1fr}.toolbar{align-items:stretch;flex-direction:column}.visible-count{padding:0 4px}}
 </style></head><body><main>
+${skipped.length ? `<section class="hero skipped"><div class="eyebrow">Missing manifests</div><p><b>${skipped.length}</b> selected ${skipped.length === 1 ? 'result was' : 'results were'} not rendered because ${skipped.length === 1 ? 'its manifest file' : 'their manifest files'} no longer exist:</p><ul>${skipped.map((entry) => `<li>${escapeHtml(entry.label ?? entry.manifest)} <span class="meta">${escapeHtml(entry.manifest)}</span></li>`).join('')}</ul></section>` : ''}
 <section class="hero"><div class="eyebrow">Explicit manifest dashboard</div><h1>${escapeHtml(config.title)}</h1><p>${escapeHtml(config.description ?? '')}</p><div class="summary"><span><b>${entries.length}</b> selected results</span><span><b>${platformCounts.iOS?.length ?? 0}</b> iOS</span><span><b>${platformCounts.Android?.length ?? 0}</b> Android</span><span><b>${counts.PASS?.length ?? 0}</b> pass</span><span><b>${counts.FAIL?.length ?? 0}</b> fail</span><span><b>${counts.REVIEW?.length ?? 0}</b> review</span><span><b>${counts.INFRA_ERROR?.length ?? 0}</b> infrastructure errors</span></div></section>
 <div class="toolbar"><input id="search" type="search" aria-label="Search results" placeholder="Filter selected results"><select id="platform" aria-label="Platform"><option value="">All platforms</option><option>iOS</option><option>Android</option><option>Unknown</option></select><select id="verdict" aria-label="Verdict"><option value="">All verdicts</option><option>PASS</option><option>FAIL</option><option>REVIEW</option><option>INFRA_ERROR</option></select><select id="evidence-view" aria-label="Evidence view"><option value="both">Both views</option><option value="baseline">Browser only</option><option value="candidate">Popcorn only</option></select><output id="visible-count" class="visible-count"></output></div>
 <section class="results" id="results">${entries.length ? entries.map((entry) => card(outputDir, entry)).join('') : '<p class="empty">No result manifests were selected. Add entries to a dashboard config or pass --manifest.</p>'}</section>
@@ -162,6 +184,7 @@ const search=document.querySelector('#search');const platform=document.querySele
     config: configPath ? path.relative(outputDir, configPath) : null,
     output: path.basename(absoluteOutput),
     entries: entries.map((entry) => path.relative(outputDir, entry.pairFile)),
+    skippedEntries: skipped,
   };
   writeFileSync(path.join(outputDir, 'dashboard-manifest.json'), `${JSON.stringify(buildManifest, null, 2)}\n`, { mode: 0o600 });
   console.log(absoluteOutput);
@@ -175,6 +198,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       config: { type: 'string' },
       manifest: { type: 'string', multiple: true },
       output: { type: 'string' },
+      'skip-missing': { type: 'boolean' },
     },
   });
   try {
@@ -182,6 +206,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       configFile: args.values.config,
       manifests: args.values.manifest ?? [],
       outputFile: args.values.output,
+      skipMissing: Boolean(args.values['skip-missing']),
     });
   } catch (error) {
     console.error(error.stack || error);

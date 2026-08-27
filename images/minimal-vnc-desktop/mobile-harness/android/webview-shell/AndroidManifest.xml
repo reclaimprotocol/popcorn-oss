@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimal WebView host used to test pages that ship inside an Android WebView
+     instead of Chrome. Build with android/webview-shell/build.sh; min and target
+     SDK are injected by aapt2 so they stay in one place. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="org.reclaimprotocol.popcorn.webviewshell">
+
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.CAMERA" />
+  <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+  <application
+      android:label="Popcorn WebView Shell"
+      android:usesCleartextTraffic="true"
+      android:allowBackup="false">
+    <activity
+        android:name=".ShellActivity"
+        android:exported="true"
+        android:launchMode="singleTask"
+        android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden"
+        android:windowSoftInputMode="adjustResize"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+      <!-- Lets the shell be launched exactly like Chrome: am start -a VIEW -p <package> -d <url> -->
+      <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <category android:name="android.intent.category.BROWSABLE" />
+        <data android:scheme="http" />
+        <data android:scheme="https" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>

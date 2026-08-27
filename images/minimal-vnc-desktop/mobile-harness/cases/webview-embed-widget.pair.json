@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "name": "webview-embed-widget",
+  "testDescription": "Inside a host app's web view, an embedded third-party widget must load, report itself to the page, and advance a step when the visible continue control is tapped natively.",
+  "testPage": "cases/webview-embed-widget.html",
+  "launchTarget": "webview-shell",
+  "baseline": {
+    "fixturePath": "cases/webview-embed-widget.html"
+  },
+  "candidate": {
+    "setupActions": []
+  },
+  "recordingStart": {
+    "name": "case-ready",
+    "color": "#00c8ff",
+    "timeoutMs": 45000
+  },
+  "actions": [
+    {
+      "type": "waitForColor",
+      "name": "fixture-ready",
+      "color": "#00c8ff",
+      "timeoutMs": 45000
+    },
+    {
+      "type": "waitForColor",
+      "name": "widget-loaded",
+      "color": "#ffd400",
+      "timeoutMs": 45000
+    },
+    {
+      "type": "waitForColor",
+      "name": "widget-active",
+      "color": "#ff7a00",
+      "timeoutMs": 45000
+    },
+    {
+      "type": "screenshot",
+      "name": "widget-ready",
+      "syncWith": "widget-active"
+    },
+    {
+      "type": "tapRelativeToColor",
+      "name": "tap-continue",
+      "color": "#6a007a",
+      "offsetX": 0,
+      "offsetY": 0
+    },
+    {
+      "type": "waitForColor",
+      "name": "widget-stepped",
+      "color": "#00ff6a",
+      "timeoutMs": 45000
+    },
+    {
+      "type": "wait",
+      "ms": 900
+    },
+    {
+      "type": "waitForColor",
+      "name": "step-settled",
+      "color": "#00ff6a",
+      "timeoutMs": 45000
+    },
+    {
+      "type": "screenshot",
+      "name": "widget-advanced",
+      "syncWith": "step-settled"
+    }
+  ],
+  "candidateActionFailureVerdict": "FAIL",
+  "compare": {
+    "profile": "relative-transition-diff",
+    "from": "widget-ready",
+    "to": "widget-advanced",
+    "pixelThreshold": 0.15,
+    "maxTransitionRatioDelta": 0.25
+  }
+}

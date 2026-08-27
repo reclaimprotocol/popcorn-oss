@@ -1,5 +1,26 @@
 {
-  "schemaVersion":1,"name":"direct-field-switch-after-scroll","testDescription":"After a real page scroll, focusing and typing in one field then directly tapping the next must transfer focus correctly with the keyboard open.","testPage":"cases/direct-field-switch-after-scroll.html","baseline":{"fixturePath":"cases/direct-field-switch-after-scroll.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
-  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"swipe","name":"scroll-to-form","fromX":200,"fromY":600,"toX":200,"toY":180,"durationMs":700},{"type":"waitForColor","name":"first-field-visible","color":"#fef3c7","timeoutMs":30000},{"type":"wait","ms":1400},{"type":"tapRelativeToColor","name":"focus-first","color":"#fef3c7","tolerance":8},{"type":"waitForColor","name":"first-focused","color":"#ff00d8","timeoutMs":30000},{"type":"tap","name":"type-q","x":23,"y":613},{"type":"waitForColor","name":"first-typed","color":"#ffe600","timeoutMs":30000},{"type":"screenshot","name":"before-switch","syncWith":"first-typed"},{"type":"tapRelativeToColor","name":"tap-second-directly","color":"#e0f2fe","tolerance":8},{"type":"waitForColor","name":"second-focused","color":"#00cfff","timeoutMs":30000},{"type":"waitForColor","name":"switch-success","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-switch","syncWith":"switch-success"}],
-  "compare":{"profile":"relative-transition-diff","from":"before-switch","to":"after-switch","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+  "schemaVersion": 1,
+  "name": "direct-field-switch-after-scroll",
+  "testDescription": "After a real page scroll, focusing and typing in one field then directly tapping the next must transfer focus correctly with the keyboard open.",
+  "testPage": "cases/direct-field-switch-after-scroll.html",
+  "baseline": { "fixturePath": "cases/direct-field-switch-after-scroll.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "swipe", "name": "scroll-to-form", "durationMs": 700, "fromXFraction": 0.513, "toXFraction": 0.513, "fromYFraction": 0.711, "toYFraction": 0.213 },
+    { "type": "waitForColor", "name": "first-field-visible", "color": "#fef3c7", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 1400 },
+    { "type": "tapRelativeToColor", "name": "focus-first", "color": "#fef3c7", "tolerance": 8 },
+    { "type": "waitForColor", "name": "first-focused", "color": "#ff00d8", "timeoutMs": 30000 },
+    { "type": "typeText", "name": "type-q", "text": "q" },
+    { "type": "waitForColor", "name": "first-typed", "color": "#ffe600", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-switch", "syncWith": "first-typed" },
+    { "type": "tapRelativeToColor", "name": "tap-second-directly", "color": "#e0f2fe", "tolerance": 8 },
+    { "type": "waitForColor", "name": "second-focused", "color": "#00cfff", "timeoutMs": 30000 },
+    { "type": "waitForColor", "name": "switch-success", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-switch", "syncWith": "switch-success" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-switch", "to": "after-switch", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
 }

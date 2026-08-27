@@ -1,5 +1,22 @@
 {
-  "schemaVersion":1,"name":"native-week-picker","testDescription":"A week input must open the iOS ISO-week calendar in Safari and LiveView, select a complete week row, and commit week 35.","testPage":"cases/native-week-picker.html","baseline":{"fixturePath":"cases/native-week-picker.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
-  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-picker","syncWith":"ready"},{"type":"tapRelativeToColor","name":"open-week-picker","color":"#dcfce7","tolerance":8},{"type":"wait","ms":800},{"type":"screenshot","name":"picker-open"},{"type":"tap","name":"choose-week-35","x":196,"y":480,"platformOverrides":{"Android":{"x":410,"y":1350}}},{"type":"tap","name":"confirm-week","x":300,"y":573,"platformOverrides":{"Android":{"x":935,"y":1500}}},{"type":"waitForColor","name":"week-selected","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-selection","syncWith":"week-selected"}],
-  "compare":{"profile":"relative-transition-diff","from":"before-picker","to":"after-selection","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+  "schemaVersion": 1,
+  "name": "native-week-picker",
+  "testDescription": "A week input must open the iOS ISO-week calendar in Safari and LiveView, select a complete week row, and commit week 35.",
+  "testPage": "cases/native-week-picker.html",
+  "baseline": { "fixturePath": "cases/native-week-picker.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-picker", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "open-week-picker", "color": "#dcfce7", "tolerance": 8 },
+    { "type": "wait", "ms": 800 },
+    { "type": "screenshot", "name": "picker-open" },
+    { "type": "tapNativeElement", "name": "choose-week-35", "android": {"text": "35"}, "ios": {"pickerValue": "35"}, "settleMs": 400 },
+    { "type": "tapNativeElement", "name": "confirm-week", "android": {"resourceId": "android:id/button1"}, "ios": {"label": "Done"}, "settleMs": 400 },
+    { "type": "waitForColor", "name": "week-selected", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-selection", "syncWith": "week-selected" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
 }

@@ -1,5 +1,28 @@
 {
-  "schemaVersion":1,"name":"keyboard-open-page-scroll","testDescription":"With the mobile keyboard open, two sustained forward page swipes followed by reverse swipes must travel substantially in both directions without blurring the focused input.","testPage":"cases/keyboard-open-page-scroll.html","baseline":{"fixturePath":"cases/keyboard-open-page-scroll.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
-  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"tapRelativeToColor","name":"focus-field","color":"#fef3c7","tolerance":8},{"type":"waitForColor","name":"focused","color":"#ff00d8","timeoutMs":30000},{"type":"screenshot","name":"before-scroll","syncWith":"focused"},{"type":"swipe","name":"scroll-forward-one","fromX":200,"fromY":370,"toX":200,"toY":150,"durationMs":750,"platformOverrides":{"Android":{"durationMs":300}}},{"type":"wait","ms":400},{"type":"swipe","name":"scroll-forward-two","fromX":200,"fromY":370,"toX":200,"toY":150,"durationMs":750,"platformOverrides":{"Android":{"durationMs":300}}},{"type":"wait","ms":400},{"type":"screenshot","name":"after-forward-swipes"},{"type":"swipe","name":"scroll-reverse-one","fromX":200,"fromY":170,"toX":200,"toY":330,"durationMs":700,"platformOverrides":{"Android":{"durationMs":300}}},{"type":"wait","ms":300},{"type":"screenshot","name":"after-first-reverse"},{"type":"swipe","name":"scroll-reverse-two","fromX":200,"fromY":170,"toX":200,"toY":370,"durationMs":800,"platformOverrides":{"Android":{"durationMs":300}}},{"type":"waitForColor","name":"scrolled-focus-retained","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-scroll","syncWith":"scrolled-focus-retained"}],
-  "compare":{"profile":"relative-transition-diff","from":"before-scroll","to":"after-scroll","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+  "schemaVersion": 1,
+  "name": "keyboard-open-page-scroll",
+  "testDescription": "With the mobile keyboard open, two sustained forward page swipes followed by reverse swipes must travel substantially in both directions without blurring the focused input.",
+  "testPage": "cases/keyboard-open-page-scroll.html",
+  "baseline": { "fixturePath": "cases/keyboard-open-page-scroll.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "tapRelativeToColor", "name": "focus-field", "color": "#fef3c7", "tolerance": 8 },
+    { "type": "waitForColor", "name": "focused", "color": "#ff00d8", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-scroll", "syncWith": "focused" },
+    { "type": "swipe", "name": "scroll-forward-one", "durationMs": 750, "platformOverrides": {"Android": {"durationMs": 300}}, "fromXFraction": 0.513, "toXFraction": 0.513, "fromYFraction": 0.438, "toYFraction": 0.178 },
+    { "type": "wait", "ms": 400 },
+    { "type": "swipe", "name": "scroll-forward-two", "durationMs": 750, "platformOverrides": {"Android": {"durationMs": 300}}, "fromXFraction": 0.513, "toXFraction": 0.513, "fromYFraction": 0.438, "toYFraction": 0.178 },
+    { "type": "wait", "ms": 400 },
+    { "type": "screenshot", "name": "after-forward-swipes" },
+    { "type": "swipe", "name": "scroll-reverse-one", "durationMs": 700, "platformOverrides": {"Android": {"durationMs": 300}}, "fromXFraction": 0.513, "toXFraction": 0.513, "fromYFraction": 0.26, "toYFraction": 0.391 },
+    { "type": "wait", "ms": 300 },
+    { "type": "screenshot", "name": "after-first-reverse" },
+    { "type": "swipe", "name": "scroll-reverse-two", "durationMs": 800, "platformOverrides": {"Android": {"durationMs": 300}}, "fromXFraction": 0.513, "toXFraction": 0.513, "fromYFraction": 0.26, "toYFraction": 0.438 },
+    { "type": "waitForColor", "name": "scrolled-focus-retained", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-scroll", "syncWith": "scrolled-focus-retained" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-scroll", "to": "after-scroll", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
 }

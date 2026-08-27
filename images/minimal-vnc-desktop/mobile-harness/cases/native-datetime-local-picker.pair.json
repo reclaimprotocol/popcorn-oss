@@ -3,194 +3,30 @@
   "name": "native-datetime-local-picker",
   "testDescription": "A datetime-local input must open the combined iOS calendar/time picker in Safari and LiveView and commit August 29 at 11:16.",
   "testPage": "cases/native-datetime-local-picker.html",
-  "baseline": {
-    "fixturePath": "cases/native-datetime-local-picker.html"
-  },
-  "candidate": {
-    "setupActions": []
-  },
+  "baseline": { "fixturePath": "cases/native-datetime-local-picker.html" },
+  "candidate": { "setupActions": [] },
   "candidateActionFailureVerdict": "FAIL",
-  "recordingStart": {
-    "name": "case-ready",
-    "color": "#2b005f",
-    "timeoutMs": 30000
-  },
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
   "actions": [
-    {
-      "type": "waitForColor",
-      "name": "ready",
-      "color": "#2b005f",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "screenshot",
-      "name": "before-picker",
-      "syncWith": "ready"
-    },
-    {
-      "type": "tapRelativeToColor",
-      "name": "open-datetime-picker",
-      "color": "#dcfce7",
-      "tolerance": 8
-    },
-    {
-      "type": "wait",
-      "ms": 800
-    },
-    {
-      "type": "screenshot",
-      "name": "calendar-open"
-    },
-    {
-      "type": "tap",
-      "name": "choose-august-29",
-      "x": 337,
-      "y": 467,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": {
-            "type": "tap",
-            "x": 540,
-            "y": 1067,
-            "settleMs": 250
-          },
-          "candidate": {
-            "type": "tap",
-            "x": 540,
-            "y": 1067,
-            "settleMs": 250
-          }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "name": "advance-day-25",
-      "ms": 0,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 },
-          "candidate": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "name": "advance-day-26",
-      "ms": 0,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 },
-          "candidate": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "name": "advance-day-27",
-      "ms": 0,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 },
-          "candidate": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "name": "advance-day-28",
-      "ms": 0,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 },
-          "candidate": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "name": "advance-day-29",
-      "ms": 0,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 },
-          "candidate": { "type": "tap", "x": 540, "y": 1067, "settleMs": 250 }
-        }
-      }
-    },
-    {
-      "type": "tap",
-      "name": "open-time-pane",
-      "x": 305,
-      "y": 563,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "wait", "ms": 500 },
-          "candidate": { "type": "wait", "ms": 500 }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "ms": 500
-    },
-    {
-      "type": "screenshot",
-      "name": "time-pane-open"
-    },
-    {
-      "type": "tap",
-      "name": "choose-hour-11",
-      "x": 172,
-      "y": 465,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "swipe", "fromX": 330, "fromY": 1450, "toX": 330, "toY": 1300, "durationMs": 500 },
-          "candidate": { "type": "swipe", "fromX": 330, "fromY": 1450, "toX": 330, "toY": 1300, "durationMs": 500 }
-        }
-      }
-    },
-    {
-      "type": "tap",
-      "name": "choose-minute-16",
-      "x": 238,
-      "y": 465,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "type": "swipe", "fromX": 540, "fromY": 1450, "toX": 540, "toY": 1300, "durationMs": 500 },
-          "candidate": { "type": "swipe", "fromX": 540, "fromY": 1450, "toX": 540, "toY": 1300, "durationMs": 500 }
-        }
-      }
-    },
-    {
-      "type": "tap",
-      "name": "confirm-datetime",
-      "x": 319,
-      "y": 620,
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": { "x": 935, "y": 1810 },
-          "candidate": { "x": 935, "y": 1810 }
-        }
-      }
-    },
-    {
-      "type": "waitForColor",
-      "name": "datetime-selected",
-      "color": "#00d084",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "screenshot",
-      "name": "after-selection",
-      "syncWith": "datetime-selected"
-    }
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-picker", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "open-datetime-picker", "color": "#dcfce7", "tolerance": 8 },
+    { "type": "wait", "ms": 800 },
+    { "type": "screenshot", "name": "calendar-open" },
+    { "type": "tapNativeElement", "name": "step-day-to-24", "android": {"text": "24"}, "platforms": ["Android"], "settleMs": 250 },
+    { "type": "tapNativeElement", "name": "step-day-to-25", "android": {"text": "25"}, "platforms": ["Android"], "settleMs": 250 },
+    { "type": "tapNativeElement", "name": "step-day-to-26", "android": {"text": "26"}, "platforms": ["Android"], "settleMs": 250 },
+    { "type": "tapNativeElement", "name": "step-day-to-27", "android": {"text": "27"}, "platforms": ["Android"], "settleMs": 250 },
+    { "type": "tapNativeElement", "name": "step-day-to-28", "android": {"text": "28"}, "platforms": ["Android"], "settleMs": 250 },
+    { "type": "tapNativeElement", "name": "step-day-to-29", "android": {"text": "29"}, "platforms": ["Android"], "settleMs": 250 },
+    { "type": "tapNativeElement", "name": "set-day-wheel", "ios": {"pickerValue": "29", "wheelIndex": 2}, "platforms": ["iOS"], "settleMs": 300 },
+    { "type": "wait", "ms": 500 },
+    { "type": "screenshot", "name": "time-pane-open" },
+    { "type": "tapNativeElement", "name": "choose-hour-11", "android": {"text": "11"}, "ios": {"pickerValue": "11", "wheelIndex": 3}, "settleMs": 300 },
+    { "type": "tapNativeElement", "name": "choose-minute-16", "android": {"text": "16"}, "ios": {"pickerValue": "16", "wheelIndex": 4}, "settleMs": 300 },
+    { "type": "tapNativeElement", "name": "confirm-datetime", "android": {"resourceId": "android:id/button1"}, "ios": {"label": "Done"}, "settleMs": 400 },
+    { "type": "waitForColor", "name": "datetime-selected", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-selection", "syncWith": "datetime-selected" }
   ],
-  "compare": {
-    "profile": "relative-transition-diff",
-    "from": "before-picker",
-    "to": "after-selection",
-    "pixelThreshold": 0.15,
-    "maxTransitionRatioDelta": 0.2
-  }
+  "compare": { "profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
 }

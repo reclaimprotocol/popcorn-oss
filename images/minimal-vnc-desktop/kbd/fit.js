@@ -380,6 +380,19 @@ export function createFit({
   // grew. Grow both from the same number (window.__pcnFbTarget, which returns the
   // framebuffer AND the CSS size it corresponds to) and a DSF>1 renders exactly
   // into it. See the supersampling branch below and kbd/fbscale.js.
+  // The last viewport height seen with the keyboard DOWN. A soft keyboard must
+  // never define the remote viewport: on an adjustResize Android WebView it
+  // shrinks the LAYOUT viewport, so emulating that height reflows the remote page
+  // under the field being typed into — which re-creates the field and closes the
+  // keyboard. The window-resize path guards itself, but pushEmulate has other
+  // callers (the connect-time settle retries, the geometry watcher, fbscale), so
+  // the invariant belongs here where the height is chosen.
+  let lastNoKbdH = 0;
+  function stableEmulateHeight(h) {
+    if (!getKeyboardActive()) { lastNoKbdH = h; return h; }
+    return lastNoKbdH > h ? lastNoKbdH : h;
+  }
+
   function computeEmulation() {
     if (fitMode && fitLayoutW > 0) {
       // Render the FULL page width; the wide framebuffer is scaled down for
@@ -389,7 +402,7 @@ export function createFit({
     }
     const screen = getScreenElement();
     let width = Math.max(1, Math.round((screen && screen.offsetWidth) || window.innerWidth));
-    let height = Math.max(1, Math.round((screen && screen.offsetHeight) || window.innerHeight));
+    let height = stableEmulateHeight(Math.max(1, Math.round((screen && screen.offsetHeight) || window.innerHeight)));
     // Emulate at the SAME target rfb._screenSize sizes the framebuffer to (viewer.js
     // __pcnFbTarget): the kiosk-capped size (default), or the window-aspect rect
     // fitted in the cap (?fill=1). Sharing the one function keeps CDP layout ==
@@ -842,7 +855,19 @@ export function createFit({
       try { if (rfb) rfb.resizeSession = false; } catch (_) {}
       if (pushTimer) clearTimeout(pushTimer);
       if (getKeyboardActive()) return;
-      pushTimer = setTimeout(() => { pushTimer = null; settle(); }, 350);
+      pushTimer = setTimeout(() => {
+        pushTimer = null;
+        // Re-check the keyboard HERE, not only at event time. On an adjustResize
+        // Android WebView the soft keyboard shrinks the LAYOUT viewport, so a
+        // keyboard open is the only thing that fires this event — and kbd-detect
+        // latches keyboardActive from its own window 'resize' listener. Both
+        // listeners are on window, so whichever registered first wins the race;
+        // reading the flag at event time meant a keyboard open could still push
+        // a remote resize, whose reflow re-creates the focused field and closes
+        // the keyboard ("it keeps closing when I type the password").
+        if (getKeyboardActive()) return;
+        settle();
+      }, 350);
     };
     // Settle now, with retries in case CDP/SetDesktopSize isn't ready at connect.
     settle();

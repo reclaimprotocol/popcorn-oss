@@ -15,9 +15,13 @@
 <body>
   <main>
     <h1>Active fixture cases</h1>
+    <p><a href="cases/webview-embed-widget.html">Embedded widget in a web view</a></p>
+    <p><a href="cases/webview-bottom-input-keyboard.html">Bottom input, keyboard occlusion</a></p>
     <p><a href="cases/input-near-bottom-typing-stability.html">Input near bottom: typing stability</a></p>
     <p><a href="cases/multiple-input-types-switching.html">Multiple input types: native switching</a></p>
     <p><a href="cases/multiple-input-types-direct-tap.html">Multiple input types: direct field taps</a></p>
+    <p><a href="cases/long-input-cascade.html">Long input cascade</a></p>
+    <p><a href="cases/mixed-input-return-cycle.html">Mixed input return cycle</a></p>
     <p><a href="cases/desktop-horizontal-login.html">Desktop-only horizontal login</a></p>
     <p><a href="cases/drag-and-drop-functional.html">Drag and drop: functional transition</a></p>
     <p><a href="cases/nested-scrolling.html">Nested scrolling: inner panel</a></p>
@@ -25,6 +29,7 @@
     <p><a href="cases/slider-scrubbing.html">Slider scrubbing</a></p>
     <p><a href="cases/swipe-carousel.html">Swipe carousel</a></p>
     <p><a href="cases/modal-input-workflow.html">Modal input workflow</a></p>
+    <p><a href="cases/sticky-modal-input-cycle.html">Sticky header modal input cycle</a></p>
     <p><a href="cases/pinch-then-tap.html">Pinch then tap</a></p>
     <p><a href="cases/direct-field-switch-after-scroll.html">Direct field switch after scroll</a></p>
     <p><a href="cases/native-select-picker.html">Native select picker</a></p>
@@ -52,7 +57,9 @@
     <p><a href="cases/viewport-no-meta-fallback.html">No-metadata desktop fallback</a></p>
     <p><a href="cases/viewport-fixed-width-720.html">Explicit numeric viewport width</a></p>
     <p><a href="cases/viewport-dynamic-meta.html">Dynamically inserted viewport metadata</a></p>
-    <p>The harness runs these pages only through their explicit pair definitions.</p>
+    <p>The harness runs these pages only through their explicit pair definitions.
+      Support pages loaded <em>by</em> a fixture rather than driven as a case of their own
+      are not listed here: <code>cases/webview-embed-stub-widget.html</code>.</p>
   </main>
 </body>
 </html>

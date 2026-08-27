@@ -15,6 +15,8 @@ const list = spawnSync(appium, ['driver', 'list', '--installed', '--json'], {
   encoding: 'utf8',
 });
 
+console.log('Web-view cases additionally need the shell app: ./ios/webview-shell/build.sh');
+
 if (list.status === 0 && /"xcuitest"/.test(list.stdout)) {
   console.log(`XCUITest driver already installed in ${appiumHome}`);
   process.exit(0);

@@ -298,6 +298,10 @@ const PROFILES = {
     ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120 Mobile',
     maxTouchPoints: 5, coarse: true, editContext: false,
   },
+  'firefox-android': { // Gecko on Android — reports the keyboard unlike any Blink
+    ua: 'Mozilla/5.0 (Android 14; Mobile; rv:154.0) Gecko/154.0 Firefox/154.0',
+    maxTouchPoints: 5, coarse: true, editContext: false,
+  },
   'android-ec': { // Android WITH EditContext → EC path
     ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120 Mobile',
     maxTouchPoints: 5, coarse: true, editContext: true,

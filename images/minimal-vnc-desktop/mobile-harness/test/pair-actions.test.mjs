@@ -79,3 +79,24 @@ test('platform-target override can replace a tap with a calibrated native swipe'
     type: 'tap', name: 'choose-month', x: 410, y: 1085,
   }]);
 });
+
+test('an action can be limited to the platform whose control it describes', () => {
+  const actions = [
+    { type: 'waitForColor', name: 'ready', color: '#2b005f' },
+    { type: 'tapNativeElement', name: 'step-day', platforms: ['Android'], android: { text: '24' } },
+    { type: 'tapNativeElement', name: 'set-wheel', platforms: ['iOS'], ios: { pickerValue: '29' } },
+  ];
+  const android = actionsForTarget(actions, 'baseline', 'Android');
+  const ios = actionsForTarget(actions, 'baseline', 'iOS');
+  assert.deepEqual(android.map((a) => a.name), ['ready', 'step-day']);
+  assert.deepEqual(ios.map((a) => a.name), ['ready', 'set-wheel']);
+  // The marker must not leak into the action the driver executes.
+  assert.ok(!('platforms' in android[1]));
+});
+
+test('an empty or malformed platforms list is a case error, not a silent skip', () => {
+  assert.throws(() => actionsForTarget([{ type: 'tap', name: 'x', platforms: [] }], 'baseline', 'iOS'),
+    /invalid platforms list/);
+  assert.throws(() => actionsForTarget([{ type: 'tap', name: 'x', platforms: 'iOS' }], 'baseline', 'iOS'),
+    /invalid platforms list/);
+});

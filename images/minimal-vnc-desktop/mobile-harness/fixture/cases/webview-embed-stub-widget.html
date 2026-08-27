@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Stub verification widget</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body { font: 15px/1.35 system-ui, sans-serif; color: #0f172a; background: #fff;
+      padding: 14px; transition: none; }
+    h1 { font-size: 17px; margin: 0 0 10px; }
+    .field { height: 46px; margin-bottom: 10px; border: 3px solid #94a3b8; border-radius: 9px; background: #f1f5f9; }
+    #extra { display: none; }
+    body.step2 #extra { display: block; }
+    #panel { padding: 12px; border: 3px dashed #94a3b8; border-radius: 10px; }
+  </style>
+</head>
+<body>
+  <!-- Not the real provider. A deterministic stand-in with the same parent-observable
+       behaviour - it loads in an iframe, posts a message to its embedder, and
+       changes its own height when it advances a step - so the case can be run
+       and regression-tested without an embed target. -->
+  <div id="panel">
+    <h1>Stub verification step 1</h1>
+    <div class="field"></div>
+    <div class="field"></div>
+    <div id="extra">
+      <h1>Stub verification step 2</h1>
+      <div class="field"></div>
+      <div class="field"></div>
+      <div class="field"></div>
+      <div class="field"></div>
+    </div>
+  </div>
+  <script>
+    // Announce to the embedder, the way an embedded widget reports its height.
+    function announce() {
+      parent.postMessage({ type: 'stub-widget:height', height: document.body.scrollHeight }, '*');
+    }
+    window.addEventListener('load', announce);
+    window.addEventListener('message', (event) => {
+      if (event.data?.type !== 'popcorn-harness:advance') return;
+      document.body.classList.add('step2');
+      requestAnimationFrame(announce);
+    });
+  </script>
+</body>
+</html>

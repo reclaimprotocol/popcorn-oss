@@ -1,5 +1,23 @@
 {
-  "schemaVersion":1,"name":"native-month-picker","testDescription":"A month input must open the iOS month/year wheels in Safari and LiveView and commit September 2026.","testPage":"cases/native-month-picker.html","baseline":{"fixturePath":"cases/native-month-picker.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
-  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-picker","syncWith":"ready"},{"type":"tapRelativeToColor","name":"open-month-picker","color":"#dcfce7","tolerance":8},{"type":"wait","ms":800},{"type":"screenshot","name":"picker-open"},{"type":"tap","name":"choose-september","x":128,"y":429,"platformOverrides":{"Android":{"x":410,"y":1085}},"platformTargetOverrides":{"Android":{"baseline":{"type":"swipe","fromX":410,"fromY":1145,"toX":410,"toY":1015,"durationMs":450},"candidate":{"type":"swipe","fromX":410,"fromY":1145,"toX":410,"toY":1015,"durationMs":450}}}},{"type":"wait","ms":1400},{"type":"tap","name":"confirm-month","x":319,"y":537,"platformOverrides":{"Android":{"x":935,"y":1495}}},{"type":"waitForColor","name":"month-selected","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-selection","syncWith":"month-selected"}],
-  "compare":{"profile":"relative-transition-diff","from":"before-picker","to":"after-selection","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+  "schemaVersion": 1,
+  "name": "native-month-picker",
+  "testDescription": "A month input must open the iOS month/year wheels in Safari and LiveView and commit September 2026.",
+  "testPage": "cases/native-month-picker.html",
+  "baseline": { "fixturePath": "cases/native-month-picker.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-picker", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "open-month-picker", "color": "#dcfce7", "tolerance": 8 },
+    { "type": "wait", "ms": 800 },
+    { "type": "screenshot", "name": "picker-open" },
+    { "type": "tapNativeElement", "name": "choose-september", "android": {"text": "Sep"}, "ios": {"pickerValue": "September"}, "settleMs": 400 },
+    { "type": "wait", "ms": 1400 },
+    { "type": "tapNativeElement", "name": "confirm-month", "android": {"resourceId": "android:id/button1"}, "ios": {"label": "Done"}, "settleMs": 400 },
+    { "type": "waitForColor", "name": "month-selected", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-selection", "syncWith": "month-selected" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
 }

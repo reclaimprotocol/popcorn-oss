@@ -43,6 +43,8 @@ The pair must use:
 
 - the same simulator model and orientation;
 - direct Safari (iOS) or Chrome (Android) as the baseline and LiveView as the candidate;
+- the bundled WebView shell in place of that browser when the case sets
+  `launchTarget: "webview-shell"`, for pages that ship inside a host app's web view;
 - the same test page and native action array;
 - the exact Popcorn build and feature flags being evaluated;
 - built-in setup navigation to the baseline fixture before recording begins;
@@ -309,3 +311,61 @@ legitimate dark content, and site-specific overlays.
   infrastructure failed.
 
 Never convert missing evidence into a pass.
+
+## Running an existing case on a different surface
+
+A case ports to another surface only as far as its ACTIONS do. The sweep through
+the Android WebView shell found that most of what stopped a case from porting was
+in the case, not the product, and the cases have since been rewritten to remove
+it. What that established:
+
+**A literal coordinate is a calibration, not a behavior.** 26 cases carried a
+`tap`, `swipe`, `drag` or `pinch` with screen coordinates — 101 actions, plus 4
+more hidden inside `platformTargetOverrides`, where a `wait` becomes a tap and an
+audit of action types alone does not see it. Coordinates encode the device and the
+surface together, so running one elsewhere completes the gesture and then times
+out on the marker it was supposed to produce. All of them are now expressed as
+markers, window fractions, text entry, or native selectors; see
+[../cases/README.md](../cases/README.md) for which to reach for. A coordinate
+appearing in a case again is a bug in the case.
+
+**An absolute offset does not port either, even on a marker-relative action.**
+`dragRelativeToColorByOffset` resolves its source from the framebuffer but
+carried a fixed `delta`. `drag-hidden-target` needs the finger to enter a band
+`innerHeight - 130` from the bottom and stay there long enough to autoscroll.
+In a browser, chrome makes `innerHeight` smaller and the calibrated delta landed
+inside the band; in a chrome-less web view the viewport is taller and the same
+delta only grazed it (measured: `deltaY: 1408` fails, `1671` passes). Retuning
+the delta only moves which surface works. The fix belongs in the FIXTURE: its
+source now sits at `calc(100vh - 530px)`, a fixed distance above the viewport
+BOTTOM, so one delta enters the band on every surface.
+
+**On-screen keyboard keys are calibrated against the keyboard too.** `q` sits at
+y=613 on an iOS simulator and y=1715 on Android, and moves again between Gboard
+and the AOSP keyboard. `typeText` and `pressKey` go through the platform's own
+input path instead, which is why the typing cases now run on any surface with any
+keyboard.
+
+**A native picker is an OS window.** It carries no fixture colors, so no
+framebuffer marker can address it — but it exposes accessibility text, which is
+stable across browsers and web views, and `tapNativeElement` uses that. Measured
+in the WebView shell, a plain Android WebView does open the platform date, time,
+month, week and select dialogs (they come from Chromium's content layer, which
+WebView shares), and the exact-value cases commit through them, so these cases do
+belong on the shell and not only on a browser.
+
+**On Android there is no WebDriver to ask.** This transport is
+`adb exec-out screencap` plus `adb shell input` and declares
+`elementAccess: false`, so an Appium selector cannot resolve anything here — a
+`tapNativeElement` written that way fails with `driver.$ is not a function`.
+Android resolves a native element by dumping the accessibility hierarchy
+(`uiautomator dump`) and tapping the matched node's centre, walking a long list by
+repeating a swipe inside the list's own rectangle, because `scrollIntoView` also
+needs a WebDriver. Only nodes with real on-screen area are eligible: a
+NumberPicker keeps its off-screen values in the hierarchy, and tapping one of
+those "centres" would hit whatever is painted there instead.
+
+**Set `defaults.actionCoordinateScale`.** Only offsets and deltas still need it
+(cases are authored in iOS points; the Android framebuffer is device pixels).
+Without it those are off by ~2.8x, which reads as a product failure and is not
+one. Marker positions, window fractions, and text entry do not depend on it.

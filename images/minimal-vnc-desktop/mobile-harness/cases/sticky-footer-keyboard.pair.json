@@ -1,5 +1,20 @@
 {
-  "schemaVersion":1,"name":"sticky-footer-keyboard","testDescription":"With an input focused and the iOS keyboard open, typing must succeed and the resulting fixed-footer placement is preserved as visual evidence for evaluation.","testPage":"cases/sticky-footer-keyboard.html","baseline":{"fixturePath":"cases/sticky-footer-keyboard.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
-  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"tapRelativeToColor","name":"focus-field","color":"#e0f2fe","tolerance":8},{"type":"waitForColor","name":"field-focused","color":"#ff00d8","timeoutMs":30000},{"type":"screenshot","name":"keyboard-open","syncWith":"field-focused"},{"type":"tap","name":"type-q","x":23,"y":613},{"type":"waitForColor","name":"typed-footer-visible","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-input","syncWith":"typed-footer-visible"}],
-  "compare":{"profile":"relative-transition-diff","from":"keyboard-open","to":"after-input","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+  "schemaVersion": 1,
+  "name": "sticky-footer-keyboard",
+  "testDescription": "With an input focused and the iOS keyboard open, typing must succeed and the resulting fixed-footer placement is preserved as visual evidence for evaluation.",
+  "testPage": "cases/sticky-footer-keyboard.html",
+  "baseline": { "fixturePath": "cases/sticky-footer-keyboard.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "tapRelativeToColor", "name": "focus-field", "color": "#e0f2fe", "tolerance": 8 },
+    { "type": "waitForColor", "name": "field-focused", "color": "#ff00d8", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "keyboard-open", "syncWith": "field-focused" },
+    { "type": "typeText", "name": "type-q", "text": "q" },
+    { "type": "waitForColor", "name": "typed-footer-visible", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-input", "syncWith": "typed-footer-visible" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "keyboard-open", "to": "after-input", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildTouchTracks, coordinateExpression } from '../src/touch-tracks.mjs';
+import { buildTouchTracks, coordinateExpression, recordingTimeline } from '../src/touch-tracks.mjs';
 
 const origin = Date.parse('2026-08-27T00:00:00.000Z');
 const at = (milliseconds) => new Date(origin + milliseconds).toISOString();
@@ -56,4 +56,44 @@ test('tap remains a short stationary marker', () => {
   assert.equal(track.visibleStart, 3.88);
   assert.equal(track.visibleEnd, 4.6);
   assert.equal(coordinateExpression(track, 'x'), '492');
+});
+
+test('the overlay timeline covers the run even when screenrecord barely recorded', () => {
+  // Measured on an emulator: double-tap-no-zoom, a case whose whole point is that
+  // nothing changes on screen. screenrecord emitted 3 frames spanning 3.13s for a
+  // 3.8s run, so both taps (at +3.31s and +3.77s) fell past the encoded end and
+  // the mandatory overlay was refused for a case that had actually passed.
+  const short = recordingTimeline({ recordedDuration: 3.131, sourceFrames: 3, wallClockSeconds: 3.8 });
+  assert.equal(short.mode, 'hold-last-frame', 'keep the real frames, hold the last');
+  assert.equal(short.duration, 3.8, 'the timeline covers the whole run');
+  assert.equal(short.padSeconds, 0.669);
+  assert.equal(short.extended, true);
+});
+
+test('a single-frame recording still loops that frame', () => {
+  const one = recordingTimeline({ recordedDuration: 0.03, sourceFrames: 1, wallClockSeconds: 6 });
+  assert.equal(one.mode, 'loop-single-frame');
+  assert.equal(one.duration, 6);
+  assert.equal(one.padSeconds, 0, 'looping needs no pad');
+});
+
+test('a recording that covers the run is used exactly as recorded', () => {
+  const full = recordingTimeline({ recordedDuration: 5.4, sourceFrames: 160, wallClockSeconds: 5.2 });
+  assert.equal(full.mode, 'as-recorded');
+  assert.equal(full.duration, 5.4, 'no invented time');
+  assert.equal(full.extended, false);
+});
+
+test('a quarter second of slack is not treated as a short recording', () => {
+  // Encoding ends a frame or two before the last action; that is not the bug.
+  const close = recordingTimeline({ recordedDuration: 3.7, sourceFrames: 90, wallClockSeconds: 3.8 });
+  assert.equal(close.mode, 'as-recorded');
+});
+
+test('missing ffprobe metadata falls back to the wall clock', () => {
+  for (const bad of [{ recordedDuration: NaN, sourceFrames: 12 }, { recordedDuration: 0, sourceFrames: 12 }]) {
+    const t = recordingTimeline({ ...bad, wallClockSeconds: 4 });
+    assert.equal(t.mode, 'loop-single-frame');
+    assert.equal(t.duration, 4);
+  }
 });

@@ -3,246 +3,39 @@
   "name": "multiple-input-types-switching",
   "testDescription": "Switching natively through text, email, and telephone fields must focus each real input type, expose its appropriate keyboard, accept a visible value, keep the focused field above the keyboard, and avoid a black band or extra page jump.",
   "testPage": "cases/multiple-input-types-switching.html",
-  "baseline": {
-    "fixturePath": "cases/multiple-input-types-switching.html"
-  },
-  "candidate": {
-    "setupActions": []
-  },
-  "recordingStart": {
-    "name": "case-ready",
-    "color": "#35007d",
-    "timeoutMs": 30000
-  },
+  "baseline": { "fixturePath": "cases/multiple-input-types-switching.html" },
+  "candidate": { "setupActions": [] },
+  "recordingStart": { "name": "case-ready", "color": "#35007d", "timeoutMs": 30000 },
   "actions": [
-    {
-      "type": "waitForColor",
-      "name": "ready",
-      "color": "#35007d",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "screenshot",
-      "name": "ready",
-      "syncWith": "ready"
-    },
-    {
-      "type": "tapRelativeToColor",
-      "name": "focus-text",
-      "color": "#5f006e",
-      "offsetX": -170,
-      "offsetY": 0
-    },
-    {
-      "type": "waitForColor",
-      "name": "text-focused",
-      "color": "#ff00cb",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "wait",
-      "ms": 1000
-    },
-    {
-      "type": "screenshot",
-      "name": "text-focused",
-      "syncWith": "text-focused"
-    },
-    {
-      "type": "tap",
-      "name": "type-text-q",
-      "x": 23,
-      "y": 613
-    },
-    {
-      "type": "waitForColor",
-      "name": "text-typed",
-      "color": "#ffdd00",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "screenshot",
-      "name": "text-typed",
-      "syncWith": "text-typed"
-    },
-    {
-      "type": "wait",
-      "name": "reveal-email-on-android-candidate",
-      "ms": 0,
-      "platformTargetOverrides": {
-        "Android": {
-          "candidate": {
-            "type": "swipe",
-            "fromX": 550,
-            "fromY": 1320,
-            "toX": 550,
-            "toY": 900,
-            "durationMs": 650
-          }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "ms": 700
-    },
-    {
-      "type": "tap",
-      "name": "native-next-to-email",
-      "x": 95,
-      "y": 506,
-      "platformOverrides": {
-        "Android": {
-          "x": 995,
-          "y": 2180
-        }
-      },
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": {
-            "type": "tapRelativeToColor",
-            "color": "#008a99",
-            "offsetX": -430,
-            "tolerance": 50
-          },
-          "candidate": {
-            "type": "tapRelativeToColor",
-            "color": "#008a99",
-            "offsetX": -430,
-            "tolerance": 50
-          }
-        }
-      }
-    },
-    {
-      "type": "waitForColor",
-      "name": "email-focused",
-      "color": "#00c7ff",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "wait",
-      "ms": 1000
-    },
-    {
-      "type": "screenshot",
-      "name": "email-focused",
-      "syncWith": "email-focused"
-    },
-    {
-      "type": "tap",
-      "name": "type-email-q",
-      "x": 23,
-      "y": 613
-    },
-    {
-      "type": "waitForColor",
-      "name": "email-typed",
-      "color": "#00ff63",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "screenshot",
-      "name": "email-typed",
-      "syncWith": "email-typed"
-    },
-    {
-      "type": "wait",
-      "name": "reveal-telephone-on-android-candidate",
-      "ms": 0,
-      "platformTargetOverrides": {
-        "Android": {
-          "candidate": {
-            "type": "swipe",
-            "fromX": 550,
-            "fromY": 1320,
-            "toX": 550,
-            "toY": 900,
-            "durationMs": 650
-          }
-        }
-      }
-    },
-    {
-      "type": "wait",
-      "ms": 700
-    },
-    {
-      "type": "tap",
-      "name": "native-next-to-telephone",
-      "x": 95,
-      "y": 506,
-      "platformOverrides": {
-        "Android": {
-          "x": 995,
-          "y": 2180
-        }
-      },
-      "platformTargetOverrides": {
-        "Android": {
-          "baseline": {
-            "type": "tapRelativeToColor",
-            "color": "#7a3e00",
-            "offsetX": -430,
-            "tolerance": 50
-          },
-          "candidate": {
-            "type": "tapRelativeToColor",
-            "color": "#7a3e00",
-            "offsetX": -430,
-            "tolerance": 50
-          }
-        }
-      }
-    },
-    {
-      "type": "waitForColor",
-      "name": "telephone-focused",
-      "color": "#ff4e00",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "wait",
-      "ms": 1000
-    },
-    {
-      "type": "screenshot",
-      "name": "telephone-focused",
-      "syncWith": "telephone-focused"
-    },
-    {
-      "type": "tap",
-      "name": "type-telephone-1",
-      "x": 68,
-      "y": 609
-    },
-    {
-      "type": "waitForColor",
-      "name": "telephone-typed",
-      "color": "#adff00",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "wait",
-      "ms": 1000
-    },
-    {
-      "type": "waitForColor",
-      "name": "telephone-settled",
-      "color": "#adff00",
-      "timeoutMs": 30000
-    },
-    {
-      "type": "screenshot",
-      "name": "telephone-typed",
-      "syncWith": "telephone-settled"
-    }
+    { "type": "waitForColor", "name": "ready", "color": "#35007d", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "ready", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "focus-text", "color": "#5f006e", "offsetX": -170, "offsetY": 0 },
+    { "type": "waitForColor", "name": "text-focused", "color": "#ff00cb", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 1000 },
+    { "type": "screenshot", "name": "text-focused", "syncWith": "text-focused" },
+    { "type": "typeText", "name": "type-text-q", "text": "q" },
+    { "type": "waitForColor", "name": "text-typed", "color": "#ffdd00", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "text-typed", "syncWith": "text-typed" },
+    { "type": "wait", "name": "reveal-email-on-android-candidate", "ms": 0, "platformTargetOverrides": {"Android": {"candidate": {"type": "swipe", "durationMs": 650, "fromXFraction": 0.509, "toXFraction": 0.509, "fromYFraction": 0.55, "toYFraction": 0.375}}} },
+    { "type": "wait", "ms": 700 },
+    { "type": "pressKey", "name": "native-next-to-email", "key": "next" },
+    { "type": "waitForColor", "name": "email-focused", "color": "#00c7ff", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 1000 },
+    { "type": "screenshot", "name": "email-focused", "syncWith": "email-focused" },
+    { "type": "typeText", "name": "type-email-q", "text": "q" },
+    { "type": "waitForColor", "name": "email-typed", "color": "#00ff63", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "email-typed", "syncWith": "email-typed" },
+    { "type": "wait", "name": "reveal-telephone-on-android-candidate", "ms": 0, "platformTargetOverrides": {"Android": {"candidate": {"type": "swipe", "durationMs": 650, "fromXFraction": 0.509, "toXFraction": 0.509, "fromYFraction": 0.55, "toYFraction": 0.375}}} },
+    { "type": "wait", "ms": 700 },
+    { "type": "pressKey", "name": "native-next-to-telephone", "key": "next" },
+    { "type": "waitForColor", "name": "telephone-focused", "color": "#ff4e00", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 1000 },
+    { "type": "screenshot", "name": "telephone-focused", "syncWith": "telephone-focused" },
+    { "type": "typeText", "name": "type-telephone-1", "text": "5" },
+    { "type": "waitForColor", "name": "telephone-typed", "color": "#adff00", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 1000 },
+    { "type": "waitForColor", "name": "telephone-settled", "color": "#adff00", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "telephone-typed", "syncWith": "telephone-settled" }
   ],
-  "compare": {
-    "profile": "checkpoint-pixel-diff",
-    "from": "text-focused",
-    "to": "telephone-typed",
-    "pixelThreshold": 0.15,
-    "maxChangedPixelRatio": null
-  }
+  "compare": { "profile": "checkpoint-pixel-diff", "from": "text-focused", "to": "telephone-typed", "pixelThreshold": 0.15, "maxChangedPixelRatio": null }
 }

@@ -83,3 +83,39 @@ test('empty configuration produces a clean empty dashboard', () => {
   assert.match(html, /0<\/b> selected results/);
   assert.match(html, /No result manifests were selected/);
 });
+
+test('a missing manifest is an error unless skipping is requested, and skips are reported', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'popcorn-harness-dashboard-skip-'));
+  const present = path.join(directory, 'present');
+  mkdirSync(present, { recursive: true });
+  writeFileSync(path.join(present, 'pair.json'), JSON.stringify({
+    schemaVersion: 1,
+    name: 'present-case',
+    status: 'COMPLETE',
+    verdict: 'PASS',
+    reason: 'kept',
+    platform: 'Android',
+    browser: { name: 'Android WebView', platformName: 'Android' },
+  }));
+  const configFile = path.join(directory, 'current.json');
+  writeFileSync(configFile, JSON.stringify({
+    schemaVersion: 1,
+    title: 'Skip test',
+    entries: [
+      { manifest: 'present/pair.json', label: 'present-case', tags: [] },
+      { manifest: 'pruned/pair.json', label: 'pruned-case', tags: [] },
+    ],
+  }));
+  const outputFile = path.join(directory, 'out', 'index.html');
+
+  assert.throws(() => buildDashboard({ configFile, outputFile }), /pruned\/pair\.json/);
+
+  buildDashboard({ configFile, outputFile, skipMissing: true });
+  const html = readFileSync(outputFile, 'utf8');
+  assert.match(html, /Missing manifests/);
+  assert.match(html, /pruned-case/);
+  assert.match(html, /present-case/);
+  const buildManifest = JSON.parse(readFileSync(path.join(path.dirname(outputFile), 'dashboard-manifest.json'), 'utf8'));
+  assert.equal(buildManifest.entries.length, 1);
+  assert.deepEqual(buildManifest.skippedEntries, [{ manifest: 'pruned/pair.json', label: 'pruned-case' }]);
+});

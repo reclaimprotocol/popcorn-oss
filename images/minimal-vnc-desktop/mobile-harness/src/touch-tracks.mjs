@@ -112,3 +112,26 @@ export function coordinateExpression(track, axis) {
   const delta = last[key] - first[key];
   return `if(lt(t,${start}),${first[key]},if(gt(t,${end}),${last[key]},${first[key]}+${delta}*(t-${start})/${Math.max(0.001, end - start)}))`;
 }
+
+// How long the overlay timeline should be, and how the source has to be stretched
+// to cover it.
+//
+// screenrecord emits frames only when the screen CHANGES, so a case whose whole
+// point is that nothing changes (a double tap that must NOT zoom) produced a
+// 3-frame, 3.13s file for a 3.8s run — and every real touch then fell after the
+// encoded end, so the mandatory overlay was refused for a case that had passed.
+// The encoded duration is only trustworthy when it actually covers the run.
+export function recordingTimeline({ recordedDuration, sourceFrames, wallClockSeconds }) {
+  const wall = Math.max(1, Number(wallClockSeconds) || 0);
+  const encoded = Number(recordedDuration);
+  const frames = Number(sourceFrames);
+  const singleFrame = !Number.isFinite(encoded) || encoded <= 0 || !(frames > 1);
+  const short = !singleFrame && encoded + 0.25 < wall;
+  return {
+    duration: singleFrame || short ? wall : encoded,
+    // loop the one frame we have, hold the last of the few we have, or neither
+    mode: singleFrame ? 'loop-single-frame' : short ? 'hold-last-frame' : 'as-recorded',
+    padSeconds: short ? Number((wall - encoded).toFixed(3)) : 0,
+    extended: singleFrame || short,
+  };
+}

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "name": "webview-bottom-input-keyboard",
+  "testDescription": "In a host app's web view, tapping a bottom-pinned input must open the keyboard and leave that input fully visible above it.",
+  "testPage": "cases/webview-bottom-input-keyboard.html",
+  "launchTarget": "webview-shell",
+  "baseline": {
+    "fixturePath": "cases/webview-bottom-input-keyboard.html"
+  },
+  "candidate": {
+    "setupActions": []
+  },
+  "recordingStart": {
+    "name": "case-ready",
+    "color": "#00c8ff",
+    "timeoutMs": 45000
+  },
+  "actions": [
+    {
+      "type": "waitForColor",
+      "name": "page-ready",
+      "color": "#00c8ff",
+      "timeoutMs": 45000
+    },
+    {
+      "type": "screenshot",
+      "name": "before-keyboard",
+      "syncWith": "page-ready"
+    },
+    {
+      "type": "tapRelativeToColor",
+      "name": "tap-bottom-input",
+      "color": "#6a007a",
+      "offsetX": 0,
+      "offsetY": 0
+    },
+    {
+      "type": "waitForColor",
+      "name": "field-visible-with-keyboard",
+      "color": "#00ff6a",
+      "timeoutMs": 20000
+    },
+    {
+      "type": "wait",
+      "ms": 900
+    },
+    {
+      "type": "waitForColor",
+      "name": "field-settled",
+      "color": "#00ff6a",
+      "timeoutMs": 20000
+    },
+    {
+      "type": "screenshot",
+      "name": "with-keyboard",
+      "syncWith": "field-settled"
+    }
+  ],
+  "candidateActionFailureVerdict": "FAIL",
+  "compare": {
+    "profile": "relative-transition-diff",
+    "from": "before-keyboard",
+    "to": "with-keyboard",
+    "pixelThreshold": 0.15,
+    "maxTransitionRatioDelta": 0.3
+  }
+}

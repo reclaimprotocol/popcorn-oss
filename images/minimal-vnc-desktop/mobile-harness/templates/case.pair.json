@@ -27,10 +27,10 @@
       "syncWith": "before-state"
     },
     {
-      "type": "tap",
+      "type": "tapRelativeToColor",
       "name": "replace-with-native-action",
-      "x": 200,
-      "y": 400
+      "color": "#ff6b00",
+      "tolerance": 8
     },
     {
       "type": "waitForColor",

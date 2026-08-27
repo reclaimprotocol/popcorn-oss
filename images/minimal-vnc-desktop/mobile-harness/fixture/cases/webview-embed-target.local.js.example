@@ -1,0 +1,8 @@
+// Copy to webview-embed-target.local.js (gitignored) and fill in your program.
+// The embed provider gives you a URL for the view; the fixture iframes it.
+window.EMBED_VIEW_URL = 'https://services.embed-view.com/verify/REPLACE_WITH_PROGRAM_ID/';
+
+// Optional. Set only if you want the page embedded through the provider's JS library
+// instead of a plain iframe; the fixture falls back to the iframe if the SDK
+// cannot be loaded or its shape differs.
+// window.EMBED_VIEW_SDK_URL = 'https://REPLACE_WITH_JSLIB_URL/embed-view.js';

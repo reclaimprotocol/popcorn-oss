@@ -7,3 +7,4 @@ if (version.status !== 0) {
 }
 console.log(version.stdout.trim());
 console.log('Android uses framebuffer screenshots and native touch through ADB; no WebDriver driver is installed.');
+console.log('Web-view cases additionally need the shell app: ./android/webview-shell/build.sh');

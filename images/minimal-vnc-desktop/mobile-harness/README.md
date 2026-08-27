@@ -2,7 +2,9 @@
 
 This harness compares a website opened directly in the device browser with the
 same website rendered through Popcorn LiveView. It runs Safari on iOS and
-Chrome on Android. Both sides of an Android pair run in Chrome. The runner
+Chrome on Android. A pair runs in that browser by default, or in the bundled
+WebView shell for its platform when the case asks for it, so pages that ship
+inside a host app's web view can be tested as they ship. The runner
 drives native mobile input and treats the device framebuffer as the source of
 truth. Android uses only ADB framebuffer capture and native touch injection; it
 does not open a WebDriver session. The harness does not use browser CDP, the
@@ -15,6 +17,8 @@ cannot silently become part of a new evaluation.
 ## Layout
 
 ```text
+android/webview-shell/      minimal Android WebView host app for web-view cases
+ios/webview-shell/          minimal iOS WKWebView host app for web-view cases
 cases/                      active pair definitions created by the tester
 dashboards/                 explicit lists of result manifests to publish
 docs/                       configuration and debugging guides
@@ -35,6 +39,17 @@ npm install
 npm run setup:ios
 npm run setup:android
 ```
+
+To test pages that run inside a web view rather than a browser, build the shell
+app for the platforms you need. Neither build uses Gradle or an Xcode project:
+
+```bash
+./android/webview-shell/build.sh   # JDK 17+ and the Android SDK
+./ios/webview-shell/build.sh       # Xcode with the iOS Simulator SDK
+```
+
+See [android/webview-shell/README.md](android/webview-shell/README.md) and
+[ios/webview-shell/README.md](ios/webview-shell/README.md).
 
 `package.json` declares Node `24.5.0`, npm `>=11.5.1 <12`, and the preferred
 package manager `npm@11.5.1`. There is no harness-specific runtime launcher;
@@ -67,6 +82,13 @@ cp templates/fixture.html fixture/cases/example.html
 Edit both files. The pair describes only visible behavior and native actions;
 it must not contain host addresses, credentials, device IDs, or shared feature
 flags. Each behavior gets its own deterministic page and visible phase markers.
+
+Nothing in a case may be a screen coordinate. A literal coordinate encodes the
+device and the surface it was calibrated on, so it silently stops describing the
+product as soon as the case runs anywhere else. Touch points come from visible
+markers, scroll distances from window fractions, text from `typeText`/`pressKey`,
+and native pickers from `tapNativeElement`; `test/case-portability.test.mjs`
+fails if a coordinate reappears. See [cases/README.md](cases/README.md).
 
 Run baseline and LiveView sequentially:
 
@@ -155,6 +177,14 @@ npm run dashboard -- \
 The builder writes `dashboard-manifest.json` beside the HTML, recording the
 exact inputs used. It never scans `artifacts/`, infers an issue category,
 deduplicates by name, or chooses a newest run.
+
+A selected manifest that cannot be read is an error, because the selection is
+explicit on purpose. `--skip-missing` relaxes exactly one case - a manifest
+whose file no longer exists, which cannot be rendered at all - and every skip is
+named in a banner on the page and in `dashboard-manifest.json`, never dropped
+quietly. A pair refreshes the dashboard with that flag, so pruning an old case
+from `artifacts/` cannot make the next run fail; the skips also land in the pair
+manifest as `dashboardSkippedEntries`.
 
 ## Sequence and parallel execution
 

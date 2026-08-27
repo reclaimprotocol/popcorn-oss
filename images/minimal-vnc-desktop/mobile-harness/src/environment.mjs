@@ -1,6 +1,47 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  defaultAndroidLaunchTarget,
+  defaultIosLaunchTarget,
+} from './launch-targets.mjs';
+
+const harnessRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Which app hosts the page, per platform. Chrome and Safari stay the defaults
+// so existing environments keep working unchanged; the WebView shells cover
+// pages that ship inside a host app's web view. An environment may add targets
+// or override these under `android.launchTargets` and `ios.launchTargets`.
+const builtInLaunchTargets = {
+  Android: {
+    chrome: defaultAndroidLaunchTarget,
+    'webview-shell': {
+      label: 'Android WebView',
+      package: 'org.reclaimprotocol.popcorn.webviewshell',
+      activity: 'org.reclaimprotocol.popcorn.webviewshell.ShellActivity',
+      urlDelivery: 'extra',
+      urlExtra: 'url',
+      apk: path.join(harnessRoot, 'android', 'webview-shell', 'build', 'popcorn-webview-shell.apk'),
+    },
+  },
+  iOS: {
+    safari: defaultIosLaunchTarget,
+    'webview-shell': {
+      label: 'iOS WebView',
+      bundleId: 'org.reclaimprotocol.popcorn.webviewshell',
+      // simctl launch delivers the URL directly. A custom scheme would work too,
+      // but iOS asks the tester to confirm opening the app, which no automated
+      // run can answer.
+      urlDelivery: 'launch-args',
+      urlArgument: 'url',
+      scheme: 'popcorn-shell',
+      app: path.join(harnessRoot, 'ios', 'webview-shell', 'build', 'PopcornWebViewShell.app'),
+    },
+  },
+};
+
+const environmentSections = { Android: 'android', iOS: 'ios' };
 
 function readJson(file) {
   try {
@@ -20,6 +61,74 @@ function merge(base, override) {
       : structuredClone(value);
   }
   return result;
+}
+
+function launchTargets(environment, platform) {
+  const configured = environment[environmentSections[platform]]?.launchTargets ?? {};
+  const builtIn = builtInLaunchTargets[platform];
+  const names = new Set([...Object.keys(builtIn), ...Object.keys(configured)]);
+  const result = {};
+  for (const name of names) {
+    result[name] = merge(builtIn[name] ?? {}, configured[name] ?? {});
+  }
+  return result;
+}
+
+export function resolveEnvironmentLaunchTargets(loadedEnvironment, platform) {
+  if (!loadedEnvironment) return {};
+  const targets = launchTargets(loadedEnvironment.value, platform);
+  return Object.fromEntries(Object.keys(targets).sort().map((name) => [
+    name,
+    resolveLaunchTarget(name, platform, targets, loadedEnvironment.directory),
+  ]));
+}
+
+function resolveAndroidLaunchTarget(resolved) {
+  requireString(resolved.package, `android.launchTargets.${resolved.name}.package`);
+  resolved.urlDelivery ??= 'view-intent';
+  if (!['view-intent', 'extra'].includes(resolved.urlDelivery)) {
+    throw new Error(`Android launch target ${resolved.name} urlDelivery must be view-intent or extra`);
+  }
+  if (resolved.urlDelivery === 'extra') {
+    requireString(resolved.activity, `android.launchTargets.${resolved.name}.activity`);
+    resolved.urlExtra ??= 'url';
+  }
+  return resolved;
+}
+
+function resolveIosLaunchTarget(resolved) {
+  resolved.urlDelivery ??= 'open-url';
+  if (!['open-url', 'launch-args', 'custom-scheme'].includes(resolved.urlDelivery)) {
+    throw new Error(`iOS launch target ${resolved.name} urlDelivery must be open-url, launch-args, or custom-scheme`);
+  }
+  if (resolved.urlDelivery === 'open-url' && !resolved.bundleId) {
+    // Safari and any other system handler: nothing to install, and the session
+    // needs a browser name instead of a bundle id.
+    requireString(resolved.browserName, `ios.launchTargets.${resolved.name}.browserName`);
+  } else {
+    requireString(resolved.bundleId, `ios.launchTargets.${resolved.name}.bundleId`);
+  }
+  if (resolved.urlDelivery === 'launch-args') resolved.urlArgument ??= 'url';
+  if (resolved.urlDelivery === 'custom-scheme') {
+    requireString(resolved.scheme, `ios.launchTargets.${resolved.name}.scheme`);
+    resolved.urlQuery ??= 'url';
+  }
+  return resolved;
+}
+
+function resolveLaunchTarget(name, platform, targets, environmentDirectory) {
+  const target = targets[name];
+  if (!target) {
+    throw new Error(`Environment has no ${platform} launch target named ${name} (available: ${Object.keys(targets).sort().join(', ')})`);
+  }
+  const resolved = { ...target, name };
+  for (const key of ['apk', 'app']) {
+    if (resolved[key] && !path.isAbsolute(resolved[key])) {
+      resolved[key] = path.resolve(environmentDirectory, resolved[key]);
+    }
+  }
+  resolved.label ??= name;
+  return platform === 'Android' ? resolveAndroidLaunchTarget(resolved) : resolveIosLaunchTarget(resolved);
 }
 
 function requireString(value, label) {
@@ -67,6 +176,26 @@ function selectSimulator(environment, requestedName) {
   return { name, value: profiles[name] };
 }
 
+// Turn the launch target NAME a case may carry into the resolved target for each
+// side. Kept out of materializePair: that function is the one place every
+// environment rule lands, and each inline block makes the next one harder to
+// follow (and to test) than the last.
+function applySideLaunchTargets(result, environment, environmentDirectory) {
+  const platform = String(result.device.platformName).toLowerCase() === 'android' ? 'Android' : 'iOS';
+  const targets = launchTargets(environment, platform);
+  const section = environment[environmentSections[platform]] ?? {};
+  const fallback = result.launchTarget
+    ?? section.defaultLaunchTarget
+    ?? (platform === 'Android' ? 'chrome' : 'safari');
+  for (const side of ['baseline', 'candidate']) {
+    const name = result[side].launchTarget ?? fallback;
+    if (typeof name !== 'string') throw new Error(`${side}.launchTarget must be a launch target name`);
+    result[side].launchTarget = resolveLaunchTarget(name, platform, targets, environmentDirectory);
+  }
+  delete result.launchTarget;
+  return result;
+}
+
 export function materializePair(pair, pairFile, loadedEnvironment, simulatorName) {
   const result = structuredClone(pair);
   if (!loadedEnvironment) return result;
@@ -112,6 +241,7 @@ export function materializePair(pair, pairFile, loadedEnvironment, simulatorName
   } else if (popcorn.navigation || result.navigation) {
     result.navigation = merge(popcorn.navigation ?? {}, result.navigation ?? {});
   }
+  applySideLaunchTargets(result, environment, loadedEnvironment.directory);
   result.environment = {
     name: environment.name,
     simulator: simulator.name,

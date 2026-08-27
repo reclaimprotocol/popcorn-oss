@@ -14,3 +14,7 @@ artifacts/*/candidate/*
 environments/local.json
 environments/*.local.json
 *.log
+android/webview-shell/build/
+ios/webview-shell/build/
+fixture/cases/webview-embed-target.local.js
+android/webview-shell/.signing/

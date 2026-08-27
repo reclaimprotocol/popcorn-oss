@@ -1,5 +1,21 @@
 {
-  "schemaVersion":1,"name":"contenteditable-editor","testDescription":"A contenteditable surface must receive native focus, show the keyboard, and accept typed text.","testPage":"cases/contenteditable-editor.html","baseline":{"fixturePath":"cases/contenteditable-editor.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
-  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-focus","syncWith":"ready"},{"type":"tapRelativeToColor","name":"focus-editor","color":"#fae8ff","tolerance":8},{"type":"waitForColor","name":"editor-focused","color":"#ff00d8","timeoutMs":30000},{"type":"screenshot","name":"editor-focused","syncWith":"editor-focused"},{"type":"tap","name":"type-q","x":23,"y":613,"platformOverrides":{"Android":{"x":60,"y":1715}}},{"type":"waitForColor","name":"editor-typed","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-editor-input","syncWith":"editor-typed"}],
-  "compare":{"profile":"relative-transition-diff","from":"before-focus","to":"after-editor-input","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+  "schemaVersion": 1,
+  "name": "contenteditable-editor",
+  "testDescription": "A contenteditable surface must receive native focus, show the keyboard, and accept typed text.",
+  "testPage": "cases/contenteditable-editor.html",
+  "baseline": { "fixturePath": "cases/contenteditable-editor.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-focus", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "focus-editor", "color": "#fae8ff", "tolerance": 8 },
+    { "type": "waitForColor", "name": "editor-focused", "color": "#ff00d8", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "editor-focused", "syncWith": "editor-focused" },
+    { "type": "typeText", "name": "type-q", "text": "q" },
+    { "type": "waitForColor", "name": "editor-typed", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-editor-input", "syncWith": "editor-typed" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-focus", "to": "after-editor-input", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
 }

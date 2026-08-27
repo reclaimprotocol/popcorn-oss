@@ -20,6 +20,8 @@ Configure:
 | `simulators.<name>.derivedDataPath` | Per-simulator WebDriverAgent build directory |
 | `defaultSimulator` | Profile used when `--simulator` is omitted |
 | `fixtures.baseUrl` | Base URL used to resolve a case's `baseline.fixturePath` |
+| `android.launchTargets`, `ios.launchTargets` | Apps that can host the page, keyed by name |
+| `android.defaultLaunchTarget`, `ios.defaultLaunchTarget` | Launch target used when a case names none |
 | `popcorn.sessionProvider` | Session transport, control-plane address, cluster, and region |
 | `popcorn.liveview` | Public gateway, host page, and shared flags such as `magnify=1` |
 | `popcorn.navigation` | Optional override for the built-in pre-record remote navigation |
@@ -103,6 +105,150 @@ The command checks the active Node runtime, platform tools, XCUITest for iOS,
 ADB for Android, connected devices, fixture host, Popcorn control plane, and gateway. A pair repeats the
 environment health checks before starting its baseline, preventing a dead
 cluster from producing a misleading partial test.
+
+## Launch targets
+
+The harness launches the page into a named app. Four targets are built in and
+need no configuration:
+
+| Platform | Name | App | URL delivery |
+| --- | --- | --- | --- |
+| Android | `chrome` | `com.android.chrome` | `VIEW` intent data (`-d <url>`) |
+| Android | `webview-shell` | `org.reclaimprotocol.popcorn.webviewshell` | `--es url` on an explicit component |
+| iOS | `safari` | Safari | `simctl openurl` |
+| iOS | `webview-shell` | `org.reclaimprotocol.popcorn.webviewshell` | `simctl launch ... -url <url>` |
+
+`chrome` and `safari` remain the defaults, so existing environments and cases
+behave exactly as they did. Pick another target per case with `launchTarget`, or
+per side with `baseline.launchTarget` and `candidate.launchTarget`. A case names
+only the target; bundle ids, activities, binary paths, and options stay here:
+
+```json
+"android": {
+  "defaultLaunchTarget": "chrome",
+  "launchTargets": {
+    "webview-shell": {
+      "label": "Android WebView",
+      "package": "org.reclaimprotocol.popcorn.webviewshell",
+      "activity": "org.reclaimprotocol.popcorn.webviewshell.ShellActivity",
+      "urlDelivery": "extra",
+      "urlExtra": "url",
+      "apk": "../android/webview-shell/build/popcorn-webview-shell.apk",
+      "extras": { "wideViewPort": true, "clearData": true }
+    }
+  }
+},
+"ios": {
+  "defaultLaunchTarget": "safari",
+  "launchTargets": {
+    "webview-shell": {
+      "label": "iOS WebView",
+      "bundleId": "org.reclaimprotocol.popcorn.webviewshell",
+      "urlDelivery": "launch-args",
+      "urlArgument": "url",
+      "app": "../ios/webview-shell/build/PopcornWebViewShell.app",
+      "extras": { "clearData": true }
+    }
+  }
+}
+```
+
+Shared fields:
+
+| Field | Purpose |
+| --- | --- |
+| `label` | Name shown in run manifests and on the dashboard |
+| `urlDelivery` | How the URL reaches the app, per the table below |
+| `reinstall` | Reinstall on every run instead of only when missing |
+| `extras` | Extra options passed to the host app |
+
+Android fields: `package` (application id, force-stopped before each launch),
+`activity` (explicit component, required for `extra` delivery), `urlExtra`
+(extra name carrying the URL, default `url`), and `apk`. Android `urlDelivery`
+is `view-intent` or `extra`. Extras are typed by JSON value: bool `--ez`,
+number `--ei`, string `--es`.
+
+iOS fields: `bundleId` (required unless the target is a system handler such as
+Safari), `browserName` (Safari only, and then no app is installed),
+`urlArgument` (launch argument carrying the URL, default `url`), `scheme` and
+`urlQuery` (for `custom-scheme`), and `app`. iOS `urlDelivery` is `open-url`,
+`launch-args`, or `custom-scheme`; extras become `-name value` launch arguments
+or query items. Prefer `launch-args`: iOS shows a confirmation dialog when
+another process opens a custom scheme, and an automated run cannot answer it.
+
+Relative `apk` and `app` paths resolve against the environment file. The
+Android APK is installed with `adb install -r -g`, so declared runtime
+permissions are pre-granted; the iOS app is installed with `simctl install`.
+Build the shells first with
+[`android/webview-shell/build.sh`](../android/webview-shell/README.md) and
+[`ios/webview-shell/build.sh`](../ios/webview-shell/README.md); a run that
+needs one fails with the build command in the error rather than installing
+something stale. `npm run doctor` lists every configured target for each
+platform in use, its application, and whether its binary is present.
+
+On iOS the session attaches to the target bundle rather than to Safari, so the
+install happens before Appium starts. Nothing else about the transport changes:
+screenshots and native input still come from WebDriverAgent, and Android still
+uses ADB only.
+
+Both sides of a pair should normally use the same target: a browser shows a URL
+bar and a shell does not, so mixing them changes the usable viewport height and
+makes a pixel comparison meaningless. Mix them only for a case whose whole
+point is that difference.
+
+## Android emulator rendering
+
+Start the emulator with **hardware** rendering. On an Apple Silicon host:
+
+```bash
+$ANDROID_HOME/emulator/emulator -avd <name> -no-audio -no-boot-anim -gpu host
+```
+
+`-gpu swiftshader_indirect` renders in software. Headless that is merely slow,
+but with the emulator window open it starves `system_server` badly enough to
+raise *"Process system isn't responding"*, and that dialog covers the page under
+test: markers are found once and then hidden, so a run fails with
+`Visible marker ... did not appear` while reporting a `max pixels` value well
+above the threshold. That signature means the framebuffer was obscured, not that
+the fixture is wrong.
+
+Measured on this project's AVD (Pixel 7, API 34), same case: `-gpu host` with the
+window open completes in ~39s, `-gpu swiftshader_indirect` headless in ~60s, and
+`swiftshader_indirect` with a window ANRs. Prefer `-gpu host`; keep `-no-window`
+only for CI hosts with no GPU.
+
+## Android browser preparation
+
+A freshly created AVD hides the page behind Chrome's own surfaces: the
+first-run screen, then a notifications promo. Either one keeps the case's ready
+marker from appearing, and the run ends `INFRA_ERROR` with
+`Visible marker ... did not appear`.
+
+The harness handles both from the launch target's `preparation` block, which the
+built-in `chrome` target already sets:
+
+| Field | Purpose |
+| --- | --- |
+| `commandLineFile` | Device path for the browser command-line file |
+| `commandLineFlags` | Flags written there, e.g. `--disable-fre` |
+| `debugApp` | Run `am set-debug-app --persistent` so the flags are read |
+| `dismissNodeIds` | Dialog node ids to tap if present, e.g. `com.android.chrome:id/negative_button` |
+| `dismissRounds` | How many times to look for another dialog (default 3) |
+
+Flags are written before the launch; `adb root` is attempted first and a device
+that refuses it simply keeps its existing browser configuration, with
+`preparation.commandLineFlags.applied: false` recorded in `run.json`. Dialog
+dismissal runs after the launch but **before** the ready marker and before
+recording starts, so a dismissed promo can never appear in the evidence. What
+was dismissed is recorded as `launchTarget.dismissedDialogs`.
+
+Set `"preparation": null` on a target to turn all of this off. The
+`webview-shell` targets define no preparation because they have no such
+surfaces.
+
+Prefer a `google_apis` system image over `google_apis_playstore`: `adb root` is
+refused on Play-enabled images, so the flag file cannot be written and Chrome's
+first-run screen has to be dismissed by hand.
 
 ## Multiple environments
 

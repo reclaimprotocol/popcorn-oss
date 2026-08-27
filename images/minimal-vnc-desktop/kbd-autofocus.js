@@ -81,7 +81,7 @@ import { createDialog } from './kbd/dialog.js';
 import { createPopupBar } from './kbd/popup-bar.js';
 import { createNativeSelectProxy } from './kbd/native-select.js';
 import { createNativePickerProxy } from './kbd/native-picker.js';
-import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
+import { hostGeometry, installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
 import { initE2E } from './kbd/e2e.js';
 import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
@@ -308,6 +308,25 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // A successful reclaim means somebody up there stole it. That is an
     // integration bug the embedder cannot see from its own side, so say so.
     onFocusStolen: () => reportHealth('focus-stolen'),
+    // Does something that CAN see the keyboard still report it occluding? Only
+    // an authoritative source counts: the embedder's posted rect, or a live
+    // VirtualKeyboard rect. Used to tell "focus dropped but the IME is still up"
+    // apart from "the keyboard is gone".
+    keyboardOccluding: () => {
+      const g = hostGeometry();
+      if (g && g.occludedBottom > 0) return true;
+      try {
+        const vk = navigator.virtualKeyboard;
+        if (vk && vk.boundingRect && vk.boundingRect.height > 0) return true;
+      } catch (_) {}
+      // The adjustResize WebView cell, measured at depth 3 in a real embed chain:
+      // the layout viewport shrank for the keyboard, so BOTH the embedder's
+      // innerHeight and its visualViewport moved together and it reports
+      // occludedBottom=0 — no authoritative rect exists anywhere. Our own
+      // layout-resize latch is then the only thing that knows the keyboard is up,
+      // and it is exactly as authoritative here: it measured the reflow.
+      return detect.layoutResizeMode();
+    },
   });
   const startWatchdog = watchdog.start;
   const stopWatchdog = watchdog.stop;
