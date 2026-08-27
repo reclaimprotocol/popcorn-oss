@@ -1,0 +1,48 @@
+{{- if .Values.networkPolicy.ingressEnabled }}
+{{- $gatewayNamespace := default .Release.Namespace .Values.networkPolicy.gatewayNamespace }}
+{{- $poolManagerNamespace := default .Release.Namespace .Values.networkPolicy.poolManagerNamespace }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: browser-runtime-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: browser-runtime
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $gatewayNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app: gateway
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $poolManagerNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app: pool-manager
+      ports:
+        - protocol: TCP
+          port: 6080
+        - protocol: TCP
+          port: 9222
+        - protocol: TCP
+          port: 9226
+{{- if .Values.browserRuntimeAttestor.enabled }}
+        - protocol: TCP
+          port: 8085
+{{- end }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- range $port := dig "browser" "ports" (list) $extension }}
+        - protocol: {{ default "TCP" $port.protocol }}
+          port: {{ $port.containerPort }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

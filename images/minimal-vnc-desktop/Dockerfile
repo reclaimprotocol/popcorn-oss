@@ -33,7 +33,7 @@ WORKDIR /src
 ARG TARGETARCH
 ARG TARGETOS
 ARG SOURCE_DATE_EPOCH=0
-COPY proxy/go.mod ./
+COPY proxy/go.mod proxy/go.sum ./
 COPY proxy/*.go ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
@@ -246,7 +246,9 @@ COPY liveview.html /usr/share/novnc/liveview.html
 COPY kbd-autofocus.js /usr/share/novnc/kbd-autofocus.js
 COPY kbd /usr/share/novnc/kbd
 COPY viewer.js /usr/share/novnc/viewer.js
+COPY --from=trusted-liveview bootstrap.js noise.js /usr/share/novnc/e2e/
 COPY locks/esbuild.lock /tmp/esbuild.lock
+COPY locks/noble.lock /tmp/noble.lock
 
 # Bundle the viewer (noVNC core/* + the kbd/* IME layer + viewer.js) into a single
 # viewer.bundle.js so the page loads in ONE request instead of a ~70-module ES
@@ -259,6 +261,18 @@ COPY locks/esbuild.lock /tmp/esbuild.lock
 # debuggable. (Full --minify would mangle names; deliberately not used.) esbuild's
 # output is deterministic (no embedded timestamps), preserving reproducibility.
 RUN set -eux; \
+    mkdir -p /usr/share/novnc/node_modules/@noble; \
+    while IFS="$(printf '\t')" read -r noble_name noble_version noble_url noble_sha256; do \
+      case "$noble_name" in \#*|'') continue ;; esac; \
+      noble_archive="/tmp/noble-${noble_name}.tgz"; \
+      curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
+           --connect-timeout 15 --speed-limit 4096 --speed-time 20 --max-time 300 \
+           --ipv4 --output "$noble_archive" "$noble_url"; \
+      echo "${noble_sha256}  ${noble_archive}" | sha256sum -c -; \
+      mkdir -p "/usr/share/novnc/node_modules/@noble/${noble_name}"; \
+      tar -xzf "$noble_archive" --strip-components=1 \
+          -C "/usr/share/novnc/node_modules/@noble/${noble_name}"; \
+    done < /tmp/noble.lock; \
     esb_url="$(awk -F '=' '$1 == "url" { print $2 }' /tmp/esbuild.lock)"; \
     esb_sha256="$(awk -F '=' '$1 == "sha256" { print $2 }' /tmp/esbuild.lock)"; \
     curl --fail --location --retry 5 --retry-all-errors --retry-delay 2 \
@@ -270,7 +284,7 @@ RUN set -eux; \
     /tmp/esbuild-src/bin/esbuild /usr/share/novnc/viewer.js --bundle --format=esm \
         --minify-whitespace --minify-syntax \
         --outfile=/usr/share/novnc/viewer.bundle.js; \
-    rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock; \
+    rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock /tmp/noble-*.tgz /tmp/noble.lock; \
     # Immutable primary bundle plus a no-cache fallback; generate SRI from its bytes.
     bundle_hash="$(sha256sum /usr/share/novnc/viewer.bundle.js | cut -c1-12)"; \
     bundle_sri="$(openssl dgst -sha384 -binary /usr/share/novnc/viewer.bundle.js | base64 | tr -d '\n')"; \

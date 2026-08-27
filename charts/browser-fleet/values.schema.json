@@ -29,6 +29,17 @@
         "enabled": { "type": "boolean" }
       }
     },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingressEnabled": { "type": "boolean" },
+        "gatewayNamespace": { "type": "string" },
+        "poolManagerNamespace": { "type": "string" },
+        "kubernetesApiCidr": { "type": "string" }
+      }
+    },
     "sessionExtensions": {
       "type": "object",
       "additionalProperties": {

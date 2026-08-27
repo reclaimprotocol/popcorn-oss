@@ -40,12 +40,25 @@ func main() {
 	cdpRestrictedListen := flag.String("cdp-restricted-listen", envDefault("CDP_RESTRICTED_LISTEN", "0.0.0.0:9222"), "restricted CDP proxy listen address; empty disables it")
 	cdpFullListen := flag.String("cdp-full-listen", envDefault("CDP_FULL_LISTEN", "0.0.0.0:9226"), "full CDP proxy listen address; empty disables it")
 	flag.Parse()
+	noiseEndpoint, err := newNoiseEndpoint()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")) != "" && strings.TrimSpace(os.Getenv("POD_NAME")) != "" {
+		go noiseEndpoint.watchAllocationBinding()
+		log.Printf("liveview e2ee pod key generated (%s), public key %s", noiseProtocolName, noiseEndpoint.publicKeyString())
+		if err := noiseEndpoint.publishPublicKey(); err != nil {
+			// Encrypted allocation will fail closed while waiting for this
+			// annotation; the default transport remains available.
+			log.Printf("liveview e2ee public-key publication failed: %v", err)
+		}
+	}
 
 	ready := readyGate{file: *readyFile}
 	servers := []*http.Server{
 		{
 			Addr:              *listen,
-			Handler:           noVNCMux(*web, *vnc, *cdpUpstream, ready),
+			Handler:           noVNCMux(*web, *vnc, *cdpUpstream, ready, noiseEndpoint),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
@@ -86,7 +99,7 @@ func main() {
 	log.Fatal(<-errs)
 }
 
-func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
+func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoint) http.Handler {
 	mux := http.NewServeMux()
 	kbd := newKbdHub()
 	mux.HandleFunc("/kbd", func(w http.ResponseWriter, r *http.Request) {
@@ -253,7 +266,8 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	// Viewer-measured tunnel RTT (kbd/rtt-report.js): POST ingests sample batches,
 	// GET ?sid= serves the per-session aggregate read at teardown for analytics.
 	// Carries timestamps and integers only.
-	mux.HandleFunc("/rtstats", rtstatsHTTPHandler(newRtstatsStore(log.Printf)))
+	rtstats := newRtstatsStore(log.Printf)
+	mux.HandleFunc("/rtstats", rtstatsHTTPHandler(rtstats))
 	// Screen-geometry hygiene: a fit/magnify viewer resizes the X screen to its own
 	// layout and nothing put it back, so the next session inherited a phone-shaped
 	// screen. Restore the advertised desktop size once the last viewer leaves.
@@ -274,6 +288,17 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
 		serveWebsocket(w, r, vnc, ready, keeper)
 	})
+	if len(e2e) > 0 && e2e[0] != nil {
+		// E2EE routes are intentionally separate from default routes. A caller
+		// cannot opt out with a query parameter and the gateway only sees opaque
+		// WebSocket frames.
+		mux.HandleFunc("/e2e/rfb", func(w http.ResponseWriter, r *http.Request) {
+			serveNoiseRFB(e2e[0], w, r, vnc, ready, keeper)
+		})
+		mux.HandleFunc("/e2e/control", func(w http.ResponseWriter, r *http.Request) {
+			serveNoiseControlSession(e2e[0], w, r, ready, kbd, em, rtstats, kbd.onViewerMsg)
+		})
+	}
 	mux.HandleFunc("/vnc-ws/", func(w http.ResponseWriter, r *http.Request) {
 		serveWebsocket(w, r, vnc, ready, keeper)
 	})
@@ -281,7 +306,82 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate) http.Handler {
 		serveWebsocket(w, r, vnc, ready, keeper)
 	})
 	mux.HandleFunc("/", staticHandler(web, ready))
+	if len(e2e) > 0 && e2e[0] != nil {
+		return liveViewTransportGuard(e2e[0], mux)
+	}
 	return mux
+}
+
+// liveViewTransportGuard is the pod-boundary enforcement for encrypted
+// allocations. The gateway may still know and attempt the default route, so
+// route selection in the control plane is not a security boundary. Once the
+// allocation carries an E2E binding, the LiveView HTTP port permits only
+// static viewer assets, the two Noise endpoints, and the loopback-only browser
+// dialog publisher. CDP listens separately and is deliberately outside this
+// user-facing transport guard.
+func liveViewTransportGuard(e *noiseEndpoint, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isPlaintextLiveViewPath(r.URL.Path) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if e.requiresE2E() {
+			if r.URL.Path == "/dialog" && isLoopbackRemote(r.RemoteAddr) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			http.Error(w, "encrypted LiveView session requires E2E transport", http.StatusForbidden)
+			return
+		}
+		tracked := &plaintextTrackingWriter{ResponseWriter: w, endpoint: e}
+		defer tracked.release()
+		next.ServeHTTP(tracked, r)
+	})
+}
+
+type plaintextTrackingWriter struct {
+	http.ResponseWriter
+	endpoint *noiseEndpoint
+	cleanup  func()
+}
+
+func (w *plaintextTrackingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("hijacking unsupported")
+	}
+	conn, rw, err := hijacker.Hijack()
+	if err == nil {
+		w.cleanup = w.endpoint.trackPlaintextConn(conn)
+	}
+	return conn, rw, err
+}
+
+func (w *plaintextTrackingWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *plaintextTrackingWriter) release() {
+	if w.cleanup != nil {
+		w.cleanup()
+		w.cleanup = nil
+	}
+}
+
+func isPlaintextLiveViewPath(p string) bool {
+	switch p {
+	case "/kbd", "/kbdstate", "/dialog", "/emulate", "/geometry", "/input", "/klog", "/rtstats", "/websockify":
+		return true
+	default:
+		return strings.HasPrefix(p, "/vnc-ws/") || strings.HasPrefix(p, "/liveview-ws/")
+	}
+}
+
+func isLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func envDefault(name, fallback string) string {

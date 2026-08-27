@@ -196,20 +196,26 @@ func rtstatsHTTPHandler(store *rtstatsStore) http.HandlerFunc {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		var p rtstatsPayload
-		if err := json.Unmarshal(body, &p); err != nil || len(p.Samples) == 0 {
+		if _, ok := ingestRTStats(store, body); !ok {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if len(p.Samples) > 128 { // matches the client's FLUSH_BATCH_MAX
-			p.Samples = p.Samples[:128]
-		}
-		sid := rtstatsSanitizeSID(p.SID)
-		n, avg, p50, p95, maxv := store.ingest(sid, p.Samples)
-		if n > 0 {
-			store.logf("[popcorn-rtt sid=%s] n=%d avg=%dms p50=%dms p95=%dms max=%dms",
-				klogSanitize(sid, 24), n, avg, p50, p95, maxv)
-		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func ingestRTStats(store *rtstatsStore, body []byte) (string, bool) {
+	var p rtstatsPayload
+	if json.Unmarshal(body, &p) != nil || len(p.Samples) == 0 {
+		return "", false
+	}
+	if len(p.Samples) > 128 {
+		p.Samples = p.Samples[:128]
+	}
+	sid := rtstatsSanitizeSID(p.SID)
+	n, avg, p50, p95, maxv := store.ingest(sid, p.Samples)
+	if n > 0 {
+		store.logf("[popcorn-rtt sid=%s] n=%d avg=%dms p50=%dms p95=%dms max=%dms", klogSanitize(sid, 24), n, avg, p50, p95, maxv)
+	}
+	return sid, true
 }

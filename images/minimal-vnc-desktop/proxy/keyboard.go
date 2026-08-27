@@ -70,10 +70,63 @@ type kbdHub struct {
 	// holds it, so no new distribution channel is needed — and it lands in the
 	// extension's isolated world, which page script cannot read.
 	bridgeToken string
+	e2eClients  map[*e2eControlClient]struct{}
+	e2eMirror   map[*e2eControlClient]bool
 }
 
 func newKbdHub() *kbdHub {
-	return &kbdHub{clients: make(map[*kbdClient]struct{})}
+	return &kbdHub{clients: make(map[*kbdClient]struct{}), e2eClients: make(map[*e2eControlClient]struct{}), e2eMirror: make(map[*e2eControlClient]bool)}
+}
+
+func (h *kbdHub) addE2E(c *e2eControlClient) bool {
+	h.mu.Lock()
+	if len(h.clients)+len(h.e2eClients) >= kbdMaxClients {
+		h.mu.Unlock()
+		return false
+	}
+	h.e2eClients[c] = struct{}{}
+	state, dialog, popup := h.lastState, h.lastDialog, h.lastPopup
+	if h.publishers == 0 {
+		state = nil
+	}
+	h.mu.Unlock()
+	if state != nil {
+		c.enqueueE2E("signal", state)
+	}
+	if dialog != nil {
+		c.enqueueE2E("dialog", dialog)
+	}
+	if popup != nil {
+		c.enqueueE2E("popup", popup)
+	}
+	c.enqueueE2E("geometry", geometryPayload())
+	return true
+}
+
+func (h *kbdHub) removeE2E(c *e2eControlClient) {
+	h.mu.Lock()
+	delete(h.e2eClients, c)
+	delete(h.e2eMirror, c)
+	pubs, mirror := h.recomputeMirrorLocked()
+	h.mu.Unlock()
+	for _, p := range pubs {
+		p.enqueueCtl(mirror)
+	}
+}
+
+func (h *kbdHub) setE2EMirror(c *e2eControlClient, on bool) {
+	h.mu.Lock()
+	h.e2eMirror[c] = on
+	pubs, mirror := h.recomputeMirrorLocked()
+	h.mu.Unlock()
+	for _, p := range pubs {
+		p.enqueueCtl(mirror)
+	}
+}
+
+func geometryPayload() []byte {
+	b, _ := json.Marshal(map[string]any{"width": envInt("WIDTH", 1920), "height": envInt("FB_HEIGHT", envInt("HEIGHT", 1080))})
+	return b
 }
 
 // viewers counts the connected non-publisher clients. The dialog path consults it:
@@ -89,13 +142,14 @@ func (h *kbdHub) viewers() int {
 			n++
 		}
 	}
+	n += len(h.e2eClients)
 	return n
 }
 
 func (h *kbdHub) full() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return len(h.clients) >= kbdMaxClients
+	return len(h.clients)+len(h.e2eClients) >= kbdMaxClients
 }
 
 // kbdWriteDeadline bounds a single frame write so a stalled TCP send on a bad
@@ -281,6 +335,12 @@ func mirrorPayload(on bool) []byte {
 // nothing changed. Caller holds h.mu.
 func (h *kbdHub) recomputeMirrorLocked() ([]*kbdClient, []byte) {
 	want := false
+	for _, on := range h.e2eMirror {
+		if on {
+			want = true
+			break
+		}
+	}
 	for c := range h.clients {
 		if !c.publisher && c.wantsMirror {
 			want = true
@@ -332,15 +392,22 @@ func (h *kbdHub) publish(sender *kbdClient, payload []byte) {
 	h.mu.Lock()
 	h.lastState = buf
 	targets := make([]*kbdClient, 0, len(h.clients))
+	e2e := make([]*e2eControlClient, 0, len(h.e2eClients))
 	for c := range h.clients {
 		if c != sender {
 			targets = append(targets, c)
 		}
 	}
+	for c := range h.e2eClients {
+		e2e = append(e2e, c)
+	}
 	h.mu.Unlock()
 
 	for _, c := range targets {
 		c.enqueue(buf)
+	}
+	for _, c := range e2e {
+		c.enqueueE2E("signal", buf)
 	}
 }
 
@@ -370,15 +437,22 @@ func (h *kbdHub) broadcastDialog(payload []byte, open bool) {
 		h.lastDialog = nil
 	}
 	targets := make([]*kbdClient, 0, len(h.clients))
+	e2e := make([]*e2eControlClient, 0, len(h.e2eClients))
 	for c := range h.clients {
 		if !c.publisher {
 			targets = append(targets, c)
 		}
 	}
+	for c := range h.e2eClients {
+		e2e = append(e2e, c)
+	}
 	h.mu.Unlock()
 
 	for _, c := range targets {
 		c.enqueueDialog(buf)
+	}
+	for _, c := range e2e {
+		c.enqueueE2E("dialog", buf)
 	}
 }
 
@@ -396,15 +470,22 @@ func (h *kbdHub) broadcastPopup(payload []byte, open bool) {
 		h.lastPopup = nil
 	}
 	targets := make([]*kbdClient, 0, len(h.clients))
+	e2e := make([]*e2eControlClient, 0, len(h.e2eClients))
 	for c := range h.clients {
 		if !c.publisher {
 			targets = append(targets, c)
 		}
 	}
+	for c := range h.e2eClients {
+		e2e = append(e2e, c)
+	}
 	h.mu.Unlock()
 
 	for _, c := range targets {
 		c.enqueuePopup(buf)
+	}
+	for _, c := range e2e {
+		c.enqueueE2E("popup", buf)
 	}
 }
 

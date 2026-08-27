@@ -21,6 +21,11 @@ import {
 import { buildSessionUrls, websocketBaseUrl } from "./src/session-urls";
 import { closeProxyCdpSession, presetExtensionProxy } from "./src/extension-proxy";
 import { proxyPreset, readSessionProxy, type SessionProxy } from "./src/session-proxy";
+import {
+    LIVEVIEW_E2E_PROTOCOL,
+    readLiveViewE2eRequest,
+    type LiveViewE2eRequest,
+} from "./src/liveview-e2e";
 
 const app = new Hono();
 const PORT = 3000;
@@ -187,22 +192,42 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
         : null;
     const internalToken = Auth.signToken(sessionId, 'internal', session.expiresAt);
 
+    const allUrls = buildSessionUrls({
+        baseUrl,
+        browserPodId: session.name,
+        sessionId,
+        restrictedToken: token,
+        automationToken,
+        internalToken,
+        includeE2e: Boolean(session.liveViewE2e),
+    });
+    const { e2eRfbUrl, e2eControlUrl, ...urls } = allUrls;
+    const liveViewE2e = session.liveViewE2e;
+    if (liveViewE2e && (liveViewE2e.version !== 1 || !liveViewE2e.podPublicKey || !liveViewE2e.podUid)) {
+        throw new Error("Session has an invalid bound LiveView E2EE identity");
+    }
     const details: Record<string, unknown> = {
         success: true,
         sessionId,
-        ...buildSessionUrls({
-            baseUrl,
-            browserPodId: session.name,
-            sessionId,
-            restrictedToken: token,
-            automationToken,
-            internalToken,
-        }),
+        ...urls,
         browserPodId: session.name,
         allocationRequestedAt: session.allocationRequestedAt,
         gameServerAllocatedAt: session.gameServerAllocatedAt,
         gameServerAllocationLatencyMs: session.gameServerAllocationLatencyMs,
         boundAt: session.boundAt,
+        ...(liveViewE2e ? {
+            // The shared viewer uses these Noise-protected channels when its
+            // explicit encryption flag is present.
+            liveViewE2e: {
+                version: 1,
+                protocol: LIVEVIEW_E2E_PROTOCOL,
+                ...(liveViewE2e.clientPublicKey ? { clientPublicKey: liveViewE2e.clientPublicKey } : {}),
+                podPublicKey: liveViewE2e.podPublicKey,
+                podUid: liveViewE2e.podUid,
+                e2eRfbUrl,
+                e2eControlUrl,
+            },
+        } : {}),
     };
 
     if (session.expiresAt) {
@@ -236,6 +261,7 @@ async function allocateSessionLocally(
     tokenExpiresAt?: string,
     accessPolicy: SessionAccessPolicy = { tokenMode: "expiring", cdpScope: "restricted" },
     proxy: SessionProxy = null,
+    liveViewE2e?: LiveViewE2eRequest,
 ) {
     const allocationRequestedAt = new Date();
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
@@ -256,7 +282,7 @@ async function allocateSessionLocally(
     console.log(`🚀 Allocation request for session: ${sessionId} (client: ${identity.clientId})`);
 
     try {
-        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId);
+        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
         const port = browserRoutePort(allocation.ports);
@@ -264,6 +290,27 @@ async function allocateSessionLocally(
 
         const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
         const bound = await annotatePodWithSessionMetadata(podMetadata.namespace, allocation.gameServerName, sessionId);
+
+        // Bind the client identity through GameServer metadata before accepting
+        // routes, then wait for the pod's startup-generated public key. The
+        // private half never crosses this process or Kubernetes metadata.
+        const e2eBinding = liveViewE2e ? await (async () => {
+            await K8s.patchGameServer(GAME_SERVER_NAMESPACE, allocation.gameServerName, {
+                metadata: { annotations: {
+                    ...buildSessionMetadata(sessionId, new Date(), liveViewE2e.clientPublicKey).annotations,
+                    ...(liveViewE2e.bindingSecretHash ? {
+                        "popcorn.dev/e2e-binding-secret-hash": liveViewE2e.bindingSecretHash,
+                    } : {}),
+                    "popcorn.dev/e2e-version": "1",
+                } },
+            });
+            return K8s.waitForLiveViewE2eBinding(
+                allocation.gameServerName,
+                liveViewE2e,
+                podMetadata.uid,
+                GAME_SERVER_NAMESPACE,
+            );
+        })() : undefined;
 
         const podData = {
             name: allocation.gameServerName,
@@ -280,6 +327,7 @@ async function allocateSessionLocally(
             createdAt: Date.now(),
             ...(expiresAt ? { expiresAt } : {}),
             ...sessionAccessFields(tokenExpiresAt, accessPolicy),
+            ...(e2eBinding ? { liveViewE2e: e2eBinding } : {}),
         };
 
         if (proxy) {
@@ -290,6 +338,15 @@ async function allocateSessionLocally(
 
         const sessionAnnotations = {
             ...bound.annotations,
+            ...(liveViewE2e ? {
+                "popcorn.dev/e2e-version": "1",
+                ...(liveViewE2e.clientPublicKey ? {
+                    "popcorn.dev/e2e-client-public-key": liveViewE2e.clientPublicKey,
+                } : {}),
+                ...(liveViewE2e.bindingSecretHash ? {
+                    "popcorn.dev/e2e-binding-secret-hash": liveViewE2e.bindingSecretHash,
+                } : {}),
+            } : {}),
             ...(expiresAt ? { [ANNOTATION_SESSION_EXPIRES_AT]: expiresAt } : {}),
         };
 
@@ -388,6 +445,7 @@ async function createControlPlaneSession(c: any): Promise<Response> {
         const publicBaseUrl = normalizeBaseUrl(body?.publicGatewayUrl);
         const expiresAt = normalizeExpiresAt(body?.expiresAt);
         const access = readSessionAccessRequest(body, expiresAt);
+        const liveViewE2e = readLiveViewE2eRequest(body?.liveViewE2e);
 
         if (!sessionId || !clientId || !clientName || !publicBaseUrl) {
             return c.json({ error: "Missing sessionId, clientId, clientName, or valid publicGatewayUrl" }, 400);
@@ -399,6 +457,9 @@ async function createControlPlaneSession(c: any): Promise<Response> {
 
         if (access.error || !access.value?.accessPolicy) {
             return c.json({ error: access.error || "Invalid session access policy" }, 400);
+        }
+        if (liveViewE2e.error) {
+            return c.json({ error: liveViewE2e.error }, 400);
         }
         const proxy = readSessionProxy(body);
         if ("error" in proxy) return c.json({ error: proxy.error }, 400);
@@ -415,6 +476,7 @@ async function createControlPlaneSession(c: any): Promise<Response> {
             access.value.tokenExpiresAt,
             access.value.accessPolicy,
             proxy.value,
+            liveViewE2e.value,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (e) {
@@ -529,8 +591,14 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
             return c.json({ success: false, error: "Missing accessPolicy" }, 400);
         }
         const access = readSessionAccessRequest(body, expiresAt);
+        let incomingLiveViewE2e = body?.liveViewE2e === undefined
+            ? undefined
+            : readLiveViewE2eRequest(body.liveViewE2e);
         if (access.error || !access.value?.accessPolicy) {
             return c.json({ success: false, error: access.error || "Invalid session access policy" }, 400);
+        }
+        if (incomingLiveViewE2e?.error) {
+            return c.json({ success: false, error: incomingLiveViewE2e.error }, 400);
         }
         const proxy = readSessionProxy(body);
         if ("error" in proxy) return c.json({ success: false, error: proxy.error }, 400);
@@ -543,6 +611,20 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
             : existing?.clientName || "";
         if (!clientId || !clientName) {
             return c.json({ success: false, error: "Missing clientId or clientName" }, 400);
+        }
+        if (existing?.liveViewE2e && !incomingLiveViewE2e?.value) {
+            // An encrypted session cannot be downgraded just because the
+            // replacement request omitted the key.
+            incomingLiveViewE2e = { value: existing.liveViewE2e };
+        }
+        if (!existing?.liveViewE2e && incomingLiveViewE2e?.value) {
+            return c.json({ success: false, error: "LiveView E2EE mode must remain stable on reallocation" }, 409);
+        }
+        const liveViewE2e = incomingLiveViewE2e?.value;
+        if (existing?.liveViewE2e && liveViewE2e
+            && (liveViewE2e.clientPublicKey !== existing.liveViewE2e.clientPublicKey
+                || liveViewE2e.bindingSecretHash !== existing.liveViewE2e.bindingSecretHash)) {
+            return c.json({ success: false, error: "LiveView E2EE binding must remain stable on reallocation" }, 409);
         }
 
         if (existing) {
@@ -564,6 +646,7 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
             access.value.tokenExpiresAt,
             access.value.accessPolicy,
             proxy.value,
+            liveViewE2e,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (error) {

@@ -1,0 +1,4 @@
+# name	version	url	sha256
+ciphers	2.0.1	https://registry.npmjs.org/@noble/ciphers/-/ciphers-2.0.1.tgz	e118f3df51994c9fffb41bc2b2a141a88eb635728a09a7c7cdbbe1c24a4f2d69
+curves	2.0.1	https://registry.npmjs.org/@noble/curves/-/curves-2.0.1.tgz	1271ac0dfa27c93e464e64b65ff2a255eea52c449ca86c149cfb0b9786dd9029
+hashes	2.0.1	https://registry.npmjs.org/@noble/hashes/-/hashes-2.0.1.tgz	638ffb3053a7e7478c9e54a6e297f3601299ee570a41112e501af7050d086a0a
