@@ -21,8 +21,19 @@ import { fieldRejectsSpace } from './ime-hints.js';
 import { dismissDelay, linkLatency, noteTapConfirm } from './latency.js';
 import { formatRects } from './diag-geometry.js';
 
+// Did the reported editable geometry actually move? Report-to-report identity is the
+// common case, and only a real change invalidates a tap's hit-test verdict.
+function rectsMoved(prev, next) {
+  if (prev.length !== next.length) return true;
+  for (let i = 0; i < next.length; i++) {
+    const a = prev[i], b = next[i];
+    if (a.x !== b.x || a.y !== b.y || a.w !== b.w || a.h !== b.h) return true;
+  }
+  return false;
+}
+
 export function createFieldSession({
-  tap, fit, input, echo,
+  tap, fit, input, echo, sendCompatClick,
   mirrorOn, seedProxyMirror,
   clearEcho, reconcileEcho, sendSpecialKey,
   applyProxyImeHints, zoomToField, applyLift, currentVisibleBottom,
@@ -42,6 +53,9 @@ export function createFieldSession({
   // kbd/tap.js and the xf note in extensions/proxy/content.js.
   let currentXFrames = [];
   let lastNonEmptyRectsAt = 0;   // when we last got a populated rect set (flap stickiness)
+  // Bumped whenever the rect GEOMETRY changes, so a tap verdict can tell whether it was
+  // judged against the layout that is still on screen (see tap.js lastTapWasMiss).
+  let rectsGen = 0;
   let rectsTruncated = false;    // rects[] was capped by the extension merge (background.js)
   // Some remote frame reported that it HAS editable fields but cannot place them
   // yet — a cross-origin frame still waiting to be positioned by its parent (see
@@ -281,13 +295,21 @@ export function createFieldSession({
       // rectsTruncated is set ONLY where currentInputRects is, so it always describes the list actually in
       // use — during a transient flap we keep the old rects, and must keep their flag too.
       if (state.rects.length > 0) {
+        if (rectsMoved(currentInputRects, state.rects)) rectsGen++;
         currentInputRects = state.rects;
         rectsTruncated = !!state.rtrunc; // capped list → a tap matching nothing proves nothing
         lastNonEmptyRectsAt = nowMs();
       } else if (nowMs() - lastNonEmptyRectsAt >= RECTS_STICKY_MS) {
+        if (currentInputRects.length) rectsGen++;
         currentInputRects = state.rects; // sustained empty → accept the clear
         rectsTruncated = false;
       } // else: keep the last non-empty rects through the transient flap
+    }
+    // A tap the browser never turned into a click (see nc in extensions/proxy/content.js):
+    // replay it as a real mouse click so click-activated controls work.
+    if (state.nc && sendCompatClick && isFinite(state.nc.x) && isFinite(state.nc.y)) {
+      dbg('compat click replay at ' + Math.round(state.nc.x) + ',' + Math.round(state.nc.y));
+      sendCompatClick({ x: state.nc.x, y: state.nc.y });
     }
     coverageBlind = state.blind === true;
     if (Array.isArray(state.xf)) currentXFrames = state.xf;
@@ -529,11 +551,13 @@ export function createFieldSession({
 
     // getters for the rest of the layer
     rect: () => currentRect,
+    remoteFocusKey: () => remoteFocusKey,
     hints: () => currentHints,
     viewport: () => currentViewport,
     inputRects: () => currentInputRects,
     xframes: () => currentXFrames,
     lastNonEmptyRectsAt: () => lastNonEmptyRectsAt,
+    rectsGen: () => rectsGen,
     rectsTruncated: () => rectsTruncated,
     coverageBlind: () => coverageBlind,
     remoteScrollBottom: () => remoteScrollBottom,

@@ -430,9 +430,21 @@ function connect() {
 
 // Network is back / tab foregrounded: reconnect the pixel stream now instead
 // of waiting out reconnectDelay. Guarded so we never stack connections.
+// A socket the browser closed while we were frozen leaves noVNC believing it is still
+// connected — sendKey then throws into our catch and every keystroke vanishes silently.
+function rfbSocketDead() {
+  try { return !!(rfb && rfb._sock && rfb._sock.readyState !== 'open'); } catch (_) { return false; }
+}
+
 function reconnectNow() {
   if (window.__viewerUnsupported) return; // proactively blocked; WS can't work here
-  if (intentionalDisconnect || connected) return;
+  if (intentionalDisconnect) return;
+  if (connected && rfbSocketDead()) {
+    dbg('resume: rfb socket ' + (rfb && rfb._sock ? rfb._sock.readyState : '?') + ' -> recycle');
+    try { rfb.disconnect(); } catch (_) {} // the disconnect handler reconnects
+    return;
+  }
+  if (connected) return;
   if (connecting) {
     // A connect is already in flight — normally let it resolve. But a reconnect
     // that stalled while we were backgrounded can hang here mid-handshake; if
@@ -448,10 +460,17 @@ function reconnectNow() {
   connect();
 }
 window.addEventListener('online', reconnectNow);
-window.addEventListener('pageshow', reconnectNow);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) reconnectNow(); });
+// A restored page is not a torn-down one: clear the latch, or reconnectNow's early return
+// leaves the stream dead for the rest of the session.
+window.addEventListener('pageshow', () => { intentionalDisconnect = false; reconnectNow(); });
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { intentionalDisconnect = false; reconnectNow(); }
+});
 
-window.addEventListener('beforeunload', () => {
+// Latch on a REAL unload only: mobile engines fire beforeunload for a mere freeze (app switch,
+// bfcache), and latching there killed the stream and every keystroke on return.
+window.addEventListener('pagehide', (event) => {
+  if (event && event.persisted) return; // frozen, not unloaded — it can come back
   intentionalDisconnect = true;
   if (rfb) rfb.disconnect();
 });

@@ -64,6 +64,21 @@ export function createViewportTransform({
   // occlusion but the local layout also reflowed) — the layout has already made
   // room, so any pan extension there would run into blank space below the
   // framebuffer.
+  // layoutResizeMode means our own layout made room for the keyboard — which only helps when
+  // the framebuffer shrank with it. An embedded viewer keeps the pre-keyboard framebuffer, so
+  // the stream (and the focused field) stay behind the keys until we lift/pan after all.
+  function framebufferFitsWindow() {
+    const screen = getScreenElement();
+    const canvas = screen ? screen.querySelector('canvas') : null;
+    // The untransformed box the stream occupies, same sources the clamp reads.
+    const fbCss = (canvas && (canvas.offsetHeight || canvas.clientHeight)) || 0;
+    if (!fbCss) return true;
+    return fbCss <= (window.innerHeight || 0) + 4; // slack: fractional dpr rounding
+  }
+
+  // The pan EXTENSION stays off in layout-resize mode: the window itself shrank, so the canvas
+  // already overflows it and clampPan lets a finger reach that strip — an inset on top would
+  // double-count it and pan into blank space. Only the LIFT needs the framebuffer check.
   function effKbdInset() {
     return getLayoutResizeMode() ? 0 : kbdInset;
   }
@@ -387,9 +402,8 @@ export function createViewportTransform({
     // Zoom-to-field (novp whole-page fit) already positions the field above the
     // keyboard via pan; the lift's no-zoom geometry would double-shift it off-screen.
     if (getZoomedToField()) return;
-    // Layout-resize browsers (Firefox Android, WebView adjustResize) already
-    // reflowed #screen to the smaller height, so the remote is fully visible —
-    // a transform lift would push it partly off-screen. No lift needed there.
+    // Layout-resize browsers (Firefox Android, WebView adjustResize) reflowed #screen ITSELF to
+    // the smaller height, so translating it up only exposes background — see revealFocusedRemote.
     if (getLayoutResizeMode()) return;
     const screen = getScreenElement();
     if (!screen) return;
@@ -545,7 +559,7 @@ export function createViewportTransform({
   return {
     composeScreenTransform, clampPan, zoomToField, toggleMagnify, installPointerZoomFix,
     beginPinch, updatePinch, endPinch, beginPan, updatePan,
-    applyLift, clearLift, currentVisibleBottom, postViewport, isZoomed,
+    applyLift, clearLift, currentVisibleBottom, postViewport, isZoomed, framebufferFitsWindow,
 
     // Accessors/mutators replacing the core's former direct variable touches.
     zoomScale: () => zoomScale,

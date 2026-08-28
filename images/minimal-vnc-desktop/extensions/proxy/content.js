@@ -220,6 +220,7 @@
         r: px({ x: s.r.x + dx, y: s.r.y + dy, w: s.r.w, h: s.r.h }),
       }));
     }
+    if (state.nc) state.nc = { x: Math.round(state.nc.x + dx), y: Math.round(state.nc.y + dy) };
     return state;
   }
 
@@ -976,6 +977,7 @@
   function report(el, force) {
     refreshRects(); // keep the hit-test rects current on every emit
     const state = describe(el);
+    if (pendingNoClick) { state.nc = pendingNoClick; pendingNoClick = null; force = true; }
     publishChildOffsets(force); // our children move with us
     const key = JSON.stringify(state);
     if (!force && key === lastKey) return; // focus/rect/hints/rects unchanged
@@ -1123,6 +1125,64 @@
       const el = deepActiveElement();
       if (isEditable(el)) report(el);
     }, 350);
+  }, true);
+
+  // ---- taps that produce no click ----------------------------------------
+  // A tap forwarded as CDP touch does not always yield the compatibility mouse
+  // events, and a control whose activation lives in a `click` handler is then dead:
+  // measured on an iCheck-styled checkbox, which received pointerdown/touchstart/
+  // pointerup/touchend and no click, so it never toggled — while the same pixel took
+  // a real click fine. Chrome DOES synthesize the click for ordinary buttons, so we
+  // cannot simply send one for every tap (that double-fires, and a double submit is
+  // worse than a dead checkbox). Report the ones where the click genuinely never
+  // arrived, and let the viewer replay it (see nc in the viewer's applySignal).
+  const NOCLICK_GRACE_MS = 250;
+  const NOCLICK_SELECTOR = 'a, button, input, label, select, summary, [role=button], [role=checkbox], [role=radio], [role=switch], [role=tab], [role=menuitem]';
+  let tapPending = null;    // { x, y, at, timer }
+  let clickSeenAt = 0;
+  let pendingNoClick = null;
+
+  // Only replay for something that looks activatable: a page that handles the touch
+  // itself (carousel, slider, map) suppresses the click deliberately, and replaying it
+  // there would act twice.
+  function looksClickable(x, y) {
+    let el = null;
+    try { el = document.elementFromPoint(x, y); } catch (_) { return false; }
+    for (let i = 0; el && i < 4; i++, el = el.parentElement) {
+      try {
+        if (el.matches && el.matches(NOCLICK_SELECTOR)) return true;
+        if (getComputedStyle(el).cursor === 'pointer') return true;
+      } catch (_) { /* detached mid-walk */ }
+    }
+    return false;
+  }
+
+  document.addEventListener('click', () => { clickSeenAt = Date.now(); }, true);
+  document.addEventListener('touchstart', (e) => {
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t || (e.touches && e.touches.length > 1)) { tapPending = null; return; }
+    tapPending = { x: t.clientX, y: t.clientY, at: Date.now() };
+  }, true);
+  document.addEventListener('touchend', (e) => {
+    const start = tapPending;
+    tapPending = null;
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!start || !t) return;
+    // A drag/scroll is not a tap, and its click was never coming.
+    if (Math.abs(t.clientX - start.x) > 10 || Math.abs(t.clientY - start.y) > 10) return;
+    const x = t.clientX, y = t.clientY;
+    const endedAt = Date.now();
+    if (!looksClickable(x, y)) return;
+    const ev = e;   // read defaultPrevented later: this listener captures, so the
+                    // page's own handlers have not run yet
+    setTimeout(() => {
+      if (clickSeenAt >= endedAt) return;   // the browser produced one after all
+      // preventDefault on the touch is the page saying it handled this itself; the
+      // click is missing on purpose, and a real browser would not send one either.
+      if (ev.defaultPrevented) return;
+      pendingNoClick = { x, y };
+      report(deepActiveElement(), true);    // carry it out on the next emit
+    }, NOCLICK_GRACE_MS);
   }, true);
 
   // Rects shift on scroll / resize / layout; re-report (throttled) so the

@@ -123,6 +123,11 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   let proxy = null;              // hidden <input> the OS IME composes into
 
   let keyboardActive = false;    // soft keyboard is up (visualViewport shrunk)
+  // Was the user typing when we went to the background? The OS dismisses the keyboard on the way
+  // out, so by the time we come back keyboardActive is already false and only this remembers.
+  let kbdUpWhenHidden = false;
+  let lastRaiseAt = 0;
+  let kbdFieldWhenHidden = null;
   let keyboardOpening = false;   // between focus() and viewport actually shrinking
   // Intentional-blur window: an app-driven blur (dismiss, paste, control tap)
   // arms a short deadline, and onSystemBlur ignores any blur landing before it —
@@ -335,6 +340,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
   function raiseKeyboard(reason) {
     if (!proxy) return;
+    lastRaiseAt = nowMs();
     dbg('-> raiseKeyboard(' + (reason || '?') + ') ' + tap.diagnosticTag());
     // Tell the host the keyboard is coming up so it can hide its own bottom-pinned
     // chrome (which would otherwise sit on top of the keys). Sent on INTENT, not on
@@ -503,14 +509,28 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   function reconcileKeyboardOnForeground() {
     if (!isTouch) return;
     setTimeout(() => {
-      if (!keyboardActive || document.hidden) return;
+      if (document.hidden) return;
       const shrunk = (window.innerHeight - currentVisibleBottom()) > 50;
-      if (!shrunk) {
+      if (keyboardActive && !shrunk) {
         dbg('foreground reconcile: kbd actually down -> dismiss stale state');
         dismissKeyboard();
       }
+      if (shrunk || keyboardActive) return; // genuinely up: nothing to reconcile
+      // The keyboard the user was typing on is gone (the OS dismisses it on the way out) while
+      // the remote still holds that field focused, so nothing can be typed and a fresh tap is
+      // the only way back — which reads as "the field won't take input" after a trip to a
+      // password manager. Restore what the user left. Keyed on the SAME field we raised for, so
+      // a keyboard the user deliberately dismissed does not come back. iOS is excluded: it
+      // forbids a programmatic raise outside a gesture.
+      if (!kbdUpWhenHidden || isIOS) return;
+      kbdUpWhenHidden = false;
+      const key = session.remoteFocusKey();
+      if (!key || key !== kbdFieldWhenHidden) return;
+      dbg('foreground reconcile: field still focused remotely -> re-raise');
+      raiseKeyboard('foreground');
     }, 300);
   }
+
 
   // ---- Field lift + client-side pinch-zoom/pan ------------------------------
   // The #screen transform subsystem (zoom/pan/lift state, pinch+pan gesture
@@ -602,6 +622,8 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     clearLift,
     postViewport,
     currentVisibleBottom,
+    framebufferFitsWindow: vt.framebufferFitsWindow,
+    revealFocusedRemote,
     hideMirrorBar: () => hideMirrorBar(),
     startWatchdog,
     flagJustDismissed,
@@ -637,6 +659,32 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   const queueMove = tc.queueMove;
   const cancelPendingMove = tc.cancelPendingMove;
 
+  // In the adjustResize cell (Android WebView, Firefox Android) the keyboard shrinks OUR window,
+  // so #screen is the small box and no transform can reveal the field — only the remote scrolling
+  // can. Synthesize the swipe a finger would make, in a column clear of the field's own rect so it
+  // cannot land a caret. Bounded: one reveal per focused field per keyboard open.
+  let revealedFor = '';
+  function revealFocusedRemote(visibleBottom) {
+    const rect = session.rect();
+    const viewport = session.viewport();
+    if (!rect || !viewport || !(visibleBottom > 0)) return false;
+    const key = session.remoteFocusKey ? String(session.remoteFocusKey()) : '';
+    const deficit = Math.round(rect.y + rect.h + 24 - visibleBottom);
+    if (deficit <= 8) { revealedFor = ''; return false; }
+    if (revealedFor === key + ':' + deficit) return false;
+    revealedFor = key + ':' + deficit;
+    const x = Math.max(8, Math.min(rect.x - 24, viewport.w - 8));
+    const y0 = Math.max(40, visibleBottom - 40);
+    const y1 = Math.max(8, y0 - deficit);
+    dbg('reveal: remote scroll ' + deficit + 'px (field ' + Math.round(rect.y) + ' vs visible ' + Math.round(visibleBottom) + ')');
+    sendTouch('start', [{ x, y: y0 }]);
+    for (let i = 1; i <= 3; i++) {
+      sendTouch('move', [{ x, y: Math.round(y0 + (y1 - y0) * (i / 3)) }]);
+    }
+    sendTouch('end', [{ x, y: y1 }]);
+    return true;
+  }
+
   const tap = createTap({
     vt,
     beginPinch, updatePinch, endPinch, beginPan, updatePan,
@@ -668,6 +716,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     getViewport: () => session.viewport(),
     getLastNonEmptyRectsAt: () => session.lastNonEmptyRectsAt(),
     getRectsTruncated: () => session.rectsTruncated(),
+    getRectsGen: () => session.rectsGen(),
     getCoverageBlind: () => session.coverageBlind(),
     getRemoteScrollBottom: () => session.remoteScrollBottom(),
     getFocusedScrollContainer: () => session.focusedScrollContainer(),
@@ -752,6 +801,11 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // sibling modules directly (tap/fit/input/echo instances) and reaches the
   // keyboard lifecycle via the hoisted raise/dismiss declarations.
   const session = createFieldSession({
+    // Replay a tap's missing click over the SAME ordered CDP queue the cross-origin compat
+    // click uses, so it cannot race the touch before it. No VNC fallback: that path wants
+    // screen coords and this point is in remote px, and a tap with no /input socket had no
+    // touch to complete either.
+    sendCompatClick: (p) => sendTouch('click', [p]),
     tap,
     fit,
     input,
@@ -1049,11 +1103,15 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     window.addEventListener('online', kickReconnects);
     window.addEventListener('pageshow', () => { kickReconnects(); reconcileKeyboardOnForeground(); });
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        kickReconnects();
-        reconcileKeyboardOnForeground();
-        setTimeout(() => fit.refreshAfterVisibility(), 0);
+      // A system dismiss can beat this event, so accept a very recent raise as "was typing" too.
+      if (document.hidden) {
+        kbdUpWhenHidden = keyboardActive || (nowMs() - lastRaiseAt < 15000);
+        kbdFieldWhenHidden = kbdUpWhenHidden ? session.remoteFocusKey() : null;
+        return;
       }
+      kickReconnects();
+      reconcileKeyboardOnForeground();
+      setTimeout(() => fit.refreshAfterVisibility(), 0);
     });
   }
 

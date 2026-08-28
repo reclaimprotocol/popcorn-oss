@@ -24,7 +24,7 @@ import { reportHealth } from './health.js';
 
 export function createKbdDetect({
   getKeyboardActive, setKeyboardActive, getKeyboardOpening, getProxy,
-  applyLift, clearLift, postViewport, currentVisibleBottom,
+  applyLift, clearLift, postViewport, currentVisibleBottom, framebufferFitsWindow, revealFocusedRemote,
   hideMirrorBar, startWatchdog, flagJustDismissed, getLastInputAt,
 }) {
   let lastViewportShrink = false;
@@ -341,7 +341,16 @@ export function createKbdDetect({
       setKeyboardActive(true);
       layoutResizeMode = true;
       startWatchdog();
-      clearLift();                 // layout already reflowed; no transform lift
+      // Our layout reflowed, but an EMBEDDED viewer's framebuffer did not: the stream keeps its
+      // pre-keyboard height and the focused remote field stays behind the keys. Measured in the
+      // portal-in-WebView cell (adjustResize): win 839->527 with the canvas still 839, host
+      // geometry reporting occ=0 because nothing was occluded, and no lift from anyone. So when
+      // the framebuffer did not follow, report the shrink as the occlusion it is for the stream.
+      clearLift();                 // #screen is the shrunken box: a transform would expose background
+      // Our window shrank but the stream did not, so the focused field can sit below the fold with
+      // nothing local able to reveal it — measured in the portal-in-WebView cell: win 839->527,
+      // canvas still 839, host geometry reporting occ=0, field at y=592.
+      if (!framebufferFitsWindow() && revealFocusedRemote) revealFocusedRemote(h);
       postViewport(h, 0);
     } else if (getKeyboardActive() && layoutResizeMode && !shrunk) {
       dbg('layout-resize grew -> kbd=false (dismiss)');

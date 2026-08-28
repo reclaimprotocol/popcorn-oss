@@ -182,9 +182,35 @@ const kbdFrames = new Map(); // "tabId:frameId" -> { tabId, state, ts }
 // the first claiming report after a wake re-teaches it. -1 = not yet known.
 let kbdActiveTab = -1;
 
+// A blank/internal document must never take the stream. Automation opens these
+// (an agent scratch window, a devtools target); a new window HOLDS FOCUS, so its
+// top frame would claim ownership and the page the user is typing into becomes a
+// "background tab" that is never published again — measured as rects=[] and
+// rfk=0 for a whole session, with the keyboard unable to raise. Such a window
+// re-claims normally once it navigates somewhere real.
+function kbdOwnable(url) {
+  if (!url) return false;
+  return !(/^(about:|chrome:|chrome-extension:|devtools:|edge:|data:)/.test(url));
+}
+
+// Same question for a tab we only know by id (chrome.tabs.onActivated hands us
+// nothing else, and reading the URL would need the "tabs" permission): answer it
+// from that tab's own last top-frame report. A tab that has never reported cannot
+// take the stream — its first report claims it if it deserves to.
+function kbdTabOwnable(tabId) {
+  const top = kbdFrames.get(tabId + ':0');
+  return !!(top && kbdOwnable(top.url));
+}
+
 function kbdReport(tabId, frameId, tabActive, state, senderUrl) {
   if (!state || typeof state.editable !== 'boolean') return;
-  kbdFrames.set(tabId + ':' + frameId, { tabId, state, ts: Date.now() });
+  kbdFrames.set(tabId + ':' + frameId, { tabId, state, ts: Date.now(), url: senderUrl });
+  if (frameId === 0 && state.wf === true && !kbdOwnable(senderUrl)) {
+    // Focus moved to a blank window: keep whoever owns the stream, but let the
+    // claim expire so a real page can take it (the owner may have been closed).
+    if (kbdActiveTab === tabId) kbdActiveTab = -1;
+    return;
+  }
   if (frameId === 0 && state.wf === true) {
     kbdActiveTab = tabId; // this document's window holds focus — it owns the stream
     // document.hasFocus() on a TOP frame is browser-global, so this is the one
@@ -193,7 +219,8 @@ function kbdReport(tabId, frameId, tabActive, state, senderUrl) {
     // signal (CDP reports targets, not focus) and needs it to decide WHICH window
     // its close affordance should close. See kbdSendForeground.
     kbdSendForeground(senderUrl);
-  } else if (kbdActiveTab === -1 && tabActive) {
+  } else if (kbdActiveTab === -1 && tabActive &&
+             (kbdOwnable(senderUrl) || kbdTabOwnable(tabId))) {
     kbdActiveTab = tabId; // no focus claim yet (browser chrome holds it) — seed
   }
   if (tabId !== kbdActiveTab) return; // background tab: kept fresh in the map, never published
@@ -224,6 +251,7 @@ function kbdSendForeground(url) {
 // "tabs" permission — it only hands us the tabId.
 try {
   chrome.tabs.onActivated.addListener(({ tabId }) => {
+    if (!kbdTabOwnable(tabId)) return; // scratch window opened by automation
     kbdActiveTab = tabId;
     kbdSend(mergeFrames());
   });
@@ -250,6 +278,10 @@ function mergeFrames() {
   // Same meaning as rtrunc for the viewer — our rect coverage is known-incomplete,
   // so a tap matching nothing proves nothing.
   let blind = false;
+  // nc: a tap whose click the browser never produced (content.js). See the whitelist note
+  // below — and it is ONE-SHOT: consume it from the stored frame state, or every heartbeat
+  // merge would replay the same click again.
+  let nc = null;
   for (const [key, entry] of kbdFrames) {
     if (now - entry.ts > FRAME_STALE_MS) { kbdFrames.delete(key); continue; }
     if (entry.tabId !== kbdActiveTab) continue; // background tabs are kept fresh, never published
@@ -258,6 +290,7 @@ function mergeFrames() {
     // content.js caps rects PER FRAME, so a page full of same-origin iframes multiplies that cap. Bound the
     // merged list too, or the focus message outgrows the hub's frame limit and the whole state is dropped.
     if (s.blind) blind = true;
+    if (!nc && s.nc && typeof s.nc.x === 'number' && typeof s.nc.y === 'number') { nc = s.nc; delete s.nc; }
     if (Array.isArray(s.rects)) {
       for (const r of s.rects) {
         if (rects.length >= MERGED_MAX_RECTS) { rtrunc = true; break; }
@@ -328,6 +361,7 @@ function mergeFrames() {
   if (strunc) merged.strunc = true;
   if (ptrunc) merged.ptrunc = true;
   if (blind) merged.blind = true;   // ditto — an unwhitelisted field is dropped here
+  if (nc) merged.nc = nc;
   if (sw > 0) merged.sw = sw;
   if (sb >= 0) merged.sb = sb; // 0 must survive the merge — see the whitelist note above
   if (sc) merged.sc = sc;

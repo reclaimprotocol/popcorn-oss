@@ -35,6 +35,7 @@ export function createTap({
   inputReady,                        // is the CDP touch channel usable right now?
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
   getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
+  getRectsGen,
   getCoverageBlind,
   getRemoteScrollBottom, getFocusedScrollContainer,
   getGestureID,
@@ -95,6 +96,7 @@ export function createTap({
   let lastTapAt = 0;
   let lastTapX = 0, lastTapY = 0;
   let tapSeq = 0;
+  let missGen = -1;              // rect generation the miss verdict below was judged against
   let lastTapWasMiss = false;    // last tap was a confirmed non-input (see handleTap):
                                  // suppresses the recovery-raise so an ambient focus
                                  // flap can't re-summon the keyboard onto a tap that
@@ -566,6 +568,9 @@ export function createTap({
     // The rect list was capped, so the field under this tap may simply not be in it.
     // 'unknown' keeps the optimistic path (no dismiss); a real miss still needs a full list.
     if (getRectsTruncated && getRectsTruncated()) return 'unknown';
+    // A real nav zeroes lastNonEmptyRectsAt, so a zero while we still hold rects means
+    // they belong to the previous document — a miss against them proves nothing.
+    if (getLastNonEmptyRectsAt() === 0) return 'unknown';
     return 'miss';
   }
 
@@ -587,6 +592,7 @@ export function createTap({
     // recovery. 'unknown' (no coverage — cross-origin/shadow field) must still
     // allow recovery, so it counts as not-a-miss.
     lastTapWasMiss = (hit === 'miss');
+    missGen = getRectsGen ? getRectsGen() : 0;
     const m = screenToRemote(x, y);
     const vp = getViewport();
     const canvas = m && m.cr;
@@ -750,7 +756,9 @@ export function createTap({
     // applySignal's recovery window + latency learn; raiseKeyboard's proxy spot
     lastTapAt: () => lastTapAt,
     diagnosticTag: () => tapSeq ? ('tap#' + tapSeq + '/+' + Math.round(nowMs() - lastTapAt) + 'ms') : 'tap#-',
-    lastTapWasMiss: () => lastTapWasMiss,
+    // A miss expires once the geometry it judged moves: a page that relaid out after the tap
+    // (a login error banner shifting the fields) must not keep blocking the recovery raise.
+    lastTapWasMiss: () => lastTapWasMiss && (!getRectsGen || getRectsGen() === missGen),
     lastTapXY: () => ({ x: lastTapX, y: lastTapY }),
     clearLastTap() { lastTapAt = 0; }, // deliberate dismiss must beat a late confirm
   };
