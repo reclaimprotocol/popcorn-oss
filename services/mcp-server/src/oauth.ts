@@ -28,12 +28,30 @@ export function verifyChallenge(verifier: string, challenge: string): boolean {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-export type AccessToken = { sub: string; scope: string; exp: number; iss: string };
+export type AccessToken = { sub: string; scope: string; aud: string; iat: number; exp: number; iss: string };
+
+/** The canonical resource identifier of this MCP server (RFC 8707 audience). */
+export const RESOURCE_URI = () => `${McpConfig.publicUrl}/mcp`;
+
+/** RFC 8707 `resource`: must match this server, if the client sends one. */
+export function resourceMatches(resource: string | undefined | null): boolean {
+  if (!resource) return true;
+  const canonical = RESOURCE_URI();
+  try {
+    const provided = new URL(resource);
+    provided.hash = '';
+    return provided.toString().replace(/\/$/, '') === canonical.replace(/\/$/, '');
+  } catch {
+    return false;
+  }
+}
 
 export function issueAccessToken(subject: string, scope: string, now = Date.now()): string {
   const claims: AccessToken = {
     sub: subject,
     scope,
+    aud: RESOURCE_URI(),
+    iat: Math.floor(now / 1000),
     exp: Math.floor(now / 1000) + McpConfig.accessTokenTtlSeconds,
     iss: McpConfig.publicUrl,
   };
@@ -51,6 +69,7 @@ export function verifyAccessToken(token: string, now = Date.now()): AccessToken 
     const claims = JSON.parse(Buffer.from(body, 'base64url').toString()) as AccessToken;
     if (claims.exp * 1000 <= now) return null;
     if (claims.iss !== McpConfig.publicUrl) return null;
+    if (claims.aud !== RESOURCE_URI()) return null;
     return claims;
   } catch {
     return null;
@@ -66,6 +85,8 @@ export function authorizationServerMetadata() {
     response_types_supported: ['code'],
     grant_types_supported: ['authorization_code'],
     code_challenge_methods_supported: ['S256'],
+    authorization_response_iss_parameter_supported: true,
+    resource_indicators_supported: true,
     token_endpoint_auth_methods_supported: ['none'],
     scopes_supported: [...SCOPES],
   };
@@ -73,7 +94,7 @@ export function authorizationServerMetadata() {
 
 export function protectedResourceMetadata() {
   return {
-    resource: McpConfig.publicUrl,
+    resource: RESOURCE_URI(),
     authorization_servers: [McpConfig.publicUrl],
     scopes_supported: [...SCOPES],
     bearer_methods_supported: ['header'],

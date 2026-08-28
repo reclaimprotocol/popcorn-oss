@@ -24,7 +24,7 @@ export const McpConfig = {
   sessionPriceUsdCents: num('MCP_SESSION_PRICE_USD_CENTS', 5),
   sessionTtlSeconds: num('MCP_SESSION_TTL_SECONDS', 600),
   extendPriceUsdCents: num('MCP_EXTEND_PRICE_USD_CENTS', 5),
-  minTopUpUsdCents: num('MCP_MIN_TOP_UP_USD_CENTS', 500),
+  minTopUpUsdCents: num('MCP_MIN_TOP_UP_USD_CENTS', 5),
   maxTopUpUsdCents: num('MCP_MAX_TOP_UP_USD_CENTS', 50000),
   /** Email OTP sign-in (AWS SES). */
   otpFromAddress: env('OTP_FROM_ADDRESS', 'noreply@reclaimprotocol.org'),

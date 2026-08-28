@@ -29,10 +29,7 @@ export async function credit(
   reason = 'top_up',
 ): Promise<{ credited: boolean; balanceUsdCents: number }> {
   if (amountUsdCents <= 0) throw new Error('credit amount must be positive');
-  if (await store.hasLedgerRef(ref)) {
-    return { credited: false, balanceUsdCents: await store.balanceUsdCents(subject) };
-  }
-  await store.appendLedger({
+  const applied = await store.applyLedgerEntry({
     id: crypto.randomUUID(),
     subject,
     deltaUsdCents: amountUsdCents,
@@ -40,7 +37,7 @@ export async function credit(
     ref,
     createdAt: Date.now(),
   });
-  return { credited: true, balanceUsdCents: await store.balanceUsdCents(subject) };
+  return { credited: applied.applied, balanceUsdCents: applied.balanceUsdCents };
 }
 
 /** Debits are idempotent on `ref` so a retried tool call never double-charges. */
@@ -52,14 +49,9 @@ export async function debit(
   reason: string,
 ): Promise<number> {
   if (amountUsdCents < 0) throw new Error('debit amount must not be negative');
-  if (await store.hasLedgerRef(ref)) {
-    return store.balanceUsdCents(subject);
-  }
-  const balance = await store.balanceUsdCents(subject);
-  if (balance < amountUsdCents) {
-    throw new InsufficientCredit(balance, amountUsdCents);
-  }
-  await store.appendLedger({
+  // One atomic conditional write: duplicate refs no-op, and the balance check
+  // and the insert cannot interleave with a concurrent debit.
+  const applied = await store.applyLedgerEntry({
     id: crypto.randomUUID(),
     subject,
     deltaUsdCents: -amountUsdCents,
@@ -67,7 +59,10 @@ export async function debit(
     ref,
     createdAt: Date.now(),
   });
-  return store.balanceUsdCents(subject);
+  if (!applied.applied && !applied.duplicate) {
+    throw new InsufficientCredit(applied.balanceUsdCents, amountUsdCents);
+  }
+  return applied.balanceUsdCents;
 }
 
 /** Refund a debit that could not be fulfilled (e.g. allocation failure). */

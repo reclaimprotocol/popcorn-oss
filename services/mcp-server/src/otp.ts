@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { McpConfig } from './config';
 import type { McpStore, OtpChallenge } from './store';
 import { readSesConfig, sendEmail } from './ses';
+import { subjectFor } from './oauth';
 
 /**
  * Email OTP sign-in. There is no sign-up step: proving control of an email
@@ -21,6 +22,11 @@ export function normalizeEmail(input: string): string | null {
 
 export function generateCode(): string {
   return String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+}
+
+/** Salted hash of an address; the plaintext email is never persisted. */
+export function hashEmail(email: string): string {
+  return crypto.createHmac('sha256', McpConfig.tokenSigningKey).update(`email:${email}`).digest('hex');
 }
 
 export function hashCode(challengeId: string, code: string): string {
@@ -45,7 +51,8 @@ export async function startEmailOtp(
   const email = normalizeEmail(rawEmail);
   if (!email) return { ok: false, error: 'invalid_email', message: 'Enter a valid email address.' };
 
-  const recent = await store.countRecentOtps(email, now - 15 * 60_000);
+  const emailHash = hashEmail(email);
+  const recent = await store.countRecentOtps(emailHash, now - 15 * 60_000);
   if (recent >= McpConfig.otpMaxPerWindow) {
     return { ok: false, error: 'rate_limited', message: 'Too many codes requested. Try again in a few minutes.' };
   }
@@ -54,7 +61,8 @@ export async function startEmailOtp(
   const code = generateCode();
   const challenge: OtpChallenge = {
     id: challengeId,
-    email,
+    emailHash,
+    subject: subjectFor(email),
     codeHash: hashCode(challengeId, code),
     attempts: 0,
     verified: false,
@@ -84,7 +92,7 @@ export async function startEmailOtp(
 }
 
 export type OtpVerifyResult =
-  | { ok: true; email: string }
+  | { ok: true; subject: string }
   | { ok: false; error: 'not_found' | 'expired' | 'too_many_attempts' | 'invalid_code'; message: string };
 
 export async function verifyEmailOtp(
@@ -108,5 +116,5 @@ export async function verifyEmailOtp(
     return { ok: false, error: 'invalid_code', message: 'That code is not correct.' };
   }
   await store.updateOtp(challengeId, { verified: true });
-  return { ok: true, email: challenge.email };
+  return { ok: true, subject: challenge.subject };
 }

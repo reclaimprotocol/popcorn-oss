@@ -6,14 +6,38 @@ import { McpConfig } from './config';
  * separate Popcorn client credentials.
  */
 
+/** Raw control-plane session (see services/control-plane pool-manager types). */
 export type PopcornSession = {
   sessionId: string;
-  liveViewUrl?: string;
+  /** Live view for a human. The control plane returns `url` and `vncUrl`. */
+  url?: string;
+  vncUrl?: string;
   cdpUrl?: string;
   expiresAt?: string;
   region?: string;
   [key: string]: unknown;
 };
+
+/** Normalized view used by the tool layer. */
+export type SessionView = {
+  sessionId: string;
+  liveViewUrl: string | null;
+  cdpUrl: string | null;
+  expiresAt: string | null;
+  region: string | null;
+  raw: PopcornSession;
+};
+
+export function toSessionView(session: PopcornSession): SessionView {
+  return {
+    sessionId: session.sessionId,
+    liveViewUrl: (session.vncUrl as string) ?? (session.url as string) ?? null,
+    cdpUrl: (session.cdpUrl as string) ?? null,
+    expiresAt: (session.expiresAt as string) ?? null,
+    region: (session.region as string) ?? null,
+    raw: session,
+  };
+}
 
 export type PopcornResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
 
@@ -56,11 +80,16 @@ export function getSession(sessionId: string): Promise<PopcornResult<PopcornSess
   return call<PopcornSession>(`/v1/session/${encodeURIComponent(sessionId)}`, { method: 'GET' });
 }
 
-export function extendSession(sessionId: string, ttlSeconds: number): Promise<PopcornResult<PopcornSession>> {
+/** The control plane's contract is `extendBySeconds`, not `ttlSeconds`. */
+export function extendSession(sessionId: string, extendBySeconds: number): Promise<PopcornResult<PopcornSession>> {
   return call<PopcornSession>(`/v1/session/${encodeURIComponent(sessionId)}/ttl`, {
     method: 'PATCH',
-    body: JSON.stringify({ ttlSeconds }),
+    body: JSON.stringify({ extendBySeconds }),
   });
+}
+
+export function getSessionAttestation(sessionId: string): Promise<PopcornResult<Record<string, unknown>>> {
+  return call<Record<string, unknown>>(`/v1/session/${encodeURIComponent(sessionId)}/attestation`, { method: 'GET' });
 }
 
 export function endSession(sessionId: string): Promise<PopcornResult<Record<string, unknown>>> {

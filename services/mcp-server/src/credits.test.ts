@@ -39,8 +39,20 @@ describe('popcorn credit', () => {
     expect(await store.balanceUsdCents('s')).toBe(100);
   });
 
+  test('concurrent debits cannot overdraw', async () => {
+    const store = new InMemoryStore();
+    await credit(store, 's', 5, 'stripe:1');
+    const results = await Promise.allSettled([
+      debit(store, 's', 5, 'session:a', 'session'),
+      debit(store, 's', 5, 'session:b', 'session'),
+    ]);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect(await store.balanceUsdCents('s')).toBe(0);
+  });
+
   test('validates top-up bounds', () => {
     expect(validateTopUpAmount(1)).toBeString();
+    expect(validateTopUpAmount(5)).toBeNull();
     expect(validateTopUpAmount(10_000_000)).toBeString();
     expect(validateTopUpAmount(500)).toBeNull();
   });

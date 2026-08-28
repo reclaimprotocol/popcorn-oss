@@ -16,6 +16,22 @@ function fail(data: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], structuredContent: data, isError: true };
 }
 
+/**
+ * Operation-level idempotency. A retried call returns the SAME terminal
+ * outcome — it never allocates a second browser, and a retry after a refunded
+ * failure does not yield a free session. Charging idempotency alone is not
+ * enough, because the debit and the allocation are two different effects.
+ */
+async function remembered(ctx: ToolContext, ref: string): Promise<ToolResult | null> {
+  const record = await ctx.store.getOperation(ref);
+  if (!record) return null;
+  return record.outcome === 'succeeded' ? ok(record.result) : fail(record.result);
+}
+
+async function remember(ctx: ToolContext, ref: string, outcome: 'succeeded' | 'failed', result: unknown) {
+  await ctx.store.putOperation({ ref, subject: ctx.subject, outcome, result, createdAt: Date.now() });
+}
+
 export const TOOL_DEFINITIONS = [
   {
     name: 'get_balance',
@@ -55,6 +71,39 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'get_browser_session',
     description: 'Fetch the current state of a browser session the caller owns.',
+    inputSchema: {
+      type: 'object',
+      properties: { session_id: { type: 'string' } },
+      required: ['session_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_browser_connection',
+    description:
+      'Return the agent-facing connection details for a session the caller owns: CDP websocket URL, region, and expiry. Free; the session is already paid for.',
+    inputSchema: {
+      type: 'object',
+      properties: { session_id: { type: 'string' } },
+      required: ['session_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'get_live_view',
+    description:
+      'Return the human-facing live-view URL for a session the caller owns. Send this to the person when a login or human decision is needed; never ask them for credentials.',
+    inputSchema: {
+      type: 'object',
+      properties: { session_id: { type: 'string' } },
+      required: ['session_id'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'verify_runtime',
+    description:
+      'Return the isolation and attestation posture of a session the caller owns: whether the browser pod is attested, the attestation document when available, and the isolation guarantees that always hold.',
     inputSchema: {
       type: 'object',
       properties: { session_id: { type: 'string' } },
@@ -122,10 +171,22 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const invalid = validateTopUpAmount(amount);
       if (invalid) return fail({ error: 'invalid_amount', message: invalid });
       const topUpId = crypto.randomUUID();
+      // Persist BEFORE calling Stripe: otherwise a webhook that arrives in the
+      // gap has no record to match and the payment is silently dropped.
+      await ctx.store.putTopUp({
+        id: topUpId,
+        subject: ctx.subject,
+        amountUsdCents: amount,
+        status: 'pending',
+        checkoutUrl: '',
+        providerRef: null,
+        createdAt: Date.now(),
+      });
       let checkout;
       try {
         checkout = await createCheckoutSession({ subject: ctx.subject, topUpId, amountUsdCents: amount });
       } catch (error) {
+        await ctx.store.updateTopUpStatus(topUpId, 'cancelled');
         return fail({ error: 'top_up_unavailable', message: (error as Error).message });
       }
       await ctx.store.putTopUp({
@@ -152,12 +213,18 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const purpose = typeof args.purpose === 'string' ? args.purpose.slice(0, 300) : '';
       if (!purpose) return fail({ error: 'invalid_request', message: 'purpose is required' });
       const ttlSeconds = Number.isInteger(args.ttl_seconds) ? Number(args.ttl_seconds) : McpConfig.sessionTtlSeconds;
-      const ref = `session:${ctx.subject}:${typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID()}`;
+      const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
+      const ref = `session:${ctx.subject}:${key}`;
+
+      const replay = await remembered(ctx, ref);
+      if (replay) return replay;
+
       const price = McpConfig.sessionPriceUsdCents;
       try {
         await debit(ctx.store, ctx.subject, price, ref, `browser session: ${purpose}`);
       } catch (error) {
         if (error instanceof InsufficientCredit) {
+          // Not remembered: adding credit and retrying the same key must work.
           return fail({
             error: 'insufficient_credit',
             balance_usd_cents: error.balanceUsdCents,
@@ -171,30 +238,39 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const result = await popcorn.createSession({ ttlSeconds, metadata: { subject: ctx.subject, purpose } });
       if (!result.ok) {
         await refund(ctx.store, ctx.subject, price, ref);
-        return fail({ error: 'session_unavailable', message: result.error, refunded_usd_cents: price });
+        const payload = {
+          error: 'session_unavailable',
+          message: result.error,
+          refunded_usd_cents: price,
+          next: 'Retry with a NEW idempotency_key.',
+        };
+        await remember(ctx, ref, 'failed', payload);
+        return fail(payload);
       }
 
-      const session = result.data;
-      const expiresAt = typeof session.expiresAt === 'string' ? Date.parse(session.expiresAt) : null;
+      const view = popcorn.toSessionView(result.data);
+      const expiresAt = view.expiresAt ? Date.parse(view.expiresAt) : NaN;
       await ctx.store.putSession({
-        sessionId: session.sessionId,
+        sessionId: view.sessionId,
         subject: ctx.subject,
         purpose,
         createdAt: Date.now(),
-        expiresAt: Number.isFinite(expiresAt) ? (expiresAt as number) : null,
+        expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
         endedAt: null,
       });
-      return ok({
-        session_id: session.sessionId,
-        live_view_url: session.liveViewUrl,
-        cdp_url: session.cdpUrl,
-        expires_at: session.expiresAt,
-        region: session.region,
+      const payload = {
+        session_id: view.sessionId,
+        live_view_url: view.liveViewUrl,
+        cdp_url: view.cdpUrl,
+        expires_at: view.expiresAt,
+        region: view.region,
         charged_usd_cents: price,
         balance_usd_cents: await getBalance(ctx.store, ctx.subject),
-        isolation: 'Fresh isolated browser. No local Chrome profile, cookies, or saved passwords are used.',
+        isolation: 'Fresh isolated browser. No local Chrome profile, cookies, or saved passwords.',
         human_handoff: 'Send live_view_url to the human for any login; do not ask them for credentials.',
-      });
+      };
+      await remember(ctx, ref, 'succeeded', payload);
+      return ok(payload);
     }
 
     case 'get_browser_session': {
@@ -202,14 +278,68 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
       const result = await popcorn.getSession(record.sessionId);
       if (!result.ok) return fail({ error: 'session_unavailable', message: result.error });
-      return ok({ ...result.data, purpose: record.purpose });
+      const view = popcorn.toSessionView(result.data);
+      return ok({
+        session_id: view.sessionId,
+        purpose: record.purpose,
+        live_view_url: view.liveViewUrl,
+        cdp_url: view.cdpUrl,
+        expires_at: view.expiresAt,
+        region: view.region,
+      });
+    }
+
+    case 'get_browser_connection': {
+      const record = await ownedSession(ctx, args.session_id);
+      if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
+      const result = await popcorn.getSession(record.sessionId);
+      if (!result.ok) return fail({ error: 'session_unavailable', message: result.error });
+      const connection = popcorn.toSessionView(result.data);
+      return ok({
+        session_id: record.sessionId,
+        cdp_url: connection.cdpUrl,
+        region: connection.region,
+        expires_at: connection.expiresAt,
+      });
+    }
+
+    case 'get_live_view': {
+      const record = await ownedSession(ctx, args.session_id);
+      if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
+      const result = await popcorn.getSession(record.sessionId);
+      if (!result.ok) return fail({ error: 'session_unavailable', message: result.error });
+      const liveView = popcorn.toSessionView(result.data);
+      return ok({
+        session_id: record.sessionId,
+        live_view_url: liveView.liveViewUrl,
+        expires_at: liveView.expiresAt,
+        human_handoff: 'Send this URL to the human for any login. Do not ask them for credentials.',
+      });
+    }
+
+    case 'verify_runtime': {
+      const record = await ownedSession(ctx, args.session_id);
+      if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
+      const attestation = await popcorn.getSessionAttestation(record.sessionId);
+      return ok({
+        session_id: record.sessionId,
+        isolation: 'Dedicated ephemeral browser pod. No local Chrome profile, cookies, or saved passwords; storage is destroyed when the session ends.',
+        attested: attestation.ok,
+        attestation: attestation.ok ? attestation.data : null,
+        attestation_error: attestation.ok ? null : attestation.error,
+      });
     }
 
     case 'extend_browser_session': {
       const record = await ownedSession(ctx, args.session_id);
       if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
-      const ttlSeconds = Number.isInteger(args.ttl_seconds) ? Number(args.ttl_seconds) : McpConfig.sessionTtlSeconds;
-      const ref = `extend:${record.sessionId}:${typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID()}`;
+      const extendBySeconds = Number.isInteger(args.ttl_seconds) ? Number(args.ttl_seconds) : McpConfig.sessionTtlSeconds;
+      const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
+      const ref = `extend:${record.sessionId}:${key}`;
+
+      const replay = await remembered(ctx, ref);
+      if (replay) return replay;
+
       const price = McpConfig.extendPriceUsdCents;
       try {
         await debit(ctx.store, ctx.subject, price, ref, `extend session ${record.sessionId}`);
@@ -224,17 +354,34 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         }
         throw error;
       }
-      const result = await popcorn.extendSession(record.sessionId, ttlSeconds);
+
+      const result = await popcorn.extendSession(record.sessionId, extendBySeconds);
       if (!result.ok) {
         await refund(ctx.store, ctx.subject, price, ref);
-        return fail({ error: 'extend_failed', message: result.error, refunded_usd_cents: price });
+        const payload = {
+          error: 'extend_failed',
+          message: result.error,
+          refunded_usd_cents: price,
+          next: 'Retry with a NEW idempotency_key.',
+        };
+        await remember(ctx, ref, 'failed', payload);
+        return fail(payload);
       }
-      return ok({
+
+      const view = popcorn.toSessionView(result.data);
+      if (view.expiresAt) {
+        const parsed = Date.parse(view.expiresAt);
+        if (Number.isFinite(parsed)) await ctx.store.updateSession(record.sessionId, { expiresAt: parsed });
+      }
+      const payload = {
         session_id: record.sessionId,
-        expires_at: result.data.expiresAt,
+        expires_at: view.expiresAt,
+        extended_by_seconds: extendBySeconds,
         charged_usd_cents: price,
         balance_usd_cents: await getBalance(ctx.store, ctx.subject),
-      });
+      };
+      await remember(ctx, ref, 'succeeded', payload);
+      return ok(payload);
     }
 
     case 'end_browser_session': {

@@ -3,9 +3,13 @@ import crypto from 'crypto';
 /**
  * Minimal AWS SESv2 SendEmail client (SigV4, no SDK).
  *
- * Credentials come from the standard environment: AWS_ACCESS_KEY_ID,
- * AWS_SECRET_ACCESS_KEY, optional AWS_SESSION_TOKEN — so IRSA / instance roles
- * work unchanged in the cluster.
+ * Credentials are resolved through the standard chain, so this works on a
+ * developer laptop and on EKS with IRSA:
+ *   1. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (+ optional session token)
+ *   2. IRSA: AWS_WEB_IDENTITY_TOKEN_FILE + AWS_ROLE_ARN via
+ *      sts:AssumeRoleWithWebIdentity
+ *   3. ECS/EKS container credentials endpoint
+ * Resolved temporary credentials are cached until shortly before expiry.
  */
 
 export type SesConfig = {
@@ -16,6 +20,97 @@ export type SesConfig = {
   sessionToken?: string;
   endpoint?: string;
 };
+
+export type ResolvedCredentials = {
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+  expiresAt: number | null;
+};
+
+let cachedCredentials: ResolvedCredentials | null = null;
+
+export function __resetCredentialCache(): void {
+  cachedCredentials = null;
+}
+
+/** Parse an STS AssumeRoleWithWebIdentity XML response. */
+export function parseStsResponse(xml: string): ResolvedCredentials {
+  const pick = (tag: string) => xml.match(new RegExp(`<${tag}>([^<]*)</${tag}>`))?.[1] ?? '';
+  const accessKeyId = pick('AccessKeyId');
+  const secretAccessKey = pick('SecretAccessKey');
+  const sessionToken = pick('SessionToken');
+  const expiration = pick('Expiration');
+  if (!accessKeyId || !secretAccessKey) throw new Error('STS response did not contain credentials');
+  return {
+    accessKeyId,
+    secretAccessKey,
+    sessionToken,
+    expiresAt: expiration ? Date.parse(expiration) : null,
+  };
+}
+
+async function assumeRoleWithWebIdentity(env: NodeJS.ProcessEnv): Promise<ResolvedCredentials> {
+  const tokenFile = env.AWS_WEB_IDENTITY_TOKEN_FILE!;
+  const roleArn = env.AWS_ROLE_ARN!;
+  const token = (await Bun.file(tokenFile).text()).trim();
+  const params = new URLSearchParams({
+    Action: 'AssumeRoleWithWebIdentity',
+    Version: '2011-06-15',
+    RoleArn: roleArn,
+    RoleSessionName: (env.AWS_ROLE_SESSION_NAME ?? 'popcorn-mcp-server').slice(0, 64),
+    WebIdentityToken: token,
+  });
+  const region = (env.AWS_REGION ?? 'us-east-1').trim();
+  const response = await fetch(`https://sts.${region}.amazonaws.com/?${params.toString()}`, { method: 'GET' });
+  const body = await response.text();
+  if (!response.ok) throw new Error(`sts:AssumeRoleWithWebIdentity failed (${response.status}): ${body.slice(0, 200)}`);
+  return parseStsResponse(body);
+}
+
+async function containerCredentials(env: NodeJS.ProcessEnv): Promise<ResolvedCredentials> {
+  const relative = env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+  const full = env.AWS_CONTAINER_CREDENTIALS_FULL_URI;
+  const url = full ?? `http://169.254.170.2${relative}`;
+  const response = await fetch(url, {
+    headers: env.AWS_CONTAINER_AUTHORIZATION_TOKEN ? { authorization: env.AWS_CONTAINER_AUTHORIZATION_TOKEN } : {},
+  });
+  if (!response.ok) throw new Error(`container credential endpoint failed (${response.status})`);
+  const body = (await response.json()) as any;
+  return {
+    accessKeyId: body.AccessKeyId,
+    secretAccessKey: body.SecretAccessKey,
+    sessionToken: body.Token,
+    expiresAt: body.Expiration ? Date.parse(body.Expiration) : null,
+  };
+}
+
+/** Resolve credentials through the chain, caching temporary ones. */
+export async function resolveCredentials(
+  env: NodeJS.ProcessEnv = process.env,
+  now = Date.now(),
+): Promise<ResolvedCredentials> {
+  if (env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) {
+    return {
+      accessKeyId: env.AWS_ACCESS_KEY_ID.trim(),
+      secretAccessKey: env.AWS_SECRET_ACCESS_KEY.trim(),
+      sessionToken: env.AWS_SESSION_TOKEN?.trim() || undefined,
+      expiresAt: null,
+    };
+  }
+  if (cachedCredentials && (cachedCredentials.expiresAt === null || cachedCredentials.expiresAt - 60_000 > now)) {
+    return cachedCredentials;
+  }
+  if (env.AWS_WEB_IDENTITY_TOKEN_FILE && env.AWS_ROLE_ARN) {
+    cachedCredentials = await assumeRoleWithWebIdentity(env);
+    return cachedCredentials;
+  }
+  if (env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI || env.AWS_CONTAINER_CREDENTIALS_FULL_URI) {
+    cachedCredentials = await containerCredentials(env);
+    return cachedCredentials;
+  }
+  throw new Error('no AWS credentials found (static keys, IRSA web identity, or container endpoint)');
+}
 
 export function readSesConfig(env: NodeJS.ProcessEnv = process.env): SesConfig {
   return {
@@ -84,9 +179,8 @@ export async function sendEmail(params: {
   html: string;
 }): Promise<void> {
   const { config } = params;
-  if (!config.accessKeyId || !config.secretAccessKey) {
-    throw new Error('AWS credentials are not configured; cannot send the sign-in code');
-  }
+  const credentials = await resolveCredentials();
+  const signingConfig: SesConfig = { ...config, ...credentials };
   const host = new URL(config.endpoint ?? `https://email.${config.region}.amazonaws.com`).host;
   const path = '/v2/email/outbound-emails';
   const payload = JSON.stringify({
@@ -103,7 +197,7 @@ export async function sendEmail(params: {
     },
   });
 
-  const signed = signRequest({ config, method: 'POST', host, path, payload, now: new Date() });
+  const signed = signRequest({ config: signingConfig, method: 'POST', host, path, payload, now: new Date() });
   const headers: Record<string, string> = {
     'content-type': 'application/json',
     host,
@@ -111,7 +205,7 @@ export async function sendEmail(params: {
     'x-amz-date': signed.amzDate,
     authorization: signed.authorization,
   };
-  if (config.sessionToken) headers['x-amz-security-token'] = config.sessionToken;
+  if (signingConfig.sessionToken) headers['x-amz-security-token'] = signingConfig.sessionToken;
 
   const response = await fetch(`https://${host}${path}`, { method: 'POST', headers, body: payload });
   if (!response.ok) {

@@ -25,6 +25,9 @@ describe('mcp surface', () => {
       'top_up',
       'create_browser_session',
       'get_browser_session',
+      'get_browser_connection',
+      'get_live_view',
+      'verify_runtime',
       'extend_browser_session',
       'end_browser_session',
       'list_browser_sessions',
@@ -101,5 +104,45 @@ describe('stripe webhook signatures', () => {
     const timestamp = Math.floor(Date.now() / 1000) - 10_000;
     const v1 = crypto.createHmac('sha256', secret).update(`${timestamp}.${payload}`).digest('hex');
     expect(verifyWebhookSignature(payload, `t=${timestamp},v1=${v1}`, secret)).toBe(false);
+  });
+});
+
+describe('operation idempotency', () => {
+  test('a retried create returns the first terminal outcome, not a second browser', async () => {
+    const context = ctx();
+    await context.store.putOperation({
+      ref: `session:${context.subject}:key-1`,
+      subject: context.subject,
+      outcome: 'succeeded',
+      result: { session_id: 'sess-first' },
+      createdAt: Date.now(),
+    });
+    const response = await handleRpc(context, {
+      jsonrpc: '2.0',
+      id: 10,
+      method: 'tools/call',
+      params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'key-1' } },
+    });
+    expect((response as any).result.structuredContent).toEqual({ session_id: 'sess-first' });
+  });
+
+  test('a retry after a refunded failure replays the failure instead of granting a free session', async () => {
+    const context = ctx();
+    await credit(context.store, context.subject, 100, 'stripe:1');
+    await context.store.putOperation({
+      ref: `session:${context.subject}:key-2`,
+      subject: context.subject,
+      outcome: 'failed',
+      result: { error: 'session_unavailable', refunded_usd_cents: 5 },
+      createdAt: Date.now(),
+    });
+    const response = await handleRpc(context, {
+      jsonrpc: '2.0',
+      id: 11,
+      method: 'tools/call',
+      params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'key-2' } },
+    });
+    expect((response as any).result.isError).toBe(true);
+    expect(await context.store.balanceUsdCents(context.subject)).toBe(100);
   });
 });

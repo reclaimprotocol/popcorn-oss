@@ -1,13 +1,14 @@
 import { describe, expect, test } from 'bun:test';
-import { OTP_MAX_ATTEMPTS, generateCode, hashCode, normalizeEmail, verifyCodeHash, verifyEmailOtp } from './otp';
-import { signRequest } from './ses';
+import { OTP_MAX_ATTEMPTS, generateCode, hashCode, hashEmail, normalizeEmail, verifyCodeHash, verifyEmailOtp } from './otp';
+import { parseStsResponse, resolveCredentials, signRequest, __resetCredentialCache } from './ses';
 import { InMemoryStore } from './store';
 
 function seed(store: InMemoryStore, code: string, overrides: Record<string, unknown> = {}) {
   const id = 'chal-1';
   store.putOtp({
     id,
-    email: 'user@example.com',
+    emailHash: hashEmail('user@example.com'),
+    subject: 'popcorn:test-subject',
     codeHash: hashCode(id, code),
     attempts: 0,
     verified: false,
@@ -32,7 +33,7 @@ describe('email otp', () => {
   test('accepts the right code once', async () => {
     const store = new InMemoryStore();
     const id = seed(store, '123456');
-    expect(await verifyEmailOtp(store, id, '123456')).toEqual({ ok: true, email: 'user@example.com' });
+    expect(await verifyEmailOtp(store, id, '123456')).toEqual({ ok: true, subject: 'popcorn:test-subject' });
     const replay = await verifyEmailOtp(store, id, '123456');
     expect(replay.ok).toBe(false);
   });
@@ -57,8 +58,36 @@ describe('email otp', () => {
     expect(await verifyEmailOtp(store, id, '123456')).toMatchObject({ error: 'expired' });
   });
 
+  test('challenges never persist the plaintext address', async () => {
+    const store = new InMemoryStore();
+    const id = seed(store, '123456');
+    expect(JSON.stringify(await store.getOtp(id))).not.toContain('user@example.com');
+  });
+
   test('code hashes are challenge-scoped', () => {
     expect(verifyCodeHash('chal-1', '123456', hashCode('chal-2', '123456'))).toBe(false);
+  });
+});
+
+describe('ses credentials', () => {
+  test('prefers static keys', async () => {
+    __resetCredentialCache();
+    const resolved = await resolveCredentials({ AWS_ACCESS_KEY_ID: 'AKID', AWS_SECRET_ACCESS_KEY: 'SECRET' } as any);
+    expect(resolved.accessKeyId).toBe('AKID');
+  });
+
+  test('parses STS web-identity credentials (IRSA)', () => {
+    const xml = `<AssumeRoleWithWebIdentityResponse><AssumeRoleWithWebIdentityResult><Credentials>
+      <AccessKeyId>ASIA123</AccessKeyId><SecretAccessKey>s3cret</SecretAccessKey>
+      <SessionToken>tok</SessionToken><Expiration>2026-08-28T13:00:00Z</Expiration>
+    </Credentials></AssumeRoleWithWebIdentityResult></AssumeRoleWithWebIdentityResponse>`;
+    const parsed = parseStsResponse(xml);
+    expect(parsed).toMatchObject({ accessKeyId: 'ASIA123', secretAccessKey: 's3cret', sessionToken: 'tok' });
+  });
+
+  test('fails loudly when no credential source exists', async () => {
+    __resetCredentialCache();
+    await expect(resolveCredentials({} as any)).rejects.toThrow(/no AWS credentials/);
   });
 });
 

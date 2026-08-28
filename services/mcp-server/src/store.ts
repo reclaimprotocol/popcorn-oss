@@ -31,7 +31,15 @@ export type TopUp = {
   amountUsdCents: number;
   status: 'pending' | 'credited' | 'cancelled';
   checkoutUrl: string;
-  providerRef: string;
+  providerRef: string | null;
+  createdAt: number;
+};
+
+export type OperationRecord = {
+  ref: string;
+  subject: string;
+  outcome: 'succeeded' | 'failed';
+  result: unknown;
   createdAt: number;
 };
 
@@ -55,7 +63,9 @@ export type SessionRecord = {
 
 export type OtpChallenge = {
   id: string;
-  email: string;
+  /** Salted hash of the address. The plaintext email is never persisted. */
+  emailHash: string;
+  subject: string;
   codeHash: string;
   attempts: number;
   verified: boolean;
@@ -64,6 +74,25 @@ export type OtpChallenge = {
 };
 
 export interface McpStore {
+  /**
+   * Atomically apply a ledger entry.
+   *
+   * Contract for durable implementations: this MUST be a single transaction
+   * that (a) no-ops if `entry.ref` already exists, and (b) for a negative
+   * delta, rejects when the subject's balance would go below zero — e.g.
+   *   INSERT ... SELECT ... WHERE (SELECT COALESCE(SUM(delta),0) FROM ledger
+   *   WHERE subject = $1) + $delta >= 0 ON CONFLICT (ref) DO NOTHING
+   * A read-then-write sequence is not acceptable for a payment path.
+   */
+  applyLedgerEntry(entry: LedgerEntry): Promise<{ applied: boolean; duplicate: boolean; balanceUsdCents: number }>;
+
+  /** Operation-level idempotency: one terminal outcome per (subject, key). */
+  putOperation(record: OperationRecord): Promise<void>;
+  getOperation(ref: string): Promise<OperationRecord | null>;
+
+  revokeSubjectBefore(subject: string, issuedBefore: number): Promise<void>;
+  revokedAt(subject: string): Promise<number>;
+
   putOtp(challenge: OtpChallenge): Promise<void>;
   getOtp(id: string): Promise<OtpChallenge | null>;
   updateOtp(id: string, patch: Partial<OtpChallenge>): Promise<void>;
@@ -112,8 +141,8 @@ export class InMemoryStore implements McpStore {
     if (found) this.otps.set(id, { ...found, ...patch });
   }
 
-  async countRecentOtps(email: string, since: number) {
-    return [...this.otps.values()].filter((otp) => otp.email === email && otp.createdAt >= since).length;
+  async countRecentOtps(emailHash: string, since: number) {
+    return [...this.otps.values()].filter((otp) => otp.emailHash === emailHash && otp.createdAt >= since).length;
   }
 
   async putSession(session: SessionRecord) {
@@ -174,6 +203,45 @@ export class InMemoryStore implements McpStore {
   async updateTopUpStatus(id: string, status: TopUp['status']) {
     const found = this.topUps.get(id);
     if (found) this.topUps.set(id, { ...found, status });
+  }
+
+  private revocations = new Map<string, number>();
+  private operations = new Map<string, OperationRecord>();
+
+  async putOperation(record: OperationRecord) {
+    if (!this.operations.has(record.ref)) this.operations.set(record.ref, record);
+  }
+
+  async getOperation(ref: string) {
+    return this.operations.get(ref) ?? null;
+  }
+
+  /**
+   * Single-threaded and therefore atomic in this process. A multi-replica
+   * deployment must supply a store whose implementation is transactional.
+   */
+  async applyLedgerEntry(entry: LedgerEntry) {
+    // Deliberately synchronous between the check and the write: no `await`
+    // may separate them, or two in-flight debits can both pass the check.
+    const balanceOf = (subject: string) =>
+      this.ledger.filter((existing) => existing.subject === subject).reduce((total, e) => total + e.deltaUsdCents, 0);
+    if (this.ledger.some((existing) => existing.ref === entry.ref)) {
+      return { applied: false, duplicate: true, balanceUsdCents: balanceOf(entry.subject) };
+    }
+    const balance = balanceOf(entry.subject);
+    if (balance + entry.deltaUsdCents < 0) {
+      return { applied: false, duplicate: false, balanceUsdCents: balance };
+    }
+    this.ledger.push(entry);
+    return { applied: true, duplicate: false, balanceUsdCents: balance + entry.deltaUsdCents };
+  }
+
+  async revokeSubjectBefore(subject: string, issuedBefore: number) {
+    this.revocations.set(subject, issuedBefore);
+  }
+
+  async revokedAt(subject: string) {
+    return this.revocations.get(subject) ?? 0;
   }
 
   async appendLedger(entry: LedgerEntry) {

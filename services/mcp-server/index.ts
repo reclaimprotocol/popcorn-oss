@@ -3,12 +3,13 @@ import { McpConfig } from './src/config';
 import { credit } from './src/credits';
 import { handleRpc, type JsonRpcRequest } from './src/mcp';
 import {
+  RESOURCE_URI,
   authorizationServerMetadata,
   issueAccessToken,
   newAuthorizationCode,
   protectedResourceMetadata,
   registerClient,
-  subjectFor,
+  resourceMatches,
   verifyAccessToken,
   verifyChallenge,
 } from './src/oauth';
@@ -17,6 +18,17 @@ import { startEmailOtp, verifyEmailOtp } from './src/otp';
 import { verifyWebhookSignature } from './src/stripe';
 
 const store: McpStore = new InMemoryStore();
+
+/**
+ * Refuse to run against live Stripe keys on ephemeral storage. Credits,
+ * pending top-ups, OAuth clients, codes and session ownership are held in
+ * memory and vanish on restart — that is fine for a demo, never for money.
+ */
+if (McpConfig.stripeSecretKey.startsWith('sk_live_') && process.env.MCP_ALLOW_EPHEMERAL_STORE !== 'true') {
+  throw new Error(
+    'Refusing to start: a live Stripe key is configured but storage is in-memory. Wire a durable McpStore first (see services/mcp-server/README.md).',
+  );
+}
 const app = new Hono();
 
 app.get('/health', (c) => c.text('OK'));
@@ -56,6 +68,7 @@ type AuthorizeParams = {
   state: string;
   code_challenge: string;
   scope: string;
+  resource: string;
 };
 
 function readAuthorizeParams(source: Record<string, unknown>): AuthorizeParams {
@@ -65,6 +78,7 @@ function readAuthorizeParams(source: Record<string, unknown>): AuthorizeParams {
     state: String(source.state ?? ''),
     code_challenge: String(source.code_challenge ?? ''),
     scope: String(source.scope ?? 'popcorn.sessions popcorn.credit'),
+    resource: String(source.resource ?? ''),
   };
 }
 
@@ -73,6 +87,7 @@ async function validateAuthorizeParams(params: AuthorizeParams) {
   if (!client) return null;
   if (!client.redirectUris.includes(params.redirect_uri)) return null;
   if (!params.code_challenge) return null;
+  if (!resourceMatches(params.resource)) return null;
   return client;
 }
 
@@ -166,7 +181,7 @@ app.post('/oauth/decision', async (c) => {
   await store.putCode({
     code,
     clientId: params.client_id,
-    subject: subjectFor(verified.email),
+    subject: verified.subject,
     redirectUri: params.redirect_uri,
     codeChallenge: params.code_challenge,
     codeChallengeMethod: 'S256',
@@ -190,6 +205,9 @@ app.post('/oauth/token', async (c) => {
   if (!stored || stored.expiresAt < Date.now()) return c.json({ error: 'invalid_grant' }, 400);
   if (stored.clientId !== String(form.client_id ?? '')) return c.json({ error: 'invalid_grant' }, 400);
   if (stored.redirectUri !== String(form.redirect_uri ?? '')) return c.json({ error: 'invalid_grant' }, 400);
+  if (!resourceMatches(form.resource ? String(form.resource) : null)) {
+    return c.json({ error: 'invalid_target', error_description: `resource must be ${RESOURCE_URI()}` }, 400);
+  }
   if (!verifyChallenge(String(form.code_verifier ?? ''), stored.codeChallenge)) {
     return c.json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400);
   }
@@ -204,30 +222,101 @@ app.post('/oauth/token', async (c) => {
 
 /* ------------------------------------------------------------------- MCP */
 
+const ALLOWED_PROTOCOL_VERSIONS = new Set(['2025-06-18', '2025-03-26']);
+
+/** DNS-rebinding protection: browsers must come from an allowed origin. */
+function originAllowed(origin: string | undefined): boolean {
+  if (!origin) return true; // non-browser MCP clients send no Origin
+  const allowed = [McpConfig.publicUrl, ...(process.env.MCP_ALLOWED_ORIGINS ?? '').split(',')]
+    .map((value) => value.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+  return allowed.includes(origin.trim().replace(/\/$/, ''));
+}
+
 app.all('/mcp', async (c) => {
   if (c.req.method !== 'POST') return c.json({ error: 'method_not_allowed' }, 405);
+  if (!originAllowed(c.req.header('origin'))) return c.json({ error: 'forbidden_origin' }, 403);
+
+  const protocolVersion = c.req.header('mcp-protocol-version');
+  if (protocolVersion && !ALLOWED_PROTOCOL_VERSIONS.has(protocolVersion)) {
+    return c.json(
+      { error: 'unsupported_protocol_version', supported: [...ALLOWED_PROTOCOL_VERSIONS] },
+      400,
+    );
+  }
+  const body = await c.req.json().catch(() => null);
+  // Streamable HTTP (2025-06-18) is one JSON-RPC message per POST.
+  if (Array.isArray(body)) {
+    return c.json(
+      { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'batched requests are not supported; send one JSON-RPC message per POST' } },
+      400,
+    );
+  }
+
   const header = c.req.header('authorization') ?? '';
   const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
   const claims = token ? verifyAccessToken(token) : null;
-  if (!claims) {
+  const revokedAt = claims ? await store.revokedAt(claims.sub) : 0;
+  if (!claims || claims.iat * 1000 < revokedAt) {
     c.header(
       'WWW-Authenticate',
-      `Bearer resource_metadata="${McpConfig.publicUrl}/.well-known/oauth-protected-resource"`,
+      `Bearer resource="${RESOURCE_URI()}", resource_metadata="${McpConfig.publicUrl}/.well-known/oauth-protected-resource"`,
     );
     return c.json({ error: 'unauthorized' }, 401);
   }
 
-  const body = await c.req.json().catch(() => null);
   const ctx = { store, subject: claims.sub };
-  if (Array.isArray(body)) {
-    const responses = (await Promise.all(body.map((entry) => handleRpc(ctx, entry as JsonRpcRequest)))).filter(Boolean);
-    return responses.length ? c.json(responses) : c.body(null, 202);
-  }
   if (!body || typeof body !== 'object') {
     return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }, 400);
   }
   const response = await handleRpc(ctx, body as JsonRpcRequest);
   return response ? c.json(response) : c.body(null, 202);
+});
+
+/**
+ * Revocation. Every token issued to this identity before now stops working.
+ * The consent screen promises this, so it is part of the auth surface, not an
+ * admin extra: sign in again with an emailed code and confirm.
+ */
+app.get('/oauth/revoke', (c) =>
+  c.html(
+    page(
+      'Revoke agent access',
+      `<h1 style="font-size:1.4rem">Revoke agent access</h1>
+  <p>Enter your email and we'll send a code. Confirming signs out every MCP client currently authorized on your identity. Your Popcorn credit is not affected.</p>
+  <form method="post" action="/oauth/revoke/email">
+    <label>Email address<br><input name="email" type="email" required autofocus style="width:100%;padding:.6rem;font-size:1rem"></label>
+    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Email me a code</button></p>
+  </form>`,
+    ),
+  ),
+);
+
+app.post('/oauth/revoke/email', async (c) => {
+  const form = (await c.req.parseBody()) as Record<string, unknown>;
+  const result = await startEmailOtp(store, String(form.email ?? ''));
+  if (!result.ok) {
+    return c.html(page('Revoke agent access', noticeHtml(result.message)), 400);
+  }
+  return c.html(
+    page(
+      'Revoke agent access',
+      `<h1 style="font-size:1.4rem">Enter your code</h1>
+  <form method="post" action="/oauth/revoke/confirm">
+    ${hidden('challenge_id', result.challengeId)}
+    <label>Sign-in code<br><input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autofocus style="width:100%;padding:.6rem;font-size:1.4rem;letter-spacing:.3rem"></label>
+    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Revoke all access</button></p>
+  </form>`,
+    ),
+  );
+});
+
+app.post('/oauth/revoke/confirm', async (c) => {
+  const form = (await c.req.parseBody()) as Record<string, unknown>;
+  const verified = await verifyEmailOtp(store, String(form.challenge_id ?? ''), String(form.code ?? ''));
+  if (!verified.ok) return c.html(page('Revoke agent access', noticeHtml(verified.message)), 400);
+  await store.revokeSubjectBefore(verified.subject, Date.now());
+  return c.html(page('Access revoked', '<h1 style="font-size:1.4rem">Access revoked</h1><p>Every MCP client authorized on this identity has been signed out. Your Popcorn credit is unchanged.</p>'));
 });
 
 /* ---------------------------------------------------------------- Stripe */
@@ -245,7 +334,12 @@ app.post('/stripe/webhook', async (c) => {
   if (session.payment_status !== 'paid') return c.json({ received: true });
   const topUpId = session.metadata?.popcorn_top_up_id ?? session.client_reference_id;
   const topUp = topUpId ? await store.getTopUp(String(topUpId)) : null;
-  if (!topUp) return c.json({ received: true, ignored: 'unknown top-up' });
+  if (!topUp) {
+    // Do NOT 200 here: a 200 tells Stripe the payment is handled. Fail so it
+    // retries while the top-up record catches up.
+    console.error(`stripe webhook for unknown top-up ${topUpId ?? '(none)'} on session ${session.id}`);
+    return c.json({ error: 'unknown_top_up', retry: true }, 503);
+  }
 
   await credit(store, topUp.subject, topUp.amountUsdCents, `stripe:${session.id}`);
   await store.updateTopUpStatus(topUp.id, 'credited');

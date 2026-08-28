@@ -19,8 +19,16 @@ them with a card — no wallet, no private keys, no `402` handshake.
   crypto.
 - **One payment verb.** `top_up` returns a Stripe Checkout URL; the human pays;
   the webhook credits that exact OAuth subject. The agent never sees card data.
-- **Idempotent money.** Credits are keyed on the Stripe event, debits on an
-  `idempotency_key`, and a failed allocation is refunded automatically.
+- **Idempotent operations, not just charges.** A retried call replays the
+  first terminal outcome, so it never allocates a second browser and a retry
+  after a refunded failure cannot yield a free session. Credits are keyed on
+  the Stripe event; the top-up record is written before Checkout is created so
+  a fast webhook is never dropped (unmatched events get a 503 so Stripe
+  retries).
+- **Spec-aligned transport.** Tokens are audience-bound to `<public URL>/mcp`
+  (RFC 8707 `resource` honoured at both endpoints), Origin is validated,
+  `MCP-Protocol-Version` is checked, and JSON-RPC batches are rejected — one
+  message per POST.
 
 ## Tools
 
@@ -77,6 +85,12 @@ bun install
 bun run dev
 bun test
 ```
+
+## Not production-ready yet
+
+The service refuses to boot with a live Stripe key while storage is in-memory.
+Before real payments it needs a durable `McpStore` (Postgres) implementing the
+documented atomic-ledger contract; everything else below is already handled.
 
 ## Scope of this build
 
