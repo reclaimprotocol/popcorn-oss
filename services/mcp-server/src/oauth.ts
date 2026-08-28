@@ -33,9 +33,12 @@ export type AccessToken = { sub: string; scope: string; aud: string; iat: number
 /** The canonical resource identifier of this MCP server (RFC 8707 audience). */
 export const RESOURCE_URI = () => `${McpConfig.publicUrl}/mcp`;
 
-/** RFC 8707 `resource`: must match this server, if the client sends one. */
+/**
+ * RFC 8707 `resource`: REQUIRED at both authorize and token, and must be this
+ * server's canonical MCP URI. An absent value is a rejection, not a pass.
+ */
 export function resourceMatches(resource: string | undefined | null): boolean {
-  if (!resource) return true;
+  if (!resource) return false;
   const canonical = RESOURCE_URI();
   try {
     const provided = new URL(resource);

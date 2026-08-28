@@ -19,6 +19,7 @@ describe('resource binding', () => {
   test('a mismatched RFC 8707 resource is rejected', () => {
     expect(resourceMatches(RESOURCE_URI())).toBe(true);
     expect(resourceMatches('https://evil.example/mcp')).toBe(false);
-    expect(resourceMatches(undefined)).toBe(true);
+    // RFC 8707 resource is REQUIRED, so absent is a rejection.
+    expect(resourceMatches(undefined)).toBe(false);
   });
 });

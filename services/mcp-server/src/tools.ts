@@ -22,14 +22,25 @@ function fail(data: unknown): ToolResult {
  * failure does not yield a free session. Charging idempotency alone is not
  * enough, because the debit and the allocation are two different effects.
  */
-async function remembered(ctx: ToolContext, ref: string): Promise<ToolResult | null> {
-  const record = await ctx.store.getOperation(ref);
-  if (!record) return null;
-  return record.outcome === 'succeeded' ? ok(record.result) : fail(record.result);
+async function claim(ctx: ToolContext, ref: string): Promise<{ go: true } | { go: false; replay: ToolResult }> {
+  const { claimed, existing } = await ctx.store.claimOperation(ref, ctx.subject);
+  if (claimed) return { go: true };
+  if (!existing || existing.outcome === 'pending') {
+    // Another call with this key is in flight; do NOT start a second effect.
+    return {
+      go: false,
+      replay: fail({
+        error: 'operation_in_progress',
+        message: 'Another call with this idempotency_key is still running.',
+        next: 'Poll with the same idempotency_key, or use list_browser_sessions.',
+      }),
+    };
+  }
+  return { go: false, replay: existing.outcome === 'succeeded' ? ok(existing.result) : fail(existing.result) };
 }
 
-async function remember(ctx: ToolContext, ref: string, outcome: 'succeeded' | 'failed', result: unknown) {
-  await ctx.store.putOperation({ ref, subject: ctx.subject, outcome, result, createdAt: Date.now() });
+async function settle(ctx: ToolContext, ref: string, outcome: 'succeeded' | 'failed', result: unknown) {
+  await ctx.store.settleOperation(ref, outcome, result);
 }
 
 export const TOOL_DEFINITIONS = [
@@ -189,15 +200,9 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         await ctx.store.updateTopUpStatus(topUpId, 'cancelled');
         return fail({ error: 'top_up_unavailable', message: (error as Error).message });
       }
-      await ctx.store.putTopUp({
-        id: topUpId,
-        subject: ctx.subject,
-        amountUsdCents: amount,
-        status: 'pending',
-        checkoutUrl: checkout.url,
-        providerRef: checkout.id,
-        createdAt: Date.now(),
-      });
+      // Patch the existing row; never rewrite `status`, or a webhook that has
+      // already credited this top-up would be knocked back to pending.
+      await ctx.store.attachCheckout(topUpId, checkout.url, checkout.id);
       return ok({
         status: 'approval_required',
         top_up_id: topUpId,
@@ -216,15 +221,16 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
       const ref = `session:${ctx.subject}:${key}`;
 
-      const replay = await remembered(ctx, ref);
-      if (replay) return replay;
+      const claimed = await claim(ctx, ref);
+      if (!claimed.go) return claimed.replay;
 
       const price = McpConfig.sessionPriceUsdCents;
       try {
         await debit(ctx.store, ctx.subject, price, ref, `browser session: ${purpose}`);
       } catch (error) {
         if (error instanceof InsufficientCredit) {
-          // Not remembered: adding credit and retrying the same key must work.
+          // Release the claim: adding credit and retrying the same key must work.
+          await ctx.store.releaseOperation(ref);
           return fail({
             error: 'insufficient_credit',
             balance_usd_cents: error.balanceUsdCents,
@@ -232,6 +238,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
             next: 'Call top_up to add Popcorn credit, then retry with the same idempotency_key.',
           });
         }
+        await ctx.store.releaseOperation(ref);
         throw error;
       }
 
@@ -244,7 +251,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
           refunded_usd_cents: price,
           next: 'Retry with a NEW idempotency_key.',
         };
-        await remember(ctx, ref, 'failed', payload);
+        await settle(ctx, ref, 'failed', payload);
         return fail(payload);
       }
 
@@ -269,7 +276,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         isolation: 'Fresh isolated browser. No local Chrome profile, cookies, or saved passwords.',
         human_handoff: 'Send live_view_url to the human for any login; do not ask them for credentials.',
       };
-      await remember(ctx, ref, 'succeeded', payload);
+      await settle(ctx, ref, 'succeeded', payload);
       return ok(payload);
     }
 
@@ -337,13 +344,14 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
       const ref = `extend:${record.sessionId}:${key}`;
 
-      const replay = await remembered(ctx, ref);
-      if (replay) return replay;
+      const claimed = await claim(ctx, ref);
+      if (!claimed.go) return claimed.replay;
 
       const price = McpConfig.extendPriceUsdCents;
       try {
         await debit(ctx.store, ctx.subject, price, ref, `extend session ${record.sessionId}`);
       } catch (error) {
+        await ctx.store.releaseOperation(ref);
         if (error instanceof InsufficientCredit) {
           return fail({
             error: 'insufficient_credit',
@@ -364,7 +372,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
           refunded_usd_cents: price,
           next: 'Retry with a NEW idempotency_key.',
         };
-        await remember(ctx, ref, 'failed', payload);
+        await settle(ctx, ref, 'failed', payload);
         return fail(payload);
       }
 
@@ -380,7 +388,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         charged_usd_cents: price,
         balance_usd_cents: await getBalance(ctx.store, ctx.subject),
       };
-      await remember(ctx, ref, 'succeeded', payload);
+      await settle(ctx, ref, 'succeeded', payload);
       return ok(payload);
     }
 

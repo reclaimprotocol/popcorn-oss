@@ -29,12 +29,12 @@ describe('streamable http transport', () => {
   test('rejects JSON-RPC batches', async () => {
     const response = await post([{ jsonrpc: '2.0', id: 1, method: 'ping' }]);
     expect(response.status).toBe(400);
-    expect((await response.json()).error.message).toContain('one JSON-RPC message per POST');
+    expect(((await response.json()) as any).error.message).toContain('one JSON-RPC message per POST');
   });
 
   test('publishes protected-resource metadata for discovery', async () => {
     const response = await app.request('/.well-known/oauth-protected-resource');
-    const body = await response.json();
+    const body = (await response.json()) as any;
     expect(body.resource).toEndWith('/mcp');
   });
 });

@@ -49,11 +49,19 @@ Remote MCP clients need only the URL; the OAuth flow supplies the rest.
 }
 ```
 
+## Storage
+
+`DATABASE_URL` selects the transactional Postgres store; without it the
+service keeps state in memory and refuses to start with a live Stripe key.
+Ledger writes and idempotency claims are single conditional statements, safe
+across replicas.
+
 ## Money rules
 
 - Credit is denominated in USD cents and is usable only for Popcorn sessions.
-- Stripe events credit exactly once; tool calls debit exactly once per
-  `idempotency_key`; a failed allocation refunds automatically.
+- Stripe events credit exactly once. A tool call claims its `idempotency_key`
+  before charging or allocating, so retries replay one outcome rather than
+  creating a second session; a failed allocation refunds automatically.
 - Ending a session early does not refund the session charge.
 
 See [`services/mcp-server/README.md`](../services/mcp-server/README.md) for

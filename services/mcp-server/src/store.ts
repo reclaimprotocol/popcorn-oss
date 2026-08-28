@@ -21,6 +21,8 @@ export type AuthorizationCode = {
   codeChallenge: string;
   codeChallengeMethod: 'S256';
   scope: string;
+  /** The RFC 8707 resource this code — and the resulting token — is bound to. */
+  resource: string;
   expiresAt: number;
   consumed: boolean;
 };
@@ -38,7 +40,7 @@ export type TopUp = {
 export type OperationRecord = {
   ref: string;
   subject: string;
-  outcome: 'succeeded' | 'failed';
+  outcome: 'pending' | 'succeeded' | 'failed';
   result: unknown;
   createdAt: number;
 };
@@ -86,8 +88,15 @@ export interface McpStore {
    */
   applyLedgerEntry(entry: LedgerEntry): Promise<{ applied: boolean; duplicate: boolean; balanceUsdCents: number }>;
 
-  /** Operation-level idempotency: one terminal outcome per (subject, key). */
-  putOperation(record: OperationRecord): Promise<void>;
+  /**
+   * Operation-level idempotency. `claimOperation` MUST be a single atomic
+   * insert-if-absent (`INSERT ... ON CONFLICT (ref) DO NOTHING RETURNING`):
+   * exactly one caller wins the claim and performs the effect; every other
+   * caller gets the existing record and replays or waits for its outcome.
+   */
+  claimOperation(ref: string, subject: string): Promise<{ claimed: boolean; existing: OperationRecord | null }>;
+  settleOperation(ref: string, outcome: 'succeeded' | 'failed', result: unknown): Promise<void>;
+  releaseOperation(ref: string): Promise<void>;
   getOperation(ref: string): Promise<OperationRecord | null>;
 
   revokeSubjectBefore(subject: string, issuedBefore: number): Promise<void>;
@@ -113,6 +122,8 @@ export interface McpStore {
   getTopUp(id: string): Promise<TopUp | null>;
   getTopUpByProviderRef(ref: string): Promise<TopUp | null>;
   updateTopUpStatus(id: string, status: TopUp['status']): Promise<void>;
+  /** Attach Checkout details WITHOUT touching `status`. */
+  attachCheckout(id: string, checkoutUrl: string, providerRef: string): Promise<void>;
 
   appendLedger(entry: LedgerEntry): Promise<void>;
   hasLedgerRef(ref: string): Promise<boolean>;
@@ -200,6 +211,11 @@ export class InMemoryStore implements McpStore {
     return null;
   }
 
+  async attachCheckout(id: string, checkoutUrl: string, providerRef: string) {
+    const found = this.topUps.get(id);
+    if (found) this.topUps.set(id, { ...found, checkoutUrl, providerRef });
+  }
+
   async updateTopUpStatus(id: string, status: TopUp['status']) {
     const found = this.topUps.get(id);
     if (found) this.topUps.set(id, { ...found, status });
@@ -208,8 +224,21 @@ export class InMemoryStore implements McpStore {
   private revocations = new Map<string, number>();
   private operations = new Map<string, OperationRecord>();
 
-  async putOperation(record: OperationRecord) {
-    if (!this.operations.has(record.ref)) this.operations.set(record.ref, record);
+  /** Synchronous check-and-set: no `await` may split the claim. */
+  async claimOperation(ref: string, subject: string) {
+    const existing = this.operations.get(ref);
+    if (existing) return { claimed: false, existing };
+    this.operations.set(ref, { ref, subject, outcome: 'pending', result: null, createdAt: Date.now() });
+    return { claimed: true, existing: null };
+  }
+
+  async settleOperation(ref: string, outcome: 'succeeded' | 'failed', result: unknown) {
+    const existing = this.operations.get(ref);
+    if (existing) this.operations.set(ref, { ...existing, outcome, result });
+  }
+
+  async releaseOperation(ref: string) {
+    this.operations.delete(ref);
   }
 
   async getOperation(ref: string) {

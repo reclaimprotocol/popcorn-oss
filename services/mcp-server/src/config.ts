@@ -26,6 +26,8 @@ export const McpConfig = {
   extendPriceUsdCents: num('MCP_EXTEND_PRICE_USD_CENTS', 5),
   minTopUpUsdCents: num('MCP_MIN_TOP_UP_USD_CENTS', 5),
   maxTopUpUsdCents: num('MCP_MAX_TOP_UP_USD_CENTS', 50000),
+  /** Durable storage. Unset means in-memory (dev/demo only). */
+  databaseUrl: env('DATABASE_URL'),
   /** Email OTP sign-in (AWS SES). */
   otpFromAddress: env('OTP_FROM_ADDRESS', 'noreply@reclaimprotocol.org'),
   otpMaxPerWindow: num('MCP_OTP_MAX_PER_WINDOW', 5),

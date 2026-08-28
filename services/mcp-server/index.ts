@@ -14,24 +14,33 @@ import {
   verifyChallenge,
 } from './src/oauth';
 import { InMemoryStore, type McpStore } from './src/store';
+import { PostgresStore } from './src/postgres-store';
 import { startEmailOtp, verifyEmailOtp } from './src/otp';
 import { verifyWebhookSignature } from './src/stripe';
 
-const store: McpStore = new InMemoryStore();
+/**
+ * Durable storage when DATABASE_URL is set; in-memory only for local dev,
+ * tests, and demos.
+ */
+const store: McpStore = McpConfig.databaseUrl
+  ? PostgresStore.fromUrl(McpConfig.databaseUrl)
+  : new InMemoryStore();
+const durable = store instanceof PostgresStore;
+if (durable) await (store as PostgresStore).migrate();
 
 /**
  * Refuse to run against live Stripe keys on ephemeral storage. Credits,
  * pending top-ups, OAuth clients, codes and session ownership are held in
  * memory and vanish on restart — that is fine for a demo, never for money.
  */
-if (McpConfig.stripeSecretKey.startsWith('sk_live_') && process.env.MCP_ALLOW_EPHEMERAL_STORE !== 'true') {
+if (!durable && McpConfig.stripeSecretKey.startsWith('sk_live_') && process.env.MCP_ALLOW_EPHEMERAL_STORE !== 'true') {
   throw new Error(
-    'Refusing to start: a live Stripe key is configured but storage is in-memory. Wire a durable McpStore first (see services/mcp-server/README.md).',
+    'Refusing to start: a live Stripe key is configured but storage is in-memory. Set DATABASE_URL (see services/mcp-server/README.md).',
   );
 }
 const app = new Hono();
 
-app.get('/health', (c) => c.text('OK'));
+app.get('/health', (c) => c.json({ status: 'ok', storage: durable ? 'postgres' : 'memory' }));
 
 /* ---------------------------------------------------------------- OAuth 2.1 */
 
@@ -140,7 +149,12 @@ app.get('/oauth/authorize', async (c) => {
   const query = c.req.query();
   const params = readAuthorizeParams(query);
   const client = await validateAuthorizeParams(params);
-  if (!client) return c.json({ error: 'invalid_request', error_description: 'unknown client or redirect_uri' }, 400);
+  if (!client) {
+    return c.json(
+      { error: 'invalid_request', error_description: `unknown client/redirect_uri, or missing resource (must be ${RESOURCE_URI()})` },
+      400,
+    );
+  }
   if (query.response_type !== 'code') return c.json({ error: 'unsupported_response_type' }, 400);
   if (query.code_challenge_method !== 'S256') {
     return c.json({ error: 'invalid_request', error_description: 'PKCE with S256 is required' }, 400);
@@ -186,6 +200,7 @@ app.post('/oauth/decision', async (c) => {
     codeChallenge: params.code_challenge,
     codeChallengeMethod: 'S256',
     scope: params.scope,
+    resource: params.resource,
     expiresAt: Date.now() + 60_000,
     consumed: false,
   });
@@ -205,7 +220,9 @@ app.post('/oauth/token', async (c) => {
   if (!stored || stored.expiresAt < Date.now()) return c.json({ error: 'invalid_grant' }, 400);
   if (stored.clientId !== String(form.client_id ?? '')) return c.json({ error: 'invalid_grant' }, 400);
   if (stored.redirectUri !== String(form.redirect_uri ?? '')) return c.json({ error: 'invalid_grant' }, 400);
-  if (!resourceMatches(form.resource ? String(form.resource) : null)) {
+  // The token must be issued for the SAME resource the code was bound to.
+  const requestedResource = form.resource ? String(form.resource) : null;
+  if (!resourceMatches(requestedResource) || requestedResource !== stored.resource) {
     return c.json({ error: 'invalid_target', error_description: `resource must be ${RESOURCE_URI()}` }, 400);
   }
   if (!verifyChallenge(String(form.code_verifier ?? ''), stored.codeChallenge)) {

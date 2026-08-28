@@ -108,15 +108,34 @@ describe('stripe webhook signatures', () => {
 });
 
 describe('operation idempotency', () => {
+  test('only one concurrent call with the same key may act', async () => {
+    const context = ctx();
+    const ref = `session:${context.subject}:race`;
+    const [first, second] = await Promise.all([
+      context.store.claimOperation(ref, context.subject),
+      context.store.claimOperation(ref, context.subject),
+    ]);
+    expect([first.claimed, second.claimed].filter(Boolean)).toHaveLength(1);
+  });
+
+  test('a call arriving while the claim is pending does not start a second browser', async () => {
+    const context = ctx();
+    await credit(context.store, context.subject, 100, 'stripe:1');
+    await context.store.claimOperation(`session:${context.subject}:key-3`, context.subject);
+    const response = await handleRpc(context, {
+      jsonrpc: '2.0',
+      id: 12,
+      method: 'tools/call',
+      params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'key-3' } },
+    });
+    expect((response as any).result.structuredContent.error).toBe('operation_in_progress');
+    expect(await context.store.balanceUsdCents(context.subject)).toBe(100);
+  });
+
   test('a retried create returns the first terminal outcome, not a second browser', async () => {
     const context = ctx();
-    await context.store.putOperation({
-      ref: `session:${context.subject}:key-1`,
-      subject: context.subject,
-      outcome: 'succeeded',
-      result: { session_id: 'sess-first' },
-      createdAt: Date.now(),
-    });
+    await context.store.claimOperation(`session:${context.subject}:key-1`, context.subject);
+    await context.store.settleOperation(`session:${context.subject}:key-1`, 'succeeded', { session_id: 'sess-first' });
     const response = await handleRpc(context, {
       jsonrpc: '2.0',
       id: 10,
@@ -129,12 +148,10 @@ describe('operation idempotency', () => {
   test('a retry after a refunded failure replays the failure instead of granting a free session', async () => {
     const context = ctx();
     await credit(context.store, context.subject, 100, 'stripe:1');
-    await context.store.putOperation({
-      ref: `session:${context.subject}:key-2`,
-      subject: context.subject,
-      outcome: 'failed',
-      result: { error: 'session_unavailable', refunded_usd_cents: 5 },
-      createdAt: Date.now(),
+    await context.store.claimOperation(`session:${context.subject}:key-2`, context.subject);
+    await context.store.settleOperation(`session:${context.subject}:key-2`, 'failed', {
+      error: 'session_unavailable',
+      refunded_usd_cents: 5,
     });
     const response = await handleRpc(context, {
       jsonrpc: '2.0',

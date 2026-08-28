@@ -46,6 +46,7 @@ describe('oauth', () => {
       codeChallenge: 'challenge',
       codeChallengeMethod: 'S256',
       scope: 'popcorn.sessions',
+      resource: 'http://localhost:3000/mcp',
       expiresAt: Date.now() + 60_000,
       consumed: false,
     });
