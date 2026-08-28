@@ -60,3 +60,58 @@ func TestParseChainedGeometry(t *testing.T) {
 		t.Fatal("junk output parsed as ok")
 	}
 }
+
+// A phone-sized screen asks for a window Chromium will not give (it enforces a
+// ~500px minimum width), so the fit must give up instead of re-issuing the
+// resize on every screen event — each attempt reflows the remote page.
+func TestWindowFitStopsFightingAClampedWindow(t *testing.T) {
+	windowFitStateMu.Lock()
+	windowFitState = map[string]windowFitAttempt{}
+	windowFitStateMu.Unlock()
+
+	const id, want = "8388611", "360x633"
+	for i := 0; i < windowFitAttempts; i++ {
+		if !windowFitAllowed(id, want) {
+			t.Fatalf("attempt %d refused; the first tries must go through (the screen resize can race the check)", i+1)
+		}
+	}
+	if windowFitAllowed(id, want) {
+		t.Fatal("kept trying a size the browser clamps")
+	}
+
+	// A screen that really changed is a different question, and gets asked.
+	if !windowFitAllowed(id, "500x900") {
+		t.Fatal("a new want was refused")
+	}
+	// And once the window matches, forget it: a later drift at the same size is
+	// a fixable mismatch, not the clamp.
+	windowFitSettled(id)
+	if !windowFitAllowed(id, want) {
+		t.Fatal("a settled window was not retried")
+	}
+}
+
+// The give-up line explains a window narrower than the screen, so it must be
+// said once per size and again when the screen really changes.
+func TestWindowFitGiveUpLineIsSaidOncePerSize(t *testing.T) {
+	windowFitStateMu.Lock()
+	windowFitState = map[string]windowFitAttempt{}
+	windowFitStateMu.Unlock()
+
+	const id, want = "8388611", "360x633"
+	for i := 0; i < windowFitAttempts; i++ {
+		windowFitAllowed(id, want)
+	}
+	if !windowFitNote(id, want) {
+		t.Fatal("first give-up was not logged")
+	}
+	if windowFitNote(id, want) {
+		t.Fatal("give-up line repeated for the same size")
+	}
+	// A different want is a different question; it gets its own line once it,
+	// too, runs out of attempts.
+	windowFitAllowed(id, "500x900")
+	if windowFitNote(id, "500x900") {
+		t.Fatal("logged a give-up for a size still being attempted")
+	}
+}

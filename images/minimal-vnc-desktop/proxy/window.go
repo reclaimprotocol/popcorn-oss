@@ -108,6 +108,74 @@ func parseChainedGeometry(s string) (sw, sh int, wins []windowGeom, ok bool) {
 	return sw, sh, wins, true
 }
 
+// A window that will not take the size we ask for. Chromium enforces a MINIMUM
+// toplevel width (measured: 500px), so a phone-sized screen — 360x633 for a
+// portrait mobile session — can never be matched: we set 360, the browser
+// restores 500, and the next screen event asks again. Each attempt costs a
+// Chromium relayout, which the viewer sees as a resize storm and the remote page
+// as a reflow under the field being typed into. So give up after two tries at
+// one size (two, because an /emulate POST and its RFB resize arrive separately,
+// and the first check can legitimately race the screen it predicts) and note it
+// once. Nothing is lost: the emulation override, not the window, defines the
+// remote layout viewport, and screen area the window does not cover is off the
+// framebuffer the viewer asked for. A new want (the screen really changed)
+// clears the count and we try again.
+const windowFitAttempts = 2
+
+type windowFitAttempt struct {
+	want  string
+	tries int
+	noted bool // the give-up line is logged once per window+size
+}
+
+var (
+	windowFitStateMu sync.Mutex
+	windowFitState   = map[string]windowFitAttempt{}
+)
+
+// windowFitAllowed reports whether to attempt `want` on this window, counting
+// the attempt. Shared by every caller — the one-shots included, which is the
+// point: their per-event retries were the loop.
+func windowFitAllowed(id, want string) bool {
+	windowFitStateMu.Lock()
+	defer windowFitStateMu.Unlock()
+	st := windowFitState[id]
+	if st.want != want {
+		st = windowFitAttempt{want: want}
+	}
+	if st.tries >= windowFitAttempts {
+		return false
+	}
+	st.tries++
+	windowFitState[id] = st
+	return true
+}
+
+// windowFitNote reports whether to log the give-up line for this window+size,
+// and marks it logged. The line means "we stopped trying", so it answers no
+// until the attempts for this size are actually spent — it cannot be used to
+// announce a give-up that has not happened.
+func windowFitNote(id, want string) bool {
+	windowFitStateMu.Lock()
+	defer windowFitStateMu.Unlock()
+	st := windowFitState[id]
+	if st.want != want || st.noted || st.tries < windowFitAttempts {
+		return false
+	}
+	st.noted = true
+	windowFitState[id] = st
+	return true
+}
+
+// windowFitSettled forgets a window that now matches, so a later mismatch at the
+// same size (openbox moved it, the window was replaced) is fixed rather than
+// suppressed forever.
+func windowFitSettled(id string) {
+	windowFitStateMu.Lock()
+	delete(windowFitState, id)
+	windowFitStateMu.Unlock()
+}
+
 // checkAndFitWindows compares every visible Chromium toplevel against the X
 // screen in one xdotool invocation and resizes the ones that disagree.
 // Idempotent; returns how many windows it saw, which is how the watcher's boot
@@ -134,7 +202,20 @@ func checkAndFitWindows(logf func(string, ...any), alreadyFit map[string]string)
 	}
 	want := fmt.Sprintf("%dx%d", sw, sh)
 	for _, win := range wins {
-		if win.w == sw && win.h == sh || win.w <= 0 || win.h <= 0 {
+		if win.w == sw && win.h == sh {
+			windowFitSettled(win.id)
+			continue
+		}
+		if win.w <= 0 || win.h <= 0 {
+			continue
+		}
+		if !windowFitAllowed(win.id, want) {
+			// The browser clamps this size (see windowFitAttempts). Say so once:
+			// a window narrower than the screen is otherwise a silent puzzle.
+			if windowFitNote(win.id, want) {
+				logf("window %s stays %dx%d for screen %s — browser minimum size; "+
+					"remote layout comes from the emulation override", win.id, win.w, win.h, want)
+			}
 			continue
 		}
 		if _, err := xdo("windowsize", win.id, strconv.Itoa(sw), strconv.Itoa(sh)); err != nil {
