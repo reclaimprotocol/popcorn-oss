@@ -20,6 +20,56 @@ secrets:
 # platform consumes each enabled extension's `routing` section.
 sessionExtensions: {}
 
+# Optional remote MCP endpoint (services/mcp-server). Disabled by default:
+# it needs Postgres and Stripe secrets, so operators opt in explicitly.
+mcpServer:
+  enabled: false
+  replicas: 2
+  imagePullPolicy: Always
+  updateStrategy:
+    maxSurge: 1
+    maxUnavailable: 0
+  # Public origin of the MCP endpoint, e.g. https://mcp.popcorn.example
+  publicUrl: ""
+  domainName: ""
+  staticIpName: ""
+  serviceType: ClusterIP
+  servicePort: 80
+  publicPaths:
+    - /mcp
+    - /oauth
+    - /.well-known
+    - /stripe/webhook
+    - /health
+  allowedOrigins: []
+  controlPlaneUrl: http://control-plane
+  pricing:
+    sessionUsdCents: 5
+    extendUsdCents: 5
+    # One purchase buys exactly this much browser time.
+    sessionBlockSeconds: 600
+    minTopUpUsdCents: 5
+  topUp:
+    successUrl: ""
+    cancelUrl: ""
+  # Secret holding DATABASE_URL, the token signing key, Stripe keys, and the
+  # control-plane client credentials this adapter acts as.
+  secretName: mcp-server-secret
+  secretKeys:
+    databaseUrl: DATABASE_URL
+    tokenSigningKey: MCP_TOKEN_SIGNING_KEY
+    stripeSecretKey: STRIPE_SECRET_KEY
+    stripeWebhookSecret: STRIPE_WEBHOOK_SECRET
+    popcornClientId: POPCORN_CLIENT_ID
+    popcornClientSecret: POPCORN_CLIENT_SECRET
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
 poolManager:
   enabled: false
   replicas: 1

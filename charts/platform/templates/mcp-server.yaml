@@ -1,0 +1,122 @@
+{{- $mcp := .Values.mcpServer }}
+{{- if $mcp.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-server
+  labels:
+    app: mcp-server
+spec:
+  replicas: {{ $mcp.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ $mcp.updateStrategy.maxSurge }}
+      maxUnavailable: {{ $mcp.updateStrategy.maxUnavailable }}
+  selector:
+    matchLabels:
+      app: mcp-server
+  template:
+    metadata:
+      labels:
+        app: mcp-server
+    spec:
+{{ include "popcorn-platform.podScheduling" (dict "root" .) | nindent 6 }}
+      containers:
+        - name: mcp-server
+          image: "{{ .Values.registry }}/mcp-server:{{ .Values.imageTag }}"
+          imagePullPolicy: {{ $mcp.imagePullPolicy }}
+          env:
+            - name: PORT
+              value: "3000"
+            - name: MCP_PUBLIC_URL
+              value: {{ required "mcpServer.publicUrl is required when mcpServer.enabled" $mcp.publicUrl | quote }}
+            - name: CONTROL_PLANE_URL
+              value: {{ $mcp.controlPlaneUrl | quote }}
+            - name: MCP_SESSION_PRICE_USD_CENTS
+              value: {{ $mcp.pricing.sessionUsdCents | quote }}
+            - name: MCP_EXTEND_PRICE_USD_CENTS
+              value: {{ $mcp.pricing.extendUsdCents | quote }}
+            - name: MCP_SESSION_TTL_SECONDS
+              value: {{ $mcp.pricing.sessionBlockSeconds | quote }}
+            - name: MCP_MIN_TOP_UP_USD_CENTS
+              value: {{ $mcp.pricing.minTopUpUsdCents | quote }}
+            {{- with $mcp.allowedOrigins }}
+            - name: MCP_ALLOWED_ORIGINS
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with $mcp.topUp.successUrl }}
+            - name: MCP_TOP_UP_SUCCESS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with $mcp.topUp.cancelUrl }}
+            - name: MCP_TOP_UP_CANCEL_URL
+              value: {{ . | quote }}
+            {{- end }}
+            # Durable Postgres is mandatory: the service refuses to start with
+            # a live Stripe key on in-memory storage.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "mcpServer.secretName is required when mcpServer.enabled" $mcp.secretName | quote }}
+                  key: {{ $mcp.secretKeys.databaseUrl | quote }}
+            - name: MCP_TOKEN_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcp.secretName | quote }}
+                  key: {{ $mcp.secretKeys.tokenSigningKey | quote }}
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcp.secretName | quote }}
+                  key: {{ $mcp.secretKeys.stripeSecretKey | quote }}
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcp.secretName | quote }}
+                  key: {{ $mcp.secretKeys.stripeWebhookSecret | quote }}
+            - name: POPCORN_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcp.secretName | quote }}
+                  key: {{ $mcp.secretKeys.popcornClientId | quote }}
+            - name: POPCORN_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcp.secretName | quote }}
+                  key: {{ $mcp.secretKeys.popcornClientSecret | quote }}
+          ports:
+            - containerPort: 3000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+{{ toYaml $mcp.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-server
+{{- if $mcp.staticIpName }}
+  annotations:
+    cloud.google.com/neg: '{"ingress": true}'
+{{- end }}
+spec:
+  type: {{ if $mcp.staticIpName }}ClusterIP{{ else }}{{ $mcp.serviceType }}{{ end }}
+  selector:
+    app: mcp-server
+  ports:
+    - name: http
+      port: {{ $mcp.servicePort }}
+      targetPort: 3000
+      protocol: TCP
+{{- end }}

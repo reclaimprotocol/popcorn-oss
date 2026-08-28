@@ -16,6 +16,8 @@ them with a card — no wallet, no private keys, no `402` handshake.
   and the private key never leaves the browser. Clearing site data or using
   another browser starts a new, empty balance. The auth header identifies *whose* balance and policy
   apply; it never itself authorizes a charge.
+- **Fixed SKUs.** One charge buys one fixed block of browser time; duration is
+  server-side, so a 5-cent purchase can never be stretched into hours.
 - **Popcorn credit, not a wallet.** A closed-loop prepaid balance in USD cents:
   usable only for Popcorn sessions, non-transferable, non-withdrawable, no
   crypto.
@@ -79,7 +81,7 @@ GET  /health
 | `MCP_ALLOWED_ORIGINS` | – | Extra browser Origins allowed on `/mcp` |
 | `MCP_TOKEN_SIGNING_KEY` | dev key | **Set in production**; signs access tokens |
 | `MCP_SESSION_PRICE_USD_CENTS` | `5` | Price of one session |
-| `MCP_SESSION_TTL_SECONDS` | `600` | Default session lifetime |
+| `MCP_SESSION_TTL_SECONDS` | `600` | Fixed block of browser time one purchase buys (not caller-controlled) |
 | `MCP_MIN_TOP_UP_USD_CENTS` | `5` | Minimum card charge (one session) |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | – | Required for `top_up` |
 | `MCP_TOP_UP_SUCCESS_URL` / `MCP_TOP_UP_CANCEL_URL` | – | Checkout return URLs |
@@ -114,5 +116,7 @@ interleave a check with its write:
   and the service refuses to start that way with a live Stripe key.
 - Losing the browser device key means losing access to that balance; there is
   deliberately no recovery path, because there is no account to recover.
+- Deployment is wired in the platform chart under `mcpServer` (disabled by
+  default); see `docs/mcp-server.md`.
 - There is no Popcorn dashboard yet — balance and top-ups are MCP tools plus
   the hosted Stripe Checkout page.

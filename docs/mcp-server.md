@@ -37,6 +37,26 @@ sequenceDiagram
     Mcp-->>Agent: session + amount charged
 ```
 
+## Deploying it
+
+The platform chart ships the service behind `mcpServer.enabled` (off by
+default, since it needs Postgres and Stripe):
+
+```yaml
+mcpServer:
+  enabled: true
+  publicUrl: https://mcp.popcorn.example
+  domainName: mcp.popcorn.example
+  staticIpName: mcp-popcorn-ip
+  secretName: mcp-server-secret   # DATABASE_URL, MCP_TOKEN_SIGNING_KEY,
+                                  # STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET,
+                                  # POPCORN_CLIENT_ID/SECRET
+```
+
+The ingress publishes `/mcp`, `/oauth`, `/.well-known`, `/stripe/webhook` and
+`/health`. Point the Stripe webhook endpoint at
+`https://<domain>/stripe/webhook`.
+
 ## Client configuration
 
 Remote MCP clients need only the URL; the OAuth flow supplies the rest.
@@ -63,6 +83,8 @@ across replicas.
   before charging or allocating, so retries replay one outcome rather than
   creating a second session; a failed allocation refunds automatically.
 - Ending a session early does not refund the session charge.
+- One purchase buys one fixed block of browser time (default 10 minutes);
+  callers cannot request a longer TTL for the same price.
 
 See [`services/mcp-server/README.md`](../services/mcp-server/README.md) for
 configuration and operational limits.

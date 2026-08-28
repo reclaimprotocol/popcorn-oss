@@ -67,12 +67,11 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'create_browser_session',
     description:
-      'Start one isolated Popcorn browser session and debit Popcorn credit. Returns session id, live-view URL for the human, CDP URL for the agent, expiry, and the amount charged. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.',
+      `Start one isolated Popcorn browser session and debit Popcorn credit. One purchase buys one fixed block of ${McpConfig.sessionTtlSeconds} seconds for ${McpConfig.sessionPriceUsdCents} cents; the duration is not negotiable. Returns session id, live-view URL for the human, CDP URL for the agent, expiry, and the amount charged. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.`,
     inputSchema: {
       type: 'object',
       properties: {
         purpose: { type: 'string', description: 'What the session is for; shown to the human in approvals and receipts.' },
-        ttl_seconds: { type: 'integer', description: `Requested lifetime in seconds (default ${McpConfig.sessionTtlSeconds}).` },
         idempotency_key: { type: 'string', description: 'Repeat calls with the same key never double-charge.' },
       },
       required: ['purpose'],
@@ -124,12 +123,11 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'extend_browser_session',
-    description: 'Extend a session the caller owns. This is the paid boundary: it debits credit, or returns insufficient_credit with a top_up hint.',
+    description: `Extend a session the caller owns by one more fixed block of ${McpConfig.sessionTtlSeconds} seconds. This is the paid boundary: it debits ${McpConfig.extendPriceUsdCents} cents, or returns insufficient_credit with a top_up hint.`,
     inputSchema: {
       type: 'object',
       properties: {
         session_id: { type: 'string' },
-        ttl_seconds: { type: 'integer' },
         idempotency_key: { type: 'string' },
       },
       required: ['session_id'],
@@ -172,6 +170,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         balance_usd_cents: balance,
         balance_display: formatUsd(balance),
         session_price_usd_cents: McpConfig.sessionPriceUsdCents,
+        session_block_seconds: McpConfig.sessionTtlSeconds,
         sessions_affordable: Math.floor(balance / Math.max(McpConfig.sessionPriceUsdCents, 1)),
         credit_terms: 'Closed-loop Popcorn credit: usable only for Popcorn browser sessions; non-transferable, non-withdrawable, no crypto.',
       });
@@ -217,7 +216,9 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
     case 'create_browser_session': {
       const purpose = typeof args.purpose === 'string' ? args.purpose.slice(0, 300) : '';
       if (!purpose) return fail({ error: 'invalid_request', message: 'purpose is required' });
-      const ttlSeconds = Number.isInteger(args.ttl_seconds) ? Number(args.ttl_seconds) : McpConfig.sessionTtlSeconds;
+      // Fixed block: the price and the duration are one SKU, so the caller
+      // cannot buy unlimited browser time for a single charge.
+      const ttlSeconds = McpConfig.sessionTtlSeconds;
       const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
       const ref = `session:${ctx.subject}:${key}`;
 
@@ -340,7 +341,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
     case 'extend_browser_session': {
       const record = await ownedSession(ctx, args.session_id);
       if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
-      const extendBySeconds = Number.isInteger(args.ttl_seconds) ? Number(args.ttl_seconds) : McpConfig.sessionTtlSeconds;
+      const extendBySeconds = McpConfig.sessionTtlSeconds;
       const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
       const ref = `extend:${record.sessionId}:${key}`;
 

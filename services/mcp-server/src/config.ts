@@ -22,6 +22,10 @@ export const McpConfig = {
   accessTokenTtlSeconds: num('MCP_ACCESS_TOKEN_TTL_SECONDS', 3600),
   /** Pricing. Popcorn credit is closed-loop: usable only for Popcorn sessions. */
   sessionPriceUsdCents: num('MCP_SESSION_PRICE_USD_CENTS', 5),
+  /**
+   * One purchase buys one fixed block of browser time. The duration is NOT
+   * caller-controlled: a 5-cent charge must always buy the same thing.
+   */
   sessionTtlSeconds: num('MCP_SESSION_TTL_SECONDS', 600),
   extendPriceUsdCents: num('MCP_EXTEND_PRICE_USD_CENTS', 5),
   minTopUpUsdCents: num('MCP_MIN_TOP_UP_USD_CENTS', 5),

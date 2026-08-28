@@ -57,3 +57,13 @@ describe('popcorn credit', () => {
     expect(validateTopUpAmount(500)).toBeNull();
   });
 });
+
+describe('fixed session SKU', () => {
+  test('duration is server-side, not caller-controlled', async () => {
+    const { TOOL_DEFINITIONS } = await import('./tools');
+    const create = TOOL_DEFINITIONS.find((tool) => tool.name === 'create_browser_session')!;
+    const extend = TOOL_DEFINITIONS.find((tool) => tool.name === 'extend_browser_session')!;
+    expect(Object.keys(create.inputSchema.properties)).not.toContain('ttl_seconds');
+    expect(Object.keys(extend.inputSchema.properties)).not.toContain('ttl_seconds');
+  });
+});

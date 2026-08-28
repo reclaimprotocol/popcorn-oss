@@ -65,6 +65,13 @@ export class PostgresStore implements McpStore {
         created_at BIGINT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS mcp_ledger_subject ON mcp_ledger (subject);
+      -- Authoritative per-subject balance. Debits take a row lock on this
+      -- record, so concurrent debits serialize instead of both reading the
+      -- same SUM and both succeeding.
+      CREATE TABLE IF NOT EXISTS mcp_balances (
+        subject TEXT PRIMARY KEY,
+        balance_usd_cents BIGINT NOT NULL DEFAULT 0
+      );
       CREATE TABLE IF NOT EXISTS mcp_operations (
         ref TEXT PRIMARY KEY,
         subject TEXT NOT NULL,
@@ -101,26 +108,50 @@ export class PostgresStore implements McpStore {
 
   /* ---------------------------------------------------------- money */
 
+  /**
+   * One transaction:
+   *   1. `INSERT ... ON CONFLICT DO NOTHING` on the ledger — the unique `ref`
+   *      makes replays no-ops.
+   *   2. conditional `UPDATE mcp_balances SET balance = balance + delta
+   *      WHERE subject = $1 AND balance + delta >= 0` — Postgres takes a row
+   *      lock, so two concurrent debits serialize and the second sees the
+   *      first's balance. If the update matches no row the transaction rolls
+   *      back and nothing is written.
+   */
   async applyLedgerEntry(entry: LedgerEntry) {
-    const [row] = await this.sql<{ balance: string | null }[]>`
-      WITH attempted AS (
+    return this.sql.begin(async (tx) => {
+      await tx`
+        INSERT INTO mcp_balances (subject, balance_usd_cents) VALUES (${entry.subject}, 0)
+        ON CONFLICT (subject) DO NOTHING
+      `;
+      const inserted = await tx<any[]>`
         INSERT INTO mcp_ledger (id, subject, delta_usd_cents, reason, ref, created_at)
-        SELECT ${entry.id}, ${entry.subject}, ${entry.deltaUsdCents}, ${entry.reason}, ${entry.ref}, ${entry.createdAt}
-        WHERE (
-          SELECT COALESCE(SUM(delta_usd_cents), 0) FROM mcp_ledger WHERE subject = ${entry.subject}
-        ) + ${entry.deltaUsdCents} >= 0
+        VALUES (${entry.id}, ${entry.subject}, ${entry.deltaUsdCents}, ${entry.reason}, ${entry.ref}, ${entry.createdAt})
         ON CONFLICT (ref) DO NOTHING
-        RETURNING 1
-      )
-      SELECT
-        (SELECT COUNT(*) FROM attempted) AS inserted,
-        (SELECT COALESCE(SUM(delta_usd_cents), 0) FROM mcp_ledger WHERE subject = ${entry.subject}) AS balance
-    ` as any;
-    const inserted = Number((row as any).inserted) > 0;
-    const balance = Number(row.balance ?? 0);
-    if (inserted) return { applied: true, duplicate: false, balanceUsdCents: balance };
-    const duplicate = await this.hasLedgerRef(entry.ref);
-    return { applied: false, duplicate, balanceUsdCents: balance };
+        RETURNING id
+      `;
+      if (inserted.length === 0) {
+        const [row] = await tx<any[]>`
+          SELECT balance_usd_cents FROM mcp_balances WHERE subject = ${entry.subject}
+        `;
+        return { applied: false, duplicate: true, balanceUsdCents: Number(row?.balance_usd_cents ?? 0) };
+      }
+      const [updated] = await tx<any[]>`
+        UPDATE mcp_balances
+        SET balance_usd_cents = balance_usd_cents + ${entry.deltaUsdCents}
+        WHERE subject = ${entry.subject} AND balance_usd_cents + ${entry.deltaUsdCents} >= 0
+        RETURNING balance_usd_cents
+      `;
+      if (!updated) {
+        // Insufficient funds: undo the ledger insert within this transaction.
+        await tx`DELETE FROM mcp_ledger WHERE ref = ${entry.ref}`;
+        const [row] = await tx<any[]>`
+          SELECT balance_usd_cents FROM mcp_balances WHERE subject = ${entry.subject}
+        `;
+        return { applied: false, duplicate: false, balanceUsdCents: Number(row?.balance_usd_cents ?? 0) };
+      }
+      return { applied: true, duplicate: false, balanceUsdCents: Number(updated.balance_usd_cents) };
+    }) as Promise<{ applied: boolean; duplicate: boolean; balanceUsdCents: number }>;
   }
 
   async appendLedger(entry: LedgerEntry) {
@@ -133,10 +164,10 @@ export class PostgresStore implements McpStore {
   }
 
   async balanceUsdCents(subject: string) {
-    const [row] = await this.sql<{ balance: string }[]>`
-      SELECT COALESCE(SUM(delta_usd_cents), 0) AS balance FROM mcp_ledger WHERE subject = ${subject}
+    const [row] = await this.sql<any[]>`
+      SELECT balance_usd_cents FROM mcp_balances WHERE subject = ${subject}
     `;
-    return Number(row?.balance ?? 0);
+    return Number(row?.balance_usd_cents ?? 0);
   }
 
   async listLedger(subject: string, limit: number) {
