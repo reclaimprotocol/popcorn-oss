@@ -79,6 +79,9 @@ across replicas.
 ## Money rules
 
 - Credit is denominated in USD cents and is usable only for Popcorn sessions.
+- Top-ups have a minimum (default $5) because every card charge carries a fixed
+  processing fee; sessions then debit that balance at 5¢ each with no further
+  card transactions.
 - Stripe events credit exactly once. A tool call claims its `idempotency_key`
   before charging or allocating, so retries replay one outcome rather than
   creating a second session; a failed allocation refunds automatically.

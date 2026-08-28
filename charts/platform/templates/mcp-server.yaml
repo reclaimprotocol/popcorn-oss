@@ -41,6 +41,10 @@ spec:
               value: {{ $mcp.pricing.sessionBlockSeconds | quote }}
             - name: MCP_MIN_TOP_UP_USD_CENTS
               value: {{ $mcp.pricing.minTopUpUsdCents | quote }}
+            {{- with $mcp.topUp.presetsUsdCents }}
+            - name: MCP_TOP_UP_PRESETS_USD_CENTS
+              value: {{ . | quote }}
+            {{- end }}
             {{- with $mcp.allowedOrigins }}
             - name: MCP_ALLOWED_ORIGINS
               value: {{ join "," . | quote }}

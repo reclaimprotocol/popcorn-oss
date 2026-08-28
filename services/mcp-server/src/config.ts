@@ -20,6 +20,11 @@ export const McpConfig = {
   /** Signing key for access/authorization codes issued by this server. */
   tokenSigningKey: env('MCP_TOKEN_SIGNING_KEY', 'dev-only-insecure-key'),
   accessTokenTtlSeconds: num('MCP_ACCESS_TOKEN_TTL_SECONDS', 3600),
+  /** Suggested top-up amounts (US cents) surfaced to the agent. */
+  topUpPresetsUsdCents: env('MCP_TOP_UP_PRESETS_USD_CENTS', '500,2000,5000')
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value > 0),
   /** Pricing. Popcorn credit is closed-loop: usable only for Popcorn sessions. */
   sessionPriceUsdCents: num('MCP_SESSION_PRICE_USD_CENTS', 5),
   /**
@@ -28,7 +33,12 @@ export const McpConfig = {
    */
   sessionTtlSeconds: num('MCP_SESSION_TTL_SECONDS', 600),
   extendPriceUsdCents: num('MCP_EXTEND_PRICE_USD_CENTS', 5),
-  minTopUpUsdCents: num('MCP_MIN_TOP_UP_USD_CENTS', 5),
+  /**
+   * Card payments carry a fixed per-transaction fee, so a top-up has to be
+   * worth charging: the minimum buys many sessions, and each session then
+   * debits the prepaid balance with no further card transaction.
+   */
+  minTopUpUsdCents: num('MCP_MIN_TOP_UP_USD_CENTS', 500),
   maxTopUpUsdCents: num('MCP_MAX_TOP_UP_USD_CENTS', 50000),
   /** Durable storage. Unset means in-memory (dev/demo only). */
   databaseUrl: env('DATABASE_URL'),

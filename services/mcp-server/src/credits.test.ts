@@ -52,7 +52,9 @@ describe('popcorn credit', () => {
 
   test('validates top-up bounds', () => {
     expect(validateTopUpAmount(1)).toBeString();
-    expect(validateTopUpAmount(5)).toBeNull();
+    expect(validateTopUpAmount(5)).toBeString();
+    expect(validateTopUpAmount(499)).toBeString();
+    expect(validateTopUpAmount(500)).toBeNull();
     expect(validateTopUpAmount(10_000_000)).toBeString();
     expect(validateTopUpAmount(500)).toBeNull();
   });
@@ -65,5 +67,18 @@ describe('fixed session SKU', () => {
     const extend = TOOL_DEFINITIONS.find((tool) => tool.name === 'extend_browser_session')!;
     expect(Object.keys(create.inputSchema.properties)).not.toContain('ttl_seconds');
     expect(Object.keys(extend.inputSchema.properties)).not.toContain('ttl_seconds');
+  });
+});
+
+describe('top-up economics', () => {
+  test('a minimum top-up buys many sessions, so sessions never trigger card charges', async () => {
+    const { McpConfig } = await import('./config');
+    const sessions = McpConfig.minTopUpUsdCents / McpConfig.sessionPriceUsdCents;
+    expect(McpConfig.minTopUpUsdCents).toBe(500);
+    expect(sessions).toBeGreaterThanOrEqual(20);
+  });
+
+  test('the rejection explains why a nickel top-up is not offered', () => {
+    expect(validateTopUpAmount(5)).toContain('processing fee');
   });
 });

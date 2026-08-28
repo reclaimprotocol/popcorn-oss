@@ -53,11 +53,14 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'top_up',
     description:
-      'Add Popcorn credit by card. Returns a Stripe Checkout URL for the human to approve and pay; credit lands on the calling OAuth identity when the payment succeeds. The agent never handles card data.',
+      `Add Popcorn credit by card. Returns a Stripe Checkout URL for the human to approve and pay; credit lands on the calling identity when the payment succeeds, and the agent never handles card data. Minimum ${formatUsd(McpConfig.minTopUpUsdCents)} — one card charge buys credit that is then spent ${McpConfig.sessionPriceUsdCents}c per session, so tiny repeated charges never happen.`,
     inputSchema: {
       type: 'object',
       properties: {
-        amount_usd_cents: { type: 'integer', description: 'Amount to add, in US cents.' },
+        amount_usd_cents: {
+          type: 'integer',
+          description: `Amount to add, in US cents. Minimum ${McpConfig.minTopUpUsdCents}; suggested: ${McpConfig.topUpPresetsUsdCents.join(', ')}.`,
+        },
         reason: { type: 'string', description: 'Human-readable reason shown to the payer.' },
       },
       required: ['amount_usd_cents'],
@@ -172,6 +175,8 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         session_price_usd_cents: McpConfig.sessionPriceUsdCents,
         session_block_seconds: McpConfig.sessionTtlSeconds,
         sessions_affordable: Math.floor(balance / Math.max(McpConfig.sessionPriceUsdCents, 1)),
+        minimum_top_up_usd_cents: McpConfig.minTopUpUsdCents,
+        suggested_top_up_usd_cents: McpConfig.topUpPresetsUsdCents,
         credit_terms: 'Closed-loop Popcorn credit: usable only for Popcorn browser sessions; non-transferable, non-withdrawable, no crypto.',
       });
     }
@@ -179,7 +184,14 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
     case 'top_up': {
       const amount = Number(args.amount_usd_cents);
       const invalid = validateTopUpAmount(amount);
-      if (invalid) return fail({ error: 'invalid_amount', message: invalid });
+      if (invalid) {
+        return fail({
+          error: 'invalid_amount',
+          message: invalid,
+          minimum_usd_cents: McpConfig.minTopUpUsdCents,
+          suggested_usd_cents: McpConfig.topUpPresetsUsdCents,
+        });
+      }
       const topUpId = crypto.randomUUID();
       // Persist BEFORE calling Stripe: otherwise a webhook that arrives in the
       // gap has no record to match and the payment is silently dropped.
@@ -209,6 +221,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         amount_display: formatUsd(amount),
         approval_url: checkout.url,
         reason: typeof args.reason === 'string' ? args.reason : 'Popcorn credit',
+        buys_sessions: Math.floor(amount / Math.max(McpConfig.sessionPriceUsdCents, 1)),
         next: 'Ask the human to open approval_url and pay. Credit appears on get_balance once Stripe confirms the payment.',
       });
     }

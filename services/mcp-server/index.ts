@@ -248,7 +248,7 @@ app.get('/oauth/authorize', async (c) => {
   <p class="lede">Pay as you go — <strong>${escapeHtml(client.clientName)}</strong> gets ${McpConfig.sessionPriceUsdCents}¢ browser sessions on your credit, and nothing else.</p>
   <ul class="notes">
     <li><span class="tick">✓</span><span><b>No account, no password, no email.</b> This page mints a key that never leaves this browser — that key is your balance.</span></li>
-    <li><span class="tick warn">!</span><span><b>Top up only what your agent needs.</b> Unused credit may be lost — it's closed-loop, non-transferable and non-refundable.</span></li>
+    <li><span class="tick warn">!</span><span><b>Top up only what your agent needs.</b> Card fees mean credit is bought in one go (from ${McpConfig.minTopUpUsdCents / 100} minimum) and spent ${McpConfig.sessionPriceUsdCents}¢ at a time. Unused credit may be lost — it's closed-loop, non-transferable and non-refundable.</span></li>
     <li><span class="tick dev">⌘</span><span><b>Building a product?</b> Use the <a href="https://docs.x402.org/guides/mcp-server-with-x402">x402 endpoint</a> instead of this browser flow.</span></li>
   </ul>
   <form id="approve" method="post" action="/oauth/decision" data-nonce="${escapeHtml(nonce.value)}">

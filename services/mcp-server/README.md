@@ -21,8 +21,11 @@ them with a card — no wallet, no private keys, no `402` handshake.
 - **Popcorn credit, not a wallet.** A closed-loop prepaid balance in USD cents:
   usable only for Popcorn sessions, non-transferable, non-withdrawable, no
   crypto.
-- **One payment verb.** `top_up` returns a Stripe Checkout URL; the human pays;
-  the webhook credits that exact OAuth subject. The agent never sees card data.
+- **One payment verb, one card charge.** `top_up` returns a Stripe Checkout URL;
+  the human pays; the webhook credits that exact identity. Card processing has a
+  fixed per-transaction fee, so credit is bought in a meaningful minimum
+  ($5 by default) and then spent 5¢ per session with no further card charges.
+  The agent never sees card data.
 - **Idempotent operations, not just charges.** A call claims its
   `idempotency_key` atomically before charging or allocating, so two
   simultaneous retries can never produce two browsers; later retries replay
@@ -82,7 +85,8 @@ GET  /health
 | `MCP_TOKEN_SIGNING_KEY` | dev key | **Set in production**; signs access tokens |
 | `MCP_SESSION_PRICE_USD_CENTS` | `5` | Price of one session |
 | `MCP_SESSION_TTL_SECONDS` | `600` | Fixed block of browser time one purchase buys (not caller-controlled) |
-| `MCP_MIN_TOP_UP_USD_CENTS` | `5` | Minimum card charge (one session) |
+| `MCP_MIN_TOP_UP_USD_CENTS` | `500` | Minimum card charge — one charge buys many sessions |
+| `MCP_TOP_UP_PRESETS_USD_CENTS` | `500,2000,5000` | Suggested top-up amounts |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | – | Required for `top_up` |
 | `MCP_TOP_UP_SUCCESS_URL` / `MCP_TOP_UP_CANCEL_URL` | – | Checkout return URLs |
 

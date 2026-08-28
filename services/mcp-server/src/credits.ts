@@ -78,7 +78,7 @@ export async function refund(
 export function validateTopUpAmount(amountUsdCents: number): string | null {
   if (!Number.isInteger(amountUsdCents)) return 'amount_usd_cents must be an integer number of cents';
   if (amountUsdCents < McpConfig.minTopUpUsdCents) {
-    return `minimum top-up is ${McpConfig.minTopUpUsdCents} cents`;
+    return `minimum top-up is ${formatUsd(McpConfig.minTopUpUsdCents)} (${McpConfig.minTopUpUsdCents} cents). Card payments carry a fixed processing fee, so credit is bought in one go and then spent ${McpConfig.sessionPriceUsdCents}c at a time.`;
   }
   if (amountUsdCents > McpConfig.maxTopUpUsdCents) {
     return `maximum top-up is ${McpConfig.maxTopUpUsdCents} cents`;

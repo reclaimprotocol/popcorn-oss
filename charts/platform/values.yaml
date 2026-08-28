@@ -48,8 +48,10 @@ mcpServer:
     extendUsdCents: 5
     # One purchase buys exactly this much browser time.
     sessionBlockSeconds: 600
-    minTopUpUsdCents: 5
+    # Card charges carry a fixed fee, so credit is bought in one go.
+    minTopUpUsdCents: 500
   topUp:
+    presetsUsdCents: "500,2000,5000"
     successUrl: ""
     cancelUrl: ""
   # Secret holding DATABASE_URL, the token signing key, Stripe keys, and the
