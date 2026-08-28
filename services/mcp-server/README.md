@@ -9,10 +9,12 @@ them with a card — no wallet, no private keys, no `402` handshake.
 - **MCP-native OAuth 2.1 + PKCE.** Clients register dynamically, the human
   approves once in a browser, and the access token carries a stable
   pseudonymous subject.
-- **Email OTP, no sign-up.** Authentication is a 6-digit code emailed via AWS
-  SES from `noreply@reclaimprotocol.org`. Proving control of an address *is*
-  the account: no password, no registration step, and the MCP client never
-  learns the address. The auth header identifies *whose* balance and policy
+- **Anonymous device identity, no account.** The authorization page generates
+  a non-extractable ECDSA P-256 keypair in the browser (IndexedDB) and signs a
+  single-use server nonce. The public key's RFC 7638 thumbprint *is* the
+  identity that owns the credit balance — no email, no password, no sign-up,
+  and the private key never leaves the browser. Clearing site data or using
+  another browser starts a new, empty balance. The auth header identifies *whose* balance and policy
   apply; it never itself authorizes a charge.
 - **Popcorn credit, not a wallet.** A closed-loop prepaid balance in USD cents:
   usable only for Popcorn sessions, non-transferable, non-withdrawable, no
@@ -58,9 +60,8 @@ live-view URL and never asks for credentials.
 GET  /.well-known/oauth-authorization-server
 GET  /.well-known/oauth-protected-resource
 POST /oauth/register        dynamic client registration (no client secret)
-GET  /oauth/authorize       sign-in + consent (PKCE S256 required)
-POST /oauth/email           send the 6-digit code by SES
-POST /oauth/decision        verify the code, approve, redirect with auth code
+GET  /oauth/authorize       consent + device-key challenge (PKCE S256 required)
+POST /oauth/decision        verify the signed nonce, redirect with auth code
 POST /oauth/token           authorization_code -> access token
 POST /mcp                   MCP JSON-RPC (Bearer token required)
 POST /stripe/webhook        checkout.session.completed -> credit
@@ -80,10 +81,6 @@ GET  /health
 | `MCP_SESSION_PRICE_USD_CENTS` | `5` | Price of one session |
 | `MCP_SESSION_TTL_SECONDS` | `600` | Default session lifetime |
 | `MCP_MIN_TOP_UP_USD_CENTS` | `5` | Minimum card charge (one session) |
-| `OTP_FROM_ADDRESS` | `noreply@reclaimprotocol.org` | Must be a verified SES identity |
-| `AWS_REGION` | `us-east-1` | SES region |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | – | Optional static keys; otherwise IRSA (`AWS_WEB_IDENTITY_TOKEN_FILE` + `AWS_ROLE_ARN` exchanged via `sts:AssumeRoleWithWebIdentity`) or the ECS/EKS container credential endpoint |
-| `MCP_OTP_MAX_PER_WINDOW` | `5` | Codes per address per 15 minutes |
 | `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` | – | Required for `top_up` |
 | `MCP_TOP_UP_SUCCESS_URL` / `MCP_TOP_UP_CANCEL_URL` | – | Checkout return URLs |
 
@@ -112,10 +109,10 @@ interleave a check with its write:
 
 ## Scope of this build
 
-- Storage is in-memory (`src/store.ts` defines the interface). Operators
-  running more than one replica should back it with Postgres/Redis before
-  taking real payments.
-- OTP challenges live in the same in-memory store as everything else, so a
-  code issued by one replica cannot be redeemed by another until a shared store
-  is wired in.
-- SES must have `OTP_FROM_ADDRESS` verified and be out of the sandbox.
+- Without `DATABASE_URL`, storage is in-memory: credits, top-ups, clients,
+  codes, nonces, operations and session ownership do not survive a restart,
+  and the service refuses to start that way with a live Stripe key.
+- Losing the browser device key means losing access to that balance; there is
+  deliberately no recovery path, because there is no account to recover.
+- There is no Popcorn dashboard yet — balance and top-ups are MCP tools plus
+  the hosted Stripe Checkout page.

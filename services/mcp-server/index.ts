@@ -15,7 +15,7 @@ import {
 } from './src/oauth';
 import { InMemoryStore, type McpStore } from './src/store';
 import { PostgresStore } from './src/postgres-store';
-import { startEmailOtp, verifyEmailOtp } from './src/otp';
+import { issueNonce, verifyDeviceProof } from './src/device';
 import { verifyWebhookSignature } from './src/stripe';
 
 /**
@@ -65,10 +65,12 @@ app.post('/oauth/register', async (c) => {
 });
 
 /**
- * Sign-in + consent. Authentication is an emailed one-time code — there is no
- * sign-up step: proving control of an email address IS the account. The email
- * is turned into a stable pseudonymous OAuth subject and never handed to the
- * MCP client.
+ * Sign-in + consent — anonymous, no account.
+ *
+ * The page generates a non-extractable ECDSA P-256 keypair in the browser,
+ * stores it in IndexedDB, and signs a server nonce. The public key's
+ * thumbprint becomes the OAuth subject that owns the credit balance. Nothing
+ * about the human is collected, and the MCP client never sees the key.
  */
 
 type AuthorizeParams = {
@@ -100,49 +102,68 @@ async function validateAuthorizeParams(params: AuthorizeParams) {
   return client;
 }
 
-function page(title: string, inner: string): string {
+function page(title: string, inner: string, script = ''): string {
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head>
-<body style="font-family:system-ui;max-width:30rem;margin:4rem auto;padding:0 1rem;line-height:1.55">${inner}</body></html>`;
-}
-
-function hiddenParams(params: AuthorizeParams): string {
-  return (Object.keys(params) as Array<keyof AuthorizeParams>).map((key) => hidden(key, params[key])).join('');
-}
-
-function emailFormHtml(clientName: string, params: AuthorizeParams, notice = ''): string {
-  return page(`Authorize ${clientName}`, `
-  <h1 style="font-size:1.4rem">Authorize ${escapeHtml(clientName)}</h1>
-  <p><strong>${escapeHtml(clientName)}</strong> is asking to run Popcorn browser sessions on your behalf.</p>
-  <ul>
-    <li>It can start isolated cloud browsers and spend your Popcorn credit.</li>
-    <li>Each session costs ${McpConfig.sessionPriceUsdCents} cents. It cannot add credit without you approving a payment.</li>
-    <li>It never receives your card details, your email, or your local browser profile.</li>
-  </ul>
-  ${notice}
-  <form method="post" action="/oauth/email">
-    ${hiddenParams(params)}
-    <label>Email address<br><input name="email" type="email" required autofocus style="width:100%;padding:.6rem;font-size:1rem"></label>
-    <p style="color:#666;font-size:.9rem">We'll email you a 6-digit code. No sign-up, no password.</p>
-    <button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Email me a code</button>
-  </form>`);
-}
-
-function codeFormHtml(clientName: string, params: AuthorizeParams, challengeId: string, notice = ''): string {
-  return page(`Authorize ${clientName}`, `
-  <h1 style="font-size:1.4rem">Enter your code</h1>
-  <p>We emailed a 6-digit code. It expires in 10 minutes.</p>
-  ${notice}
-  <form method="post" action="/oauth/decision">
-    ${hiddenParams(params)}${hidden('challenge_id', challengeId)}
-    <label>Sign-in code<br><input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autofocus style="width:100%;padding:.6rem;font-size:1.4rem;letter-spacing:.3rem"></label>
-    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Approve access</button></p>
-  </form>
-  <p style="color:#666;font-size:.9rem">Approving lets ${escapeHtml(clientName)} start browser sessions and spend Popcorn credit on this identity until you revoke it.</p>`);
+<body style="font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.55">${inner}${script}</body></html>`;
 }
 
 function noticeHtml(message: string): string {
   return `<p role="alert" style="background:#fdecea;border:1px solid #f5c6c3;padding:.6rem .8rem;border-radius:.4rem">${escapeHtml(message)}</p>`;
+}
+
+/** Browser-side: keypair in IndexedDB, sign the nonce, POST the proof. */
+const DEVICE_SCRIPT = `<script>
+const DB = 'popcorn-device', STORE = 'keys', KEY = 'device';
+function idb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+function tx(db, mode, fn) {
+  return new Promise((resolve, reject) => {
+    const request = fn(db.transaction(STORE, mode).objectStore(STORE));
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function deviceKey() {
+  const db = await idb();
+  const existing = await tx(db, 'readonly', (s) => s.get(KEY));
+  if (existing) return existing;
+  // Non-extractable: the private key can never leave this browser.
+  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+  await tx(db, 'readwrite', (s) => s.put(pair, KEY));
+  return pair;
+}
+async function approve(form) {
+  const status = document.getElementById('status');
+  status.textContent = 'Verifying this browser…';
+  const pair = await deviceKey();
+  const jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+  const nonce = form.dataset.nonce;
+  const signature = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    pair.privateKey,
+    new TextEncoder().encode(nonce),
+  );
+  form.public_key.value = JSON.stringify({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y });
+  form.signature.value = btoa(String.fromCharCode(...new Uint8Array(signature)));
+  form.submit();
+}
+document.getElementById('approve').addEventListener('submit', (event) => {
+  event.preventDefault();
+  approve(event.target).catch((error) => {
+    document.getElementById('status').textContent = 'This browser could not create a device key: ' + error.message;
+  });
+});
+</script>`;
+
+function hiddenParams(params: AuthorizeParams): string {
+  return (Object.keys(params) as Array<keyof AuthorizeParams>).map((key) => hidden(key, params[key])).join('');
 }
 
 app.get('/oauth/authorize', async (c) => {
@@ -159,21 +180,28 @@ app.get('/oauth/authorize', async (c) => {
   if (query.code_challenge_method !== 'S256') {
     return c.json({ error: 'invalid_request', error_description: 'PKCE with S256 is required' }, 400);
   }
-  return c.html(emailFormHtml(client.clientName, params));
-});
 
-app.post('/oauth/email', async (c) => {
-  const form = (await c.req.parseBody()) as Record<string, unknown>;
-  const params = readAuthorizeParams(form);
-  const client = await validateAuthorizeParams(params);
-  if (!client) return c.json({ error: 'invalid_request' }, 400);
-
-  const result = await startEmailOtp(store, String(form.email ?? ''));
-  if (!result.ok) {
-    const message = result.error === 'send_failed' ? 'We could not send that email. Try again shortly.' : result.message;
-    return c.html(emailFormHtml(client.clientName, params, noticeHtml(message)), 400);
-  }
-  return c.html(codeFormHtml(client.clientName, params, result.challengeId));
+  const nonce = await issueNonce(store);
+  return c.html(
+    page(
+      `Authorize ${client.clientName}`,
+      `<h1 style="font-size:1.4rem">Authorize ${escapeHtml(client.clientName)}</h1>
+  <p><strong>${escapeHtml(client.clientName)}</strong> is asking to run Popcorn browser sessions on your behalf.</p>
+  <ul>
+    <li>It can start isolated cloud browsers and spend this browser's Popcorn credit.</li>
+    <li>Each session costs ${McpConfig.sessionPriceUsdCents} cents. It cannot add credit without you approving a card payment.</li>
+    <li>No account, no email, no password: this page creates a key that stays in <em>this</em> browser and identifies your balance.</li>
+  </ul>
+  <p style="color:#666;font-size:.9rem">Clearing this site's data or using another browser starts a new, empty balance.</p>
+  <form id="approve" method="post" action="/oauth/decision" data-nonce="${escapeHtml(nonce.value)}">
+    ${hiddenParams(params)}${hidden('nonce', nonce.value)}
+    <input type="hidden" name="public_key"><input type="hidden" name="signature">
+    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Approve</button></p>
+    <p id="status" style="color:#666;font-size:.9rem"></p>
+  </form>`,
+      DEVICE_SCRIPT,
+    ),
+  );
 });
 
 app.post('/oauth/decision', async (c) => {
@@ -182,20 +210,26 @@ app.post('/oauth/decision', async (c) => {
   const client = await validateAuthorizeParams(params);
   if (!client) return c.json({ error: 'invalid_request' }, 400);
 
-  const challengeId = String(form.challenge_id ?? '');
-  const verified = await verifyEmailOtp(store, challengeId, String(form.code ?? ''));
-  if (!verified.ok) {
-    if (verified.error === 'invalid_code') {
-      return c.html(codeFormHtml(client.clientName, params, challengeId, noticeHtml(verified.message)), 400);
-    }
-    return c.html(emailFormHtml(client.clientName, params, noticeHtml(verified.message)), 400);
+  let publicKeyJwk: unknown = null;
+  try {
+    publicKeyJwk = JSON.parse(String(form.public_key ?? 'null'));
+  } catch {
+    publicKeyJwk = null;
+  }
+  const proof = await verifyDeviceProof(store, {
+    publicKeyJwk,
+    nonce: String(form.nonce ?? ''),
+    signatureB64: String(form.signature ?? ''),
+  });
+  if (!proof.ok) {
+    return c.html(page('Authorization failed', noticeHtml(proof.message)), 400);
   }
 
   const code = newAuthorizationCode();
   await store.putCode({
     code,
     clientId: params.client_id,
-    subject: verified.subject,
+    subject: proof.subject,
     redirectUri: params.redirect_uri,
     codeChallenge: params.code_challenge,
     codeChallengeMethod: 'S256',
@@ -291,49 +325,48 @@ app.all('/mcp', async (c) => {
 });
 
 /**
- * Revocation. Every token issued to this identity before now stops working.
- * The consent screen promises this, so it is part of the auth surface, not an
- * admin extra: sign in again with an emailed code and confirm.
+ * Revocation. Prove possession of the device key and every token issued to
+ * that identity before now stops working. Credit is untouched.
  */
-app.get('/oauth/revoke', (c) =>
-  c.html(
-    page(
-      'Revoke agent access',
-      `<h1 style="font-size:1.4rem">Revoke agent access</h1>
-  <p>Enter your email and we'll send a code. Confirming signs out every MCP client currently authorized on your identity. Your Popcorn credit is not affected.</p>
-  <form method="post" action="/oauth/revoke/email">
-    <label>Email address<br><input name="email" type="email" required autofocus style="width:100%;padding:.6rem;font-size:1rem"></label>
-    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Email me a code</button></p>
-  </form>`,
-    ),
-  ),
-);
-
-app.post('/oauth/revoke/email', async (c) => {
-  const form = (await c.req.parseBody()) as Record<string, unknown>;
-  const result = await startEmailOtp(store, String(form.email ?? ''));
-  if (!result.ok) {
-    return c.html(page('Revoke agent access', noticeHtml(result.message)), 400);
-  }
+app.get('/oauth/revoke', async (c) => {
+  const nonce = await issueNonce(store);
   return c.html(
     page(
       'Revoke agent access',
-      `<h1 style="font-size:1.4rem">Enter your code</h1>
-  <form method="post" action="/oauth/revoke/confirm">
-    ${hidden('challenge_id', result.challengeId)}
-    <label>Sign-in code<br><input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autofocus style="width:100%;padding:.6rem;font-size:1.4rem;letter-spacing:.3rem"></label>
+      `<h1 style="font-size:1.4rem">Revoke agent access</h1>
+  <p>This signs out every MCP client currently authorized on this browser's identity. Your Popcorn credit is not affected.</p>
+  <form id="approve" method="post" action="/oauth/revoke/confirm" data-nonce="${escapeHtml(nonce.value)}">
+    ${hidden('nonce', nonce.value)}
+    <input type="hidden" name="public_key"><input type="hidden" name="signature">
     <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Revoke all access</button></p>
+    <p id="status" style="color:#666;font-size:.9rem"></p>
   </form>`,
+      DEVICE_SCRIPT,
     ),
   );
 });
 
 app.post('/oauth/revoke/confirm', async (c) => {
   const form = (await c.req.parseBody()) as Record<string, unknown>;
-  const verified = await verifyEmailOtp(store, String(form.challenge_id ?? ''), String(form.code ?? ''));
-  if (!verified.ok) return c.html(page('Revoke agent access', noticeHtml(verified.message)), 400);
-  await store.revokeSubjectBefore(verified.subject, Date.now());
-  return c.html(page('Access revoked', '<h1 style="font-size:1.4rem">Access revoked</h1><p>Every MCP client authorized on this identity has been signed out. Your Popcorn credit is unchanged.</p>'));
+  let publicKeyJwk: unknown = null;
+  try {
+    publicKeyJwk = JSON.parse(String(form.public_key ?? 'null'));
+  } catch {
+    publicKeyJwk = null;
+  }
+  const proof = await verifyDeviceProof(store, {
+    publicKeyJwk,
+    nonce: String(form.nonce ?? ''),
+    signatureB64: String(form.signature ?? ''),
+  });
+  if (!proof.ok) return c.html(page('Revoke agent access', noticeHtml(proof.message)), 400);
+  await store.revokeSubjectBefore(proof.subject, Date.now());
+  return c.html(
+    page(
+      'Access revoked',
+      '<h1 style="font-size:1.4rem">Access revoked</h1><p>Every MCP client authorized on this identity has been signed out. Your Popcorn credit is unchanged.</p>',
+    ),
+  );
 });
 
 /* ---------------------------------------------------------------- Stripe */

@@ -1,11 +1,12 @@
 import postgres from 'postgres';
 import type {
   AuthorizationCode,
+  DeviceNonce,
+  DeviceRecord,
   LedgerEntry,
   McpStore,
   OAuthClient,
   OperationRecord,
-  OtpChallenge,
   SessionRecord,
   TopUp,
 } from './store';
@@ -80,17 +81,17 @@ export class PostgresStore implements McpStore {
         ended_at BIGINT
       );
       CREATE INDEX IF NOT EXISTS mcp_sessions_subject ON mcp_sessions (subject);
-      CREATE TABLE IF NOT EXISTS mcp_otp_challenges (
-        id TEXT PRIMARY KEY,
-        email_hash TEXT NOT NULL,
-        subject TEXT NOT NULL,
-        code_hash TEXT NOT NULL,
-        attempts INTEGER NOT NULL DEFAULT 0,
-        verified BOOLEAN NOT NULL DEFAULT FALSE,
+      CREATE TABLE IF NOT EXISTS mcp_device_nonces (
+        value TEXT PRIMARY KEY,
         created_at BIGINT NOT NULL,
-        expires_at BIGINT NOT NULL
+        expires_at BIGINT NOT NULL,
+        consumed BOOLEAN NOT NULL DEFAULT FALSE
       );
-      CREATE INDEX IF NOT EXISTS mcp_otp_email ON mcp_otp_challenges (email_hash, created_at);
+      CREATE TABLE IF NOT EXISTS mcp_devices (
+        subject TEXT PRIMARY KEY,
+        thumbprint TEXT NOT NULL UNIQUE,
+        created_at BIGINT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS mcp_revocations (
         subject TEXT PRIMARY KEY,
         issued_before BIGINT NOT NULL
@@ -322,44 +323,40 @@ export class PostgresStore implements McpStore {
     };
   }
 
-  /* ------------------------------------------------------------ otp */
+  /* --------------------------------------------------------- device */
 
-  async putOtp(challenge: OtpChallenge) {
+  async putNonce(nonce: DeviceNonce) {
     await this.sql`
-      INSERT INTO mcp_otp_challenges (id, email_hash, subject, code_hash, attempts, verified, created_at, expires_at)
-      VALUES (${challenge.id}, ${challenge.emailHash}, ${challenge.subject}, ${challenge.codeHash},
-              ${challenge.attempts}, ${challenge.verified}, ${challenge.createdAt}, ${challenge.expiresAt})
+      INSERT INTO mcp_device_nonces (value, created_at, expires_at, consumed)
+      VALUES (${nonce.value}, ${nonce.createdAt}, ${nonce.expiresAt}, FALSE)
+      ON CONFLICT (value) DO NOTHING
     `;
   }
 
-  async getOtp(id: string) {
-    const [row] = await this.sql<any[]>`SELECT * FROM mcp_otp_challenges WHERE id = ${id}`;
+  /** Single-use in one statement: only an unconsumed row is returned. */
+  async consumeNonce(value: string) {
+    const [row] = await this.sql<any[]>`
+      UPDATE mcp_device_nonces SET consumed = TRUE WHERE value = ${value} AND consumed = FALSE RETURNING *
+    `;
     if (!row) return null;
     return {
-      id: row.id,
-      emailHash: row.email_hash,
-      subject: row.subject,
-      codeHash: row.code_hash,
-      attempts: row.attempts,
-      verified: row.verified,
+      value: row.value,
       createdAt: Number(row.created_at),
       expiresAt: Number(row.expires_at),
+      consumed: false,
     };
   }
 
-  async updateOtp(id: string, patch: Partial<OtpChallenge>) {
-    if (patch.attempts !== undefined) {
-      await this.sql`UPDATE mcp_otp_challenges SET attempts = ${patch.attempts} WHERE id = ${id}`;
-    }
-    if (patch.verified !== undefined) {
-      await this.sql`UPDATE mcp_otp_challenges SET verified = ${patch.verified} WHERE id = ${id}`;
-    }
+  async putDevice(device: DeviceRecord) {
+    await this.sql`
+      INSERT INTO mcp_devices (subject, thumbprint, created_at)
+      VALUES (${device.subject}, ${device.thumbprint}, ${device.createdAt})
+      ON CONFLICT (subject) DO NOTHING
+    `;
   }
 
-  async countRecentOtps(emailHash: string, since: number) {
-    const [row] = await this.sql<any[]>`
-      SELECT COUNT(*)::int AS count FROM mcp_otp_challenges WHERE email_hash = ${emailHash} AND created_at >= ${since}
-    `;
-    return Number(row?.count ?? 0);
+  async getDevice(subject: string): Promise<DeviceRecord | null> {
+    const [row] = await this.sql<any[]>`SELECT * FROM mcp_devices WHERE subject = ${subject}`;
+    return row ? { subject: row.subject, thumbprint: row.thumbprint, createdAt: Number(row.created_at) } : null;
   }
 }

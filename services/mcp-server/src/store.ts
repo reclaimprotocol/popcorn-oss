@@ -63,16 +63,17 @@ export type SessionRecord = {
   endedAt: number | null;
 };
 
-export type OtpChallenge = {
-  id: string;
-  /** Salted hash of the address. The plaintext email is never persisted. */
-  emailHash: string;
-  subject: string;
-  codeHash: string;
-  attempts: number;
-  verified: boolean;
+export type DeviceNonce = {
+  value: string;
   createdAt: number;
   expiresAt: number;
+  consumed: boolean;
+};
+
+export type DeviceRecord = {
+  subject: string;
+  thumbprint: string;
+  createdAt: number;
 };
 
 export interface McpStore {
@@ -102,10 +103,11 @@ export interface McpStore {
   revokeSubjectBefore(subject: string, issuedBefore: number): Promise<void>;
   revokedAt(subject: string): Promise<number>;
 
-  putOtp(challenge: OtpChallenge): Promise<void>;
-  getOtp(id: string): Promise<OtpChallenge | null>;
-  updateOtp(id: string, patch: Partial<OtpChallenge>): Promise<void>;
-  countRecentOtps(email: string, since: number): Promise<number>;
+  putNonce(nonce: DeviceNonce): Promise<void>;
+  /** Single-use: returns the nonce only on the first call. */
+  consumeNonce(value: string): Promise<DeviceNonce | null>;
+  putDevice(device: DeviceRecord): Promise<void>;
+  getDevice(subject: string): Promise<DeviceRecord | null>;
 
   putSession(session: SessionRecord): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
@@ -137,23 +139,26 @@ export class InMemoryStore implements McpStore {
   private topUps = new Map<string, TopUp>();
   private ledger: LedgerEntry[] = [];
   private sessions = new Map<string, SessionRecord>();
-  private otps = new Map<string, OtpChallenge>();
+  private nonces = new Map<string, DeviceNonce>();
+  private devices = new Map<string, DeviceRecord>();
 
-  async putOtp(challenge: OtpChallenge) {
-    this.otps.set(challenge.id, challenge);
+  async putNonce(nonce: DeviceNonce) {
+    this.nonces.set(nonce.value, nonce);
   }
 
-  async getOtp(id: string) {
-    return this.otps.get(id) ?? null;
+  async consumeNonce(value: string) {
+    const found = this.nonces.get(value);
+    if (!found || found.consumed) return null;
+    this.nonces.set(value, { ...found, consumed: true });
+    return found;
   }
 
-  async updateOtp(id: string, patch: Partial<OtpChallenge>) {
-    const found = this.otps.get(id);
-    if (found) this.otps.set(id, { ...found, ...patch });
+  async putDevice(device: DeviceRecord) {
+    if (!this.devices.has(device.subject)) this.devices.set(device.subject, device);
   }
 
-  async countRecentOtps(emailHash: string, since: number) {
-    return [...this.otps.values()].filter((otp) => otp.emailHash === emailHash && otp.createdAt >= since).length;
+  async getDevice(subject: string) {
+    return this.devices.get(subject) ?? null;
   }
 
   async putSession(session: SessionRecord) {
