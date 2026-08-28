@@ -38,7 +38,6 @@ export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 export CDP_INTERNAL_PORT
 export CHROME_REMOTE_DEBUGGING_PORT="$CDP_INTERNAL_PORT"
-
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$HOME/user-data" /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix 2>/dev/null || true
 

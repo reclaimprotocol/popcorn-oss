@@ -103,6 +103,10 @@ spec:
                   valueFrom:
                     fieldRef:
                       fieldPath: metadata.name
+                - name: POD_UID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
                 - name: POD_NAMESPACE
                   valueFrom:
                     fieldRef:

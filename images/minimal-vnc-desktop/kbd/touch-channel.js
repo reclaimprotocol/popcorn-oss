@@ -16,6 +16,7 @@ import { dbg, dbgv, KBD_LOG, KBD_SID } from './diag.js';
 import { linkRtt } from './latency.js';
 import { formatPoint, formatPoints } from './diag-geometry.js';
 import { e2e } from './e2e.js';
+import { openViewerSocket } from './liveview-transport.js';
 
 // Coalesce touchmove sends. A fast swipe fires touchmove 60-120x/s; forwarding
 // each one floods /input -> CDP -> a burst of tiny scroll frames over the tunnel
@@ -119,7 +120,7 @@ export function createTouchChannel({ getRfb, getScreenElement, getViewport, getR
                       inputSock.readyState === WebSocket.OPEN)) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let s;
-    try { s = new WebSocket(proto + '//' + location.host + inputPath()); }
+    try { s = openViewerSocket(proto + '//' + location.host + inputPath()); }
     catch (_) { scheduleInputReconnect(); return; }
     inputSock = s;
     inputAttempt++;

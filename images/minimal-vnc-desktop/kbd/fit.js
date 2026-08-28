@@ -21,6 +21,7 @@
 import { isTouch, FIXEDW, MAGNIFY, FILL, nowMs, siblingPath } from './env.js';
 import { dbg } from './diag.js';
 import { MAX_ZOOM } from './viewport-transform.js';
+import { viewerFetch } from './liveview-transport.js';
 
 const MAG_TARGET = 2.5;   // fallback readable zoom (responsive/normal magnify)
 // How much a fit must downscale before the zoom button is worth showing. Measured
@@ -430,7 +431,7 @@ export function createFit({
     lastEmulateKey = key;
     dbg('emulate ' + key);
     try {
-      fetch(emulateURL(), {
+      viewerFetch(emulateURL(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         // mobile:false is deliberate. mobile:true (a) breaks sizing — Chromium

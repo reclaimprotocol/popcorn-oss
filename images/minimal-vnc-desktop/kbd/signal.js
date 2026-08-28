@@ -14,6 +14,7 @@
 import { MIRROR, nowMs, siblingPath } from './env.js';
 import { dbg } from './diag.js';
 import { startPinging, handlePong, stopPinging } from './rtt.js';
+import { openViewerSocket, viewerFetch } from './liveview-transport.js';
 
 const WS_BACKOFF_MIN = 500, WS_BACKOFF_MAX = 10000;
 // Bound stalled WebSocket upgrades without interrupting normal slow connects.
@@ -75,7 +76,7 @@ export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, 
     const opts = { cache: 'no-store' };
     if (ctl) opts.signal = ctl.signal;
     Promise.resolve()
-      .then(() => fetch(url, opts))
+      .then(() => viewerFetch(url, opts))
       .then((r) => (r && r.ok && typeof r.json === 'function' ? r.json() : null))
       .then((d) => {
         if (gen !== bridgeGen) return;
@@ -120,7 +121,7 @@ export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, 
     if (sock && (sock.readyState === WebSocket.CONNECTING || sock.readyState === WebSocket.OPEN)) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let s;
-    try { s = new WebSocket(proto + '//' + location.host + signalPath()); }
+    try { s = openViewerSocket(proto + '//' + location.host + signalPath()); }
     catch (_) { scheduleReconnect(); return; }
     sock = s;
     dialAt = nowMs();

@@ -257,6 +257,9 @@ before enabling it.
 | `serviceAccount.gcpServiceAccount` | `""` | Workload Identity service-account annotation. |
 | `serviceAccount.automountServiceAccountToken` | `true` | Browser pod token mount. |
 | `networkPolicy.enabled` | `false` | Create the browser egress NetworkPolicy. |
+| `networkPolicy.ingressEnabled` | `true` | Restrict browser pod ingress to gateway and pool-manager pods. |
+| `networkPolicy.gatewayNamespace` | release namespace | Namespace that contains gateway pods. |
+| `networkPolicy.poolManagerNamespace` | release namespace | Namespace that contains pool-manager pods. |
 | `networkPolicy.kubernetesApiCidr` | `""` | Narrow Kubernetes API CIDR allowed for the Agones sidecar. |
 | `browserRuntimeImage` | OSS `browser-runtime:latest` | Browser container image; pin a digest in production. |
 | `browserRuntimeImagePullPolicy` | `IfNotPresent` | Browser image pull policy. |

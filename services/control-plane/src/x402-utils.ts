@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { isBase64UrlX25519PublicKey } from './liveview-e2e';
 
 // The paid retry can spend up to 30s in verification, 30s establishing the
 // reconciliation block through Base RPC, 30s in regional preflight, 90s in
@@ -80,6 +81,15 @@ export interface PublicX402Endpoints {
   connectUrl?: string;
   vncUrl?: string;
   vncWsUrl?: string;
+  liveViewE2e?: {
+    version: 1;
+    protocol: 'Noise_IK_25519_ChaChaPoly_SHA256';
+    clientPublicKey: string;
+    podPublicKey: string;
+    podUid: string;
+    e2eRfbUrl: string;
+    e2eControlUrl: string;
+  };
 }
 
 // Explicitly allow only restricted public endpoints on the configured gateway.
@@ -120,6 +130,7 @@ export function publicX402Endpoints(
   const connect = allow(regional.cdpUrl, 'wss:');
   const providedVnc = allow(regional.vncUrl, 'https:', true);
   const providedVncWs = allow(regional.vncWsUrl, 'wss:');
+  const e2e = regional.liveViewE2e;
   const encodedSessionId = encodeURIComponent(sessionId);
   const liveSegments = relativeSegments(live);
   const connectSegments = relativeSegments(connect);
@@ -179,10 +190,30 @@ export function publicX402Endpoints(
     : restrictedToken
       ? `${websocketBase}/liveview-ws/${encodedSessionId}/${restrictedToken}`
       : undefined;
+  const liveViewE2e = e2e && typeof e2e === 'object' && !Array.isArray(e2e)
+    ? e2e as PublicX402Endpoints['liveViewE2e']
+    : undefined;
+  const validE2e = liveViewE2e?.version === 1
+    && liveViewE2e.protocol === 'Noise_IK_25519_ChaChaPoly_SHA256'
+    && isBase64UrlX25519PublicKey(liveViewE2e.clientPublicKey)
+    && isBase64UrlX25519PublicKey(liveViewE2e.podPublicKey)
+    && typeof liveViewE2e.podUid === 'string' && !!liveViewE2e.podUid
+    && typeof liveViewE2e.e2eRfbUrl === 'string'
+    && typeof liveViewE2e.e2eControlUrl === 'string'
+    && (() => {
+      const rfb = allow(liveViewE2e.e2eRfbUrl, 'wss:');
+      const control = allow(liveViewE2e.e2eControlUrl, 'wss:');
+      const rfbSegments = relativeSegments(rfb);
+      const controlSegments = relativeSegments(control);
+      return !!rfb && !!control && !!restrictedToken
+        && rfbSegments.join('/') === `liveview-e2e-rfb/${encodedSessionId}/${restrictedToken}`
+        && controlSegments.join('/') === `liveview-e2e-control/${encodedSessionId}/${restrictedToken}`;
+    })();
   return {
     ...(liveViewUrl || vncUrl ? { liveViewUrl: liveViewUrl || vncUrl } : {}),
     ...(connectUrl ? { connectUrl } : {}),
     ...(vncUrl ? { vncUrl } : {}),
     ...(vncWsUrl ? { vncWsUrl } : {}),
+    ...(validE2e ? { liveViewE2e } : {}),
   };
 }

@@ -114,6 +114,25 @@ describe("session database dual writes", () => {
         expect(primary.strings.has("route:api:with-extension")).toBe(false);
     });
 
+    test("publishes server-side CDP routes for an E2E-bound LiveView session", async () => {
+        const primary = new FakeRedis();
+        const database = createSessionDatabase(asRedis(primary));
+        const encryptedPod = {
+            ...pod,
+            liveViewE2e: {
+                version: 1,
+                bindingSecretHash: Buffer.alloc(32, 1).toString("base64url"),
+                podPublicKey: Buffer.alloc(32, 2).toString("base64url"),
+                podUid: "pod-uid",
+            },
+        } as any;
+
+        expect(await database.createSession("encrypted", encryptedPod)).toBe(true);
+        expect(primary.strings.get("route:liveview:encrypted")?.value).toBe("10.0.0.8:6080");
+        expect(primary.strings.get("route:cdp:encrypted")?.value).toBe("10.0.0.8:9223");
+        expect(primary.strings.get("route:cdp-internal:encrypted")?.value).toBe("10.0.0.8:9226");
+    });
+
     test("persists the refreshed token deadline with a TTL extension", async () => {
         const primary = new FakeRedis();
         const database = createSessionDatabase(asRedis(primary));

@@ -13,10 +13,12 @@
 // thing that sees the graph. Edit the modules; the build re-bundles.
 
 import RFB from './core/rfb.js';
+import { createEmbeddedLiveViewE2EClient } from './e2e/bootstrap.js';
 import './kbd-autofocus.js';          // side-effect: defines window.PopcornKbd
 import { dbg, KBD_LOG, KBD_SID } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
 import { onLifecycleAck, postToHost, sayHello } from './kbd/host-bridge.js';
 import { fbTarget, FB_MAX } from './kbd/fbtarget.js';
+import { configureEncryptedControl, encryptedTransportRequested, viewerFetch } from './kbd/liveview-transport.js';
 
 const params = new URLSearchParams(window.location.search);
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -25,6 +27,25 @@ const password = params.get('password') || '';
 const reconnect = params.get('reconnect') !== '0';
 const reconnectDelay = Number(params.get('reconnect_delay') || 600);
 const magnify = params.get('magnify') === '1' || params.get('magnify') === 'true';
+const encryptedMode = encryptedTransportRequested();
+let encryptedClientPromise = null;
+
+function encryptedClient() {
+  if (!encryptedMode) return Promise.resolve(null);
+  if (encryptedClientPromise) return encryptedClientPromise;
+  encryptedClientPromise = Promise.resolve().then(() => {
+    const bootstrap = window.__POPCORN_LIVEVIEW_E2E_BOOTSTRAP__;
+    return typeof bootstrap === 'function'
+      ? bootstrap()
+      : createEmbeddedLiveViewE2EClient(window);
+  }).then((client) => {
+    if (!client || typeof client.connectRfb !== 'function' || typeof client.connectControl !== 'function') {
+      throw new TypeError('invalid LiveView E2E client');
+    }
+    return client;
+  });
+  return encryptedClientPromise;
+}
 // Framebuffer size cap (see rfb._screenSize below), in priority order:
 // ?fbcap=WxH pins it, else the server's /geometry, else the boot framebuffer at
 // the first handshake. Read by both rfb._screenSize (the resize request) and
@@ -42,7 +63,7 @@ if (fbcapParam && /^\d+x\d+$/.test(fbcapParam)) {
 // narrow strip. Fails open on an older proxy without the route.
 if (!fbCapPinned) {
   const geomURL = window.location.pathname.replace(/\/[^/]*$/, '/geometry');
-  fetch(geomURL, { cache: 'no-store' })
+  viewerFetch(geomURL, { cache: 'no-store' })
     .then((r) => (r.ok ? r.json() : null))
     .then((g) => {
       if (g && g.width > 0 && g.height > 0 && !fbCapPinned) {
@@ -260,7 +281,8 @@ function websocketPath() {
   return window.location.pathname.replace(/\/[^/]*$/, '/websockify');
 }
 
-function connect() {
+async function connect() {
+  if (connecting || connected || intentionalDisconnect) return;
   if (everConnected) reconnectAttempt++;
   dbg('rfb connect-start reconnect=' + (everConnected ? 1 : 0) + ' attempt=' + reconnectAttempt);
   intentionalDisconnect = false;
@@ -280,7 +302,28 @@ function connect() {
   const wsQuery = wsQueryParts.length
     ? `${wsPath.includes('?') ? '&' : '?'}${wsQueryParts.join('&')}`
     : '';
-  rfb = new RFB(screen, `${protocol}//${window.location.host}${wsPath}${wsQuery}`, {
+  let rfbTransport = `${protocol}//${window.location.host}${wsPath}${wsQuery}`;
+  if (encryptedMode) {
+    try {
+      const client = await encryptedClient();
+      // The control manager begins its Noise handshake immediately, in parallel
+      // with the RFB channel. The same viewer state machine consumes both modes.
+      const control = configureEncryptedControl(() => client.connectControl(), { mirror: params.get('mirror') === '1' });
+      control.ensureConnected();
+      rfbTransport = await client.connectRfb();
+    } catch (error) {
+      connecting = false;
+      failedConnects++;
+      dbg('rfb encrypted-connect failed: ' + ((error && error.message) || 'unknown'));
+      if (failedConnects >= 2) showUnreachable();
+      if (reconnect && !intentionalDisconnect && reconnectTimer === null) {
+        reconnectTimer = window.setTimeout(() => { reconnectTimer = null; connect(); }, reconnectDelay);
+      }
+      return;
+    }
+  }
+  if (intentionalDisconnect) return;
+  rfb = new RFB(screen, rfbTransport, {
     credentials: { password },
   });
   installPointerTransformFix(rfb);
