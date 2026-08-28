@@ -29,6 +29,7 @@ Popcorn is built from a few small services:
   and attestation paths to the correct browser pod.
 - `browser-runtime`: runs Chromium and exposes its desktop over VNC/live view.
 - `ttl-controller`: expires sessions and shuts down old GameServers.
+- `mcp-server`: optional MCP adapter exposing browser sessions to agents, with OAuth 2.1 (PKCE) identity and card top-ups.
 - `redis`: stores route and session state for the local platform.
 - `browser-runtime-attestor`: optional attestation sidecar for deployments that support confidential computing.
 
@@ -53,6 +54,7 @@ flowchart LR
 - `services/gateway`: OpenResty gateway and JWT path authorization.
 - `images/minimal-vnc-desktop`: VNC/live-view browser runtime image.
 - `services/ttl-controller`: session cleanup controller.
+- `services/mcp-server`: optional remote MCP server (see `docs/mcp-server.md`).
 - `services/attestor`: optional proof sidecar.
 - `charts/platform`: platform Helm chart.
 - `charts/browser-fleet`: browser fleet Helm chart.

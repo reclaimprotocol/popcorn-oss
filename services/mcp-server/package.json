@@ -1,0 +1,16 @@
+{
+  "name": "mcp-server",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun run --watch index.ts",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "hono": "4.12.34"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.6"
+  }
+}

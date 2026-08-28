@@ -69,6 +69,8 @@ Read the hosting pages in this order:
 
 - [Attestation](attestation.md) — confidential-computing requirements and proof
   verification.
+- [MCP server](mcp-server.md) — remote MCP endpoint with OAuth 2.1 (PKCE) and
+  card-funded Popcorn credit.
 - [x402 API](x402.md) — isolated paid-session API and its operational model.
 - [MPP and x402 client](x402-client.md) — pay for a session and use LiveView or CDP.
 - [Session extensions](configuration.md#session-extensions) — add an optional
