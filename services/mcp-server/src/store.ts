@@ -53,7 +53,22 @@ export type SessionRecord = {
   endedAt: number | null;
 };
 
+export type OtpChallenge = {
+  id: string;
+  email: string;
+  codeHash: string;
+  attempts: number;
+  verified: boolean;
+  createdAt: number;
+  expiresAt: number;
+};
+
 export interface McpStore {
+  putOtp(challenge: OtpChallenge): Promise<void>;
+  getOtp(id: string): Promise<OtpChallenge | null>;
+  updateOtp(id: string, patch: Partial<OtpChallenge>): Promise<void>;
+  countRecentOtps(email: string, since: number): Promise<number>;
+
   putSession(session: SessionRecord): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
   updateSession(sessionId: string, patch: Partial<SessionRecord>): Promise<void>;
@@ -82,6 +97,24 @@ export class InMemoryStore implements McpStore {
   private topUps = new Map<string, TopUp>();
   private ledger: LedgerEntry[] = [];
   private sessions = new Map<string, SessionRecord>();
+  private otps = new Map<string, OtpChallenge>();
+
+  async putOtp(challenge: OtpChallenge) {
+    this.otps.set(challenge.id, challenge);
+  }
+
+  async getOtp(id: string) {
+    return this.otps.get(id) ?? null;
+  }
+
+  async updateOtp(id: string, patch: Partial<OtpChallenge>) {
+    const found = this.otps.get(id);
+    if (found) this.otps.set(id, { ...found, ...patch });
+  }
+
+  async countRecentOtps(email: string, since: number) {
+    return [...this.otps.values()].filter((otp) => otp.email === email && otp.createdAt >= since).length;
+  }
 
   async putSession(session: SessionRecord) {
     this.sessions.set(session.sessionId, session);

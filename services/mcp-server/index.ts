@@ -13,6 +13,7 @@ import {
   verifyChallenge,
 } from './src/oauth';
 import { InMemoryStore, type McpStore } from './src/store';
+import { startEmailOtp, verifyEmailOtp } from './src/otp';
 import { verifyWebhookSignature } from './src/stripe';
 
 const store: McpStore = new InMemoryStore();
@@ -43,67 +44,140 @@ app.post('/oauth/register', async (c) => {
 });
 
 /**
- * Consent screen. Identity is intentionally pluggable: this reference build
- * asks the human for their Popcorn account identifier. Operators should
- * replace `renderConsent`/`/oauth/decision` with their own IdP (Google, WorkOS,
- * the Popcorn dashboard session) and keep the rest of the flow unchanged.
+ * Sign-in + consent. Authentication is an emailed one-time code — there is no
+ * sign-up step: proving control of an email address IS the account. The email
+ * is turned into a stable pseudonymous OAuth subject and never handed to the
+ * MCP client.
  */
+
+type AuthorizeParams = {
+  client_id: string;
+  redirect_uri: string;
+  state: string;
+  code_challenge: string;
+  scope: string;
+};
+
+function readAuthorizeParams(source: Record<string, unknown>): AuthorizeParams {
+  return {
+    client_id: String(source.client_id ?? ''),
+    redirect_uri: String(source.redirect_uri ?? ''),
+    state: String(source.state ?? ''),
+    code_challenge: String(source.code_challenge ?? ''),
+    scope: String(source.scope ?? 'popcorn.sessions popcorn.credit'),
+  };
+}
+
+async function validateAuthorizeParams(params: AuthorizeParams) {
+  const client = await store.getClient(params.client_id);
+  if (!client) return null;
+  if (!client.redirectUris.includes(params.redirect_uri)) return null;
+  if (!params.code_challenge) return null;
+  return client;
+}
+
+function page(title: string, inner: string): string {
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head>
+<body style="font-family:system-ui;max-width:30rem;margin:4rem auto;padding:0 1rem;line-height:1.55">${inner}</body></html>`;
+}
+
+function hiddenParams(params: AuthorizeParams): string {
+  return (Object.keys(params) as Array<keyof AuthorizeParams>).map((key) => hidden(key, params[key])).join('');
+}
+
+function emailFormHtml(clientName: string, params: AuthorizeParams, notice = ''): string {
+  return page(`Authorize ${clientName}`, `
+  <h1 style="font-size:1.4rem">Authorize ${escapeHtml(clientName)}</h1>
+  <p><strong>${escapeHtml(clientName)}</strong> is asking to run Popcorn browser sessions on your behalf.</p>
+  <ul>
+    <li>It can start isolated cloud browsers and spend your Popcorn credit.</li>
+    <li>Each session costs ${McpConfig.sessionPriceUsdCents} cents. It cannot add credit without you approving a payment.</li>
+    <li>It never receives your card details, your email, or your local browser profile.</li>
+  </ul>
+  ${notice}
+  <form method="post" action="/oauth/email">
+    ${hiddenParams(params)}
+    <label>Email address<br><input name="email" type="email" required autofocus style="width:100%;padding:.6rem;font-size:1rem"></label>
+    <p style="color:#666;font-size:.9rem">We'll email you a 6-digit code. No sign-up, no password.</p>
+    <button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Email me a code</button>
+  </form>`);
+}
+
+function codeFormHtml(clientName: string, params: AuthorizeParams, challengeId: string, notice = ''): string {
+  return page(`Authorize ${clientName}`, `
+  <h1 style="font-size:1.4rem">Enter your code</h1>
+  <p>We emailed a 6-digit code. It expires in 10 minutes.</p>
+  ${notice}
+  <form method="post" action="/oauth/decision">
+    ${hiddenParams(params)}${hidden('challenge_id', challengeId)}
+    <label>Sign-in code<br><input name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required autofocus style="width:100%;padding:.6rem;font-size:1.4rem;letter-spacing:.3rem"></label>
+    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Approve access</button></p>
+  </form>
+  <p style="color:#666;font-size:.9rem">Approving lets ${escapeHtml(clientName)} start browser sessions and spend Popcorn credit on this identity until you revoke it.</p>`);
+}
+
+function noticeHtml(message: string): string {
+  return `<p role="alert" style="background:#fdecea;border:1px solid #f5c6c3;padding:.6rem .8rem;border-radius:.4rem">${escapeHtml(message)}</p>`;
+}
+
 app.get('/oauth/authorize', async (c) => {
   const query = c.req.query();
-  const client = await store.getClient(query.client_id ?? '');
-  if (!client) return c.json({ error: 'invalid_client' }, 400);
-  if (!client.redirectUris.includes(query.redirect_uri ?? '')) return c.json({ error: 'invalid_redirect_uri' }, 400);
+  const params = readAuthorizeParams(query);
+  const client = await validateAuthorizeParams(params);
+  if (!client) return c.json({ error: 'invalid_request', error_description: 'unknown client or redirect_uri' }, 400);
   if (query.response_type !== 'code') return c.json({ error: 'unsupported_response_type' }, 400);
-  if (query.code_challenge_method !== 'S256' || !query.code_challenge) {
+  if (query.code_challenge_method !== 'S256') {
     return c.json({ error: 'invalid_request', error_description: 'PKCE with S256 is required' }, 400);
   }
+  return c.html(emailFormHtml(client.clientName, params));
+});
 
-  return c.html(`<!doctype html>
-<html><head><meta charset="utf-8"><title>Authorize ${escapeHtml(client.clientName)}</title></head>
-<body style="font-family:system-ui;max-width:32rem;margin:4rem auto;line-height:1.5">
-  <h1>Authorize ${escapeHtml(client.clientName)}</h1>
-  <p><strong>${escapeHtml(client.clientName)}</strong> is asking to use Popcorn browser sessions on your behalf.</p>
-  <ul>
-    <li>It can start isolated cloud browser sessions and spend your Popcorn credit.</li>
-    <li>Each session costs ${McpConfig.sessionPriceUsdCents} cents. It cannot add credit without you approving a payment.</li>
-    <li>It never receives your card details, and never touches your local browser profile.</li>
-  </ul>
-  <form method="post" action="/oauth/decision">
-    ${hidden('client_id', query.client_id)}${hidden('redirect_uri', query.redirect_uri)}
-    ${hidden('state', query.state ?? '')}${hidden('code_challenge', query.code_challenge)}
-    ${hidden('scope', query.scope ?? 'popcorn.sessions popcorn.credit')}
-    <label>Popcorn account email<br><input name="account" type="email" required style="width:100%;padding:.5rem"></label>
-    <p><button type="submit" style="padding:.6rem 1.2rem">Approve</button></p>
-  </form>
-</body></html>`);
+app.post('/oauth/email', async (c) => {
+  const form = (await c.req.parseBody()) as Record<string, unknown>;
+  const params = readAuthorizeParams(form);
+  const client = await validateAuthorizeParams(params);
+  if (!client) return c.json({ error: 'invalid_request' }, 400);
+
+  const result = await startEmailOtp(store, String(form.email ?? ''));
+  if (!result.ok) {
+    const message = result.error === 'send_failed' ? 'We could not send that email. Try again shortly.' : result.message;
+    return c.html(emailFormHtml(client.clientName, params, noticeHtml(message)), 400);
+  }
+  return c.html(codeFormHtml(client.clientName, params, result.challengeId));
 });
 
 app.post('/oauth/decision', async (c) => {
-  const form = await c.req.parseBody();
-  const clientId = String(form.client_id ?? '');
-  const redirectUri = String(form.redirect_uri ?? '');
-  const account = String(form.account ?? '').trim().toLowerCase();
-  const client = await store.getClient(clientId);
-  if (!client || !client.redirectUris.includes(redirectUri) || !account) {
-    return c.json({ error: 'invalid_request' }, 400);
+  const form = (await c.req.parseBody()) as Record<string, unknown>;
+  const params = readAuthorizeParams(form);
+  const client = await validateAuthorizeParams(params);
+  if (!client) return c.json({ error: 'invalid_request' }, 400);
+
+  const challengeId = String(form.challenge_id ?? '');
+  const verified = await verifyEmailOtp(store, challengeId, String(form.code ?? ''));
+  if (!verified.ok) {
+    if (verified.error === 'invalid_code') {
+      return c.html(codeFormHtml(client.clientName, params, challengeId, noticeHtml(verified.message)), 400);
+    }
+    return c.html(emailFormHtml(client.clientName, params, noticeHtml(verified.message)), 400);
   }
 
   const code = newAuthorizationCode();
   await store.putCode({
     code,
-    clientId,
-    subject: subjectFor(account),
-    redirectUri,
-    codeChallenge: String(form.code_challenge ?? ''),
+    clientId: params.client_id,
+    subject: subjectFor(verified.email),
+    redirectUri: params.redirect_uri,
+    codeChallenge: params.code_challenge,
     codeChallengeMethod: 'S256',
-    scope: String(form.scope ?? 'popcorn.sessions popcorn.credit'),
+    scope: params.scope,
     expiresAt: Date.now() + 60_000,
     consumed: false,
   });
 
-  const target = new URL(redirectUri);
+  const target = new URL(params.redirect_uri);
   target.searchParams.set('code', code);
-  if (form.state) target.searchParams.set('state', String(form.state));
+  if (params.state) target.searchParams.set('state', params.state);
   return c.redirect(target.toString(), 302);
 });
 

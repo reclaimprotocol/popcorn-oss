@@ -3,7 +3,8 @@
 Popcorn's MCP adapter exposes browser sessions to MCP clients and agent
 marketplaces over a remote (streamable HTTP) endpoint at `POST /mcp`.
 
-Authentication is MCP-native OAuth 2.1 with PKCE, and sessions are paid for
+Sign-in is a one-time code emailed by AWS SES — no password and no sign-up
+step — wrapped in MCP-native OAuth 2.1 with PKCE, and sessions are paid for
 from **Popcorn credit** — a closed-loop prepaid balance topped up by card
 through Stripe Checkout. This is an alternative to the x402 path: it needs no
 wallet, no private key in client configuration, and no per-call payment
@@ -21,7 +22,9 @@ sequenceDiagram
 
     Agent->>Mcp: POST /oauth/register
     Agent->>User: open /oauth/authorize (PKCE)
-    User->>Mcp: approve
+    User->>Mcp: enter email
+    Mcp->>User: 6-digit code by SES
+    User->>Mcp: enter code, approve
     Mcp-->>Agent: code -> access token (subject-bound)
     Agent->>Mcp: tools/call top_up
     Mcp-->>Agent: approval_required + Checkout URL
