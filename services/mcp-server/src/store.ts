@@ -27,30 +27,11 @@ export type AuthorizationCode = {
   consumed: boolean;
 };
 
-export type TopUp = {
-  id: string;
-  subject: string;
-  amountUsdCents: number;
-  status: 'pending' | 'credited' | 'cancelled';
-  checkoutUrl: string;
-  providerRef: string | null;
-  createdAt: number;
-};
-
 export type OperationRecord = {
   ref: string;
   subject: string;
   outcome: 'pending' | 'succeeded' | 'failed';
   result: unknown;
-  createdAt: number;
-};
-
-export type LedgerEntry = {
-  id: string;
-  subject: string;
-  deltaUsdCents: number;
-  reason: string;
-  ref: string;
   createdAt: number;
 };
 
@@ -77,17 +58,6 @@ export type DeviceRecord = {
 };
 
 export interface McpStore {
-  /**
-   * Atomically apply a ledger entry.
-   *
-   * Contract for durable implementations: this MUST be a single transaction
-   * that (a) no-ops if `entry.ref` already exists, and (b) for a negative
-   * delta, rejects when the subject's balance would go below zero — e.g.
-   *   INSERT ... SELECT ... WHERE (SELECT COALESCE(SUM(delta),0) FROM ledger
-   *   WHERE subject = $1) + $delta >= 0 ON CONFLICT (ref) DO NOTHING
-   * A read-then-write sequence is not acceptable for a payment path.
-   */
-  applyLedgerEntry(entry: LedgerEntry): Promise<{ applied: boolean; duplicate: boolean; balanceUsdCents: number }>;
 
   /**
    * Operation-level idempotency. `claimOperation` MUST be a single atomic
@@ -120,24 +90,11 @@ export interface McpStore {
   putCode(code: AuthorizationCode): Promise<void>;
   consumeCode(code: string): Promise<AuthorizationCode | null>;
 
-  putTopUp(topUp: TopUp): Promise<void>;
-  getTopUp(id: string): Promise<TopUp | null>;
-  getTopUpByProviderRef(ref: string): Promise<TopUp | null>;
-  updateTopUpStatus(id: string, status: TopUp['status']): Promise<void>;
-  /** Attach Checkout details WITHOUT touching `status`. */
-  attachCheckout(id: string, checkoutUrl: string, providerRef: string): Promise<void>;
-
-  appendLedger(entry: LedgerEntry): Promise<void>;
-  hasLedgerRef(ref: string): Promise<boolean>;
-  balanceUsdCents(subject: string): Promise<number>;
-  listLedger(subject: string, limit: number): Promise<LedgerEntry[]>;
 }
 
 export class InMemoryStore implements McpStore {
   private clients = new Map<string, OAuthClient>();
   private codes = new Map<string, AuthorizationCode>();
-  private topUps = new Map<string, TopUp>();
-  private ledger: LedgerEntry[] = [];
   private sessions = new Map<string, SessionRecord>();
   private nonces = new Map<string, DeviceNonce>();
   private devices = new Map<string, DeviceRecord>();
@@ -201,31 +158,6 @@ export class InMemoryStore implements McpStore {
     return found;
   }
 
-  async putTopUp(topUp: TopUp) {
-    this.topUps.set(topUp.id, topUp);
-  }
-
-  async getTopUp(id: string) {
-    return this.topUps.get(id) ?? null;
-  }
-
-  async getTopUpByProviderRef(ref: string) {
-    for (const topUp of this.topUps.values()) {
-      if (topUp.providerRef === ref) return topUp;
-    }
-    return null;
-  }
-
-  async attachCheckout(id: string, checkoutUrl: string, providerRef: string) {
-    const found = this.topUps.get(id);
-    if (found) this.topUps.set(id, { ...found, checkoutUrl, providerRef });
-  }
-
-  async updateTopUpStatus(id: string, status: TopUp['status']) {
-    const found = this.topUps.get(id);
-    if (found) this.topUps.set(id, { ...found, status });
-  }
-
   private revocations = new Map<string, number>();
   private operations = new Map<string, OperationRecord>();
 
@@ -250,26 +182,6 @@ export class InMemoryStore implements McpStore {
     return this.operations.get(ref) ?? null;
   }
 
-  /**
-   * Single-threaded and therefore atomic in this process. A multi-replica
-   * deployment must supply a store whose implementation is transactional.
-   */
-  async applyLedgerEntry(entry: LedgerEntry) {
-    // Deliberately synchronous between the check and the write: no `await`
-    // may separate them, or two in-flight debits can both pass the check.
-    const balanceOf = (subject: string) =>
-      this.ledger.filter((existing) => existing.subject === subject).reduce((total, e) => total + e.deltaUsdCents, 0);
-    if (this.ledger.some((existing) => existing.ref === entry.ref)) {
-      return { applied: false, duplicate: true, balanceUsdCents: balanceOf(entry.subject) };
-    }
-    const balance = balanceOf(entry.subject);
-    if (balance + entry.deltaUsdCents < 0) {
-      return { applied: false, duplicate: false, balanceUsdCents: balance };
-    }
-    this.ledger.push(entry);
-    return { applied: true, duplicate: false, balanceUsdCents: balance + entry.deltaUsdCents };
-  }
-
   async revokeSubjectBefore(subject: string, issuedBefore: number) {
     this.revocations.set(subject, issuedBefore);
   }
@@ -278,24 +190,4 @@ export class InMemoryStore implements McpStore {
     return this.revocations.get(subject) ?? 0;
   }
 
-  async appendLedger(entry: LedgerEntry) {
-    this.ledger.push(entry);
-  }
-
-  async hasLedgerRef(ref: string) {
-    return this.ledger.some((entry) => entry.ref === ref);
-  }
-
-  async balanceUsdCents(subject: string) {
-    return this.ledger
-      .filter((entry) => entry.subject === subject)
-      .reduce((total, entry) => total + entry.deltaUsdCents, 0);
-  }
-
-  async listLedger(subject: string, limit: number) {
-    return this.ledger
-      .filter((entry) => entry.subject === subject)
-      .slice(-limit)
-      .reverse();
-  }
 }

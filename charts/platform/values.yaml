@@ -20,8 +20,9 @@ secrets:
 # platform consumes each enabled extension's `routing` section.
 sessionExtensions: {}
 
-# Optional remote MCP endpoint (services/mcp-server). Disabled by default:
-# it needs Postgres and Stripe secrets, so operators opt in explicitly.
+# Optional remote MCP endpoint (services/mcp-server). Disabled by default.
+# The OSS service performs browser operations only; usage credit, if any, is
+# delegated to an operator-run billing service (see docs/mcp-server.md).
 mcpServer:
   enabled: false
   replicas: 2
@@ -39,29 +40,24 @@ mcpServer:
     - /mcp
     - /oauth
     - /.well-known
-    - /stripe/webhook
     - /health
   allowedOrigins: []
   controlPlaneUrl: http://control-plane
-  pricing:
-    sessionUsdCents: 5
-    extendUsdCents: 5
-    # One purchase buys exactly this much browser time.
-    sessionBlockSeconds: 600
-    # Card charges carry a fixed fee, so credit is bought in one go.
-    minTopUpUsdCents: 500
-  topUp:
-    presetsUsdCents: "500,2000,5000"
-    successUrl: ""
-    cancelUrl: ""
-  # Secret holding DATABASE_URL, the token signing key, Stripe keys, and the
-  # control-plane client credentials this adapter acts as.
+  # One purchase/operation buys exactly this much browser time.
+  sessionBlockSeconds: 600
+  billing:
+    # none = every authenticated request is allowed (self-hosting default).
+    # external = delegate balance/reserve/commit/release to `baseUrl`.
+    provider: none
+    baseUrl: ""
+    # Key in `secretName` holding the service token for that billing API.
+    authTokenKey: MCP_BILLING_AUTH_TOKEN
+  # Secret holding DATABASE_URL, the token signing key, the control-plane
+  # client credentials, and (for external billing) the billing service token.
   secretName: mcp-server-secret
   secretKeys:
     databaseUrl: DATABASE_URL
     tokenSigningKey: MCP_TOKEN_SIGNING_KEY
-    stripeSecretKey: STRIPE_SECRET_KEY
-    stripeWebhookSecret: STRIPE_WEBHOOK_SECRET
     popcornClientId: POPCORN_CLIENT_ID
     popcornClientSecret: POPCORN_CLIENT_SECRET
   resources:

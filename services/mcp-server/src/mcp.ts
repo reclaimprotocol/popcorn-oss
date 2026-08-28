@@ -28,7 +28,7 @@ export async function handleRpc(ctx: ToolContext, request: JsonRpcRequest): Prom
         capabilities: { tools: { listChanged: false } },
         serverInfo: { name: 'popcorn', title: 'Popcorn browser sessions', version: '0.1.0' },
         instructions:
-          'Popcorn runs isolated, disposable cloud browsers. Sessions are paid from closed-loop Popcorn credit on your OAuth identity: check get_balance, add credit with top_up (the human approves a Stripe Checkout), then create_browser_session. Hand the live-view URL to the human for any login.',
+          'Popcorn runs isolated, disposable cloud browsers. Call create_browser_session for a fixed block of browser time, then hand the live-view URL to the human for any login. If this deployment meters usage, get_balance reports remaining credit and a refused operation returns next_action telling the human how to obtain more.',
       });
 
     case 'notifications/initialized':

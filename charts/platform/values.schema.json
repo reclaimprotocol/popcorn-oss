@@ -427,26 +427,24 @@
           "type": "string",
           "minLength": 1
         },
-        "pricing": {
+        "sessionBlockSeconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 3600
+        },
+        "billing": {
           "type": "object",
           "additionalProperties": true,
           "properties": {
-            "sessionUsdCents": {
-              "type": "integer",
-              "minimum": 1
+            "provider": {
+              "type": "string",
+              "enum": [
+                "none",
+                "external"
+              ]
             },
-            "extendUsdCents": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "sessionBlockSeconds": {
-              "type": "integer",
-              "minimum": 30,
-              "maximum": 3600
-            },
-            "minTopUpUsdCents": {
-              "type": "integer",
-              "minimum": 1
+            "baseUrl": {
+              "type": "string"
             }
           }
         }

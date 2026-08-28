@@ -1,5 +1,4 @@
 import { describe, expect, test } from 'bun:test';
-import crypto from 'crypto';
 import { app } from '../index';
 
 async function post(body: unknown, headers: Record<string, string> = {}) {
@@ -41,7 +40,7 @@ describe('streamable http transport', () => {
 });
 
 describe('authorization page', () => {
-  test('renders the pay-as-you-go copy in Popcorn brand styling', async () => {
+  test('renders no-login copy in Popcorn brand styling, and never mentions money', async () => {
     const registered = await app.request('/oauth/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -57,111 +56,25 @@ describe('authorization page', () => {
       resource: 'http://localhost:3000/mcp',
     });
     const html = await (await app.request(`/oauth/authorize?${query}`)).text();
-    expect(html).toContain("No login");
-    expect(html).toContain('Pay as you go');
-    expect(html).toContain('Unused credit may be lost');
-    expect(html).toContain('x402 endpoint');
+    expect(html).toContain('No login');
+    expect(html).toContain('No account, no password, no email');
     expect(html).toContain('--yellow: #f7d93d');
     expect(html).toContain('Manrope');
+    // The OSS authorization page knows nothing about payment.
+    expect(html.toLowerCase()).not.toContain('stripe');
+    expect(html).not.toContain('¢');
+    expect(html).not.toContain('$');
   });
 });
 
-describe('stripe webhook binding', () => {
-  const secret = process.env.STRIPE_WEBHOOK_SECRET ?? 'whsec_test';
-
-  async function deliver(session: Record<string, unknown>) {
-    const body = JSON.stringify({ type: 'checkout.session.completed', data: { object: session } });
-    const timestamp = Math.floor(Date.now() / 1000);
-    const signature = crypto.createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');
-    return app.request('/stripe/webhook', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'stripe-signature': `t=${timestamp},v1=${signature}` },
-      body,
-    });
-  }
-
-  async function pendingTopUp(id: string, subject: string) {
-    await (globalThis as any).__mcpStore.putTopUp({
-      id,
-      subject,
-      amountUsdCents: 500,
-      status: 'pending',
-      checkoutUrl: 'https://checkout.stripe.com/ours',
-      providerRef: 'cs_ours',
-      createdAt: Date.now(),
-    });
-  }
-
-  test('credits once when the session, amount and currency all match', async () => {
-    const store = (globalThis as any).__mcpStore;
-    await pendingTopUp('tu-ok', 'device:ok');
-    const response = await deliver({
-      id: 'cs_ours',
-      payment_status: 'paid',
-      amount_total: 500,
-      currency: 'usd',
-      metadata: { popcorn_top_up_id: 'tu-ok' },
-    });
-    expect(response.status).toBe(200);
-    expect(await store.balanceUsdCents('device:ok')).toBe(500);
-
-    // Stripe redelivers: the ledger ref makes it a no-op.
-    await deliver({
-      id: 'cs_ours',
-      payment_status: 'paid',
-      amount_total: 500,
-      currency: 'usd',
-      metadata: { popcorn_top_up_id: 'tu-ok' },
-    });
-    expect(await store.balanceUsdCents('device:ok')).toBe(500);
+describe('no payment surface in the OSS server', () => {
+  test('there is no Stripe webhook endpoint', async () => {
+    const response = await app.request('/stripe/webhook', { method: 'POST', body: '{}' });
+    expect(response.status).toBe(404);
   });
 
-  test('refuses a session id that is not the one we created', async () => {
-    const store = (globalThis as any).__mcpStore;
-    await pendingTopUp('tu-mismatch', 'device:mismatch');
-    const response = await deliver({
-      id: 'cs_attacker',
-      payment_status: 'paid',
-      amount_total: 500,
-      currency: 'usd',
-      metadata: { popcorn_top_up_id: 'tu-mismatch' },
-    });
-    expect(response.status).toBe(400);
-    expect(await store.balanceUsdCents('device:mismatch')).toBe(0);
-  });
-
-  test('refuses an underpaid or wrong-currency session', async () => {
-    const store = (globalThis as any).__mcpStore;
-    await pendingTopUp('tu-amount', 'device:amount');
-    expect(
-      (await deliver({
-        id: 'cs_ours',
-        payment_status: 'paid',
-        amount_total: 50,
-        currency: 'usd',
-        metadata: { popcorn_top_up_id: 'tu-amount' },
-      })).status,
-    ).toBe(400);
-    expect(
-      (await deliver({
-        id: 'cs_ours',
-        payment_status: 'paid',
-        amount_total: 500,
-        currency: 'eur',
-        metadata: { popcorn_top_up_id: 'tu-amount' },
-      })).status,
-    ).toBe(400);
-    expect(await store.balanceUsdCents('device:amount')).toBe(0);
-  });
-
-  test('asks Stripe to retry an unknown top-up instead of swallowing the payment', async () => {
-    const response = await deliver({
-      id: 'cs_unknown',
-      payment_status: 'paid',
-      amount_total: 500,
-      currency: 'usd',
-      metadata: { popcorn_top_up_id: 'tu-nope' },
-    });
-    expect(response.status).toBe(503);
+  test('health reports which billing provider is configured', async () => {
+    const body = (await (await app.request('/health')).json()) as any;
+    expect(body.billing).toBe('none');
   });
 });

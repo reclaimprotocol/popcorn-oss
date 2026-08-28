@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { McpConfig } from './src/config';
-import { credit } from './src/credits';
 import { handleRpc, type JsonRpcRequest } from './src/mcp';
 import {
   RESOURCE_URI,
@@ -13,10 +12,10 @@ import {
   verifyAccessToken,
   verifyChallenge,
 } from './src/oauth';
+import { billingProviderFromConfig } from './src/billing';
 import { InMemoryStore, type McpStore } from './src/store';
 import { PostgresStore } from './src/postgres-store';
 import { issueNonce, verifyDeviceProof } from './src/device';
-import { verifyWebhookSignature } from './src/stripe';
 
 /**
  * Durable storage when DATABASE_URL is set; in-memory only for local dev,
@@ -31,18 +30,14 @@ const durable = store instanceof PostgresStore;
 if (durable) await (store as PostgresStore).migrate();
 
 /**
- * Refuse to run against live Stripe keys on ephemeral storage. Credits,
- * pending top-ups, OAuth clients, codes and session ownership are held in
- * memory and vanish on restart — that is fine for a demo, never for money.
+ * Billing is an extension point: `none` by default, `external` delegates to an
+ * operator-run service. This process never talks to a payment provider.
  */
-if (!durable && McpConfig.stripeSecretKey.startsWith('sk_live_') && process.env.MCP_ALLOW_EPHEMERAL_STORE !== 'true') {
-  throw new Error(
-    'Refusing to start: a live Stripe key is configured but storage is in-memory. Set DATABASE_URL (see services/mcp-server/README.md).',
-  );
-}
+const billing = billingProviderFromConfig();
+
 const app = new Hono();
 
-app.get('/health', (c) => c.json({ status: 'ok', storage: durable ? 'postgres' : 'memory' }));
+app.get('/health', (c) => c.json({ status: 'ok', storage: durable ? 'postgres' : 'memory', billing: billing.name }));
 
 /* ---------------------------------------------------------------- OAuth 2.1 */
 
@@ -71,7 +66,7 @@ app.post('/oauth/register', async (c) => {
  *
  * The page generates a non-extractable ECDSA P-256 keypair in the browser,
  * stores it in IndexedDB, and signs a server nonce. The public key's
- * thumbprint becomes the OAuth subject that owns the credit balance. Nothing
+ * thumbprint becomes the OAuth subject that owns the sessions. Nothing
  * about the human is collected, and the MCP client never sees the key.
  */
 
@@ -90,7 +85,7 @@ function readAuthorizeParams(source: Record<string, unknown>): AuthorizeParams {
     redirect_uri: String(source.redirect_uri ?? ''),
     state: String(source.state ?? ''),
     code_challenge: String(source.code_challenge ?? ''),
-    scope: String(source.scope ?? 'popcorn.sessions popcorn.credit'),
+    scope: String(source.scope ?? 'popcorn.sessions'),
     resource: String(source.resource ?? ''),
   };
 }
@@ -247,10 +242,10 @@ app.get('/oauth/authorize', async (c) => {
       `Authorize ${client.clientName}`,
       `<p class="kicker"><span></span>Popcorn · isolated cloud browsers</p>
   <h1>You're all set! <span class="pop">No login</span> needed to use Popcorn!</h1>
-  <p class="lede">Pay as you go — <strong>${escapeHtml(client.clientName)}</strong> gets ${McpConfig.sessionPriceUsdCents}¢ browser sessions on your credit, and nothing else.</p>
+  <p class="lede"><strong>${escapeHtml(client.clientName)}</strong> gets isolated cloud browser sessions on this browser's identity, and nothing else.</p>
   <ul class="notes">
-    <li><span class="tick">✓</span><span><b>No account, no password, no email.</b> This page mints a key that never leaves this browser — that key is your balance.</span></li>
-    <li><span class="tick warn">!</span><span><b>Top up only what your agent needs.</b> Card fees mean credit is bought in one go (from ${McpConfig.minTopUpUsdCents / 100} minimum) and spent ${McpConfig.sessionPriceUsdCents}¢ at a time. Unused credit may be lost — it's closed-loop, non-transferable and non-refundable.</span></li>
+    <li><span class="tick">✓</span><span><b>No account, no password, no email.</b> This page mints a key that never leaves this browser — that key is your identity here.</span></li>
+    <li><span class="tick warn">!</span><span><b>Sessions are disposable.</b> Each one is a fresh browser with no access to your local profile, cookies or saved passwords.</span></li>
     <li><span class="tick dev">⌘</span><span><b>Building a product?</b> Use the <a href="https://docs.x402.org/guides/mcp-server-with-x402">x402 endpoint</a> instead of this browser flow.</span></li>
   </ul>
   <form id="approve" method="post" action="/oauth/decision" data-nonce="${escapeHtml(nonce.value)}">
@@ -259,7 +254,7 @@ app.get('/oauth/authorize', async (c) => {
     <button class="button" type="submit">Approve ${escapeHtml(client.clientName)}</button>
     <p class="status" id="status"></p>
   </form>
-  <p class="fine">Each session buys one fixed block of <code>${McpConfig.sessionTtlSeconds / 60} min</code> for <code>${McpConfig.sessionPriceUsdCents}¢</code>. Clearing this site's data or switching browsers starts a fresh, empty balance.</p>`,
+  <p class="fine">Each session runs for a fixed block of <code>${McpConfig.sessionTtlSeconds / 60} min</code>. Clearing this site's data or switching browsers starts a fresh identity.</p>`,
       DEVICE_SCRIPT,
     ),
   );
@@ -377,7 +372,7 @@ app.all('/mcp', async (c) => {
     return c.json({ error: 'unauthorized' }, 401);
   }
 
-  const ctx = { store, subject: claims.sub };
+  const ctx = { store, subject: claims.sub, billing };
   if (!body || typeof body !== 'object') {
     return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }, 400);
   }
@@ -387,7 +382,7 @@ app.all('/mcp', async (c) => {
 
 /**
  * Revocation. Prove possession of the device key and every token issued to
- * that identity before now stops working. Credit is untouched.
+ * that identity before now stops working. Any usage credit is untouched.
  */
 app.get('/oauth/revoke', async (c) => {
   const nonce = await issueNonce(store);
@@ -396,7 +391,7 @@ app.get('/oauth/revoke', async (c) => {
       'Revoke agent access',
       `<p class="kicker"><span></span>Popcorn · access control</p>
   <h1>Cut off <span class="pop">every agent</span> on this browser</h1>
-  <p class="lede">This signs out every MCP client authorized on this browser's key. Your Popcorn credit stays exactly where it is.</p>
+  <p class="lede">This signs out every MCP client authorized on this browser's key. Any usage credit is untouched.</p>
   <form id="approve" method="post" action="/oauth/revoke/confirm" data-nonce="${escapeHtml(nonce.value)}">
     ${hidden('nonce', nonce.value)}
     <input type="hidden" name="public_key"><input type="hidden" name="signature">
@@ -428,57 +423,9 @@ app.post('/oauth/revoke/confirm', async (c) => {
       'Access revoked',
       `<p class="kicker"><span></span>Popcorn · access control</p>
   <h1>Access <span class="pop">revoked</span></h1>
-  <p class="lede">Every MCP client authorized on this identity has been signed out. Your Popcorn credit is unchanged.</p>`,
+  <p class="lede">Every MCP client authorized on this identity has been signed out. Any usage credit is unchanged.</p>`,
     ),
   );
-});
-
-/* ---------------------------------------------------------------- Stripe */
-
-app.post('/stripe/webhook', async (c) => {
-  const payload = await c.req.text();
-  const signature = c.req.header('stripe-signature') ?? '';
-  if (!verifyWebhookSignature(payload, signature, McpConfig.stripeWebhookSecret)) {
-    return c.json({ error: 'invalid_signature' }, 400);
-  }
-  const event = JSON.parse(payload);
-  if (event.type !== 'checkout.session.completed') return c.json({ received: true });
-
-  const session = event.data?.object ?? {};
-  if (session.payment_status !== 'paid') return c.json({ received: true });
-  const topUpId = session.metadata?.popcorn_top_up_id ?? session.client_reference_id;
-  const topUp = topUpId ? await store.getTopUp(String(topUpId)) : null;
-  if (!topUp) {
-    // Do NOT 200 here: a 200 tells Stripe the payment is handled. Fail so it
-    // retries while the top-up record catches up.
-    console.error(`stripe webhook for unknown top-up ${topUpId ?? '(none)'} on session ${session.id}`);
-    return c.json({ error: 'unknown_top_up', retry: true }, 503);
-  }
-
-  // Bind the paid Checkout Session to the stored purchase before crediting:
-  // the session id must be the one we created for this top-up, and the amount
-  // and currency must be exactly what was requested. Anything else is a
-  // mismatch we refuse to turn into credit.
-  if (topUp.providerRef && String(session.id) !== topUp.providerRef) {
-    console.error(`stripe webhook session ${session.id} does not match top-up ${topUp.id} (${topUp.providerRef})`);
-    return c.json({ error: 'session_mismatch' }, 400);
-  }
-  if (!topUp.providerRef) {
-    // Checkout was created but the id had not landed yet; retry shortly.
-    return c.json({ error: 'top_up_not_ready', retry: true }, 503);
-  }
-  const paidAmount = Number(session.amount_total);
-  const currency = String(session.currency ?? '').toLowerCase();
-  if (paidAmount !== topUp.amountUsdCents || currency !== 'usd') {
-    console.error(
-      `stripe webhook amount mismatch on top-up ${topUp.id}: paid ${paidAmount} ${currency}, expected ${topUp.amountUsdCents} usd`,
-    );
-    return c.json({ error: 'amount_mismatch' }, 400);
-  }
-
-  await credit(store, topUp.subject, topUp.amountUsdCents, `stripe:${session.id}`);
-  await store.updateTopUpStatus(topUp.id, 'credited');
-  return c.json({ received: true });
 });
 
 function hidden(name: string, value: unknown): string {

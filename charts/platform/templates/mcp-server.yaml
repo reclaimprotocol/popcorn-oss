@@ -33,32 +33,25 @@ spec:
               value: {{ required "mcpServer.publicUrl is required when mcpServer.enabled" $mcp.publicUrl | quote }}
             - name: CONTROL_PLANE_URL
               value: {{ $mcp.controlPlaneUrl | quote }}
-            - name: MCP_SESSION_PRICE_USD_CENTS
-              value: {{ $mcp.pricing.sessionUsdCents | quote }}
-            - name: MCP_EXTEND_PRICE_USD_CENTS
-              value: {{ $mcp.pricing.extendUsdCents | quote }}
             - name: MCP_SESSION_TTL_SECONDS
-              value: {{ $mcp.pricing.sessionBlockSeconds | quote }}
-            - name: MCP_MIN_TOP_UP_USD_CENTS
-              value: {{ $mcp.pricing.minTopUpUsdCents | quote }}
-            {{- with $mcp.topUp.presetsUsdCents }}
-            - name: MCP_TOP_UP_PRESETS_USD_CENTS
-              value: {{ . | quote }}
+              value: {{ $mcp.sessionBlockSeconds | quote }}
+            - name: MCP_BILLING_PROVIDER
+              value: {{ $mcp.billing.provider | quote }}
+            {{- if eq $mcp.billing.provider "external" }}
+            - name: MCP_BILLING_BASE_URL
+              value: {{ required "mcpServer.billing.baseUrl is required for external billing" $mcp.billing.baseUrl | quote }}
+            - name: MCP_BILLING_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcp.secretName | quote }}
+                  key: {{ $mcp.billing.authTokenKey | quote }}
             {{- end }}
             {{- with $mcp.allowedOrigins }}
             - name: MCP_ALLOWED_ORIGINS
               value: {{ join "," . | quote }}
             {{- end }}
-            {{- with $mcp.topUp.successUrl }}
-            - name: MCP_TOP_UP_SUCCESS_URL
-              value: {{ . | quote }}
-            {{- end }}
-            {{- with $mcp.topUp.cancelUrl }}
-            - name: MCP_TOP_UP_CANCEL_URL
-              value: {{ . | quote }}
-            {{- end }}
-            # Durable Postgres is mandatory: the service refuses to start with
-            # a live Stripe key on in-memory storage.
+            # Durable Postgres: operation claims and session ownership must
+            # survive a restart and be shared across replicas.
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -69,16 +62,6 @@ spec:
                 secretKeyRef:
                   name: {{ $mcp.secretName | quote }}
                   key: {{ $mcp.secretKeys.tokenSigningKey | quote }}
-            - name: STRIPE_SECRET_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $mcp.secretName | quote }}
-                  key: {{ $mcp.secretKeys.stripeSecretKey | quote }}
-            - name: STRIPE_WEBHOOK_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $mcp.secretName | quote }}
-                  key: {{ $mcp.secretKeys.stripeWebhookSecret | quote }}
             - name: POPCORN_CLIENT_ID
               valueFrom:
                 secretKeyRef:

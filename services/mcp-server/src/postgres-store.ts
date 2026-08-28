@@ -3,22 +3,18 @@ import type {
   AuthorizationCode,
   DeviceNonce,
   DeviceRecord,
-  LedgerEntry,
   McpStore,
   OAuthClient,
   OperationRecord,
   SessionRecord,
-  TopUp,
 } from './store';
 
 /**
  * Durable, transactional implementation of `McpStore`.
  *
- * Every money-moving or claim operation is a single statement whose condition
- * is evaluated by Postgres, so concurrent replicas cannot interleave a check
- * with its write:
- *   - `applyLedgerEntry`: insert-if-ref-absent AND balance-stays-non-negative
- *   - `claimOperation`:   INSERT ... ON CONFLICT DO NOTHING
+ * `claimOperation` is a single `INSERT ... ON CONFLICT DO NOTHING`, so
+ * concurrent replicas cannot both win the same operation claim. Usage credit
+ * lives behind `BillingProvider`, not here.
  */
 export class PostgresStore implements McpStore {
   constructor(private readonly sql: postgres.Sql) {}
@@ -45,32 +41,6 @@ export class PostgresStore implements McpStore {
         resource TEXT NOT NULL,
         expires_at BIGINT NOT NULL,
         consumed BOOLEAN NOT NULL DEFAULT FALSE
-      );
-      CREATE TABLE IF NOT EXISTS mcp_top_ups (
-        id TEXT PRIMARY KEY,
-        subject TEXT NOT NULL,
-        amount_usd_cents INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        checkout_url TEXT NOT NULL DEFAULT '',
-        provider_ref TEXT,
-        created_at BIGINT NOT NULL
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS mcp_top_ups_provider_ref ON mcp_top_ups (provider_ref) WHERE provider_ref IS NOT NULL;
-      CREATE TABLE IF NOT EXISTS mcp_ledger (
-        id TEXT PRIMARY KEY,
-        subject TEXT NOT NULL,
-        delta_usd_cents INTEGER NOT NULL,
-        reason TEXT NOT NULL,
-        ref TEXT NOT NULL UNIQUE,
-        created_at BIGINT NOT NULL
-      );
-      CREATE INDEX IF NOT EXISTS mcp_ledger_subject ON mcp_ledger (subject);
-      -- Authoritative per-subject balance. Debits take a row lock on this
-      -- record, so concurrent debits serialize instead of both reading the
-      -- same SUM and both succeeding.
-      CREATE TABLE IF NOT EXISTS mcp_balances (
-        subject TEXT PRIMARY KEY,
-        balance_usd_cents BIGINT NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS mcp_operations (
         ref TEXT PRIMARY KEY,
@@ -104,84 +74,6 @@ export class PostgresStore implements McpStore {
         issued_before BIGINT NOT NULL
       );
     `);
-  }
-
-  /* ---------------------------------------------------------- money */
-
-  /**
-   * One transaction:
-   *   1. `INSERT ... ON CONFLICT DO NOTHING` on the ledger — the unique `ref`
-   *      makes replays no-ops.
-   *   2. conditional `UPDATE mcp_balances SET balance = balance + delta
-   *      WHERE subject = $1 AND balance + delta >= 0` — Postgres takes a row
-   *      lock, so two concurrent debits serialize and the second sees the
-   *      first's balance. If the update matches no row the transaction rolls
-   *      back and nothing is written.
-   */
-  async applyLedgerEntry(entry: LedgerEntry) {
-    return this.sql.begin(async (tx) => {
-      await tx`
-        INSERT INTO mcp_balances (subject, balance_usd_cents) VALUES (${entry.subject}, 0)
-        ON CONFLICT (subject) DO NOTHING
-      `;
-      const inserted = await tx<any[]>`
-        INSERT INTO mcp_ledger (id, subject, delta_usd_cents, reason, ref, created_at)
-        VALUES (${entry.id}, ${entry.subject}, ${entry.deltaUsdCents}, ${entry.reason}, ${entry.ref}, ${entry.createdAt})
-        ON CONFLICT (ref) DO NOTHING
-        RETURNING id
-      `;
-      if (inserted.length === 0) {
-        const [row] = await tx<any[]>`
-          SELECT balance_usd_cents FROM mcp_balances WHERE subject = ${entry.subject}
-        `;
-        return { applied: false, duplicate: true, balanceUsdCents: Number(row?.balance_usd_cents ?? 0) };
-      }
-      const [updated] = await tx<any[]>`
-        UPDATE mcp_balances
-        SET balance_usd_cents = balance_usd_cents + ${entry.deltaUsdCents}
-        WHERE subject = ${entry.subject} AND balance_usd_cents + ${entry.deltaUsdCents} >= 0
-        RETURNING balance_usd_cents
-      `;
-      if (!updated) {
-        // Insufficient funds: undo the ledger insert within this transaction.
-        await tx`DELETE FROM mcp_ledger WHERE ref = ${entry.ref}`;
-        const [row] = await tx<any[]>`
-          SELECT balance_usd_cents FROM mcp_balances WHERE subject = ${entry.subject}
-        `;
-        return { applied: false, duplicate: false, balanceUsdCents: Number(row?.balance_usd_cents ?? 0) };
-      }
-      return { applied: true, duplicate: false, balanceUsdCents: Number(updated.balance_usd_cents) };
-    }) as Promise<{ applied: boolean; duplicate: boolean; balanceUsdCents: number }>;
-  }
-
-  async appendLedger(entry: LedgerEntry) {
-    await this.applyLedgerEntry(entry);
-  }
-
-  async hasLedgerRef(ref: string) {
-    const rows = await this.sql`SELECT 1 FROM mcp_ledger WHERE ref = ${ref} LIMIT 1`;
-    return rows.length > 0;
-  }
-
-  async balanceUsdCents(subject: string) {
-    const [row] = await this.sql<any[]>`
-      SELECT balance_usd_cents FROM mcp_balances WHERE subject = ${subject}
-    `;
-    return Number(row?.balance_usd_cents ?? 0);
-  }
-
-  async listLedger(subject: string, limit: number) {
-    const rows = await this.sql<any[]>`
-      SELECT * FROM mcp_ledger WHERE subject = ${subject} ORDER BY created_at DESC LIMIT ${limit}
-    `;
-    return rows.map((row) => ({
-      id: row.id,
-      subject: row.subject,
-      deltaUsdCents: row.delta_usd_cents,
-      reason: row.reason,
-      ref: row.ref,
-      createdAt: Number(row.created_at),
-    }));
   }
 
   /* ----------------------------------------------------- operations */
@@ -268,47 +160,6 @@ export class PostgresStore implements McpStore {
   async revokedAt(subject: string) {
     const [row] = await this.sql<any[]>`SELECT issued_before FROM mcp_revocations WHERE subject = ${subject}`;
     return row ? Number(row.issued_before) : 0;
-  }
-
-  /* -------------------------------------------------------- top-ups */
-
-  async putTopUp(topUp: TopUp) {
-    await this.sql`
-      INSERT INTO mcp_top_ups (id, subject, amount_usd_cents, status, checkout_url, provider_ref, created_at)
-      VALUES (${topUp.id}, ${topUp.subject}, ${topUp.amountUsdCents}, ${topUp.status}, ${topUp.checkoutUrl},
-              ${topUp.providerRef}, ${topUp.createdAt})
-      ON CONFLICT (id) DO NOTHING
-    `;
-  }
-
-  async attachCheckout(id: string, checkoutUrl: string, providerRef: string) {
-    await this.sql`UPDATE mcp_top_ups SET checkout_url = ${checkoutUrl}, provider_ref = ${providerRef} WHERE id = ${id}`;
-  }
-
-  async getTopUp(id: string) {
-    const [row] = await this.sql<any[]>`SELECT * FROM mcp_top_ups WHERE id = ${id}`;
-    return row ? this.toTopUp(row) : null;
-  }
-
-  async getTopUpByProviderRef(ref: string) {
-    const [row] = await this.sql<any[]>`SELECT * FROM mcp_top_ups WHERE provider_ref = ${ref}`;
-    return row ? this.toTopUp(row) : null;
-  }
-
-  async updateTopUpStatus(id: string, status: TopUp['status']) {
-    await this.sql`UPDATE mcp_top_ups SET status = ${status} WHERE id = ${id}`;
-  }
-
-  private toTopUp(row: any): TopUp {
-    return {
-      id: row.id,
-      subject: row.subject,
-      amountUsdCents: row.amount_usd_cents,
-      status: row.status,
-      checkoutUrl: row.checkout_url,
-      providerRef: row.provider_ref,
-      createdAt: Number(row.created_at),
-    };
   }
 
   /* ------------------------------------------------------- sessions */

@@ -1,11 +1,10 @@
 import crypto from 'crypto';
+import type { BillingProvider, UsageContext } from './billing';
 import { McpConfig } from './config';
-import { InsufficientCredit, debit, formatUsd, getBalance, refund, validateTopUpAmount } from './credits';
 import * as popcorn from './popcorn';
-import { createCheckoutSession } from './stripe';
 import type { McpStore } from './store';
 
-export type ToolContext = { store: McpStore; subject: string };
+export type ToolContext = { store: McpStore; subject: string; billing: BillingProvider };
 export type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean; structuredContent?: unknown };
 
 function ok(data: unknown): ToolResult {
@@ -17,10 +16,10 @@ function fail(data: unknown): ToolResult {
 }
 
 /**
- * Operation-level idempotency. A retried call returns the SAME terminal
- * outcome — it never allocates a second browser, and a retry after a refunded
- * failure does not yield a free session. Charging idempotency alone is not
- * enough, because the debit and the allocation are two different effects.
+ * Operation-level idempotency. This server performs the browser effect, so it
+ * owns operation recovery: a retried call replays the SAME terminal outcome
+ * rather than allocating a second browser, and a retry after a released
+ * reservation cannot yield a free session.
  */
 async function claim(ctx: ToolContext, ref: string): Promise<{ go: true } | { go: false; replay: ToolResult }> {
   const { claimed, existing } = await ctx.store.claimOperation(ref, ctx.subject);
@@ -43,43 +42,63 @@ async function settle(ctx: ToolContext, ref: string, outcome: 'succeeded' | 'fai
   await ctx.store.settleOperation(ref, outcome, result);
 }
 
+/**
+ * Reserve usage credit for an operation. On refusal the operation claim is
+ * released so the caller can retry the SAME key after obtaining credit, and
+ * the provider's `nextAction` is passed through opaquely — this server never
+ * interprets it and never names a payment provider.
+ */
+async function reserveOrExplain(
+  ctx: ToolContext,
+  ref: string,
+  context: UsageContext,
+): Promise<{ ok: true; reservationId: string } | { ok: false; result: ToolResult }> {
+  const reservation = await ctx.billing.reserve(context);
+  if (reservation.ok) return { ok: true, reservationId: reservation.reservationId };
+
+  await ctx.store.releaseOperation(ref);
+  if (reservation.reason === 'billing_unavailable') {
+    return {
+      ok: false,
+      result: fail({
+        error: 'billing_unavailable',
+        message: 'Usage credit could not be checked right now.',
+        next: 'Retry shortly with the same idempotency_key.',
+      }),
+    };
+  }
+  return {
+    ok: false,
+    result: fail({
+      error: 'insufficient_credit',
+      message: 'Not enough usage credit for this operation.',
+      ...(reservation.nextAction ? { next_action: reservation.nextAction } : {}),
+      next: reservation.nextAction
+        ? 'Give the human next_action to obtain more credit, then retry with the same idempotency_key.'
+        : 'Obtain more usage credit, then retry with the same idempotency_key.',
+    }),
+  };
+}
+
 export const TOOL_DEFINITIONS = [
   {
     name: 'get_balance',
     description:
-      'Return the caller\'s Popcorn credit balance and the price of one browser session. Popcorn credit is closed-loop: usable only for Popcorn sessions, non-transferable and non-withdrawable.',
+      'Return the caller\'s remaining usage credit, if this deployment meters usage. A null balance means usage is not metered here.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    name: 'top_up',
-    description:
-      `Add Popcorn credit by card. Returns a Stripe Checkout URL for the human to approve and pay; credit lands on the calling identity when the payment succeeds, and the agent never handles card data. Minimum ${formatUsd(McpConfig.minTopUpUsdCents)} — one card charge buys credit that is then spent ${McpConfig.sessionPriceUsdCents}c per session, so tiny repeated charges never happen.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        amount_usd_cents: {
-          type: 'integer',
-          description: `Amount to add, in US cents. Minimum ${McpConfig.minTopUpUsdCents}; suggested: ${McpConfig.topUpPresetsUsdCents.join(', ')}.`,
-        },
-        idempotency_key: {
-          type: 'string',
-          description: 'Reuse the same key when retrying: you get back the SAME Checkout link instead of a second charge.',
-        },
-        reason: { type: 'string', description: 'Human-readable reason shown to the payer.' },
-      },
-      required: ['amount_usd_cents'],
-      additionalProperties: false,
-    },
   },
   {
     name: 'create_browser_session',
     description:
-      `Start one isolated Popcorn browser session and debit Popcorn credit. One purchase buys one fixed block of ${McpConfig.sessionTtlSeconds} seconds for ${McpConfig.sessionPriceUsdCents} cents; the duration is not negotiable. Returns session id, live-view URL for the human, CDP URL for the agent, expiry, and the amount charged. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.`,
+      `Start one isolated Popcorn browser session. One operation buys one fixed block of ${McpConfig.sessionTtlSeconds} seconds; the duration is not negotiable. Returns session id, live-view URL for the human, CDP URL for the agent, and expiry. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.`,
     inputSchema: {
       type: 'object',
       properties: {
-        purpose: { type: 'string', description: 'What the session is for; shown to the human in approvals and receipts.' },
-        idempotency_key: { type: 'string', description: 'Repeat calls with the same key never double-charge.' },
+        purpose: { type: 'string', description: 'What this session is for (shown to the human).' },
+        idempotency_key: {
+          type: 'string',
+          description: 'Reuse the same key when retrying: you get back the same session, never a second one.',
+        },
       },
       required: ['purpose'],
       additionalProperties: false,
@@ -87,7 +106,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_browser_session',
-    description: 'Fetch the current state of a browser session the caller owns.',
+    description: 'State of a browser session the caller owns.',
     inputSchema: {
       type: 'object',
       properties: { session_id: { type: 'string' } },
@@ -97,8 +116,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_browser_connection',
-    description:
-      'Return the agent-facing connection details for a session the caller owns: CDP websocket URL, region, and expiry. Free; the session is already paid for.',
+    description: 'Agent-facing connection details (CDP URL, region, expiry) for a session the caller owns.',
     inputSchema: {
       type: 'object',
       properties: { session_id: { type: 'string' } },
@@ -108,8 +126,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_live_view',
-    description:
-      'Return the human-facing live-view URL for a session the caller owns. Send this to the person when a login or human decision is needed; never ask them for credentials.',
+    description: 'Human-facing live-view URL for a session the caller owns; use it to hand a login to the human.',
     inputSchema: {
       type: 'object',
       properties: { session_id: { type: 'string' } },
@@ -119,8 +136,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'verify_runtime',
-    description:
-      'Return the isolation and attestation posture of a session the caller owns: whether the browser pod is attested, the attestation document when available, and the isolation guarantees that always hold.',
+    description: 'Isolation posture of a session the caller owns, with an attestation document when the runtime provides one.',
     inputSchema: {
       type: 'object',
       properties: { session_id: { type: 'string' } },
@@ -130,7 +146,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'extend_browser_session',
-    description: `Extend a session the caller owns by one more fixed block of ${McpConfig.sessionTtlSeconds} seconds. This is the paid boundary: it debits ${McpConfig.extendPriceUsdCents} cents, or returns insufficient_credit with a top_up hint.`,
+    description: `Extend a session the caller owns by one more fixed block of ${McpConfig.sessionTtlSeconds} seconds. This is a billed operation.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -143,7 +159,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'end_browser_session',
-    description: 'End a session the caller owns immediately. Ending early does not refund the session charge.',
+    description: 'End a session early. Does not return credit for the current block.',
     inputSchema: {
       type: 'object',
       properties: { session_id: { type: 'string' } },
@@ -172,122 +188,46 @@ async function ownedSession(ctx: ToolContext, sessionId: unknown) {
 export async function callTool(ctx: ToolContext, name: string, args: Record<string, any>): Promise<ToolResult> {
   switch (name) {
     case 'get_balance': {
-      const balance = await getBalance(ctx.store, ctx.subject);
+      const balance = await ctx.billing.getBalance(ctx.subject);
       return ok({
-        balance_usd_cents: balance,
-        balance_display: formatUsd(balance),
-        session_price_usd_cents: McpConfig.sessionPriceUsdCents,
+        credits: balance,
+        metered: balance !== null,
         session_block_seconds: McpConfig.sessionTtlSeconds,
-        sessions_affordable: Math.floor(balance / Math.max(McpConfig.sessionPriceUsdCents, 1)),
-        minimum_top_up_usd_cents: McpConfig.minTopUpUsdCents,
-        suggested_top_up_usd_cents: McpConfig.topUpPresetsUsdCents,
-        credit_terms: 'Closed-loop Popcorn credit: usable only for Popcorn browser sessions; non-transferable, non-withdrawable, no crypto.',
+        credits_per_operation: 1,
       });
-    }
-
-    case 'top_up': {
-      const amount = Number(args.amount_usd_cents);
-      const invalid = validateTopUpAmount(amount);
-      if (invalid) {
-        return fail({
-          error: 'invalid_amount',
-          message: invalid,
-          minimum_usd_cents: McpConfig.minTopUpUsdCents,
-          suggested_usd_cents: McpConfig.topUpPresetsUsdCents,
-        });
-      }
-      // Retrying a timed-out top_up must return the SAME Checkout link, never
-      // create a second payable link for the same intent.
-      const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
-      const ref = `topup:${ctx.subject}:${key}`;
-      const existing = await ctx.store.getOperation(ref);
-      if (existing && existing.outcome === 'succeeded') {
-        const record = existing.result as { top_up_id: string };
-        const stored = await ctx.store.getTopUp(record.top_up_id);
-        if (stored?.checkoutUrl) {
-          return ok({ ...(existing.result as Record<string, unknown>), replayed: true, status: stored.status });
-        }
-      }
-      const claimed = await claim(ctx, ref);
-      if (!claimed.go) return claimed.replay;
-
-      const topUpId = crypto.randomUUID();
-      // Persist BEFORE calling Stripe: otherwise a webhook that arrives in the
-      // gap has no record to match and the payment is silently dropped.
-      await ctx.store.putTopUp({
-        id: topUpId,
-        subject: ctx.subject,
-        amountUsdCents: amount,
-        status: 'pending',
-        checkoutUrl: '',
-        providerRef: null,
-        createdAt: Date.now(),
-      });
-      let checkout;
-      try {
-        checkout = await createCheckoutSession({ subject: ctx.subject, topUpId, amountUsdCents: amount });
-      } catch (error) {
-        await ctx.store.updateTopUpStatus(topUpId, 'cancelled');
-        await ctx.store.releaseOperation(ref);
-        return fail({ error: 'top_up_unavailable', message: (error as Error).message });
-      }
-      // Patch the existing row; never rewrite `status`, or a webhook that has
-      // already credited this top-up would be knocked back to pending.
-      await ctx.store.attachCheckout(topUpId, checkout.url, checkout.id);
-
-      const payload = {
-        top_up_id: topUpId,
-        amount_usd_cents: amount,
-        approval_url: checkout.url,
-        buys_sessions: Math.floor(amount / Math.max(McpConfig.sessionPriceUsdCents, 1)),
-        next: 'Ask the human to open approval_url and pay. Credit appears on get_balance once Stripe confirms the payment.',
-      };
-      await settle(ctx, ref, 'succeeded', payload);
-      return ok(payload);
     }
 
     case 'create_browser_session': {
       const purpose = typeof args.purpose === 'string' ? args.purpose.slice(0, 300) : '';
       if (!purpose) return fail({ error: 'invalid_request', message: 'purpose is required' });
-      // Fixed block: the price and the duration are one SKU, so the caller
-      // cannot buy unlimited browser time for a single charge.
-      const ttlSeconds = McpConfig.sessionTtlSeconds;
       const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
       const ref = `session:${ctx.subject}:${key}`;
 
       const claimed = await claim(ctx, ref);
       if (!claimed.go) return claimed.replay;
 
-      const price = McpConfig.sessionPriceUsdCents;
-      try {
-        await debit(ctx.store, ctx.subject, price, ref, `browser session: ${purpose}`);
-      } catch (error) {
-        if (error instanceof InsufficientCredit) {
-          // Release the claim: adding credit and retrying the same key must work.
-          await ctx.store.releaseOperation(ref);
-          return fail({
-            error: 'insufficient_credit',
-            balance_usd_cents: error.balanceUsdCents,
-            required_usd_cents: error.requiredUsdCents,
-            next: 'Call top_up to add Popcorn credit, then retry with the same idempotency_key.',
-          });
-        }
-        await ctx.store.releaseOperation(ref);
-        throw error;
-      }
+      const reserved = await reserveOrExplain(ctx, ref, {
+        subject: ctx.subject,
+        operationId: ref,
+        operation: 'create_session',
+      });
+      if (!reserved.ok) return reserved.result;
 
-      const result = await popcorn.createSession({ ttlSeconds, metadata: { subject: ctx.subject, purpose } });
+      const result = await popcorn.createSession({
+        ttlSeconds: McpConfig.sessionTtlSeconds,
+        metadata: { subject: ctx.subject, purpose },
+      });
       if (!result.ok) {
-        await refund(ctx.store, ctx.subject, price, ref);
+        await ctx.billing.release(reserved.reservationId);
         const payload = {
           error: 'session_unavailable',
           message: result.error,
-          refunded_usd_cents: price,
           next: 'Retry with a NEW idempotency_key.',
         };
         await settle(ctx, ref, 'failed', payload);
         return fail(payload);
       }
+      await ctx.billing.commit(reserved.reservationId);
 
       const view = popcorn.toSessionView(result.data);
       const expiresAt = view.expiresAt ? Date.parse(view.expiresAt) : NaN;
@@ -305,8 +245,6 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         cdp_url: view.cdpUrl,
         expires_at: view.expiresAt,
         region: view.region,
-        charged_usd_cents: price,
-        balance_usd_cents: await getBalance(ctx.store, ctx.subject),
         isolation: 'Fresh isolated browser. No local Chrome profile, cookies, or saved passwords.',
         human_handoff: 'Send live_view_url to the human for any login; do not ask them for credentials.',
       };
@@ -381,34 +319,25 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const claimed = await claim(ctx, ref);
       if (!claimed.go) return claimed.replay;
 
-      const price = McpConfig.extendPriceUsdCents;
-      try {
-        await debit(ctx.store, ctx.subject, price, ref, `extend session ${record.sessionId}`);
-      } catch (error) {
-        await ctx.store.releaseOperation(ref);
-        if (error instanceof InsufficientCredit) {
-          return fail({
-            error: 'insufficient_credit',
-            balance_usd_cents: error.balanceUsdCents,
-            required_usd_cents: error.requiredUsdCents,
-            next: 'Call top_up to add Popcorn credit, then retry with the same idempotency_key.',
-          });
-        }
-        throw error;
-      }
+      const reserved = await reserveOrExplain(ctx, ref, {
+        subject: ctx.subject,
+        operationId: ref,
+        operation: 'extend_session',
+      });
+      if (!reserved.ok) return reserved.result;
 
       const result = await popcorn.extendSession(record.sessionId, extendBySeconds);
       if (!result.ok) {
-        await refund(ctx.store, ctx.subject, price, ref);
+        await ctx.billing.release(reserved.reservationId);
         const payload = {
           error: 'extend_failed',
           message: result.error,
-          refunded_usd_cents: price,
           next: 'Retry with a NEW idempotency_key.',
         };
         await settle(ctx, ref, 'failed', payload);
         return fail(payload);
       }
+      await ctx.billing.commit(reserved.reservationId);
 
       const view = popcorn.toSessionView(result.data);
       if (view.expiresAt) {
@@ -419,8 +348,6 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         session_id: record.sessionId,
         expires_at: view.expiresAt,
         extended_by_seconds: extendBySeconds,
-        charged_usd_cents: price,
-        balance_usd_cents: await getBalance(ctx.store, ctx.subject),
       };
       await settle(ctx, ref, 'succeeded', payload);
       return ok(payload);
