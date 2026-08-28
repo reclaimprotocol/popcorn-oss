@@ -21,6 +21,10 @@ them with a card — no wallet, no private keys, no `402` handshake.
 - **Popcorn credit, not a wallet.** A closed-loop prepaid balance in USD cents:
   usable only for Popcorn sessions, non-transferable, non-withdrawable, no
   crypto.
+- **Payments that cannot double-charge.** `top_up` takes an `idempotency_key`
+  and replays the same Checkout link on retry, and the webhook credits only
+  when the paid Checkout Session id, amount and currency match the stored
+  purchase — otherwise it refuses (400) or asks Stripe to retry (503).
 - **One payment verb, one card charge.** `top_up` returns a Stripe Checkout URL;
   the human pays; the webhook credits that exact identity. Card processing has a
   fixed per-transaction fee, so credit is bought in a meaningful minimum

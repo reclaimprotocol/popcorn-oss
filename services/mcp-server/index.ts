@@ -26,6 +26,8 @@ const store: McpStore = McpConfig.databaseUrl
   ? PostgresStore.fromUrl(McpConfig.databaseUrl)
   : new InMemoryStore();
 const durable = store instanceof PostgresStore;
+// Tests drive the same store the app uses.
+(globalThis as Record<string, unknown>).__mcpStore = store;
 if (durable) await (store as PostgresStore).migrate();
 
 /**
@@ -451,6 +453,27 @@ app.post('/stripe/webhook', async (c) => {
     // retries while the top-up record catches up.
     console.error(`stripe webhook for unknown top-up ${topUpId ?? '(none)'} on session ${session.id}`);
     return c.json({ error: 'unknown_top_up', retry: true }, 503);
+  }
+
+  // Bind the paid Checkout Session to the stored purchase before crediting:
+  // the session id must be the one we created for this top-up, and the amount
+  // and currency must be exactly what was requested. Anything else is a
+  // mismatch we refuse to turn into credit.
+  if (topUp.providerRef && String(session.id) !== topUp.providerRef) {
+    console.error(`stripe webhook session ${session.id} does not match top-up ${topUp.id} (${topUp.providerRef})`);
+    return c.json({ error: 'session_mismatch' }, 400);
+  }
+  if (!topUp.providerRef) {
+    // Checkout was created but the id had not landed yet; retry shortly.
+    return c.json({ error: 'top_up_not_ready', retry: true }, 503);
+  }
+  const paidAmount = Number(session.amount_total);
+  const currency = String(session.currency ?? '').toLowerCase();
+  if (paidAmount !== topUp.amountUsdCents || currency !== 'usd') {
+    console.error(
+      `stripe webhook amount mismatch on top-up ${topUp.id}: paid ${paidAmount} ${currency}, expected ${topUp.amountUsdCents} usd`,
+    );
+    return c.json({ error: 'amount_mismatch' }, 400);
   }
 
   await credit(store, topUp.subject, topUp.amountUsdCents, `stripe:${session.id}`);

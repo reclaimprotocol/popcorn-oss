@@ -163,3 +163,48 @@ describe('operation idempotency', () => {
     expect(await context.store.balanceUsdCents(context.subject)).toBe(100);
   });
 });
+
+describe('top-up idempotency', () => {
+  test('a retried top_up returns the same Checkout link instead of a second charge', async () => {
+    const context = ctx();
+    const ref = `topup:${context.subject}:key-1`;
+    await context.store.claimOperation(ref, context.subject);
+    await context.store.putTopUp({
+      id: 'tu-1',
+      subject: context.subject,
+      amountUsdCents: 500,
+      status: 'pending',
+      checkoutUrl: 'https://checkout.stripe.com/first',
+      providerRef: 'cs_first',
+      createdAt: Date.now(),
+    });
+    await context.store.settleOperation(ref, 'succeeded', {
+      top_up_id: 'tu-1',
+      amount_usd_cents: 500,
+      approval_url: 'https://checkout.stripe.com/first',
+    });
+
+    const response = await handleRpc(context, {
+      jsonrpc: '2.0',
+      id: 20,
+      method: 'tools/call',
+      params: { name: 'top_up', arguments: { amount_usd_cents: 500, idempotency_key: 'key-1' } },
+    });
+    const content = (response as any).result.structuredContent;
+    expect(content.approval_url).toBe('https://checkout.stripe.com/first');
+    expect(content.replayed).toBe(true);
+  });
+
+  test('an under-minimum top_up is refused with the minimum stated', async () => {
+    const context = ctx();
+    const response = await handleRpc(context, {
+      jsonrpc: '2.0',
+      id: 21,
+      method: 'tools/call',
+      params: { name: 'top_up', arguments: { amount_usd_cents: 5 } },
+    });
+    const content = (response as any).result.structuredContent;
+    expect(content.error).toBe('invalid_amount');
+    expect(content.minimum_usd_cents).toBe(500);
+  });
+});

@@ -61,6 +61,10 @@ export const TOOL_DEFINITIONS = [
           type: 'integer',
           description: `Amount to add, in US cents. Minimum ${McpConfig.minTopUpUsdCents}; suggested: ${McpConfig.topUpPresetsUsdCents.join(', ')}.`,
         },
+        idempotency_key: {
+          type: 'string',
+          description: 'Reuse the same key when retrying: you get back the SAME Checkout link instead of a second charge.',
+        },
         reason: { type: 'string', description: 'Human-readable reason shown to the payer.' },
       },
       required: ['amount_usd_cents'],
@@ -192,6 +196,21 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
           suggested_usd_cents: McpConfig.topUpPresetsUsdCents,
         });
       }
+      // Retrying a timed-out top_up must return the SAME Checkout link, never
+      // create a second payable link for the same intent.
+      const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
+      const ref = `topup:${ctx.subject}:${key}`;
+      const existing = await ctx.store.getOperation(ref);
+      if (existing && existing.outcome === 'succeeded') {
+        const record = existing.result as { top_up_id: string };
+        const stored = await ctx.store.getTopUp(record.top_up_id);
+        if (stored?.checkoutUrl) {
+          return ok({ ...(existing.result as Record<string, unknown>), replayed: true, status: stored.status });
+        }
+      }
+      const claimed = await claim(ctx, ref);
+      if (!claimed.go) return claimed.replay;
+
       const topUpId = crypto.randomUUID();
       // Persist BEFORE calling Stripe: otherwise a webhook that arrives in the
       // gap has no record to match and the payment is silently dropped.
@@ -209,21 +228,22 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         checkout = await createCheckoutSession({ subject: ctx.subject, topUpId, amountUsdCents: amount });
       } catch (error) {
         await ctx.store.updateTopUpStatus(topUpId, 'cancelled');
+        await ctx.store.releaseOperation(ref);
         return fail({ error: 'top_up_unavailable', message: (error as Error).message });
       }
       // Patch the existing row; never rewrite `status`, or a webhook that has
       // already credited this top-up would be knocked back to pending.
       await ctx.store.attachCheckout(topUpId, checkout.url, checkout.id);
-      return ok({
-        status: 'approval_required',
+
+      const payload = {
         top_up_id: topUpId,
         amount_usd_cents: amount,
-        amount_display: formatUsd(amount),
         approval_url: checkout.url,
-        reason: typeof args.reason === 'string' ? args.reason : 'Popcorn credit',
         buys_sessions: Math.floor(amount / Math.max(McpConfig.sessionPriceUsdCents, 1)),
         next: 'Ask the human to open approval_url and pay. Credit appears on get_balance once Stripe confirms the payment.',
-      });
+      };
+      await settle(ctx, ref, 'succeeded', payload);
+      return ok(payload);
     }
 
     case 'create_browser_session': {

@@ -5,7 +5,7 @@
   "scripts": {
     "start": "bun run index.ts",
     "dev": "bun run --watch index.ts",
-    "test": "bun test",
+    "test": "STRIPE_WEBHOOK_SECRET=whsec_test bun test",
     "db:migrate": "bun run scripts/migrate.ts"
   },
   "dependencies": {
