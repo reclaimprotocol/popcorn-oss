@@ -102,14 +102,70 @@ async function validateAuthorizeParams(params: AuthorizeParams) {
   return client;
 }
 
+/** Popcorn brand tokens, matching popcorn.reclaimprotocol.org. */
+const BRAND_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&family=DM+Mono:wght@400;500&display=swap');
+  :root {
+    --ink: #17170f;
+    --muted: #66665b;
+    --cream: #f6f2e4;
+    --paper: #fffdf4;
+    --yellow: #f7d93d;
+    --yellow-soft: #ffe879;
+    --green: #b9d86b;
+    --line: #17170f2e;
+    --font-sans: 'Manrope', Arial, sans-serif;
+    --font-mono: 'DM Mono', ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--cream); color: var(--ink);
+    font-family: var(--font-sans); -webkit-font-smoothing: antialiased;
+    min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 32px 16px;
+  }
+  .shell { width: min(560px, 100%); }
+  .card { background: var(--paper); border: 2px solid var(--ink); padding: 32px; box-shadow: 8px 8px 0 var(--ink); }
+  .kicker {
+    display: flex; align-items: center; gap: 10px; margin: 0 0 20px;
+    font-family: var(--font-mono); font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+  }
+  .kicker > span { background: #b49b00; width: 22px; height: 2px; }
+  h1 { font-size: 30px; line-height: 1.15; letter-spacing: -.03em; margin: 0 0 10px; font-weight: 800; }
+  h1 .pop { background: var(--yellow); box-shadow: 0 0 0 6px var(--yellow); }
+  .lede { color: var(--muted); font-size: 16px; line-height: 1.65; letter-spacing: -.015em; margin: 18px 0 0; }
+  .notes { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 12px; }
+  .notes li { display: flex; gap: 12px; align-items: flex-start; font-size: 14px; line-height: 1.55; }
+  .notes li b { font-weight: 600; }
+  .tick { flex: none; width: 22px; height: 22px; border: 2px solid var(--ink); background: var(--green);
+          display: grid; place-items: center; font-size: 11px; font-family: var(--font-mono); }
+  .tick.warn { background: var(--yellow-soft); }
+  .tick.dev { background: var(--paper); }
+  .button {
+    display: inline-flex; align-items: center; justify-content: center; gap: 12px; width: 100%;
+    min-height: 52px; margin-top: 28px; padding: 0 20px; cursor: pointer;
+    border: 2px solid var(--ink); background: var(--ink); color: var(--paper);
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: .03em; text-transform: uppercase;
+    transition: transform .16s, box-shadow .16s;
+  }
+  .button:hover { transform: translate(-2px, -2px); box-shadow: 4px 4px 0 var(--ink); }
+  .button:disabled { opacity: .6; cursor: progress; transform: none; box-shadow: none; }
+  .status { margin: 14px 0 0; min-height: 20px; font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
+  .fine { margin: 22px 0 0; padding-top: 18px; border-top: 1px solid var(--line);
+          font-size: 12px; line-height: 1.6; color: var(--muted); }
+  .fine code { font-family: var(--font-mono); background: var(--yellow-soft); padding: 1px 5px; }
+  .alert { border: 2px solid var(--ink); background: var(--yellow-soft); padding: 12px 14px; margin: 0 0 20px;
+           font-size: 14px; }
+`;
+
 function page(title: string, inner: string, script = ''): string {
   return `<!doctype html>
-<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title></head>
-<body style="font-family:system-ui;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.55">${inner}${script}</body></html>`;
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)}</title><style>${BRAND_CSS}</style></head>
+<body><main class="shell"><div class="card">${inner}</div></main>${script}</body></html>`;
 }
 
 function noticeHtml(message: string): string {
-  return `<p role="alert" style="background:#fdecea;border:1px solid #f5c6c3;padding:.6rem .8rem;border-radius:.4rem">${escapeHtml(message)}</p>`;
+  return `<p class="alert" role="alert">${escapeHtml(message)}</p>`;
 }
 
 /** Browser-side: keypair in IndexedDB, sign the nonce, POST the proof. */
@@ -157,6 +213,8 @@ async function approve(form) {
 document.getElementById('approve').addEventListener('submit', (event) => {
   event.preventDefault();
   approve(event.target).catch((error) => {
+    const button = event.target.querySelector('button');
+    if (button) button.disabled = false;
     document.getElementById('status').textContent = 'This browser could not create a device key: ' + error.message;
   });
 });
@@ -185,20 +243,21 @@ app.get('/oauth/authorize', async (c) => {
   return c.html(
     page(
       `Authorize ${client.clientName}`,
-      `<h1 style="font-size:1.4rem">Authorize ${escapeHtml(client.clientName)}</h1>
-  <p><strong>${escapeHtml(client.clientName)}</strong> is asking to run Popcorn browser sessions on your behalf.</p>
-  <ul>
-    <li>It can start isolated cloud browsers and spend this browser's Popcorn credit.</li>
-    <li>Each session costs ${McpConfig.sessionPriceUsdCents} cents. It cannot add credit without you approving a card payment.</li>
-    <li>No account, no email, no password: this page creates a key that stays in <em>this</em> browser and identifies your balance.</li>
+      `<p class="kicker"><span></span>Popcorn · isolated cloud browsers</p>
+  <h1>You're all set! <span class="pop">No login</span> needed to use Popcorn!</h1>
+  <p class="lede">Pay as you go — <strong>${escapeHtml(client.clientName)}</strong> gets ${McpConfig.sessionPriceUsdCents}¢ browser sessions on your credit, and nothing else.</p>
+  <ul class="notes">
+    <li><span class="tick">✓</span><span><b>No account, no password, no email.</b> This page mints a key that never leaves this browser — that key is your balance.</span></li>
+    <li><span class="tick warn">!</span><span><b>Top up only what your agent needs.</b> Unused credit may be lost — it's closed-loop, non-transferable and non-refundable.</span></li>
+    <li><span class="tick dev">⌘</span><span><b>Building a product?</b> Use the <a href="https://docs.x402.org/guides/mcp-server-with-x402">x402 endpoint</a> instead of this browser flow.</span></li>
   </ul>
-  <p style="color:#666;font-size:.9rem">Clearing this site's data or using another browser starts a new, empty balance.</p>
   <form id="approve" method="post" action="/oauth/decision" data-nonce="${escapeHtml(nonce.value)}">
     ${hiddenParams(params)}${hidden('nonce', nonce.value)}
     <input type="hidden" name="public_key"><input type="hidden" name="signature">
-    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Approve</button></p>
-    <p id="status" style="color:#666;font-size:.9rem"></p>
-  </form>`,
+    <button class="button" type="submit">Approve ${escapeHtml(client.clientName)}</button>
+    <p class="status" id="status"></p>
+  </form>
+  <p class="fine">Each session buys one fixed block of <code>${McpConfig.sessionTtlSeconds / 60} min</code> for <code>${McpConfig.sessionPriceUsdCents}¢</code>. Clearing this site's data or switching browsers starts a fresh, empty balance.</p>`,
       DEVICE_SCRIPT,
     ),
   );
@@ -333,13 +392,14 @@ app.get('/oauth/revoke', async (c) => {
   return c.html(
     page(
       'Revoke agent access',
-      `<h1 style="font-size:1.4rem">Revoke agent access</h1>
-  <p>This signs out every MCP client currently authorized on this browser's identity. Your Popcorn credit is not affected.</p>
+      `<p class="kicker"><span></span>Popcorn · access control</p>
+  <h1>Cut off <span class="pop">every agent</span> on this browser</h1>
+  <p class="lede">This signs out every MCP client authorized on this browser's key. Your Popcorn credit stays exactly where it is.</p>
   <form id="approve" method="post" action="/oauth/revoke/confirm" data-nonce="${escapeHtml(nonce.value)}">
     ${hidden('nonce', nonce.value)}
     <input type="hidden" name="public_key"><input type="hidden" name="signature">
-    <p><button type="submit" style="padding:.6rem 1.2rem;font-size:1rem">Revoke all access</button></p>
-    <p id="status" style="color:#666;font-size:.9rem"></p>
+    <button class="button" type="submit">Revoke all access</button>
+    <p class="status" id="status"></p>
   </form>`,
       DEVICE_SCRIPT,
     ),
@@ -364,7 +424,9 @@ app.post('/oauth/revoke/confirm', async (c) => {
   return c.html(
     page(
       'Access revoked',
-      '<h1 style="font-size:1.4rem">Access revoked</h1><p>Every MCP client authorized on this identity has been signed out. Your Popcorn credit is unchanged.</p>',
+      `<p class="kicker"><span></span>Popcorn · access control</p>
+  <h1>Access <span class="pop">revoked</span></h1>
+  <p class="lede">Every MCP client authorized on this identity has been signed out. Your Popcorn credit is unchanged.</p>`,
     ),
   );
 });

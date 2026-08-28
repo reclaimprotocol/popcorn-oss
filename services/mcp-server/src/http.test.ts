@@ -38,3 +38,29 @@ describe('streamable http transport', () => {
     expect(body.resource).toEndWith('/mcp');
   });
 });
+
+describe('authorization page', () => {
+  test('renders the pay-as-you-go copy in Popcorn brand styling', async () => {
+    const registered = await app.request('/oauth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ client_name: 'Claude', redirect_uris: ['https://claude.ai/cb'] }),
+    });
+    const client = (await registered.json()) as any;
+    const query = new URLSearchParams({
+      client_id: client.client_id,
+      redirect_uri: 'https://claude.ai/cb',
+      response_type: 'code',
+      code_challenge: 'abc',
+      code_challenge_method: 'S256',
+      resource: 'http://localhost:3000/mcp',
+    });
+    const html = await (await app.request(`/oauth/authorize?${query}`)).text();
+    expect(html).toContain("No login");
+    expect(html).toContain('Pay as you go');
+    expect(html).toContain('Unused credit may be lost');
+    expect(html).toContain('x402 endpoint');
+    expect(html).toContain('--yellow: #f7d93d');
+    expect(html).toContain('Manrope');
+  });
+});
