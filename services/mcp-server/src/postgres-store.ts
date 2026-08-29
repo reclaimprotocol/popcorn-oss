@@ -6,6 +6,7 @@ import type {
   McpStore,
   OAuthClient,
   OperationRecord,
+  PendingCommit,
   SessionRecord,
 } from './store';
 
@@ -58,6 +59,19 @@ export class PostgresStore implements McpStore {
         ended_at BIGINT
       );
       CREATE INDEX IF NOT EXISTS mcp_sessions_subject ON mcp_sessions (subject);
+      -- Billing commits we owe the provider. Written before the commit is
+      -- attempted, so a crash cannot lose the obligation to settle.
+      CREATE TABLE IF NOT EXISTS mcp_pending_commits (
+        reservation_id TEXT PRIMARY KEY,
+        subject TEXT NOT NULL,
+        operation_ref TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        created_at BIGINT NOT NULL,
+        next_attempt_at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS mcp_pending_commits_due ON mcp_pending_commits (next_attempt_at);
       CREATE TABLE IF NOT EXISTS mcp_device_nonces (
         value TEXT PRIMARY KEY,
         created_at BIGINT NOT NULL,
@@ -160,6 +174,47 @@ export class PostgresStore implements McpStore {
   async revokedAt(subject: string) {
     const [row] = await this.sql<any[]>`SELECT issued_before FROM mcp_revocations WHERE subject = ${subject}`;
     return row ? Number(row.issued_before) : 0;
+  }
+
+  /* ------------------------------------------------ pending commits */
+
+  async putPendingCommit(pending: PendingCommit) {
+    await this.sql`
+      INSERT INTO mcp_pending_commits (reservation_id, subject, operation_ref, operation, attempts, last_error, created_at, next_attempt_at)
+      VALUES (${pending.reservationId}, ${pending.subject}, ${pending.operationRef}, ${pending.operation}, ${pending.attempts}, ${pending.lastError}, ${pending.createdAt}, ${pending.nextAttemptAt})
+      ON CONFLICT (reservation_id) DO NOTHING
+    `;
+  }
+
+  async deletePendingCommit(reservationId: string) {
+    await this.sql`DELETE FROM mcp_pending_commits WHERE reservation_id = ${reservationId}`;
+  }
+
+  async recordCommitAttempt(reservationId: string, error: string, nextAttemptAt: number) {
+    await this.sql`
+      UPDATE mcp_pending_commits
+      SET attempts = attempts + 1, last_error = ${error}, next_attempt_at = ${nextAttemptAt}
+      WHERE reservation_id = ${reservationId}
+    `;
+  }
+
+  async dueCommits(now: number, limit: number) {
+    const rows = await this.sql<any[]>`
+      SELECT * FROM mcp_pending_commits
+      WHERE next_attempt_at <= ${now}
+      ORDER BY next_attempt_at ASC
+      LIMIT ${limit}
+    `;
+    return rows.map((row) => ({
+      reservationId: row.reservation_id,
+      subject: row.subject,
+      operationRef: row.operation_ref,
+      operation: row.operation,
+      attempts: Number(row.attempts),
+      lastError: row.last_error,
+      createdAt: Number(row.created_at),
+      nextAttemptAt: Number(row.next_attempt_at),
+    }));
   }
 
   /* ------------------------------------------------------- sessions */

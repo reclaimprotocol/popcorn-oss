@@ -44,6 +44,25 @@ export type SessionRecord = {
   endedAt: number | null;
 };
 
+/**
+ * A billing commit we owe an external provider.
+ *
+ * The browser effect happens BEFORE the commit, so a commit that fails or
+ * times out must not be forgotten: the reservation would otherwise expire and
+ * refund a session the caller actually used. The record survives a restart and
+ * is retried by the reconciler.
+ */
+export type PendingCommit = {
+  reservationId: string;
+  subject: string;
+  operationRef: string;
+  operation: string;
+  attempts: number;
+  lastError: string | null;
+  createdAt: number;
+  nextAttemptAt: number;
+};
+
 export type DeviceNonce = {
   value: string;
   createdAt: number;
@@ -79,6 +98,16 @@ export interface McpStore {
   putDevice(device: DeviceRecord): Promise<void>;
   getDevice(subject: string): Promise<DeviceRecord | null>;
 
+  /**
+   * Pending billing commits. `putPendingCommit` is written BEFORE the commit
+   * is attempted, so a crash between the browser effect and the commit still
+   * leaves a durable obligation to settle.
+   */
+  putPendingCommit(pending: PendingCommit): Promise<void>;
+  deletePendingCommit(reservationId: string): Promise<void>;
+  recordCommitAttempt(reservationId: string, error: string, nextAttemptAt: number): Promise<void>;
+  dueCommits(now: number, limit: number): Promise<PendingCommit[]>;
+
   putSession(session: SessionRecord): Promise<void>;
   getSession(sessionId: string): Promise<SessionRecord | null>;
   updateSession(sessionId: string, patch: Partial<SessionRecord>): Promise<void>;
@@ -96,6 +125,7 @@ export class InMemoryStore implements McpStore {
   private clients = new Map<string, OAuthClient>();
   private codes = new Map<string, AuthorizationCode>();
   private sessions = new Map<string, SessionRecord>();
+  private pendingCommits = new Map<string, PendingCommit>();
   private nonces = new Map<string, DeviceNonce>();
   private devices = new Map<string, DeviceRecord>();
 
@@ -116,6 +146,29 @@ export class InMemoryStore implements McpStore {
 
   async getDevice(subject: string) {
     return this.devices.get(subject) ?? null;
+  }
+
+  async putPendingCommit(pending: PendingCommit) {
+    this.pendingCommits.set(pending.reservationId, { ...pending });
+  }
+
+  async deletePendingCommit(reservationId: string) {
+    this.pendingCommits.delete(reservationId);
+  }
+
+  async recordCommitAttempt(reservationId: string, error: string, nextAttemptAt: number) {
+    const row = this.pendingCommits.get(reservationId);
+    if (!row) return;
+    row.attempts += 1;
+    row.lastError = error;
+    row.nextAttemptAt = nextAttemptAt;
+  }
+
+  async dueCommits(now: number, limit: number) {
+    return [...this.pendingCommits.values()]
+      .filter((row) => row.nextAttemptAt <= now)
+      .slice(0, limit)
+      .map((row) => ({ ...row }));
   }
 
   async putSession(session: SessionRecord) {

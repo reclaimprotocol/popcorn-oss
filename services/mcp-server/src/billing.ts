@@ -37,11 +37,31 @@ export type Reservation =
   | { ok: true; reservationId: string }
   | { ok: false; reason: 'insufficient_credit' | 'billing_unavailable'; nextAction?: NextAction };
 
+/**
+ * Thrown when a commit did not durably settle. `terminal` means retrying can
+ * never succeed (the provider refused the reservation outright), so the caller
+ * should stop and surface it rather than loop forever.
+ */
+export class BillingCommitError extends Error {
+  constructor(
+    message: string,
+    readonly terminal: boolean,
+  ) {
+    super(message);
+    this.name = 'BillingCommitError';
+  }
+}
+
 export interface BillingProvider {
   readonly name: string;
   /** Remaining usage credits, or null when this provider does not meter. */
   getBalance(subject: string): Promise<number | null>;
   reserve(context: UsageContext): Promise<Reservation>;
+  /**
+   * Settle a reservation. MUST throw `BillingCommitError` unless the provider
+   * durably confirmed the commit — the effect being paid for has already
+   * happened, so a swallowed failure gives the operation away for free.
+   */
   commit(reservationId: string): Promise<void>;
   release(reservationId: string): Promise<void>;
 }
@@ -153,7 +173,18 @@ export class ExternalBillingProvider implements BillingProvider {
   }
 
   async commit(reservationId: string): Promise<void> {
-    await this.call(`/v1/reservations/${encodeURIComponent(reservationId)}/commit`, { method: 'POST' });
+    let response: Response;
+    try {
+      response = await this.call(`/v1/reservations/${encodeURIComponent(reservationId)}/commit`, { method: 'POST' });
+    } catch (error) {
+      // Network failure or timeout: the commit may or may not have landed.
+      // Commit is idempotent, so a retry is always safe.
+      throw new BillingCommitError(`commit unreachable: ${(error as Error).message}`, false);
+    }
+    if (response.ok) return;
+    // 409 means the provider will never accept this commit; anything else
+    // (401, 5xx, rate limit) may succeed on a later attempt.
+    throw new BillingCommitError(`commit rejected with ${response.status}`, response.status === 409);
   }
 
   async release(reservationId: string): Promise<void> {

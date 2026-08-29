@@ -92,6 +92,30 @@ Two implementations ship here (`src/billing.ts`):
   POST {base}/v1/reservations/:id/release
   ```
 
+### Commit is the money-critical step
+
+The browser is created **before** the reservation is committed, so a commit
+that fails, times out or is lost to a crash must never be mistaken for success
+— the provider would eventually expire the reservation and refund a session
+that was actually delivered. Therefore:
+
+- `commit()` throws unless the provider durably confirmed it. `ExternalBillingProvider`
+  rejects every non-2xx response; `409` is treated as terminal, everything else
+  as retryable.
+- Before committing, the obligation is written to `mcp_pending_commits`, so it
+  survives a restart.
+- A background reconciler (`src/reconcile.ts`) retries pending commits with
+  capped exponential backoff until the provider confirms. Commit is idempotent,
+  so retrying is always safe.
+- The operation result carries `usage_settled`, which is `false` while a commit
+  is still outstanding — the operation is never reported as fully settled
+  before billing confirms it.
+- A terminally refused commit is logged as `UNSETTLED USAGE` and dropped;
+  operators should alert on that line.
+
+Providers are expected to accept a **late** commit for a reservation they
+already expired, re-debiting it, rather than treating the expiry as final.
+
 A provider may return an opaque purchase hint, which the tool layer passes
 through untouched:
 
@@ -144,6 +168,10 @@ do it separately). `claimOperation` is a single
 `INSERT ... ON CONFLICT DO NOTHING`, so concurrent replicas cannot both win the
 same claim. Without `DATABASE_URL` storage is in-memory: fine for local dev,
 tests and demos, but claims and session ownership do not survive a restart.
+
+> **Operators:** the default is `MCP_BILLING_PROVIDER=none`, which meters
+> nothing. A metered deployment must set `external` and its base URL/token
+> explicitly — a missing setting silently grants unmetered browser usage.
 
 ## Scope of this build
 

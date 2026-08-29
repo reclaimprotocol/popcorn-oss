@@ -13,6 +13,7 @@ import {
   verifyChallenge,
 } from './src/oauth';
 import { billingProviderFromConfig } from './src/billing';
+import { startCommitReconciler } from './src/reconcile';
 import { InMemoryStore, type McpStore } from './src/store';
 import { PostgresStore } from './src/postgres-store';
 import { issueNonce, verifyDeviceProof } from './src/device';
@@ -34,6 +35,14 @@ if (durable) await (store as PostgresStore).migrate();
  * operator-run service. This process never talks to a payment provider.
  */
 const billing = billingProviderFromConfig();
+
+/**
+ * A billed operation performs the browser effect before committing its
+ * reservation, so a commit lost to an outage or a crash is retried here until
+ * billing confirms it. Without this, an expired reservation would refund a
+ * session that was actually delivered.
+ */
+if (billing.name !== 'none') startCommitReconciler(store, billing);
 
 const app = new Hono();
 

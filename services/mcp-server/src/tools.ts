@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import type { BillingProvider, UsageContext } from './billing';
+import { BillingCommitError, type BillingProvider, type UsageContext } from './billing';
 import { McpConfig } from './config';
 import * as popcorn from './popcorn';
 import type { McpStore } from './store';
@@ -78,6 +78,53 @@ async function reserveOrExplain(
         : 'Obtain more usage credit, then retry with the same idempotency_key.',
     }),
   };
+}
+
+/**
+ * Settle a reservation for an effect that ALREADY happened.
+ *
+ * The browser exists by the time we get here, so the credit is owed. We record
+ * the obligation durably BEFORE attempting the commit: if this process dies,
+ * or billing is down, or the commit times out, the reconciler retries it. A
+ * commit that merely looks like it failed is safe to retry, because commit is
+ * idempotent on the provider side.
+ *
+ * Returns whether billing confirmed the settlement, so the operation result
+ * never claims to be fully settled when it is not.
+ */
+async function settleUsage(
+  ctx: ToolContext,
+  reservationId: string,
+  operationRef: string,
+  operation: UsageContext['operation'],
+): Promise<boolean> {
+  await ctx.store.putPendingCommit({
+    reservationId,
+    subject: ctx.subject,
+    operationRef,
+    operation,
+    attempts: 0,
+    lastError: null,
+    createdAt: Date.now(),
+    nextAttemptAt: Date.now(),
+  });
+  try {
+    await ctx.billing.commit(reservationId);
+    await ctx.store.deletePendingCommit(reservationId);
+    return true;
+  } catch (error) {
+    const message = error instanceof BillingCommitError ? error.message : String(error);
+    if (error instanceof BillingCommitError && error.terminal) {
+      // Retrying can never work. Drop the obligation but make the loss loud:
+      // an operation was delivered that billing refused to settle.
+      console.error(`UNSETTLED USAGE: commit permanently refused for ${reservationId} (${operationRef}): ${message}`);
+      await ctx.store.deletePendingCommit(reservationId);
+      return false;
+    }
+    console.error(`commit deferred for ${reservationId} (${operationRef}): ${message}`);
+    await ctx.store.recordCommitAttempt(reservationId, message, Date.now() + 30_000);
+    return false;
+  }
 }
 
 export const TOOL_DEFINITIONS = [
@@ -227,7 +274,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         await settle(ctx, ref, 'failed', payload);
         return fail(payload);
       }
-      await ctx.billing.commit(reserved.reservationId);
+      const settled = await settleUsage(ctx, reserved.reservationId, ref, 'create_session');
 
       const view = popcorn.toSessionView(result.data);
       const expiresAt = view.expiresAt ? Date.parse(view.expiresAt) : NaN;
@@ -247,6 +294,9 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         region: view.region,
         isolation: 'Fresh isolated browser. No local Chrome profile, cookies, or saved passwords.',
         human_handoff: 'Send live_view_url to the human for any login; do not ask them for credentials.',
+        // False means the session is live but its usage has not been confirmed
+        // settled yet; reconciliation will retry.
+        usage_settled: settled,
       };
       await settle(ctx, ref, 'succeeded', payload);
       return ok(payload);
@@ -337,7 +387,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         await settle(ctx, ref, 'failed', payload);
         return fail(payload);
       }
-      await ctx.billing.commit(reserved.reservationId);
+      const settled = await settleUsage(ctx, reserved.reservationId, ref, 'extend_session');
 
       const view = popcorn.toSessionView(result.data);
       if (view.expiresAt) {
@@ -348,6 +398,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         session_id: record.sessionId,
         expires_at: view.expiresAt,
         extended_by_seconds: extendBySeconds,
+        usage_settled: settled,
       };
       await settle(ctx, ref, 'succeeded', payload);
       return ok(payload);
