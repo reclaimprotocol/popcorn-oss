@@ -49,9 +49,11 @@ export function assertProductionConfig(): void {
     ['MCP_TOKEN_SIGNING_KEY', McpConfig.tokenSigningKey !== 'dev-only-insecure-key' ? McpConfig.tokenSigningKey : ''],
   ].filter(([, value]) => !value).map(([name]) => name);
   if (!McpConfig.publicUrl.startsWith('https://')) missing.push('MCP_PUBLIC_URL (https required)');
+  if (McpConfig.tokenSigningKey.length < 32) missing.push('MCP_TOKEN_SIGNING_KEY (minimum 32 characters)');
   if (McpConfig.billingProvider === 'external') {
     if (!McpConfig.billingBaseUrl) missing.push('MCP_BILLING_BASE_URL');
     if (!McpConfig.billingAuthToken) missing.push('MCP_BILLING_AUTH_TOKEN');
+    else if (McpConfig.billingAuthToken.length < 32) missing.push('MCP_BILLING_AUTH_TOKEN (minimum 32 characters)');
   }
   if (missing.length) throw new Error(`Refusing to start: missing production configuration: ${missing.join(', ')}`);
 }
