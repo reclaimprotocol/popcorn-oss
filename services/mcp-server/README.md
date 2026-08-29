@@ -145,7 +145,7 @@ Bring your own provider by implementing the interface and wiring it in
 | `MCP_BILLING_PROVIDER` | `none` | `none` or `external` |
 | `MCP_BILLING_BASE_URL` | – | Billing service base URL (external only) |
 | `MCP_BILLING_AUTH_TOKEN` | – | Bearer token for that service |
-| `DATABASE_URL` | – | Postgres; unset means in-memory (dev/demo only) |
+| `DATABASE_URL` or `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | – | Postgres; unset means in-memory (dev/demo only) |
 | `MCP_ALLOWED_ORIGINS` | – | Extra browser Origins allowed on `/mcp` |
 
 ## Endpoints

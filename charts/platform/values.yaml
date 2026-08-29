@@ -56,8 +56,9 @@ mcpServer:
   # Secret holding DATABASE_URL, the token signing key, the control-plane
   # client credentials, and (for external billing) the billing service token.
   secretName: mcp-server-secret
+  # Existing platform database Secret with host, port, database, username and password.
+  databaseSecretName: analytics-db-secret
   secretKeys:
-    databaseUrl: DATABASE_URL
     tokenSigningKey: MCP_TOKEN_SIGNING_KEY
     popcornClientId: POPCORN_CLIENT_ID
     popcornClientSecret: POPCORN_CLIENT_SECRET

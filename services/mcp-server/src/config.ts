@@ -9,6 +9,18 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function databaseUrl(): string {
+  const direct = env('DATABASE_URL');
+  if (direct) return direct;
+  const host = env('POSTGRES_HOST');
+  const database = env('POSTGRES_DB');
+  const user = env('POSTGRES_USER');
+  const password = env('POSTGRES_PASSWORD');
+  if (!host || !database || !user || !password) return '';
+  const port = env('POSTGRES_PORT', '5432');
+  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${encodeURIComponent(database)}`;
+}
+
 export const McpConfig = {
   port: num('PORT', 3000),
   /** Public origin of this MCP server; used for OAuth metadata and redirects. */
@@ -37,13 +49,13 @@ export const McpConfig = {
   billingBaseUrl: env('MCP_BILLING_BASE_URL').replace(/\/$/, ''),
   billingAuthToken: env('MCP_BILLING_AUTH_TOKEN'),
   /** Durable storage. Unset means in-memory (dev/demo only). */
-  databaseUrl: env('DATABASE_URL'),
+  databaseUrl: databaseUrl(),
 } as const;
 
 export function assertProductionConfig(): void {
   if (process.env.NODE_ENV !== 'production') return;
   const missing = [
-    ['DATABASE_URL', McpConfig.databaseUrl],
+    ['DATABASE_URL or POSTGRES_*', McpConfig.databaseUrl],
     ['POPCORN_CLIENT_ID', McpConfig.controlPlaneClientId],
     ['POPCORN_CLIENT_SECRET', McpConfig.controlPlaneClientSecret],
     ['MCP_TOKEN_SIGNING_KEY', McpConfig.tokenSigningKey !== 'dev-only-insecure-key' ? McpConfig.tokenSigningKey : ''],

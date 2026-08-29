@@ -54,17 +54,28 @@ spec:
             - name: MCP_ALLOWED_ORIGINS
               value: {{ join "," . | quote }}
             {{- end }}
-            # Durable Postgres: operation claims and session ownership must
-            # survive a restart and be shared across replicas.
-            - name: DATABASE_URL
+            # Reuse the platform PostgreSQL database. MCP owns only mcp_* tables.
+            - name: POSTGRES_HOST
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "mcpServer.secretName is required when mcpServer.enabled" $mcp.secretName | quote }}
-                  key: {{ $mcp.secretKeys.databaseUrl | quote }}
+                  name: {{ $mcp.databaseSecretName | quote }}
+                  key: host
+            - name: POSTGRES_PORT
+              valueFrom:
+                secretKeyRef: { name: {{ $mcp.databaseSecretName | quote }}, key: port }
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: {{ $mcp.databaseSecretName | quote }}, key: database }
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef: { name: {{ $mcp.databaseSecretName | quote }}, key: username }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $mcp.databaseSecretName | quote }}, key: password }
             - name: MCP_TOKEN_SIGNING_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ $mcp.secretName | quote }}
+                  name: {{ required "mcpServer.secretName is required when mcpServer.enabled" $mcp.secretName | quote }}
                   key: {{ $mcp.secretKeys.tokenSigningKey | quote }}
             - name: POPCORN_CLIENT_ID
               valueFrom:
