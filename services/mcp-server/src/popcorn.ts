@@ -67,12 +67,13 @@ async function call<T>(path: string, init: RequestInit): Promise<PopcornResult<T
 }
 
 export function createSession(input: {
+  sessionId: string;
   ttlSeconds: number;
   metadata: Record<string, unknown>;
 }): Promise<PopcornResult<PopcornSession>> {
   return call<PopcornSession>('/v1/sessions', {
     method: 'POST',
-    body: JSON.stringify({ ttlSeconds: input.ttlSeconds, metadata: input.metadata }),
+    body: JSON.stringify({ sessionId: input.sessionId, ttlSeconds: input.ttlSeconds, metadata: input.metadata }),
   });
 }
 

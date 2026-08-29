@@ -45,6 +45,7 @@ mcpServer:
   controlPlaneUrl: http://control-plane
   # One purchase/operation buys exactly this much browser time.
   sessionBlockSeconds: 600
+  operationLeaseSeconds: 120
   billing:
     # none = every authenticated request is allowed (self-hosting default).
     # external = delegate balance/reserve/commit/release to `baseUrl`.

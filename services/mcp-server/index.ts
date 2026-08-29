@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { McpConfig } from './src/config';
+import { McpConfig, assertProductionConfig } from './src/config';
 import { handleRpc, type JsonRpcRequest } from './src/mcp';
 import {
   RESOURCE_URI,
@@ -22,6 +22,7 @@ import { issueNonce, verifyDeviceProof } from './src/device';
  * Durable storage when DATABASE_URL is set; in-memory only for local dev,
  * tests, and demos.
  */
+assertProductionConfig();
 const store: McpStore = McpConfig.databaseUrl
   ? PostgresStore.fromUrl(McpConfig.databaseUrl)
   : new InMemoryStore();
@@ -47,6 +48,14 @@ if (billing.name !== 'none') startCommitReconciler(store, billing);
 const app = new Hono();
 
 app.get('/health', (c) => c.json({ status: 'ok', storage: durable ? 'postgres' : 'memory', billing: billing.name }));
+app.get('/ready', async (c) => {
+  try {
+    await store.ping();
+    return c.json({ status: 'ready' });
+  } catch (error) {
+    return c.json({ status: 'not_ready', error: (error as Error).message }, 503);
+  }
+});
 
 /* ---------------------------------------------------------------- OAuth 2.1 */
 

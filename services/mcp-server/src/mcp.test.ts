@@ -48,7 +48,6 @@ describe('mcp surface', () => {
       'get_browser_connection',
       'get_live_view',
       'verify_runtime',
-      'extend_browser_session',
       'end_browser_session',
       'list_browser_sessions',
     ]);
@@ -103,7 +102,7 @@ describe('billing boundary', () => {
       jsonrpc: '2.0',
       id: 6,
       method: 'tools/call',
-      params: { name: 'create_browser_session', arguments: { purpose: 'log in to acme' } },
+      params: { name: 'create_browser_session', arguments: { purpose: 'log in to acme', idempotency_key: 'approval' } },
     });
     const payload = (response as any).result.structuredContent;
     expect((response as any).result.isError).toBe(true);
@@ -120,7 +119,7 @@ describe('billing boundary', () => {
       jsonrpc: '2.0',
       id: 7,
       method: 'tools/call',
-      params: { name: 'create_browser_session', arguments: { purpose: 'x' } },
+      params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'outage' } },
     });
     expect((response as any).result.structuredContent.error).toBe('billing_unavailable');
   });
@@ -201,5 +200,24 @@ describe('operation idempotency', () => {
       params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'key-3' } },
     });
     expect((response as any).result.structuredContent.error).toBe('operation_in_progress');
+  });
+
+  test('a stale pending claim can be recovered by exactly one caller', async () => {
+    const context = ctx();
+    const ref = `session:${context.subject}:stale`;
+    await context.store.claimOperation(ref, context.subject, 0);
+    const [first, second] = await Promise.all([
+      context.store.claimOperation(ref, context.subject),
+      context.store.claimOperation(ref, context.subject),
+    ]);
+    expect([first.claimed, second.claimed].filter(Boolean)).toHaveLength(1);
+  });
+
+  test('create requires an explicit idempotency key', async () => {
+    const response = await handleRpc(ctx(), {
+      jsonrpc: '2.0', id: 13, method: 'tools/call',
+      params: { name: 'create_browser_session', arguments: { purpose: 'x' } },
+    });
+    expect((response as any).result.structuredContent.error).toBe('invalid_request');
   });
 });

@@ -48,8 +48,12 @@ export class PostgresStore implements McpStore {
         subject TEXT NOT NULL,
         outcome TEXT NOT NULL,
         result JSONB,
-        created_at BIGINT NOT NULL
+        created_at BIGINT NOT NULL,
+        lease_expires_at BIGINT NOT NULL
       );
+      ALTER TABLE mcp_operations ADD COLUMN IF NOT EXISTS lease_expires_at BIGINT;
+      UPDATE mcp_operations SET lease_expires_at = created_at WHERE lease_expires_at IS NULL;
+      ALTER TABLE mcp_operations ALTER COLUMN lease_expires_at SET NOT NULL;
       CREATE TABLE IF NOT EXISTS mcp_sessions (
         session_id TEXT PRIMARY KEY,
         subject TEXT NOT NULL,
@@ -90,14 +94,22 @@ export class PostgresStore implements McpStore {
     `);
   }
 
+  async ping(): Promise<void> {
+    await this.sql`SELECT 1`;
+  }
+
   /* ----------------------------------------------------- operations */
 
-  async claimOperation(ref: string, subject: string) {
+  async claimOperation(ref: string, subject: string, leaseMs = 120_000) {
     const now = Date.now();
     const inserted = await this.sql<any[]>`
-      INSERT INTO mcp_operations (ref, subject, outcome, result, created_at)
-      VALUES (${ref}, ${subject}, 'pending', NULL, ${now})
-      ON CONFLICT (ref) DO NOTHING
+      INSERT INTO mcp_operations (ref, subject, outcome, result, created_at, lease_expires_at)
+      VALUES (${ref}, ${subject}, 'pending', NULL, ${now}, ${now + leaseMs})
+      ON CONFLICT (ref) DO UPDATE
+      SET lease_expires_at = ${now + leaseMs}
+      WHERE mcp_operations.subject = ${subject}
+        AND mcp_operations.outcome = 'pending'
+        AND mcp_operations.lease_expires_at <= ${now}
       RETURNING ref
     `;
     if (inserted.length > 0) return { claimed: true, existing: null };
@@ -117,7 +129,14 @@ export class PostgresStore implements McpStore {
   async getOperation(ref: string): Promise<OperationRecord | null> {
     const [row] = await this.sql<any[]>`SELECT * FROM mcp_operations WHERE ref = ${ref}`;
     if (!row) return null;
-    return { ref: row.ref, subject: row.subject, outcome: row.outcome, result: row.result, createdAt: Number(row.created_at) };
+    return {
+      ref: row.ref,
+      subject: row.subject,
+      outcome: row.outcome,
+      result: row.result,
+      createdAt: Number(row.created_at),
+      leaseExpiresAt: Number(row.lease_expires_at),
+    };
   }
 
   /* --------------------------------------------------------- oauth */

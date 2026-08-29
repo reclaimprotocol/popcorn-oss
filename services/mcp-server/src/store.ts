@@ -33,6 +33,8 @@ export type OperationRecord = {
   outcome: 'pending' | 'succeeded' | 'failed';
   result: unknown;
   createdAt: number;
+  /** A crashed worker may be replaced after this lease expires. */
+  leaseExpiresAt: number;
 };
 
 export type SessionRecord = {
@@ -78,13 +80,17 @@ export type DeviceRecord = {
 
 export interface McpStore {
 
+  /** Readiness check for the backing store. */
+  ping(): Promise<void>;
+
   /**
    * Operation-level idempotency. `claimOperation` MUST be a single atomic
    * insert-if-absent (`INSERT ... ON CONFLICT (ref) DO NOTHING RETURNING`):
    * exactly one caller wins the claim and performs the effect; every other
-   * caller gets the existing record and replays or waits for its outcome.
+   * caller gets the existing record and replays or waits for its outcome. A
+   * pending row whose lease expired may be atomically claimed by one retry.
    */
-  claimOperation(ref: string, subject: string): Promise<{ claimed: boolean; existing: OperationRecord | null }>;
+  claimOperation(ref: string, subject: string, leaseMs?: number): Promise<{ claimed: boolean; existing: OperationRecord | null }>;
   settleOperation(ref: string, outcome: 'succeeded' | 'failed', result: unknown): Promise<void>;
   releaseOperation(ref: string): Promise<void>;
   getOperation(ref: string): Promise<OperationRecord | null>;
@@ -128,6 +134,8 @@ export class InMemoryStore implements McpStore {
   private pendingCommits = new Map<string, PendingCommit>();
   private nonces = new Map<string, DeviceNonce>();
   private devices = new Map<string, DeviceRecord>();
+
+  async ping() {}
 
   async putNonce(nonce: DeviceNonce) {
     this.nonces.set(nonce.value, nonce);
@@ -215,10 +223,24 @@ export class InMemoryStore implements McpStore {
   private operations = new Map<string, OperationRecord>();
 
   /** Synchronous check-and-set: no `await` may split the claim. */
-  async claimOperation(ref: string, subject: string) {
+  async claimOperation(ref: string, subject: string, leaseMs = 120_000) {
+    const now = Date.now();
     const existing = this.operations.get(ref);
-    if (existing) return { claimed: false, existing };
-    this.operations.set(ref, { ref, subject, outcome: 'pending', result: null, createdAt: Date.now() });
+    if (existing) {
+      if (existing.subject === subject && existing.outcome === 'pending' && existing.leaseExpiresAt <= now) {
+        this.operations.set(ref, { ...existing, leaseExpiresAt: now + leaseMs });
+        return { claimed: true, existing };
+      }
+      return { claimed: false, existing };
+    }
+    this.operations.set(ref, {
+      ref,
+      subject,
+      outcome: 'pending',
+      result: null,
+      createdAt: now,
+      leaseExpiresAt: now + leaseMs,
+    });
     return { claimed: true, existing: null };
   }
 

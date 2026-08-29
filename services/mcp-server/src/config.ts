@@ -25,6 +25,8 @@ export const McpConfig = {
    * server-side, never caller-controlled.
    */
   sessionTtlSeconds: num('MCP_SESSION_TTL_SECONDS', 600),
+  /** How long one worker owns an operation before a retry may recover it. */
+  operationLeaseSeconds: num('MCP_OPERATION_LEASE_SECONDS', 120),
   /**
    * Billing. `none` (default) meters nothing — the right choice for
    * self-hosters. `external` delegates balance/reserve/commit/release to an
@@ -37,3 +39,19 @@ export const McpConfig = {
   /** Durable storage. Unset means in-memory (dev/demo only). */
   databaseUrl: env('DATABASE_URL'),
 } as const;
+
+export function assertProductionConfig(): void {
+  if (process.env.NODE_ENV !== 'production') return;
+  const missing = [
+    ['DATABASE_URL', McpConfig.databaseUrl],
+    ['POPCORN_CLIENT_ID', McpConfig.controlPlaneClientId],
+    ['POPCORN_CLIENT_SECRET', McpConfig.controlPlaneClientSecret],
+    ['MCP_TOKEN_SIGNING_KEY', McpConfig.tokenSigningKey !== 'dev-only-insecure-key' ? McpConfig.tokenSigningKey : ''],
+  ].filter(([, value]) => !value).map(([name]) => name);
+  if (!McpConfig.publicUrl.startsWith('https://')) missing.push('MCP_PUBLIC_URL (https required)');
+  if (McpConfig.billingProvider === 'external') {
+    if (!McpConfig.billingBaseUrl) missing.push('MCP_BILLING_BASE_URL');
+    if (!McpConfig.billingAuthToken) missing.push('MCP_BILLING_AUTH_TOKEN');
+  }
+  if (missing.length) throw new Error(`Refusing to start: missing production configuration: ${missing.join(', ')}`);
+}

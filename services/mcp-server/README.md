@@ -34,7 +34,6 @@ implementation.
 | `get_browser_connection` | – | Agent-facing CDP URL, region, expiry |
 | `get_live_view` | – | Human-facing live-view URL for a login handoff |
 | `verify_runtime` | – | Isolation posture and attestation when available |
-| `extend_browser_session` | ✓ | One more fixed block |
 | `end_browser_session` | – | End early |
 | `list_browser_sessions` | – | Recent sessions for this identity |
 
@@ -51,7 +50,7 @@ claim idempotent operation
         ↓
 billing.reserve()
         ↓
-create or extend browser
+create browser with a deterministic session id
         ↓
 success → billing.commit()
 failure → billing.release()
@@ -63,7 +62,7 @@ store and replay operation result
 type UsageContext = {
   subject: string;
   operationId: string;
-  operation: 'create_session' | 'extend_session';
+  operation: 'create_session';
 };
 
 interface BillingProvider {
@@ -142,6 +141,7 @@ Bring your own provider by implementing the interface and wiring it in
 | `POPCORN_CLIENT_ID` / `POPCORN_CLIENT_SECRET` | – | Control-plane client this server acts as |
 | `MCP_TOKEN_SIGNING_KEY` | dev key | Signs tokens and derives subjects; rotating it invalidates both |
 | `MCP_SESSION_TTL_SECONDS` | `600` | Fixed block of browser time per billed operation |
+| `MCP_OPERATION_LEASE_SECONDS` | `120` | When one retry may recover a crashed operation |
 | `MCP_BILLING_PROVIDER` | `none` | `none` or `external` |
 | `MCP_BILLING_BASE_URL` | – | Billing service base URL (external only) |
 | `MCP_BILLING_AUTH_TOKEN` | – | Bearer token for that service |

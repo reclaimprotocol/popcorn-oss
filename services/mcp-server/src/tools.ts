@@ -22,7 +22,11 @@ function fail(data: unknown): ToolResult {
  * reservation cannot yield a free session.
  */
 async function claim(ctx: ToolContext, ref: string): Promise<{ go: true } | { go: false; replay: ToolResult }> {
-  const { claimed, existing } = await ctx.store.claimOperation(ref, ctx.subject);
+  const { claimed, existing } = await ctx.store.claimOperation(
+    ref,
+    ctx.subject,
+    McpConfig.operationLeaseSeconds * 1000,
+  );
   if (claimed) return { go: true };
   if (!existing || existing.outcome === 'pending') {
     // Another call with this key is in flight; do NOT start a second effect.
@@ -36,6 +40,17 @@ async function claim(ctx: ToolContext, ref: string): Promise<{ go: true } | { go
     };
   }
   return { go: false, replay: existing.outcome === 'succeeded' ? ok(existing.result) : fail(existing.result) };
+}
+
+/** Stable Control Plane id: a stale operation can safely discover/replay its browser. */
+export function sessionIdForOperation(ref: string): string {
+  return `mcp_${crypto.createHash('sha256').update(ref).digest('base64url')}`;
+}
+
+function idempotencyKey(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const key = value.trim();
+  return key && key.length <= 200 ? key : null;
 }
 
 async function settle(ctx: ToolContext, ref: string, outcome: 'succeeded' | 'failed', result: unknown) {
@@ -147,7 +162,7 @@ export const TOOL_DEFINITIONS = [
           description: 'Reuse the same key when retrying: you get back the same session, never a second one.',
         },
       },
-      required: ['purpose'],
+      required: ['purpose', 'idempotency_key'],
       additionalProperties: false,
     },
   },
@@ -187,19 +202,6 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: { session_id: { type: 'string' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'extend_browser_session',
-    description: `Extend a session the caller owns by one more fixed block of ${McpConfig.sessionTtlSeconds} seconds. This is a billed operation.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_id: { type: 'string' },
-        idempotency_key: { type: 'string' },
-      },
       required: ['session_id'],
       additionalProperties: false,
     },
@@ -247,8 +249,10 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
     case 'create_browser_session': {
       const purpose = typeof args.purpose === 'string' ? args.purpose.slice(0, 300) : '';
       if (!purpose) return fail({ error: 'invalid_request', message: 'purpose is required' });
-      const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
+      const key = idempotencyKey(args.idempotency_key);
+      if (!key) return fail({ error: 'invalid_request', message: 'idempotency_key is required (max 200 characters)' });
       const ref = `session:${ctx.subject}:${key}`;
+      const sessionId = sessionIdForOperation(ref);
 
       const claimed = await claim(ctx, ref);
       if (!claimed.go) return claimed.replay;
@@ -260,10 +264,14 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       });
       if (!reserved.ok) return reserved.result;
 
-      const result = await popcorn.createSession({
+      let result = await popcorn.createSession({
+        sessionId,
         ttlSeconds: McpConfig.sessionTtlSeconds,
         metadata: { subject: ctx.subject, purpose },
       });
+      // A recovered operation uses the same deterministic id. The normal API
+      // reports the already-created effect as 409, so fetch and replay it.
+      if (!result.ok && result.status === 409) result = await popcorn.getSession(sessionId);
       if (!result.ok) {
         await ctx.billing.release(reserved.reservationId);
         const payload = {
@@ -357,51 +365,6 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         attestation: attestation.ok ? attestation.data : null,
         attestation_error: attestation.ok ? null : attestation.error,
       });
-    }
-
-    case 'extend_browser_session': {
-      const record = await ownedSession(ctx, args.session_id);
-      if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
-      const extendBySeconds = McpConfig.sessionTtlSeconds;
-      const key = typeof args.idempotency_key === 'string' && args.idempotency_key ? args.idempotency_key : crypto.randomUUID();
-      const ref = `extend:${record.sessionId}:${key}`;
-
-      const claimed = await claim(ctx, ref);
-      if (!claimed.go) return claimed.replay;
-
-      const reserved = await reserveOrExplain(ctx, ref, {
-        subject: ctx.subject,
-        operationId: ref,
-        operation: 'extend_session',
-      });
-      if (!reserved.ok) return reserved.result;
-
-      const result = await popcorn.extendSession(record.sessionId, extendBySeconds);
-      if (!result.ok) {
-        await ctx.billing.release(reserved.reservationId);
-        const payload = {
-          error: 'extend_failed',
-          message: result.error,
-          next: 'Retry with a NEW idempotency_key.',
-        };
-        await settle(ctx, ref, 'failed', payload);
-        return fail(payload);
-      }
-      const settled = await settleUsage(ctx, reserved.reservationId, ref, 'extend_session');
-
-      const view = popcorn.toSessionView(result.data);
-      if (view.expiresAt) {
-        const parsed = Date.parse(view.expiresAt);
-        if (Number.isFinite(parsed)) await ctx.store.updateSession(record.sessionId, { expiresAt: parsed });
-      }
-      const payload = {
-        session_id: record.sessionId,
-        expires_at: view.expiresAt,
-        extended_by_seconds: extendBySeconds,
-        usage_settled: settled,
-      };
-      await settle(ctx, ref, 'succeeded', payload);
-      return ok(payload);
     }
 
     case 'end_browser_session': {

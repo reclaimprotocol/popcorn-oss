@@ -27,6 +27,8 @@ spec:
           image: "{{ .Values.registry }}/mcp-server:{{ .Values.imageTag }}"
           imagePullPolicy: {{ $mcp.imagePullPolicy }}
           env:
+            - name: NODE_ENV
+              value: production
             - name: PORT
               value: "3000"
             - name: MCP_PUBLIC_URL
@@ -35,6 +37,8 @@ spec:
               value: {{ $mcp.controlPlaneUrl | quote }}
             - name: MCP_SESSION_TTL_SECONDS
               value: {{ $mcp.sessionBlockSeconds | quote }}
+            - name: MCP_OPERATION_LEASE_SECONDS
+              value: {{ $mcp.operationLeaseSeconds | quote }}
             - name: MCP_BILLING_PROVIDER
               value: {{ $mcp.billing.provider | quote }}
             {{- if eq $mcp.billing.provider "external" }}
@@ -82,7 +86,7 @@ spec:
             periodSeconds: 20
           readinessProbe:
             httpGet:
-              path: /health
+              path: /ready
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
