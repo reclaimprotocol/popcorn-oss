@@ -160,14 +160,23 @@ export function createTap({
         // a second touchStart containing the current point set adds the new contact
         // without converting the gesture into viewer zoom.
         cancelPendingMove();
-        if (TOUCH_INPUT && inputReady()) {
+        // Whoever owns the presentation owns the pinch, and the remote cannot
+        // serve one here — the extension pins the page's viewport meta. Fit mode
+        // is viewer-owned by definition (it picked the layout width AND the
+        // readable zoom), so it keeps the gesture at every zoom including the
+        // floor; off fit, a zoom above the floor is the viewer's too (a tap that
+        // zoomed to a field). Anything else belongs to the remote website.
+        const viewerOwnsZoom = vt.fitMode() || vt.zoomScale() > vt.minZoom() + 0.01;
+        if (TOUCH_INPUT && inputReady() && !viewerOwnsZoom) {
           vt.clearGesture();
           sendTouch('start', collectPoints(e));
           remoteTouchActive = true;
           tapStart = null; kbdPan = null;
         } else {
-          // Offline/non-native fallback: keep the viewer usable by handling the
+          // Viewer-owned zoom, or the offline/non-native fallback: handle the
           // pinch locally. Cancel a partial remote stream before taking it over.
+          dbg('pinch local (' + (viewerOwnsZoom ? 'viewer owns zoom' : 'no native touch') +
+              ') z=' + vt.zoomScale().toFixed(2) + '/' + vt.minZoom().toFixed(2));
           if (remoteTouchActive) { sendTouch('cancel', []); remoteTouchActive = false; }
           tapStart = null; kbdPan = null; vt.clearPan();
           beginPinch(e);

@@ -564,6 +564,9 @@ export function createViewportTransform({
     // Accessors/mutators replacing the core's former direct variable touches.
     zoomScale: () => zoomScale,
     minZoom: () => minZoom,
+    // Fit mode means the VIEWER owns how the page is presented (it chose the
+    // layout width and the readable zoom), so gesture routing has to know.
+    fitMode: () => !!(getFitMode && getFitMode()),
     // Keyboard-pan gesture reads (kbd/tap.js): the live pan for its
     // desired-vs-actual handoff math, and the effective occlusion budget that
     // gates the gesture (0 with no keyboard, a floating keyboard, or in
