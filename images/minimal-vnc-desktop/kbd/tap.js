@@ -29,6 +29,7 @@ export function createTap({
   sendTouch, sendPointerClick, collectPoints, queueMove, cancelPendingMove, flushPendingMove, touchToRemote, // touch-channel
   onMagButton, pasteFromDevice,     // controls
   onDialogSheet,                    // JS dialog sheet (kbd/dialog.js) — own UI, not the stream
+  describeNativeSelectAt,           // what the local select overlays think is at a point (diag only)
   flushLocalClipboard,              // clipboard
   raiseKeyboard, dismissKeyboard, armDismiss, parkProxyOffscreen, // core (hoisted)
   zoomToHitField,                    // immediate legacy-page field zoom (core)
@@ -614,6 +615,7 @@ export function createTap({
       ' z=' + vt.zoomScale().toFixed(2) + '/' + vt.minZoom().toFixed(2) +
       ' pan=' + formatPoint(vt.panX(), vt.panY()) +
       ' kinset=' + Math.round(vt.kbdPanInset()) +
+      ' nsel=' + (describeNativeSelectAt ? describeNativeSelectAt(x, y) : '-') +
       ' rects=' + formatRects(getInputRects()) +
       (hitRect ? ' matched=' + formatRects([hitRect]) : ''));
     if (hit === 'hit') {

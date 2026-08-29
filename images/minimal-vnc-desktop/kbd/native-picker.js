@@ -6,6 +6,7 @@
 // input after validation at every hop.
 
 import { dbg } from './diag.js';
+import { createRectFreshness } from './rect-freshness.js';
 import { mapSelectRect } from './native-select.js';
 
 const ROOT_ATTR = 'data-popcorn-native-picker-root';
@@ -113,7 +114,7 @@ export function createNativePickerProxy({ enabled, getScreenElement, sendChoice 
     observeCanvas(canvas);
     const cr = canvas && canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
     for (const entry of entries.values()) {
-      const box = enabled && transportReady ? mapSelectRect(entry.descriptor.r, viewport, cr) : null;
+      const box = enabled && transportReady && freshness.fresh() ? mapSelectRect(entry.descriptor.r, viewport, cr) : null;
       if (!box) {
         entry.el.style.display = 'none';
         continue;
@@ -131,9 +132,13 @@ export function createNativePickerProxy({ enabled, getScreenElement, sendChoice 
     raf = requestAnimationFrame(position);
   }
 
+  const freshness = createRectFreshness();
+  function noteRemoteScroll() { freshness.stale(); refresh(); }
+
   function applySignal(state) {
     if (!state || typeof state.editable !== 'boolean') return;
     if (state.vw > 0 && state.vh > 0) viewport = { w: state.vw, h: state.vh };
+    freshness.note(state.sy);
     descriptors = Array.isArray(state.pickers) ? state.pickers : [];
     syncEntries();
     refresh();
@@ -156,7 +161,7 @@ export function createNativePickerProxy({ enabled, getScreenElement, sendChoice 
   window.addEventListener('resize', refresh);
 
   return {
-    applySignal, setTransportReady, refresh, reset,
+    applySignal, setTransportReady, refresh, reset, noteRemoteScroll,
     owns(target) {
       if (!target) return false;
       for (const entry of entries.values()) if (entry.el === target || entry.el.contains(target)) return true;

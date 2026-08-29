@@ -12,6 +12,7 @@
 // remains a normal interactive form control.
 
 import { dbg } from './diag.js';
+import { createRectFreshness } from './rect-freshness.js';
 
 const ROOT_ATTR = 'data-popcorn-native-select-root';
 const SELECT_ATTR = 'data-popcorn-native-select';
@@ -148,7 +149,7 @@ export function createNativeSelectProxy({ enabled, getScreenElement, sendChoice 
     observeCanvas(canvas);
     const cr = canvas && canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
     for (const entry of entries.values()) {
-      const box = enabled && transportReady ? mapSelectRect(entry.descriptor.r, viewport, cr) : null;
+      const box = enabled && transportReady && freshness.fresh() ? mapSelectRect(entry.descriptor.r, viewport, cr) : null;
       if (!box) {
         entry.el.style.display = 'none';
         continue;
@@ -166,9 +167,13 @@ export function createNativeSelectProxy({ enabled, getScreenElement, sendChoice 
     raf = requestAnimationFrame(position);
   }
 
+  const freshness = createRectFreshness();
+  function noteRemoteScroll() { freshness.stale(); refresh(); }
+
   function applySignal(state) {
     if (!state || typeof state.editable !== 'boolean') return;
     if (state.vw > 0 && state.vh > 0) viewport = { w: state.vw, h: state.vh };
+    freshness.note(state.sy);
     descriptors = Array.isArray(state.selects) ? state.selects : [];
     syncEntries();
     refresh();
@@ -191,7 +196,25 @@ export function createNativeSelectProxy({ enabled, getScreenElement, sendChoice 
   window.addEventListener('resize', refresh);
 
   return {
-    applySignal, setTransportReady, refresh, reset,
+    applySignal, setTransportReady, refresh, reset, noteRemoteScroll,
+    // What the hit targets think is at a point, for the tap diag: a break reads as
+    // the nearest overlay being offset, inert, or absent.
+    describeAt(x, y) {
+      let best = null;
+      for (const entry of entries.values()) {
+        const r = entry.el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        const dx = x < r.left ? r.left - x : (x > r.right ? x - r.right : 0);
+        const dy = y < r.top ? r.top - y : (y > r.bottom ? y - r.bottom : 0);
+        const gap = Math.max(dx, dy);
+        if (!best || gap < best.gap) {
+          best = { gap, k: entry.descriptor && entry.descriptor.k, live: entry.el.style.display !== 'none' };
+        }
+      }
+      if (!best) return 'none';
+      if (best.gap === 0) return best.k + (best.live ? '' : '/inert');
+      return best.k + '+' + Math.round(best.gap) + 'px' + (best.live ? '' : '/inert');
+    },
     owns(target) {
       if (!target) return false;
       for (const entry of entries.values()) if (entry.el === target || entry.el.contains(target)) return true;

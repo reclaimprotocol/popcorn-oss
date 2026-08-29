@@ -48,10 +48,16 @@ test('one viewer maps its existing controls onto the optional E2E transport', as
     signal.send(JSON.stringify({ t: 'ping', id: 7 }));
     signal.send(JSON.stringify({ dialogReply: { seq: 3, accept: true } }));
     input.send(JSON.stringify({ t: 'end', points: [{ x: 1, y: 2 }], d: 'sid', g: 9 }));
+    // Choices made in the viewer's local native controls: the wrapper stays on,
+    // because the pod feeds the payload to the same relay the /kbd path uses.
+    signal.send(JSON.stringify({ selectChoice: { key: 'abc:7', index: 2 } }));
+    signal.send(JSON.stringify({ pickerChoice: { key: 'abc:7', value: '2001-02-03' } }));
     assert.deepEqual(channel.sent.slice(1), [
       { type: 'ping', payload: { id: 7 } },
       { type: 'dialog-reply', payload: { seq: 3, accept: true } },
       { type: 'touch', payload: { t: 'end', points: [{ x: 1, y: 2 }], sid: 'sid', gesture: 9 } },
+      { type: 'select-choice', payload: { selectChoice: { key: 'abc:7', index: 2 } } },
+      { type: 'picker-choice', payload: { pickerChoice: { key: 'abc:7', value: '2001-02-03' } } },
     ]);
 
     channel.receive('signal', { editable: true });

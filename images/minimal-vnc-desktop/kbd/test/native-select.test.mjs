@@ -110,3 +110,69 @@ test('dynamic options update the focused select in place and preserve the native
   for (const fn of original._listeners.change || []) fn({ target: original });
   assert.deepEqual(sent, [{ key: 'dynamic:1', index: 2 }]);
 });
+
+// The page can put its own modal over everything (injected.js swaps a huge
+// list's OS dropdown for an in-page sheet), and the extension then advertises no
+// selects at all. Local hit targets must go with them, or a sheet row drawn over
+// one is untappable and the tap opens the wrong control.
+test('withdrawing the advertised selects removes the local hit targets', () => {
+  makeScreen();
+  const proxy = createNativeSelectProxy({
+    enabled: true,
+    getScreenElement: () => document.getElementById('screen'),
+    sendChoice: () => true,
+  });
+  proxy.setTransportReady(true);
+  const signal = (selects) => proxy.applySignal({ editable: false, vw: 390, vh: 844, selects });
+  signal([{ k: 'page:2', r: { x: 20, y: 40, w: 200, h: 60 }, s: 0, o: [{ i: 0, t: 'A' }] }]);
+  const el = proxy._entries().get('page:2').el;
+  assert.equal(el.style.display, 'block');
+
+  signal([]);
+  assert.equal(proxy._entries().size, 0, 'entry survived an empty advertisement');
+  assert.ok(!el.isConnected || el.style.display === 'none', 'hit target still over the pixels');
+
+  // And they come back when the sheet closes and the selects are advertised again.
+  signal([{ k: 'page:2', r: { x: 20, y: 40, w: 200, h: 60 }, s: 0, o: [{ i: 0, t: 'A' }] }]);
+  assert.equal(proxy._entries().get('page:2').el.style.display, 'block');
+});
+
+// Rects are viewport-relative, so they only mean anything at the scroll offset
+// they were measured at. A page still gliding under a fling publishes a new
+// offset every time, and a hit target placed from one of those sits beside the
+// control the user sees.
+test('hit targets wait for two states to agree on the scroll offset', () => {
+  makeScreen();
+  const proxy = createNativeSelectProxy({
+    enabled: true,
+    getScreenElement: () => document.getElementById('screen'),
+    sendChoice: () => true,
+  });
+  proxy.setTransportReady(true);
+  const at = (sy) => proxy.applySignal({
+    editable: false, vw: 390, vh: 844, sy,
+    selects: [{ k: 'page:2', r: { x: 20, y: 40, w: 200, h: 60 }, s: 0, o: [{ i: 0, t: 'A' }] }],
+  });
+
+  at(0);
+  const el = proxy._entries().get('page:2').el;
+  assert.equal(el.style.display, 'none', 'went live off a single unconfirmed offset');
+  at(0);
+  assert.equal(el.style.display, 'block', 'never went live on a settled page');
+
+  // Scrolling again — each state describes a page that has already moved on.
+  at(120);
+  assert.equal(el.style.display, 'none', 'stayed live while the page was still moving');
+  at(240);
+  assert.equal(el.style.display, 'none', 'a second moving state is still not agreement');
+  at(240);
+  assert.equal(el.style.display, 'block', 'never recovered once the scroll settled');
+
+  // A publisher that stops reporting the offset must not cost the control — an
+  // extension too old to send one keeps the behaviour it always had.
+  proxy.applySignal({
+    editable: false, vw: 390, vh: 844,
+    selects: [{ k: 'page:2', r: { x: 20, y: 40, w: 200, h: 60 }, s: 0, o: [{ i: 0, t: 'A' }] }],
+  });
+  assert.equal(el.style.display, 'block', 'a missing offset took the control away');
+});

@@ -167,7 +167,9 @@ const MERGED_MAX_RECTS = 120;
 // Local native-select proxies are a usability enhancement, never allowed to
 // crowd the keyboard/focus state out of the bounded /kbd frame. Content scripts
 // already cap options per frame; this is the cross-frame ceiling.
-const MERGED_MAX_SELECTS = 12;
+// Bytes, not controls (see content.js). Sized against the 24 KiB wire budget,
+// leaving room for the rects and focus state sharing the frame.
+const MERGED_SELECT_BUDGET = 18 * 1024;
 const MERGED_MAX_PICKERS = 12;
 const kbdFrames = new Map(); // "tabId:frameId" -> { tabId, state, ts }
 
@@ -271,6 +273,9 @@ function mergeFrames() {
   const selects = [];
   const pickers = [];
   let rtrunc = false; // merged list hit MERGED_MAX_RECTS -> the viewer must not read a miss as off-field
+  let sy = null;
+  let selectBudget = MERGED_SELECT_BUDGET;
+  let sheet = false;
   let strunc = false;
   let ptrunc = false;
   // Some frame reported that it HAS editable fields but cannot place them yet
@@ -290,6 +295,7 @@ function mergeFrames() {
     // content.js caps rects PER FRAME, so a page full of same-origin iframes multiplies that cap. Bound the
     // merged list too, or the focus message outgrows the hub's frame limit and the whole state is dropped.
     if (s.blind) blind = true;
+    if (s.sheet) sheet = true;
     if (!nc && s.nc && typeof s.nc.x === 'number' && typeof s.nc.y === 'number') { nc = s.nc; delete s.nc; }
     if (Array.isArray(s.rects)) {
       for (const r of s.rects) {
@@ -299,8 +305,11 @@ function mergeFrames() {
     }
     if (Array.isArray(s.selects)) {
       for (const descriptor of s.selects) {
-        if (selects.length >= MERGED_MAX_SELECTS) { strunc = true; break; }
+        let cost = Infinity;
+        try { cost = JSON.stringify(descriptor).length; } catch (_) {}
+        if (cost > selectBudget) { strunc = true; break; }
         selects.push(descriptor);
+        selectBudget -= cost;
       }
     }
     if (Array.isArray(s.pickers)) {
@@ -318,6 +327,8 @@ function mergeFrames() {
     }
     // Top frame owns the authoritative viewport size; fall back to any frame.
     if (frameId === 0 && s.vw > 0 && s.vh > 0) { vw = s.vw; vh = s.vh; }
+    // ...and the scroll offset the rects were measured at (see content.js base.sy).
+    if (frameId === 0 && typeof s.sy === 'number') sy = s.sy;
     if ((!vw || !vh) && s.vw > 0 && s.vh > 0) { vw = s.vw; vh = s.vh; }
     // sw (content width, fit-to-width) and pid (page id, nav reset) come from the
     // top frame only (content.js sets them for IS_TOP). Forward them so the viewer
@@ -356,7 +367,10 @@ function mergeFrames() {
       if (Array.isArray(s.xf)) xf = s.xf;
     }
   }
+  // One frame's sheet is a modal over the whole surface (see content.js).
+  if (sheet) { selects.length = 0; pickers.length = 0; strunc = false; ptrunc = false; }
   const merged = { editable, rects, selects, pickers, vw, vh };
+  if (sy !== null) merged.sy = sy;
   if (rtrunc) merged.rtrunc = true; // whitelist field, like every other one below
   if (strunc) merged.strunc = true;
   if (ptrunc) merged.ptrunc = true;

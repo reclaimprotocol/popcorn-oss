@@ -523,3 +523,37 @@ func TestTouchFloodQueuesNothing(t *testing.T) {
 		t.Fatalf("touch moves queued %d control frames; the viewer reads none of them", len(c.out))
 	}
 }
+
+// A local native control (the mirrored select, the temporal picker) only changes
+// anything if its choice reaches the page. Under e2e this channel is the only
+// route, and the canonicalizing relay is shared with the plaintext /kbd path.
+func TestE2EControlRelaysNativeControlChoices(t *testing.T) {
+	for _, c := range []struct {
+		kind, payload, want string
+	}{
+		{"select-choice", `{"selectChoice":{"key":"abc:7","index":2}}`, `{"selectChoice":{"index":2,"key":"abc:7"}}`},
+		{"picker-choice", `{"pickerChoice":{"key":"abc:7","value":"2001-02-03"}}`, `{"pickerChoice":{"key":"abc:7","value":"2001-02-03"}}`},
+	} {
+		hub := newKbdHub()
+		pub, pubReader, pubConn := newTestClient()
+		pub.publisher = true
+		hub.add(pub)
+		readText(t, pubReader, pubConn) // connect-time mirror state
+
+		client := &e2eControlClient{hub: hub, out: make(chan []byte, 4), done: make(chan struct{})}
+		envelope := mustJSON(map[string]any{"type": c.kind, "payload": json.RawMessage(c.payload)})
+		if err := client.handle(envelope); err != nil {
+			t.Fatalf("%s: %v", c.kind, err)
+		}
+		if got := readText(t, pubReader, pubConn); got != c.want {
+			t.Errorf("%s: publisher got %q, want %q", c.kind, got, c.want)
+		}
+		pubConn.Close()
+
+		// A malformed choice is rejected rather than passed through.
+		bad := mustJSON(map[string]any{"type": c.kind, "payload": json.RawMessage(`{"nope":1}`)})
+		if err := client.handle(bad); err == nil {
+			t.Errorf("%s: a malformed choice was accepted", c.kind)
+		}
+	}
+}

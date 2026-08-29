@@ -312,10 +312,27 @@
   // set if it cannot fit, so a normal country-sized list can use the platform
   // picker without risking loss of keyboard state. Truly huge lists still fall
   // back to the existing in-page searchable picker.
-  const MAX_NATIVE_SELECTS = 8;
-  const MAX_NATIVE_SELECT_OPTIONS = 250;
-  const MAX_NATIVE_SELECT_OPTIONS_TOTAL = 250;
+  // Budget the bytes the wire carries, not the number of controls: 250 options
+  // with long labels is ~30 KiB and costs the hub the WHOLE state, while 300
+  // short ones are ~8 KiB and are safe. One control's share is capped so a huge
+  // list cannot starve the rest of the page.
+  const SELECT_WIRE_BUDGET = 16 * 1024;
+  const SELECT_WIRE_SHARE = 0.7;          // of the budget, for one control
+  const MAX_NATIVE_SELECTS = 32;          // backstop only; the budget decides
   const MAX_SELECT_TEXT = 120;
+
+  function wireCost(value) {
+    try { return JSON.stringify(value).length; } catch (_) { return Infinity; }
+  }
+
+  // injected.js draws an in-page sheet for lists it keeps. That sheet is a modal
+  // over the whole viewport, and the viewer's local controls are invisible
+  // overlays pinned to element positions — a sheet row over one is untappable and
+  // a tap there opens the wrong control. Advertise nothing while it is up.
+  const PAGE_SELECT_SHEET_ID = '__pcn_select_sheet';
+  function pageSheetOpen() {
+    try { return !!document.getElementById(PAGE_SELECT_SHEET_ID); } catch (_) { return false; }
+  }
 
   function plainSelect(el) {
     return !!(el && el.tagName === 'SELECT' && !el.multiple && !el.disabled && el.size <= 1);
@@ -331,18 +348,19 @@
 
   function collectSelects() {
     const out = [];
+    if (pageSheetOpen()) { selectElements.clear(); return out; }
     const nextElements = new Map();
-    let optionBudget = MAX_NATIVE_SELECT_OPTIONS_TOTAL;
+    let wireBudget = SELECT_WIRE_BUDGET;
     let els;
     try { els = document.querySelectorAll('select'); } catch (_) { return out; }
     for (const sel of els) {
-      if (out.length >= MAX_NATIVE_SELECTS || optionBudget <= 0) break;
+      if (out.length >= MAX_NATIVE_SELECTS || wireBudget <= 0) break;
       if (!plainSelect(sel)) continue;
       let r;
       try { r = sel.getBoundingClientRect(); } catch (_) { continue; }
       if (r.width <= 0 || r.height <= 0) continue;
       const count = sel.options ? sel.options.length : 0;
-      if (count < 1 || count > MAX_NATIVE_SELECT_OPTIONS || count > optionBudget) continue;
+      if (count < 1) continue;
       const options = [];
       let selectedIncluded = false;
       for (let i = 0; i < count; i++) {
@@ -364,15 +382,20 @@
       // control. Fall back instead of opening a picker with the wrong checkmark.
       if (!options.length || !selectedIncluded) continue;
       const key = focusKeyFor(sel);
-      nextElements.set(key, sel);
-      out.push({
+      const descriptor = {
         k: key,
         r: px({ x: r.left, y: r.top, w: r.width, h: r.height }),
         s: sel.selectedIndex,
         a: String((sel.getAttribute && sel.getAttribute('aria-label')) || labelText(sel) || '').slice(0, MAX_SELECT_TEXT),
         o: options,
-      });
-      optionBudget -= count;
+      };
+      // Skipping keeps going, so an enormous list falls back to the in-page sheet
+      // (which has the search box it needs anyway) and its neighbours keep theirs.
+      const cost = wireCost(descriptor);
+      if (cost > SELECT_WIRE_BUDGET * SELECT_WIRE_SHARE || cost > wireBudget) continue;
+      nextElements.set(key, sel);
+      out.push(descriptor);
+      wireBudget -= cost;
     }
     selectElements.clear();
     for (const [key, sel] of nextElements) selectElements.set(key, sel);
@@ -393,6 +416,7 @@
 
   function collectPickers() {
     const out = [];
+    if (pageSheetOpen()) { pickerElements.clear(); return out; }
     const nextElements = new Map();
     let els;
     try { els = document.querySelectorAll('input[type="date"],input[type="time"],input[type="datetime-local"],input[type="month"],input[type="week"]'); } catch (_) { return out; }
@@ -714,6 +738,12 @@
     // rects/vw/vh ride on every message (even editable:false) so the viewer can
     // hit-test taps and dismiss reliably regardless of focus state.
     const base = { vw: vp.w, vh: vp.h, rects: cachedRects, selects: cachedSelects, pickers: cachedPickers };
+    // These rects are viewport-relative: the viewer needs the offset they were
+    // measured at to tell a settled page from one gliding under a fling.
+    try { base.sy = Math.round(window.scrollY || 0); } catch (_) {}
+    // A top-document sheet covers a child frame's box too, so one frame's sheet
+    // has to suppress every frame's overlays.
+    if (pageSheetOpen()) base.sheet = true;
     // sw (content width, for fit-to-width) and pid (per-document id, reset
     // fit-mode on navigation) only make sense from the TOP document — a per-frame
     // FOCUS_KEY_FRAME from a subframe would otherwise look like a navigation.

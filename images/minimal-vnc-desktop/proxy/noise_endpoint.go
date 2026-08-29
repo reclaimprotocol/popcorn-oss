@@ -695,6 +695,19 @@ func (c *e2eControlClient) handle(raw []byte) error {
 		if c.onViewer != nil {
 			c.onViewer(b)
 		}
+	case "select-choice", "picker-choice":
+		// A choice made in one of the viewer's local native controls. Both relays
+		// canonicalize strictly and forward only to the trusted extension
+		// publisher, exactly as they do for the plaintext /kbd path.
+		relayed := false
+		if envelope.Type == "picker-choice" {
+			relayed = c.hub.relayPickerChoice(envelope.Payload)
+		} else {
+			relayed = c.hub.relaySelectChoice(envelope.Payload)
+		}
+		if !relayed {
+			return errors.New("invalid " + envelope.Type)
+		}
 	case "mirror":
 		var p struct {
 			On bool `json:"on"`

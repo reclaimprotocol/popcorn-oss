@@ -649,7 +649,12 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // Every forwarded scroll/drag funnels through here, so it doubles as the
     // 'scroll' interaction report for an embedding host's analytics. Already
     // coalesced upstream (touch-channel batches moves), so this is not per-pixel.
-    noteRemoteScroll: () => { tap.noteRemoteScroll(); quality.noteMotion(); reportInteraction('scroll'); },
+    noteRemoteScroll: () => {
+      tap.noteRemoteScroll(); quality.noteMotion(); reportInteraction('scroll');
+      // The remote page just moved under rects we published before it did.
+      if (nativeSelect) nativeSelect.noteRemoteScroll();
+      if (nativePicker) nativePicker.noteRemoteScroll();
+    },
   });
   const connectInput = tc.connectInput;
   const sendTouch = tc.sendTouch;
@@ -692,6 +697,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     flushPendingMove: tc.flushPendingMove,
     touchToRemote,
     onMagButton: (t) => onMagButton(t),        // controls alias (defined earlier — arrow for uniform deferral)
+    describeNativeSelectAt: (x, y) => (nativeSelect ? nativeSelect.describeAt(x, y) : '-'),
     onDialogSheet: (t) => (nativeSelect && nativeSelect.owns(t)) ||
       (nativePicker && nativePicker.owns(t)) || dialog.owns(t) || popupBar.owns(t), // viewer chrome, not remote touch
     pasteFromDevice: () => pasteFromDevice(),
