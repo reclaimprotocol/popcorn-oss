@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Date of birth form (depth 3)</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 14px; font: 16px/1.35 system-ui, sans-serif; background: #fff; color: #14532d; }
+    h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: .04em; color: #365314; }
+    label { display: block; margin: 0 0 7px; font-weight: 900; }
+    /* The only #dcfce7 region in the whole three-document chain: the harness resolves the tap
+       from the centroid of every matching pixel, so this colour must not appear in the relay or
+       the outer page.
+
+       The width is calc(), not 100%, because WebKit computes this control as content-box whatever
+       the author asks — box-sizing:border-box on input[type=date] is ignored — so 100% overflows
+       by the control's own padding and border and the field ends up clipped by the frame edge.
+       width:auto is no help either: a form control's auto width is its intrinsic size. So subtract
+       the box the control adds, from the variables that define it. */
+    input { --pad: 12px; --bd: 4px;
+      display: block; width: calc(100% - 2 * (var(--pad) + var(--bd))); height: 64px;
+      border: var(--bd) solid #166534; border-radius: 13px; background: #dcfce7;
+      padding: 0 var(--pad); font-size: 20px; color: #14532d; }
+    p { margin: 12px 2px 0; color: #365314; line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <h2>DEPTH 3 — SIGNUP FORM</h2>
+  <label for="dob">Date of birth</label>
+  <input id="dob" type="date" aria-label="Date of birth"
+         value="1994-03-17" min="1900-01-01" max="2008-12-31" step="1">
+  <p>Open the platform calendar and choose the 18th.</p>
+  <script>
+    // This frame owns the control. It never paints a phase marker itself: the
+    // outer page does, so a marker proves the value travelled back up the whole
+    // chain rather than just changing where it started.
+    const dob = document.querySelector('#dob');
+    const up = (message) => { try { parent.postMessage(message, '*'); } catch (_) {} };
+    dob.addEventListener('change', () => up({ pcnDob: 'change', value: dob.value }));
+    up({ pcnDob: 'ready', value: dob.value });
+    window.addEventListener('load', () => up({ pcnDob: 'ready', value: dob.value }));
+  </script>
+</body>
+</html>

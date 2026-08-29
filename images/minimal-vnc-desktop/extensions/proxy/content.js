@@ -220,6 +220,14 @@
         r: px({ x: s.r.x + dx, y: s.r.y + dy, w: s.r.w, h: s.r.h }),
       }));
     }
+    // Pickers carry a rect the viewer pins a transparent local input over, exactly
+    // like selects — three frames deep, an unshifted one puts the DOB field's hit
+    // target two iframe origins away from the pixels it belongs to.
+    if (Array.isArray(state.pickers)) {
+      state.pickers = state.pickers.map((p) => Object.assign({}, p, {
+        r: px({ x: p.r.x + dx, y: p.r.y + dy, w: p.r.w, h: p.r.h }),
+      }));
+    }
     if (state.nc) state.nc = { x: Math.round(state.nc.x + dx), y: Math.round(state.nc.y + dy) };
     return state;
   }

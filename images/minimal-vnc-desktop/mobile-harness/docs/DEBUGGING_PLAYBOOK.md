@@ -369,3 +369,22 @@ those "centres" would hit whatever is painted there instead.
 (cases are authored in iOS points; the Android framebuffer is device pixels).
 Without it those are off by ~2.8x, which reads as a product failure and is not
 one. Marker positions, window fractions, and text entry do not depend on it.
+
+## A hand-driven scenario is not the pair path
+
+`npm run run -- --scenario` merges the platform's DEFAULT launch target underneath whatever the
+scenario names, and takes none of the environment's `defaults`. Three consequences, each of which
+fails as a marker that never appears rather than as a launch error:
+
+- **iOS keeps the default's `browserName: "Safari"`,** so the XCUITest session attaches to Safari
+  while the app named by `bundleId` holds the page — the taps land in the wrong application. Set
+  `browserName: null`.
+- **Android keeps Chrome's `preparation`,** whose `debugApp: true` issues
+  `am set-debug-app --persistent` against the scenario's OWN package. The app then waits for a
+  debugger and never paints. Set `preparation: null`.
+- **`nativeOpenUrl` is an environment default,** so a scenario has to set it itself. Without it the
+  whole launch block is skipped, `run.json` records `navigation: null`, and the run silently
+  measures whatever the app happened to be showing already — which can look like a pass.
+
+Check `navigation` in `run.json` before trusting a scenario run: a null there means the harness
+never delivered the URL.

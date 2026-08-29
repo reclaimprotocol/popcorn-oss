@@ -142,7 +142,12 @@ inner page holding a bottom-pinned input), tapping the input at depth 3:
 
 Two things that follow:
 
-- **Nesting itself is not the cause.** The field keeps focus, the keyboard stays
+- **Nesting itself is not the cause** for the keyboard. It *was* the cause for
+  the temporal pickers, which is a separate defect in the same cell: their rects
+  were the one descriptor kind that never got the accumulated frame offset. See
+  [NATIVE_DATE_PICKER.md](NATIVE_DATE_PICKER.md) and
+  `cases/nested-webview-dob-picker.pair.json`.
+- **For the keyboard:** The field keeps focus, the keyboard stays
   up, and no blur arrives — with or without the frame-focus claim that
   `kbd-autofocus.js` makes inside the gesture (`window.focus()` when
   `window !== window.top`). Both variants behaved identically.
