@@ -823,6 +823,19 @@ const (
 	inputMaxPayload    = 8192
 )
 
+// inputAckWanted decides whether a touch event earns an acknowledgement back to
+// the viewer. ONE terminal ack proves the whole gesture path, so moves are
+// silent: a pinch or a drag is a sustained stream (measured: 150+ events in a
+// single gesture) and acking each one floods the return path for no extra
+// diagnostic value. Both transports share this gate, because under e2e the acks
+// ride the one queue that also carries keyboard state and touch.
+func inputAckWanted(sid string, gesture uint64, eventType string) bool {
+	if sid == "" || gesture == 0 {
+		return false
+	}
+	return eventType == "end" || eventType == "cancel" || eventType == "click"
+}
+
 var inputClients int32
 
 // inputWSHandler streams touch input from the viewer to the remote as native
@@ -943,7 +956,7 @@ func inputWSHandler(em *emulator, ready readyGate) http.HandlerFunc {
 			// intentionally omitted on the success path to keep permanent diagnostics
 			// to a single browser round-trip per tap; an end/cancel failure still tells
 			// us that the gesture could not complete.
-			diagnostic := sid != "" && msg.G != 0 && (msg.T == "end" || msg.T == "cancel" || msg.T == "click")
+			diagnostic := inputAckWanted(sid, msg.G, msg.T)
 			traceDone := func(ok bool) {
 				if !diagnostic {
 					return

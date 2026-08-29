@@ -461,3 +461,65 @@ func TestE2EControlPingRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected pong: %#v", got)
 	}
 }
+
+// A pinch is a sustained move stream, and under e2e one queue carries BOTH acks
+// and field state. Acking every move fills it, and an overflow closes the only
+// channel keyboard and touch have.
+func TestInputAckOnlyOnTerminalEvents(t *testing.T) {
+	for _, ev := range []string{"end", "cancel", "click"} {
+		if !inputAckWanted("sid", 7, ev) {
+			t.Errorf("%q must be acked: one terminal ack proves the gesture path", ev)
+		}
+	}
+	for _, ev := range []string{"start", "move"} {
+		if inputAckWanted("sid", 7, ev) {
+			t.Errorf("%q must be silent: a gesture sends many, and they share the state queue", ev)
+		}
+	}
+	// No diagnostic identity, nothing to correlate an ack with.
+	if inputAckWanted("", 7, "end") || inputAckWanted("sid", 0, "end") {
+		t.Error("acked an event with no session/gesture id")
+	}
+}
+
+func TestDiagnosticEnqueueDropsInsteadOfClosingTheChannel(t *testing.T) {
+	c := &e2eControlClient{out: make(chan []byte, 2), done: make(chan struct{})}
+	for i := 0; i < 20; i++ {
+		c.enqueueE2EDiagnostic("input-ack", mustJSON(map[string]any{"event": "end"}))
+	}
+	select {
+	case <-c.done:
+		t.Fatal("a droppable diagnostic closed the session's only control channel")
+	default:
+	}
+	// State still owns the channel: losing it silently would leave the viewer
+	// believing a stale field is focused, so an overflow must force a resync.
+	c.enqueueE2E("signal", mustJSON(map[string]any{"editable": true}))
+	select {
+	case <-c.done:
+	default:
+		t.Fatal("state overflow no longer closes the channel for resync")
+	}
+}
+
+// A gesture is a sustained stream. Under e2e it shares one queue with keyboard
+// state, so a burst of moves must cost that queue nothing at all.
+func TestTouchFloodQueuesNothing(t *testing.T) {
+	em := &emulator{cmds: make(chan cdpCmd, 256), prio: make(chan cdpCmd, 256)}
+	c := &e2eControlClient{em: em, out: make(chan []byte, 2), done: make(chan struct{})}
+	for i := 0; i < 200; i++ {
+		payload := mustJSON(map[string]any{"t": "move", "sid": "sid", "gesture": 1,
+			"points": []map[string]any{{"x": i, "y": i, "id": 1}}})
+		if err := c.handle(mustJSON(map[string]any{"type": "touch", "payload": json.RawMessage(payload)})); err != nil {
+			t.Fatalf("touch move rejected: %v", err)
+		}
+	}
+	select {
+	case <-c.done:
+		t.Fatal("a touch burst closed the channel that carries the keyboard")
+	default:
+	}
+	if len(c.out) != 0 {
+		t.Fatalf("touch moves queued %d control frames; the viewer reads none of them", len(c.out))
+	}
+}

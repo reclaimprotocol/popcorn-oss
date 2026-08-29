@@ -580,6 +580,17 @@ type e2eControlClient struct {
 }
 
 func (c *e2eControlClient) enqueueE2E(kind string, payload []byte) {
+	c.enqueue(kind, payload, false)
+}
+
+// enqueueE2EDiagnostic sends something the session can lose. This channel is the
+// only path for keyboard state and touch under e2e, so an overflowing diagnostic
+// is dropped rather than allowed to close it.
+func (c *e2eControlClient) enqueueE2EDiagnostic(kind string, payload []byte) {
+	c.enqueue(kind, payload, true)
+}
+
+func (c *e2eControlClient) enqueue(kind string, payload []byte, droppable bool) {
 	msg := struct {
 		Type    string          `json:"type"`
 		Payload json.RawMessage `json:"payload"`
@@ -597,8 +608,11 @@ func (c *e2eControlClient) enqueueE2E(kind string, payload []byte) {
 	case c.out <- b:
 	case <-c.done:
 	default:
-		// State and acknowledgements must not disappear silently. Closing makes
-		// the trusted client reconnect, rerun Noise, and receive the hub snapshot.
+		if droppable {
+			return
+		}
+		// State must not disappear silently. Closing makes the trusted client
+		// reconnect, rerun Noise, and receive the hub snapshot.
 		c.close()
 	}
 }
@@ -703,18 +717,22 @@ func (c *e2eControlClient) handle(raw []byte) error {
 		if ev == "" {
 			return errors.New("invalid touch type")
 		}
+		// Same gate as the plaintext /input handler (inputAckWanted): one terminal
+		// ack per gesture, never one per move.
+		ack := func(state string) {
+			if !inputAckWanted(p.SID, p.Gesture, p.T) {
+				return
+			}
+			c.enqueueE2EDiagnostic("input-ack", mustJSON(map[string]any{"sid": p.SID, "gesture": p.Gesture, "event": p.T, "state": state}))
+		}
 		ok := false
 		if ev == "click" && len(p.Points) == 1 {
-			ok = c.em.dispatchCompatClickWithDone(p.Points[0], func(done bool) {
-				c.enqueueE2E("input-ack", mustJSON(map[string]any{"sid": p.SID, "gesture": p.Gesture, "event": p.T, "state": ackState(done)}))
-			})
+			ok = c.em.dispatchCompatClickWithDone(p.Points[0], func(done bool) { ack(ackState(done)) })
 		} else {
-			ok = c.em.dispatchTouchWithDone(ev, p.Points, func(done bool) {
-				c.enqueueE2E("input-ack", mustJSON(map[string]any{"sid": p.SID, "gesture": p.Gesture, "event": p.T, "state": ackState(done)}))
-			})
+			ok = c.em.dispatchTouchWithDone(ev, p.Points, func(done bool) { ack(ackState(done)) })
 		}
 		if !ok {
-			c.enqueueE2E("input-ack", mustJSON(map[string]any{"sid": p.SID, "gesture": p.Gesture, "event": p.T, "state": "rejected"}))
+			ack("rejected")
 		}
 	case "emulate":
 		var p emulateRequest
@@ -752,7 +770,15 @@ func (c *e2eControlClient) handle(raw []byte) error {
 	default:
 		return errors.New("unsupported e2e control type")
 	}
-	c.enqueueE2E("signal", mustJSON(map[string]string{"ack": envelope.Type}))
+	// The viewer parses this bare acknowledgement and discards it (see
+	// liveview-transport.js: "Command acknowledgements are not keyboard state").
+	// Nothing reads it, so the high-rate kinds skip it rather than spend one
+	// encrypted frame per touch move, and the rest stays droppable.
+	switch envelope.Type {
+	case "touch", "diag", "rtt":
+		return nil
+	}
+	c.enqueueE2EDiagnostic("signal", mustJSON(map[string]string{"ack": envelope.Type}))
 	return nil
 }
 
