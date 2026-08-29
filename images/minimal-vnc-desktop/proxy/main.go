@@ -330,6 +330,17 @@ func liveViewTransportGuard(e *noiseEndpoint, next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// The keyboard extension publishes focus state from INSIDE the pod
+			// (ws://127.0.0.1:6080/kbd?role=pub), so it is not user-facing
+			// transport. Its field rects and remote viewport are what place a tap
+			// on a remote coordinate and raise the keyboard. Only the publisher
+			// role passes, and publisherAllowed still demands loopback plus the
+			// browser-stamped extension origin; viewers reach :6080 from outside
+			// the pod and stay on the encrypted channel.
+			if r.URL.Path == "/kbd" && r.URL.Query().Get("role") == "pub" && publisherAllowed(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			http.Error(w, "encrypted LiveView session requires E2E transport", http.StatusForbidden)
 			return
 		}

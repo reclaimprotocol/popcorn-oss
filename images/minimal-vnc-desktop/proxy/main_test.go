@@ -575,3 +575,45 @@ func TestWebsocketCloseInfo(t *testing.T) {
 		t.Fatalf("short payload = (%d, %q), want empty", code, reason)
 	}
 }
+
+// The keyboard extension is an in-pod publisher, not user-facing transport. Its
+// field rects and remote viewport are what let a tap map to a remote coordinate
+// and raise the keyboard.
+func TestE2EBindingAllowsTheLoopbackKeyboardPublisher(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", ClientKey: client.Public, PodUID: "pod-1"})
+	liveView := noVNCMux(t.TempDir(), "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
+
+	ask := func(target, remote, origin string) int {
+		r := httptest.NewRequest(http.MethodGet, "http://pod.example"+target, nil)
+		r.RemoteAddr = remote
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		liveView.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	if code := ask("/kbd?role=pub", "127.0.0.1:12345", "chrome-extension://abc"); code == http.StatusForbidden {
+		t.Error("the pod's own keyboard publisher was blocked; the session loses every field rect")
+	}
+	// The carve-out is exactly the publisher trust level, nothing wider.
+	for _, c := range []struct {
+		name, target, remote, origin string
+	}{
+		{"remote publisher", "/kbd?role=pub", "203.0.113.7:443", "chrome-extension://abc"},
+		{"page origin", "/kbd?role=pub", "127.0.0.1:12345", "https://example.test"},
+		{"loopback subscriber", "/kbd", "127.0.0.1:12345", ""},
+	} {
+		if code := ask(c.target, c.remote, c.origin); code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want %d", c.name, code, http.StatusForbidden)
+		}
+	}
+}
