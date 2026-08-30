@@ -142,13 +142,29 @@ test('a real character cancels the deferred Unidentified backspace', async () =>
   assert.deepEqual(rfb.tapped(), keysymsFor('a')); // no spurious Backspace
 });
 
-test('sensitive field: Unidentified never guesses a backspace', async () => {
+test('sensitive field: Unidentified deletes too — a secret must be correctable', async () => {
+  // This used to assert the opposite ("never guess on a secret"), trading a rare
+  // wrong guess for a constant silent one: Gboard glide, Indic, SwiftKey and
+  // Samsung all report delete as 'Unidentified', so on a password it did NOTHING
+  // and the login failed on a correct secret. A real character still cancels the
+  // deferral (test above), which is what makes it safe.
   const { rfb, proxy } = await freshViewer(createMockRfb);
   pushSignal({ editable: true, focusKey: 'pw2', rect: { x: 0, y: 0, w: 10, h: 10 },
     hints: { type: 'password' }, sync: { sensitive: true, len: 0 } });
   fire(proxy, 'keydown', { key: 'Unidentified', keyCode: 229 });
   await sleep(150);
-  assert.deepEqual(rfb.tapped(), []);
+  assert.deepEqual(rfb.tapped(), [BS]);
+});
+
+test('sensitive field: a real character still cancels the deferred backspace', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'pw3', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: { type: 'password' }, sync: { sensitive: true, len: 0 } });
+  fire(proxy, 'keydown', { key: 'Unidentified', keyCode: 229 });
+  fire(proxy, 'beforeinput', { inputType: 'insertText', data: 'a' });
+  type(proxy, 'a');
+  await sleep(150);
+  assert.deepEqual(rfb.tapped(), keysymsFor('a'));
 });
 
 test('remote-driven field switch clears the stale proxy buffer (no cross-field corruption)', async () => {

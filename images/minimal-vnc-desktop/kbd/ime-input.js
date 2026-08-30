@@ -391,12 +391,13 @@ export function createImeInput({
     // the composition guard, and NOT gated on an empty value. Defer a remote
     // backspace that a following beforeinput/input CANCELS (a real character), so a
     // keydown-only delete (glide) reaches the remote and a character doesn't get a
-    // spurious backspace. Never guess on a secret field.
+    // spurious backspace. Runs on SECRETS too: skipping it there ("never guess on a
+    // secret") left the delete key dead on every password and OTP, so a typo was
+    // uncorrectable and the login failed silently. Barely a guess anyway —
+    // onProxyInput clears this timer before handling any real input event.
     if (e.key === 'Unidentified') {
-      if (!getSensitiveField()) {
-        if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
-        pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
-      }
+      if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
+      pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
       return;
     }
     // During IME composition, Enter/Escape/Space commit or dismiss the candidate
@@ -687,11 +688,11 @@ export function createImeInput({
       // that a following textupdate CANCELS (a real character always produces one;
       // onECTextUpdate clears this timer up top even when it suppresses the send).
       // So a keydown-only delete (glide) reaches the remote, and a character does
-      // not get a spurious backspace. Never guess on secret fields.
-      if (!getSensitiveField()) {
-        if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
-        pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
-      }
+      // not get a spurious backspace. Runs on SECRETS too — see onProxyKeyDown.
+      // Gboard glide, Indic, SwiftKey and Samsung all report delete this way, so
+      // the old exemption left it dead on every password and OTP field.
+      if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
+      pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
       return;
     }
     // Composition owns Enter/Escape/Space (commit/dismiss candidate) — don't
