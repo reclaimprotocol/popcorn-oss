@@ -274,11 +274,21 @@ export function createImeInput({
       // keystrokes and produces the "space re-types the previous word" bug. We
       // mirror each step via the value-diff below (the proven reference behavior).
 
+      // An explicit delete inputType with NOTHING removed locally (the usual case:
+      // an empty buffer) is the keystroke itself reaching us — one remote delete.
+      // When the buffer DID shrink, fall through to the shrink handler below: one
+      // press removes one grapheme, but a selection delete or a cut removes the
+      // whole range in a SINGLE event and Gboard/SwiftKey report both as
+      // deleteContentBackward. Sending a fixed single Backspace there left the rest
+      // of the selection on the remote while lastSentValue claimed it was gone —
+      // desyncing the field permanently, since every later diff built on it.
       if (inputType === 'deleteContentBackward' || inputType === 'deleteByCut' ||
           inputType === 'deleteContent' || inputType === 'deleteContentForward') {
-        sendSpecialKey('Backspace');
-        lastSentValue = currentValue;
-        return;
+        if (currentValue.length >= lastSentValue.length) {
+          sendSpecialKey('Backspace');
+          lastSentValue = currentValue;
+          return;
+        }
       }
 
       // Value shrunk → user deleted. Clean-suffix trim: backspace just the removed
@@ -300,8 +310,15 @@ export function createImeInput({
         return;
       }
 
-      if (inputType === 'insertText' || inputType === 'insertCompositionText' ||
-          currentValue.length > lastSentValue.length) {
+      // No inputType guard here. The two branches below already discriminate on the
+      // only thing that matters — grew, or same length and different — and the
+      // shrink case returned above. Gating on insertText/insertCompositionText
+      // instead meant an EQUAL-LENGTH replacement under any other inputType fell
+      // through to `lastSentValue = currentValue` and sent nothing at all: tapping
+      // a Gboard suggestion or a Grammarly rewrite that swaps 'teh' for 'the'
+      // arrives as insertReplacementText, so the correction never reached the
+      // remote and the field silently kept the typo.
+      {
         if (currentValue.length > lastSentValue.length) {
           if (currentValue.startsWith(lastSentValue)) {
             // Append-only: send just the new tail.
@@ -408,6 +425,21 @@ export function createImeInput({
 
     if (isAndroid) {
       switch (e.key) {
+      // Caret keys. Previously inert on mobile — swallowed here and never
+      // forwarded — which silently corrupted the field for any keyboard that has
+      // them (Hacker's Keyboard ships arrows, Home/End and Delete on a phone). The
+      // local caret moved, the remote's did not, and the next edit diffed against
+      // a tail that was no longer where the remote was writing.
+      //
+      // Forwarding alone is not enough: the value-diff is anchored to the END of
+      // the field, so after the caret moves, `lastSentValue` describes text the
+      // remote caret is no longer sitting behind. Clear the baseline with it — the
+      // carets now agree, and the next characters go out as plain inserts at the
+      // position both sides share. Costs the IME its word context, which is what
+      // already happens at any word boundary.
+      case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown':
+      case 'Home': case 'End': case 'Delete':
+        e.preventDefault(); sendSpecialKey(e.key); clearProxy(); return;
         case 'Backspace':
           if (proxy.value === '') { e.preventDefault(); sendSpecialKey('Backspace'); }
           return;
@@ -699,6 +731,21 @@ export function createImeInput({
     // forward them to the remote. keyCode 229 / e.isComposing mark IME activity.
     if (e.isComposing || e.keyCode === 229) return;
     switch (e.key) {
+      // Caret keys. Previously inert on mobile — swallowed here and never
+      // forwarded — which silently corrupted the field for any keyboard that has
+      // them (Hacker's Keyboard ships arrows, Home/End and Delete on a phone). The
+      // local caret moved, the remote's did not, and the next edit diffed against
+      // a tail that was no longer where the remote was writing.
+      //
+      // Forwarding alone is not enough: the value-diff is anchored to the END of
+      // the field, so after the caret moves, `lastSentValue` describes text the
+      // remote caret is no longer sitting behind. Clear the baseline with it — the
+      // carets now agree, and the next characters go out as plain inserts at the
+      // position both sides share. Costs the IME its word context, which is what
+      // already happens at any word boundary.
+      case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown':
+      case 'Home': case 'End': case 'Delete':
+        e.preventDefault(); sendSpecialKey(e.key); clearProxy(); return;
       case 'Enter': e.preventDefault(); sendActionKey(); resetEC(); return;
       case 'Tab': e.preventDefault(); sendSpecialKey('Tab'); resetEC(); return;
       case 'Escape': e.preventDefault(); toggleKeyboard(); return;
