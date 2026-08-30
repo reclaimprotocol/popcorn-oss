@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IME trace recorder</title>
+<style>
+body{margin:0;font:16px system-ui;background:#0b1020;color:#e6edf7}
+h1{font-size:15px;padding:8px;margin:0;background:#172554}
+label{display:block;margin:8px 8px 2px;font-size:13px;color:#94a3b8}
+input{width:calc(100% - 16px);margin:0 8px;height:48px;font-size:17px;border-radius:8px;border:2px solid #1e3a8a;padding:0 10px}
+#st{padding:8px;font:12px ui-monospace;color:#7dd3fc}
+</style></head><body>
+<h1>IME trace recorder</h1>
+<label for="text">text (prose)</label><input id="text" type="text" autocomplete="off">
+<label for="user">username</label><input id="user" type="text" name="user[login]" autocomplete="username">
+<label for="pw">password</label><input id="pw" type="password" name="user[password]" autocomplete="current-password">
+<div id="st">booting…</div>
+<script>
+'use strict';
+// Mirrors what the viewer's proxy sees. Values are MASKED (letters->a, digits->9)
+// so a trace can never carry a real secret; whitespace and punctuation are kept
+// verbatim as code points, since those are the characters under investigation.
+var t0 = Date.now(), seq = 0;
+function mask(s) {
+  return Array.from(String(s == null ? '' : s)).map(function (ch) {
+    var cp = ch.codePointAt(0);
+    if (/\p{L}/u.test(ch)) return 'a';
+    if (/\p{N}/u.test(ch)) return '9';
+    return 'U+' + cp.toString(16).toUpperCase().padStart(4, '0');
+  }).join('');
+}
+function post(body) {
+  try { fetch('/ev', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), keepalive: true }); } catch (_) {}
+}
+var EVENTS = ['keydown','keyup','beforeinput','input','compositionstart','compositionupdate',
+  'compositionend','focus','blur','select'];
+['text','user','pw'].forEach(function (id) {
+  var el = document.getElementById(id);
+  EVENTS.forEach(function (type) {
+    el.addEventListener(type, function (e) {
+      var sel = '';
+      try { sel = el.selectionStart + '-' + el.selectionEnd; } catch (_) { sel = 'n/a'; }
+      post({ n: ++seq, ms: Date.now() - t0, field: id, type: e.type,
+        inputType: e.inputType || null,
+        data: e.data == null ? null : mask(e.data),
+        isComposing: e.isComposing === true,
+        key: e.key === undefined ? null : e.key,
+        keyCode: e.keyCode === undefined ? null : e.keyCode,
+        sel: sel, len: Array.from(el.value).length, value: mask(el.value) });
+    }, true);
+  });
+});
+document.getElementById('st').textContent =
+  'EditContext=' + (typeof window.EditContext !== 'undefined') + '  ua=' + navigator.userAgent.slice(0, 60);
+post({ n: 0, ms: 0, type: 'boot', editContext: typeof window.EditContext !== 'undefined',
+       ua: navigator.userAgent });
+</script></body></html>
