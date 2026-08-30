@@ -76,3 +76,74 @@ Two findings worth keeping in mind when reading traces:
 - A password field changes Gboard's behaviour wholesale. That is what the secure
   surface buys, and it is why a credential field must reach the IME as a real
   `<input type=password>`.
+
+## keyboards.sh — getting IMEs onto the device
+
+`fetch-oss` installs every F-Droid keyboard unattended and pins each one's
+signing certificate in `keyboards.lock`; a later build signed by a different key
+is refused rather than installed. `play <pkg>` drives an install through the
+device's own Play session by tapping the button by its accessibility label.
+
+APKMirror is deliberately not used: it answers 403 to every scripted request
+(Cloudflare), and working around that is both against their terms and the wrong
+habit to build. Play is the only sanctioned source for the proprietary ones, and
+it is the only one that yields a publisher-signed binary.
+
+Note `apksigner` and `sdkmanager` both need a JRE. Without one, signature
+verification falls back to reading the v1 certificate out of the APK zip with
+openssl, and refuses to pin anything it cannot compute — an empty pin matches
+everything, which is worse than no pin at all.
+
+## Browsers matter as much as keyboards
+
+The engine decides which input path runs. Chrome 121+ has EditContext; Chrome
+113 and every Gecko build do not, so those take the hidden-`<input>` value-diff
+path. `kbd/kbd-detect.js` carries a Gecko-only branch (`isFirefox`, "VP grew on
+gecko -> keep kbd") because Firefox reverts the visual viewport while the IME is
+up — behaviour no Blink engine shows. Until this run, that branch had only ever
+executed against a stub.
+
+Fennec (Firefox's F-Droid build, `org.mozilla.fennec_fdroid`) installs without
+Play, so the Gecko path is reachable unattended.
+
+## Two traps that silently invalidate a run
+
+**`&` in `adb shell am start -d <url>` is eaten by the DEVICE shell.** The URL is
+truncated at the first ampersand, so `?kbddebug=1&magnify=1&e2e=20` arrives as
+`?kbddebug=1` and the run quietly tests the wrong configuration. Quote the whole
+command so the device shell sees one argument:
+
+```sh
+adb shell "am start -a android.intent.action.VIEW -d '$URL' com.android.chrome"
+```
+
+Verify rather than assume — read `location.search` back over CDP, and check the
+boot line, which prints `magnify=` from the parsed value. Note there may be
+several viewer tabs open; make sure you read the foreground one.
+
+This matters because `TOUCH_INPUT = MAGNIFY && isTouch`: without magnify the
+native `/input` touch channel never opens and taps fall back to noVNC
+touch->mouse, so a whole transport path goes untested. With magnify on, the boot
+log shows `kickReconnects (sock=1 input=1)`, `emulate 412x783@1.000`, and
+`input socket open`.
+
+**Clearing a remote field with JS desyncs the viewer.** Setting `.value=''`
+through CDP leaves the proxy's `lastSentValue` stale, and the next diff replays
+that buffer — drift-recon is off on sensitive fields by design, so nothing
+notices. Reset by switching fields (which is what makes field-session call
+`clearProxy()`), not by clearing the value.
+
+## Nested chain
+
+`host/test-host.html?nest=1&viewer=<base>` loads itself one level deeper, giving
+host -> relay iframe -> viewer. Serve `images/minimal-vnc-desktop` and reverse
+the port:
+
+```sh
+python3 -m http.server 8749 --bind 127.0.0.1
+adb reverse tcp:8749 tcp:8749
+```
+
+A healthy nested boot logs `nested mode: child is this page in relay mode`,
+`HELLO proto=1 vk=1 vv=1 magnify=1`, and
+`host-bridge: embedder proved it can see the keyboard -> local detectors stand down`.

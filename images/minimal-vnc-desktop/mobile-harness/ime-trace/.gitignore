@@ -1,0 +1,6 @@
+# Downloaded keyboard APKs. `./keyboards.sh fetch-oss` re-fetches the F-Droid
+# ones on demand and verifies each against keyboards.lock, so the binaries are
+# reproducible from the lock file and do not belong in git — Fennec alone is
+# 120 MB. Proprietary APKs land in apk-drop/ by hand and are not redistributable.
+.apk-cache/
+apk-drop/
