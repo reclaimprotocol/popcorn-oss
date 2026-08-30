@@ -20,7 +20,7 @@ import { isTouch, nowMs } from './env.js';
 import { fieldRejectsSpace } from './ime-hints.js';
 import { dbg, dbgv, safeKeyName, KBD_LOG } from './diag.js';
 import { e2e } from './e2e.js';
-import { SPECIAL_KEYSYMS, keysymForCodepoint } from './keys.js';
+import { SPECIAL_KEYSYMS, DESKTOP_KEYSYMS, keysymForCodepoint } from './keys.js';
 import { reportInteraction } from './host-bridge.js';
 
 const SEND_QUEUE_MAX = 128;
@@ -240,7 +240,10 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
   function sendSpecialKey(name, count) {
     count = count == null ? 1 : count;
     if (count <= 0) return;
-    const keysym = SPECIAL_KEYSYMS[name];
+    // DESKTOP_KEYSYMS is the fallback, not a desktop-only table: the mobile proxy
+    // forwards caret keys (arrows, Home/End, Delete) through here too, for the
+    // keyboards that have them.
+    const keysym = SPECIAL_KEYSYMS[name] || DESKTOP_KEYSYMS[name];
     if (!keysym) return;
     const rfb = getRfb();
     if (!rfb || !getRfbReady()) { dbg('sendKey queued (rfb down)'); if (name === 'Backspace') echoBackspace(count); enqueueSend({ kind: 'special', payload: { name, count } }); return; }
