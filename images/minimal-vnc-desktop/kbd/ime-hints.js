@@ -165,8 +165,16 @@ export function applyImeHints(proxy, hints, { mirrorOn, secure }) {
   // question so far (leading capitals, the Gboard trailing space) has come down to
   // this, and guessing at it has cost several wrong fixes.
   currentFieldIsLiteral = literalField;
-  currentFieldRejectsSpace = remoteType === 'email' || remoteType === 'url' ||
-    acIsLiteral || imIsLiteral || nameIsAddress || phIsAddress;
+  // A secret is never an address field. nameIsAddress matches "user" as a whole
+  // word, so Rails' name="user[password]" (and user_password, login_password) lands
+  // in the address bucket, where transport.js drops EVERY space — silently, since a
+  // masked field publishes no val/len for drift-recon to check. transport.js gates
+  // on sync.sensitive too, for secrets typed as text that this cannot see.
+  const acIsSecret = /^(current-password|new-password|one-time-code|cc-number|cc-csc)$/.test(acLower);
+  const isSecretField = remoteType === 'password' || acIsSecret;
+  currentFieldRejectsSpace = !isSecretField &&
+    (remoteType === 'email' || remoteType === 'url' ||
+     acIsLiteral || imIsLiteral || nameIsAddress || phIsAddress);
   const remoteCap = (info.autoCapitalize || '').toLowerCase();
   const remoteCorrect = (info.autoCorrect || '').toLowerCase();
   const remoteSpell = (info.spellCheck || '').toLowerCase();

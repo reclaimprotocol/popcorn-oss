@@ -226,3 +226,50 @@ test('a non-sensitive field never wants it', () => {
   assert.equal(secureSurfaceWanted({ tag: 'INPUT', type: 'text' }, false), false);
   assert.equal(secureSurfaceWanted({ tag: 'TEXTAREA' }, false), false);
 });
+
+// ---- a secret is never an address field --------------------------------------
+// nameIsAddress matches "user" as a whole word, so Rails' name="user[password]"
+// (and user_password, login_password) reads as address-like — and an address-like
+// field has EVERY space dropped in transport.js. On a masked field that is
+// invisible: secrets publish no val/len, so nothing downstream can notice.
+
+test('a Rails-style password name does not make the field space-rejecting', () => {
+  const p = fakeProxy();
+  applyImeHints(p, {
+    tag: 'INPUT', type: 'password', name: 'user[password]', autoComplete: 'current-password',
+  }, NO_MIRROR);
+  assert.equal(fieldRejectsSpace(), false);
+});
+
+test('every address-shaped password name is exempt', () => {
+  for (const name of ['user[password]', 'user_password', 'login_password',
+                      'user-password', 'login[password]', 'account_user_password']) {
+    const p = fakeProxy();
+    applyImeHints(p, { tag: 'INPUT', type: 'password', name }, NO_MIRROR);
+    assert.equal(fieldRejectsSpace(), false, name + ' would have its spaces stripped');
+  }
+});
+
+test('a secret typed as type=text is exempt via its autocomplete token', () => {
+  // Sites that roll their own masking ship type=text with the honest token.
+  for (const ac of ['current-password', 'new-password', 'one-time-code']) {
+    const p = fakeProxy();
+    applyImeHints(p, { tag: 'INPUT', type: 'text', name: 'user_login', autoComplete: ac }, NO_MIRROR);
+    assert.equal(fieldRejectsSpace(), false, ac + ' would have its spaces stripped');
+  }
+});
+
+test('the address filter still fires on the fields it exists for', () => {
+  // The exemption must not reinstate the Gboard trailing-space bug on the
+  // username/email side, which is what the filter was built for.
+  for (const hints of [
+    { tag: 'INPUT', type: 'email' },
+    { tag: 'INPUT', type: 'text', autoComplete: 'username' },
+    { tag: 'INPUT', type: 'text', name: 'user[email]' },
+    { tag: 'INPUT', type: 'text', name: 'login' },
+  ]) {
+    const p = fakeProxy();
+    applyImeHints(p, hints, NO_MIRROR);
+    assert.equal(fieldRejectsSpace(), true, JSON.stringify(hints) + ' should still reject spaces');
+  }
+});

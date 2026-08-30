@@ -110,6 +110,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     echoBackspace: (n) => echoBackspace(n),
     onSent: (delta) => session.noteSent(delta), // drift-recon feed (field-session)
     getFocusKey: () => session.focusKey(),       // tag queued keys so a reconnect can't replay them into another field
+    getSensitiveField: () => session.sensitive(), // keep the address-space filter off passwords
   });
   const sendText = transport.sendText;
   const sendSpecialKey = transport.sendSpecialKey;

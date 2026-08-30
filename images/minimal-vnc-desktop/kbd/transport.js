@@ -26,7 +26,11 @@ import { reportInteraction } from './host-bridge.js';
 const SEND_QUEUE_MAX = 128;
 const SEND_QUEUE_MAX_AGE_MS = 5000;
 
-export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace, onSent, getFocusKey }) {
+export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace, onSent, getFocusKey, getSensitiveField }) {
+  // Authoritative secrecy (sync.sensitive), to keep the address-space filter off
+  // secrets ime-hints cannot recognise — one the page ships as type=text that the
+  // extension matched by name or shape. Defaults false for an older caller.
+  const sensitive = () => (getSensitiveField ? !!getSensitiveField() : false);
   let sendQueue = [];
   let replayingQueue = false; // true while flushSendQueue replays (don't re-echo)
 
@@ -208,7 +212,9 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
         // so the keyboard treats the field as prose no matter what inputmode says.
         // Dropping the space here catches every source (suggestion commit, glide,
         // typing it by hand), and never applies to password fields.
-        if (cp === 0x20 && fieldRejectsSpace()) { dbgv('space dropped (address field)'); continue; }
+        // Never on a secret, whatever it is named: a passphrase space is legal, and
+        // a masked field publishes no val/len, so nothing can notice one we ate.
+        if (cp === 0x20 && fieldRejectsSpace() && !sensitive()) { dbgv('space dropped (address field)'); continue; }
         // Carry-over from the previous field (see the note above): the first
         // character of a fresh field session can't legitimately be a space.
         // Normal tier — this one is the P1, so it must be visible without
