@@ -91,6 +91,28 @@ export function createImeInput({
     }
   }
 
+  // Caret keys, shared by both mobile paths. Previously inert — swallowed and
+  // never forwarded — which silently corrupted the field for any keyboard that
+  // has them (Hacker's Keyboard ships arrows, Home/End and Delete on a phone):
+  // the local caret moved, the remote's did not, and the next edit diffed
+  // against a tail the remote was no longer writing behind.
+  //
+  // Forwarding alone is not enough. The value-diff is anchored to the END of the
+  // field, so once the caret moves, lastSentValue describes text the remote caret
+  // no longer sits behind. Drop the baseline with the caret: the two now agree,
+  // and the characters after it go out as plain inserts at the shared position.
+  // Costs the IME its word context, which a word boundary costs anyway.
+  const CARET_KEYS = new Set([
+    'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Delete',
+  ]);
+  function handleCaretKey(e) {
+    if (!CARET_KEYS.has(e.key)) return false;
+    e.preventDefault();
+    sendSpecialKey(e.key);
+    clearProxy();
+    return true;
+  }
+
   // Commit-only composition: on a slow link, don't mirror every marked-text step
   // to the remote (that floods the tunnel with backspace/retype per jamo/kana and
   // fires the remote page's per-keystroke JS with half-composed text). Preview
@@ -424,22 +446,12 @@ export function createImeInput({
     if (e.isComposing || e.keyCode === 229) return;
 
     if (isAndroid) {
+      // Android only, deliberately. On iOS clearProxy() tears down the chew
+      // buffer that hold-to-repeat backspace depends on, and no iOS soft keyboard
+      // ships arrows — only a hardware keyboard on iPad would reach this, which
+      // is untested. Keep the blast radius to the paths that were verified.
+      if (handleCaretKey(e)) return;
       switch (e.key) {
-      // Caret keys. Previously inert on mobile — swallowed here and never
-      // forwarded — which silently corrupted the field for any keyboard that has
-      // them (Hacker's Keyboard ships arrows, Home/End and Delete on a phone). The
-      // local caret moved, the remote's did not, and the next edit diffed against
-      // a tail that was no longer where the remote was writing.
-      //
-      // Forwarding alone is not enough: the value-diff is anchored to the END of
-      // the field, so after the caret moves, `lastSentValue` describes text the
-      // remote caret is no longer sitting behind. Clear the baseline with it — the
-      // carets now agree, and the next characters go out as plain inserts at the
-      // position both sides share. Costs the IME its word context, which is what
-      // already happens at any word boundary.
-      case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown':
-      case 'Home': case 'End': case 'Delete':
-        e.preventDefault(); sendSpecialKey(e.key); clearProxy(); return;
         case 'Backspace':
           if (proxy.value === '') { e.preventDefault(); sendSpecialKey('Backspace'); }
           return;
@@ -730,22 +742,8 @@ export function createImeInput({
     // Composition owns Enter/Escape/Space (commit/dismiss candidate) — don't
     // forward them to the remote. keyCode 229 / e.isComposing mark IME activity.
     if (e.isComposing || e.keyCode === 229) return;
+    if (handleCaretKey(e)) return;
     switch (e.key) {
-      // Caret keys. Previously inert on mobile — swallowed here and never
-      // forwarded — which silently corrupted the field for any keyboard that has
-      // them (Hacker's Keyboard ships arrows, Home/End and Delete on a phone). The
-      // local caret moved, the remote's did not, and the next edit diffed against
-      // a tail that was no longer where the remote was writing.
-      //
-      // Forwarding alone is not enough: the value-diff is anchored to the END of
-      // the field, so after the caret moves, `lastSentValue` describes text the
-      // remote caret is no longer sitting behind. Clear the baseline with it — the
-      // carets now agree, and the next characters go out as plain inserts at the
-      // position both sides share. Costs the IME its word context, which is what
-      // already happens at any word boundary.
-      case 'ArrowLeft': case 'ArrowRight': case 'ArrowUp': case 'ArrowDown':
-      case 'Home': case 'End': case 'Delete':
-        e.preventDefault(); sendSpecialKey(e.key); clearProxy(); return;
       case 'Enter': e.preventDefault(); sendActionKey(); resetEC(); return;
       case 'Tab': e.preventDefault(); sendSpecialKey('Tab'); resetEC(); return;
       case 'Escape': e.preventDefault(); toggleKeyboard(); return;
