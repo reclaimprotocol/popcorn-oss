@@ -36,7 +36,7 @@ export function createFieldSession({
   tap, fit, input, echo, sendCompatClick,
   mirrorOn, seedProxyMirror,
   clearEcho, reconcileEcho, sendSpecialKey,
-  applyProxyImeHints, zoomToField, applyLift, currentVisibleBottom,
+  applyFieldSurface, zoomToField, applyLift, currentVisibleBottom,
   focusProxyDesktop, blurProxyDesktop,
   mirrorBarShown, showMirrorBar,
   raiseKeyboard, dismissKeyboard,
@@ -251,6 +251,9 @@ export function createFieldSession({
     remoteFocusKey = null;
     echo.setAllowed(false);
     sensitiveField = false;
+    // Back to the default surface with the field identity: a stale password
+    // surface would cost the next prose field its glide typing and prediction bar.
+    if (applyFieldSurface) applyFieldSurface(false);
     remoteValue = ''; mirrorNeedsSeed = false;
     spaceRepairKey = null; spaceRepairs = 0;
     clearEcho();
@@ -342,7 +345,9 @@ export function createFieldSession({
       // Local-echo bookkeeping (detectDrift has just refreshed baseline/delta):
       const sync = state.sync || {};
       echo.setAllowed(!(sync && sync.sensitive)); // never echo password/OTP/card
+      const wasSensitive = sensitiveField;
       sensitiveField = !!(sync && sync.sensitive); // gate auto-space + Indic guess
+      const secrecyChanged = sensitiveField !== wasSensitive;
       // Mirror: track the remote field's real text. A new field resets it (a
       // sensitive field publishes no val, so it stays empty and is never seeded).
       if (typeof sync.val === 'string') remoteValue = sync.val;
@@ -402,11 +407,17 @@ export function createFieldSession({
           const observed = nowMs() - tap.lastTapAt();
           if (observed > 0 && observed < 8000) noteTapConfirm(observed);
         }
-        // Reshape the proxy IME for the new field — including field-to-field
-        // tabbing while the keyboard stays up (text -> number should switch
-        // Gboard to a numeric pad).
-        applyProxyImeHints();
       }
+      // Reshape the proxy for this field: keypad/capitalisation hints, and on
+      // Android whether it needs the password surface at all (applyFieldSurface).
+      //
+      // A new field OR a secrecy change, because neither implies the other: a
+      // "show password" toggle flips type on ONE element, and pages that reuse a
+      // single focusKey change field without ever looking new (the carry-over hunt
+      // logged a constant focusKey for a whole session) — which is how a password
+      // ends up still wearing the previous field's prose keyboard. The isNewField
+      // half is what re-pads Gboard when tabbing text -> number.
+      if (isNewField || secrecyChanged) applyFieldSurface(sensitiveField);
       // Whole-page desktop-fit (novp): mirror mobile Safari — once the keyboard is
       // up on a field, zoom into it so it's readable (the field is often
       // auto-focused, so this can't gate on isNewField). Re-zooms per new field.

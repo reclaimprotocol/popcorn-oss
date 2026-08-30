@@ -1,6 +1,6 @@
 // ime-hints.js — shape the proxy so platform keyboards pick the right layout.
 //
-// Pure function of (proxy, remote-field hints, mirror-mode flag): derives
+// Pure function of (proxy, remote-field hints, mirror-mode + secure flags): derives
 // inputmode / autocomplete / enterkeyhint / autocapitalize / autocorrect /
 // spellcheck from what the extension reports about the focused remote field, so
 // Gboard/Samsung/SwiftKey/iOS show the same keypad and behaviors a real phone
@@ -22,11 +22,42 @@ export function fieldIsLiteral() { return currentFieldIsLiteral; }
 let currentFieldRejectsSpace = false;
 export function fieldRejectsSpace() { return currentFieldRejectsSpace; }
 
+const numericFromPattern = (pat) => {
+  if (!pat) return '';
+  const core = pat.replace(/^\^/, '').replace(/\$$/, '');
+  return /^(\[0-9\]|\\d)([*+]|\{\d+(,\d*)?\})?$/.test(core) ? 'numeric' : '';
+};
+
+function deriveInputMode(remoteInputMode, remoteType, remotePattern) {
+  return remoteInputMode ||
+    ({ number: 'decimal', tel: 'tel', email: 'email', url: 'url', search: 'search' }[remoteType] || '') ||
+    numericFromPattern(remotePattern);
+}
+
+// Whether this field needs the password SURFACE — a real <input type=password>,
+// so the IME drops its prose pipeline on a secret it would otherwise treat as
+// text. Deliberately NARROWER than "sensitive", which also covers OTP and cards:
+// type=password costs one-time-code its SMS chip, and it costs every numeric box
+// its pad (Chrome gives a password field the TEXT keyboard whatever inputmode
+// says) while suppressing a prose pipeline a number pad never had. Platform
+// gating belongs to the caller, so this stays pure.
+export function secureSurfaceWanted(hints, sensitive) {
+  if (!sensitive) return false;
+  const info = hints || {};
+  if ((info.autoComplete || '').toLowerCase() === 'one-time-code') return false;
+  const im = deriveInputMode(
+    (info.inputMode || '').toLowerCase(),
+    (info.type || '').toLowerCase(),
+    info.pattern || '',
+  );
+  return !(im === 'numeric' || im === 'decimal' || im === 'tel');
+}
+
 // Returns a summary of what the remote reported and what we derived, for the CALLER
 // to log — every keyboard question so far (leading capitals, the Gboard trailing
 // space) came down to this value, and guessing at it cost several wrong fixes.
 // Returned rather than logged here so this module stays import-free and unit-testable.
-export function applyImeHints(proxy, hints, { mirrorOn }) {
+export function applyImeHints(proxy, hints, { mirrorOn, secure }) {
   if (!proxy) return null;
   const info = hints || {};
   const remoteType = (info.type || '').toLowerCase();
@@ -50,7 +81,14 @@ export function applyImeHints(proxy, hints, { mirrorOn }) {
     // seedProxyMirror rely on. inputmode gives the same keypad without those
     // side effects. (type=password was never mirrored either — it forces the iOS
     // Passwords AutoFill accessory, which steals proxy focus and breaks the lift.)
-    try { proxy.type = 'text'; } catch (_) {}
+    //
+    // The exception is a CREDENTIAL field on Android: it must be a real
+    // type=password <input> or the IME runs its prose pipeline on the secret —
+    // suggestion strip, word+SPACE on a tap, double-space to ". " (measured on
+    // Android 14/Gboard). None of the hazards above apply to password, and the
+    // send side cannot clean up after it: those filters skip secrets on purpose.
+    // `secure` is the caller's call, keeping platform gating out of this module.
+    try { proxy.type = secure ? 'password' : 'text'; } catch (_) {}
   }
 
   // Most sites use <input type=number|tel|email|url|search> WITHOUT an
@@ -67,14 +105,7 @@ export function applyImeHints(proxy, hints, { mirrorOn }) {
   // anchors, only [0-9]/\d with an optional *, +, {n}, {n,}, {n,m} quantifier —
   // anything with a separator, alternation, or letter class is rejected (a decimal
   // or formatted pattern must NOT get the separator-less numeric pad).
-  const numericFromPattern = (pat) => {
-    if (!pat) return '';
-    const core = pat.replace(/^\^/, '').replace(/\$$/, '');
-    return /^(\[0-9\]|\\d)([*+]|\{\d+(,\d*)?\})?$/.test(core) ? 'numeric' : '';
-  };
-  const derivedInputMode = remoteInputMode ||
-    ({ number: 'decimal', tel: 'tel', email: 'email', url: 'url', search: 'search' }[remoteType] || '') ||
-    numericFromPattern(remotePattern);
+  const derivedInputMode = deriveInputMode(remoteInputMode, remoteType, remotePattern);
   if (derivedInputMode) { try { proxy.setAttribute('inputmode', derivedInputMode); } catch (_) {} }
   else { try { proxy.removeAttribute('inputmode'); } catch (_) {} }
 

@@ -4,7 +4,7 @@
 // autocapitalize exemption directly against a minimal fake proxy.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyImeHints, fieldRejectsSpace } from '../ime-hints.js';
+import { applyImeHints, secureSurfaceWanted, fieldRejectsSpace } from '../ime-hints.js';
 
 function fakeProxy(tagName = 'INPUT') {
   const attrs = {};
@@ -165,4 +165,64 @@ test('name=password does not become space-rejecting', () => {
   const p = fakeProxy();
   applyImeHints(p, { tag: 'INPUT', type: 'password', name: 'password', autoComplete: 'current-password' }, NO_MIRROR);
   assert.equal(fieldRejectsSpace(), false);
+});
+
+// ---- the secure proxy type ---------------------------------------------------
+// A credential field has to reach the IME as a real type=password <input>, or
+// Android runs its prose pipeline on the secret: suggestion strip, word+SPACE on
+// a suggestion tap, double-space to ". ". The send path cannot clean that up
+// afterwards — it refuses to touch whitespace in a secret on purpose.
+
+test('a sensitive field makes the proxy a password input', () => {
+  const p = fakeProxy();
+  applyImeHints(p, { tag: 'INPUT', type: 'password', autoComplete: 'current-password' },
+    { mirrorOn: () => false, secure: true });
+  assert.equal(p.type, 'password');
+});
+
+test('the proxy goes back to text when the next field is not sensitive', () => {
+  // Leaving a password on the same proxy must not strand it in password mode:
+  // that would cost every later prose field its suggestions and glide typing.
+  const p = fakeProxy();
+  applyImeHints(p, { tag: 'INPUT', type: 'password' }, { mirrorOn: () => false, secure: true });
+  applyImeHints(p, { tag: 'INPUT', type: 'text' }, { mirrorOn: () => false, secure: false });
+  assert.equal(p.type, 'text');
+});
+
+test('secure is the caller decision, so a password field alone does not flip the type', () => {
+  // iOS passes secure:false for every field — type=password there summons the
+  // Passwords AutoFill accessory, which steals proxy focus and breaks the lift.
+  const p = fakeProxy();
+  applyImeHints(p, { tag: 'INPUT', type: 'password', autoComplete: 'current-password' }, NO_MIRROR);
+  assert.equal(p.type, 'text');
+});
+
+// ---- which fields want the password surface ----------------------------------
+// Narrower than "sensitive" on purpose: password mode helps only where the IME
+// would otherwise run a prose pipeline. Applying it to an OTP or a card number
+// costs the numeric pad (Chrome gives type=password the TEXT keyboard whatever
+// inputmode says) and, for one-time-code, the OS SMS chip too.
+
+test('a password field wants the secure surface', () => {
+  assert.equal(secureSurfaceWanted({ tag: 'INPUT', type: 'password' }, true), true);
+});
+
+test('a one-time-code field does not — it would lose the SMS chip', () => {
+  assert.equal(secureSurfaceWanted(
+    { tag: 'INPUT', type: 'text', autoComplete: 'one-time-code' }, true), false);
+});
+
+test('numeric keypads do not: no suggestions to suppress, and a pad to lose', () => {
+  // CVV via the legacy pattern idiom, a tel field, and an explicit numeric
+  // inputmode all reach the IME as a number pad, where no auto-space, no
+  // suggestion strip and no double-space-to-period exist in the first place.
+  assert.equal(secureSurfaceWanted({ tag: 'INPUT', type: 'text', pattern: '[0-9]*' }, true), false);
+  assert.equal(secureSurfaceWanted({ tag: 'INPUT', type: 'tel' }, true), false);
+  assert.equal(secureSurfaceWanted({ tag: 'INPUT', type: 'text', inputMode: 'numeric' }, true), false);
+  assert.equal(secureSurfaceWanted({ tag: 'INPUT', type: 'number' }, true), false);
+});
+
+test('a non-sensitive field never wants it', () => {
+  assert.equal(secureSurfaceWanted({ tag: 'INPUT', type: 'text' }, false), false);
+  assert.equal(secureSurfaceWanted({ tag: 'TEXTAREA' }, false), false);
 });

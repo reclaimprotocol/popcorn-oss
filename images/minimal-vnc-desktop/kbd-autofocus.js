@@ -63,7 +63,7 @@ import { createClipboard } from './kbd/clipboard.js';
 import { createTouchChannel } from './kbd/touch-channel.js';
 import { createWatchdog } from './kbd/watchdog.js';
 import { reportHealth } from './kbd/health.js';
-import { applyImeHints } from './kbd/ime-hints.js';
+import { applyImeHints, secureSurfaceWanted } from './kbd/ime-hints.js';
 import { createAutoSpaceFilter } from './kbd/autospace.js';
 import { createDesktopBridge } from './kbd/desktop-bridge.js';
 import { createViewportTransform } from './kbd/viewport-transform.js';
@@ -74,7 +74,7 @@ import { createTransport } from './kbd/transport.js';
 import { createImeInput } from './kbd/ime-input.js';
 import { createKbdDetect } from './kbd/kbd-detect.js';
 import { createTap } from './kbd/tap.js';
-import { buildProxy } from './kbd/proxy-setup.js';
+import { buildProxy, buildSecureProxy } from './kbd/proxy-setup.js';
 import { createFieldSession } from './kbd/field-session.js';
 import { createSignal } from './kbd/signal.js';
 import { createDialog } from './kbd/dialog.js';
@@ -121,6 +121,13 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // What stays here is the state SHARED across subsystems.
 
   let proxy = null;              // hidden <input> the OS IME composes into
+  // Android only: the two surfaces the IME can compose into, and which one is
+  // live. The EditContext div is the default (glide typing, prediction bar); the
+  // secure <input type=password> takes over on password/OTP/card fields, because
+  // EditContext cannot tell the IME a field is a secret and the prose pipeline
+  // then commits characters the user never typed. applyFieldSurface() picks one.
+  let ecProxy = null;            // EditContext div  (non-sensitive fields)
+  let secureProxy = null;        // <input type=password> (sensitive fields)
 
   let keyboardActive = false;    // soft keyboard is up (visualViewport shrunk)
   // Was the user typing when we went to the background? The OS dismisses the keyboard on the way
@@ -278,19 +285,75 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   const seedProxyMirror = input.seedProxyMirror;
   const mirrorOn = input.mirrorOn;
 
+  // ---- field surface (keypad hints + Android secrecy) ----------------------
+  // The ONE place that reshapes the proxy for the focused remote field, on a new
+  // field or a secrecy change (neither implies the other — see field-session.js).
+  //
+  // A credential field must reach the IME as an <input type=password> or the
+  // keyboard runs its prose pipeline on the secret — suggestion strip, word+SPACE
+  // on a tap, double-space to ". " (measured, Android 14/Gboard). The send side
+  // cannot undo it: those filters skip secrets on purpose. Two mechanisms, since
+  // the Android paths differ: the hidden-<input> path retypes its one proxy;
+  // EditContext cannot express "secret" at all, so the IME moves to a separate
+  // password <input> built at setup.
+  let surfaceSecure = false; // secrecy of the surface as last applied
+  function applyFieldSurface(sensitive) {
+    // ime-hints owns WHICH fields qualify (it excludes OTP and numeric pads);
+    // this is the platform half. iOS keeps type=text so the Passwords AutoFill
+    // accessory cannot steal proxy focus, and desktop has no prose pipeline to
+    // fight — a password proxy there would only attract the browser's own
+    // password manager onto a hidden 1px input.
+    const want = !isIOS && !DESKTOP && secureSurfaceWanted(session.hints(), sensitive);
+    const changed = want !== surfaceSecure;
+    surfaceSecure = want;
+    if (changed) {
+      // A secrecy change is always a different field, so the buffer belongs to the
+      // one we are leaving; diffing the new field against it would type the
+      // previous field's characters into a password, or backspace over it.
+      // Retyping an <input> preserves its value, so this clear is not free.
+      clearProxy();
+      input.resetComposition();
+    }
+    if (changed && secureProxy && ecProxy) {
+      // EditContext path only: move the IME to the other element. Swapping moves
+      // DOM focus, so arm the intentional-blur window first — otherwise the
+      // outgoing blur reads as a back-button dismiss and tears the keyboard down
+      // mid-login. Android keeps it up across a move between editable elements and
+      // just re-reads EditorInfo, which is the whole point.
+      const next = want ? secureProxy : ecProxy;
+      if (next !== proxy) {
+        const hadFocus = document.activeElement === proxy;
+        proxy = next;
+        input.setProxy(proxy);
+        input.setEcMode(proxy === ecProxy);
+        // Clear the INCOMING surface too: clearProxy() is per-surface, so a
+        // password <input> re-entered later would still hold the previous secret
+        // while lastSentValue reads empty, and the first diff would re-send it.
+        clearProxy();
+        if (hadFocus || keyboardActive) {
+          armAllowBlur();
+          try { proxy.focus(); } catch (_) {}
+        }
+      }
+    }
+    // Hints last: on the <input> paths this is what actually sets type=password,
+    // and after a swap it re-derives inputmode/capitalisation for the new element.
+    applyProxyImeHints();
+  }
+
   // ---- IME hints (shape the proxy so platform keyboards pick the layout) ---
   // The derivation lives in ./kbd/ime-hints.js (pure function of proxy + hints
   // + mirror flag); this wrapper supplies the core's live currentHints/mirrorOn.
 
   function applyProxyImeHints() {
-    const h = applyImeHints(proxy, session.hints(), { mirrorOn });
+    const h = applyImeHints(proxy, session.hints(), { mirrorOn, secure: surfaceSecure });
     // What the extension REPORTED vs what we derived. Logged here (not in the pure
     // ime-hints module) and only under ?kbddebug=1 — it is the single value that
     // decides keyboard layout, capitalisation and the address-field space filter.
     if (h && KBD_DEBUG) {
       dbg('hints tag=' + h.tag + ' type=' + h.type + ' im=' + h.im + ' ac=' + h.ac +
           ' pat=' + h.pat + ' nm=' + h.nm + ' ph=' + h.ph +
-          ' -> literal=' + h.literal + ' nospace=' + h.nospace +
+          ' -> literal=' + h.literal + ' nospace=' + h.nospace + ' secure=' + (surfaceSecure ? 1 : 0) +
           ' cap=' + h.cap + ' correct=' + h.correct);
     }
   }
@@ -823,7 +886,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // Trailing-space repair sends a remote Backspace of its own (see
     // repairTrailingSpace); onSent already feeds the drift counter from here.
     sendSpecialKey,
-    applyProxyImeHints,
+    applyFieldSurface,
     zoomToField,
     applyLift,
     currentVisibleBottom,
@@ -1026,6 +1089,16 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     proxy = built.proxy;
     input.setProxy(proxy); // the input state machine's handlers use a local ref
     if (built.editCtx) input.setEditContext(built.editCtx);
+    if (ecMode) {
+      // Built up front, not on the first sensitive field: creating and focusing an
+      // <input> in the same turn as the signal asking for it races the keyboard's
+      // own restart, and a password is where a dropped keyboard costs most.
+      ecProxy = built.proxy;
+      secureProxy = buildSecureProxy({
+        onProxyBeforeInput, onProxyInput, onProxyKeyDown,
+        onProxyBlur, onCompositionStart, onCompositionUpdate, onCompositionEnd,
+      });
+    }
 
     if (DESKTOP) {
       connectSignal(); // /kbd focus signal drives proxy focus on desktop too
