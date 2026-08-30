@@ -9,8 +9,18 @@
 // tap-per-key cases carried per-platform overrides and still only ran on one surface.
 //
 // Both platforms can instead put text into the focused field through their own input
-// path: `input text` on Android goes through the IME, and XCUITest's typeText drives
-// the real on-screen keyboard. Neither depends on where a key is painted.
+// path, neither of which depends on where a key is painted. XCUITest's typeText
+// drives the real iOS keyboard.
+//
+// Android's does NOT. `input text` injects key events at the input dispatcher
+// (InputManager#injectInputEvent) and bypasses the installed soft keyboard, so it
+// only ever produces plain insertText — no composition, no suggestion strip, no
+// glide, no autocorrect, no keydown 'Unidentified'. Every IME defect the viewer has
+// to survive is therefore invisible here: the Gboard suggestion tap that commits
+// word+SPACE into a credential, the delete key arriving as 'Unidentified', SwiftKey
+// re-composing on space, Samsung composing with no compositionstart. Those live as
+// browser event sequences in kbd/test (secure-*, android-*). Treat a green typeText
+// case as proof of the transport, never of IME handling.
 //
 // This module holds only the decisions — escaping, key names, selector syntax — so
 // they are testable without a device. cli.mjs owns the adb and driver calls.
