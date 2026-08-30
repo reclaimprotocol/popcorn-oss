@@ -28,16 +28,11 @@ import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
 import { buildSessionAllocationEvent, buildSessionAnalyticsMetadata, normalizeViewerRttSummary } from './src/session-analytics';
 import {
-  getActiveSessionCount,
-  getSessionsByRegion,
-  getSessionAllocationStats,
-  getSessionRttStats,
+  getActiveSessionStats,
+  getAnalyticsTimeSeries,
+  getSessionDimensions,
+  getSessionOverviewStats,
   getSessionRttStatsByRegion,
-  getSessionTimeSeries,
-  getSessionWindowStats,
-  getViewerRttTimeSeries,
-  getStaleActiveSessionCount,
-  getTopClients,
 } from './src/stats';
 import { expiresAtFromTtlSeconds, extendExpiresAt, readOptionalSeconds, validateTtlSeconds } from './src/ttl';
 import { X402PaymentGateway } from './src/x402-payment';
@@ -775,13 +770,94 @@ function normalizeWindowHours(raw: string | number | undefined): number {
 }
 
 // Pick a trend-chart bucket count so longer ranges keep useful granularity
-// without over-crowding the x-axis (getSessionTimeSeries caps at 48).
+// without over-crowding the x-axis (getAnalyticsTimeSeries caps at 48).
 function bucketsForWindow(windowHours: number): number {
   if (windowHours <= 24) return 12;   // 1h→5m, 6h→30m, 24h→2h
   if (windowHours <= 72) return 12;   // 2d→4h, 3d→6h
   if (windowHours <= 168) return 14;  // 7d→12h
   if (windowHours <= 336) return 14;  // 14d→1d
   return 15;                          // 30d→2d
+}
+
+type HistoricalSessionAnalytics = {
+  overview: Awaited<ReturnType<typeof getSessionOverviewStats>>;
+  rttByRegion: Awaited<ReturnType<typeof getSessionRttStatsByRegion>>;
+  timeSeries: Awaited<ReturnType<typeof getAnalyticsTimeSeries>>;
+  dimensions: Awaited<ReturnType<typeof getSessionDimensions>>;
+};
+
+type HistoricalSessionAnalyticsCacheEntry = {
+  value?: HistoricalSessionAnalytics;
+  expiresAt: number;
+  inFlight?: Promise<HistoricalSessionAnalytics>;
+};
+
+const HISTORICAL_ANALYTICS_CACHE_MAX_ENTRIES = 16;
+const historicalAnalyticsCache = new Map<number, HistoricalSessionAnalyticsCacheEntry>();
+
+function historicalAnalyticsTtlMs(windowHours: number) {
+  if (windowHours >= 168) return 60_000;
+  if (windowHours >= 24) return 30_000;
+  return 15_000;
+}
+
+async function loadHistoricalSessionAnalytics(windowHours: number): Promise<HistoricalSessionAnalytics> {
+  // Keep the two most expensive percentile phases separate to bound peak
+  // memory on PostgreSQL. Queries inside each phase reuse covering indexes.
+  const [overview, rttByRegion] = await Promise.all([
+    getSessionOverviewStats(windowHours),
+    getSessionRttStatsByRegion(windowHours),
+  ]);
+  const [timeSeries, dimensions] = await Promise.all([
+    getAnalyticsTimeSeries(windowHours, bucketsForWindow(windowHours)),
+    getSessionDimensions(windowHours),
+  ]);
+  return { overview, rttByRegion, timeSeries, dimensions };
+}
+
+function startHistoricalAnalyticsRefresh(
+  windowHours: number,
+  entry: HistoricalSessionAnalyticsCacheEntry,
+): Promise<HistoricalSessionAnalytics> {
+  const inFlight = loadHistoricalSessionAnalytics(windowHours)
+    .then((value) => {
+      historicalAnalyticsCache.delete(windowHours);
+      historicalAnalyticsCache.set(windowHours, {
+        value,
+        expiresAt: Date.now() + historicalAnalyticsTtlMs(windowHours),
+      });
+      while (historicalAnalyticsCache.size > HISTORICAL_ANALYTICS_CACHE_MAX_ENTRIES) {
+        const oldestKey = historicalAnalyticsCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        historicalAnalyticsCache.delete(oldestKey);
+      }
+      return value;
+    })
+    .catch((error) => {
+      if (entry.value) {
+        entry.inFlight = undefined;
+        historicalAnalyticsCache.set(windowHours, entry);
+      } else {
+        historicalAnalyticsCache.delete(windowHours);
+      }
+      throw error;
+    });
+  entry.inFlight = inFlight;
+  historicalAnalyticsCache.set(windowHours, entry);
+  return inFlight;
+}
+
+async function getHistoricalSessionAnalytics(windowHours: number): Promise<HistoricalSessionAnalytics> {
+  const entry = historicalAnalyticsCache.get(windowHours) ?? { expiresAt: 0 };
+  if (entry.value && entry.expiresAt > Date.now()) return entry.value;
+  if (entry.value) {
+    if (!entry.inFlight) {
+      void startHistoricalAnalyticsRefresh(windowHours, entry)
+        .catch((error) => console.error('Failed to refresh historical analytics cache:', error));
+    }
+    return entry.value;
+  }
+  return entry.inFlight ?? startHistoricalAnalyticsRefresh(windowHours, entry);
 }
 
 // Combines live Agones gauges (via pool managers) with cumulative Postgres
@@ -803,19 +879,24 @@ async function buildX402AnalyticsPayload(windowHours: number): Promise<X402Analy
 }
 
 async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
-  const [regions, windowStats, allocationStats, rttStats, rttByRegion, rttSeries, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
+  // Live fleet state remains uncached. Historical aggregates use a short,
+  // bounded stale-while-refresh cache so manual refreshes do not repeatedly
+  // sort the same 30-day percentile data.
+  const [regions, historical, activeSessionStats] = await Promise.all([
     loadAdminRegions(),
-    getSessionWindowStats(windowHours),
-    getSessionAllocationStats(windowHours),
-    getSessionRttStats(windowHours),
-    getSessionRttStatsByRegion(windowHours),
-    getViewerRttTimeSeries(windowHours, bucketsForWindow(windowHours)),
-    getActiveSessionCount(),
-    getStaleActiveSessionCount(),
-    getSessionTimeSeries(windowHours, bucketsForWindow(windowHours)),
-    getSessionsByRegion(windowHours),
-    getTopClients(windowHours),
+    getHistoricalSessionAnalytics(windowHours),
+    getActiveSessionStats(),
   ]);
+  const { overview, rttByRegion, timeSeries, dimensions } = historical;
+  const windowStats = overview.window;
+  const allocationStats = overview.allocation;
+  const rttStats = overview.viewerRtt;
+  const series = timeSeries.sessions;
+  const rttSeries = timeSeries.viewerRtt;
+  const activeSessions = activeSessionStats.active;
+  const staleActiveSessions = activeSessionStats.stale;
+  const regionSessions = dimensions.byRegion;
+  const topClients = dimensions.topClients;
 
   const enabledRegions = regions.filter((region) => region.enabled);
   const servers = enabledRegions.flatMap((region) => region.servers || []);

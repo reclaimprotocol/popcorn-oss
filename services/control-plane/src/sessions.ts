@@ -2,6 +2,20 @@ import { db } from './db';
 import { sessions, sessionEvents } from './schema';
 import { and, count, desc, eq, isNull, sql } from 'drizzle-orm';
 
+// Generated analytics projections are intentionally internal to aggregate
+// queries and must not expand the existing session API response shape.
+const publicSessionColumns = {
+  sessionId: sessions.sessionId,
+  clientId: sessions.clientId,
+  clientName: sessions.clientName,
+  clusterName: sessions.clusterName,
+  region: sessions.region,
+  createdAt: sessions.createdAt,
+  endedAt: sessions.endedAt,
+  status: sessions.status,
+  metadata: sessions.metadata,
+};
+
 export const SessionService = {
   // Create a new session
   async createSession(sessionId: string, clientId: string, clientName: string, clusterName: string, region?: string, metadata?: Record<string, unknown>): Promise<void> {
@@ -89,12 +103,12 @@ export const SessionService = {
 
   // Get session info
   async getSession(sessionId: string) {
-    return await db.select().from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
+    return await db.select(publicSessionColumns).from(sessions).where(eq(sessions.sessionId, sessionId)).limit(1);
   },
 
   async listSessions(limit = 100, clientId?: string, offset = 0) {
     if (clientId) {
-      return await db.select()
+      return await db.select(publicSessionColumns)
         .from(sessions)
         .where(eq(sessions.clientId, clientId))
         .orderBy(desc(sessions.createdAt))
@@ -102,7 +116,7 @@ export const SessionService = {
         .offset(offset);
     }
 
-    return await db.select()
+    return await db.select(publicSessionColumns)
       .from(sessions)
       .orderBy(desc(sessions.createdAt))
       .limit(limit)

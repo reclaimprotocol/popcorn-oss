@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { pgTable, uuid, text, timestamp, boolean, jsonb, index, integer, bigint, uniqueIndex, check } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, boolean, jsonb, index, integer, bigint, doublePrecision, uniqueIndex, check } from 'drizzle-orm/pg-core';
 
 export const clients = pgTable('clients', {
   id: text('id').primaryKey(), // e.g., "client_abc123"
@@ -29,6 +29,44 @@ export const sessions = pgTable('sessions', {
 
   // Additional metadata
   metadata: jsonb('metadata'),
+
+  // Frequently aggregated values are projected once when metadata changes.
+  // Keeping them as generated columns avoids repeatedly decoding the much
+  // wider JSON document during analytics reads.
+  allocationLatencyMs: doublePrecision('allocation_latency_ms').generatedAlwaysAs(sql`
+    CASE
+      WHEN jsonb_typeof(metadata->'allocationLatencyMs') = 'number'
+      THEN (metadata->>'allocationLatencyMs')::double precision
+    END
+  `),
+  viewerRttAvgMs: doublePrecision('viewer_rtt_avg_ms').generatedAlwaysAs(sql`
+    CASE
+      WHEN jsonb_typeof(metadata->'viewerRtt') = 'object'
+       AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
+      THEN (metadata->'viewerRtt'->>'avgMs')::double precision
+    END
+  `),
+  viewerRttP50Ms: doublePrecision('viewer_rtt_p50_ms').generatedAlwaysAs(sql`
+    CASE
+      WHEN jsonb_typeof(metadata->'viewerRtt') = 'object'
+       AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
+      THEN (metadata->'viewerRtt'->>'p50Ms')::double precision
+    END
+  `),
+  viewerRttP95Ms: doublePrecision('viewer_rtt_p95_ms').generatedAlwaysAs(sql`
+    CASE
+      WHEN jsonb_typeof(metadata->'viewerRtt') = 'object'
+       AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
+      THEN (metadata->'viewerRtt'->>'p95Ms')::double precision
+    END
+  `),
+  viewerRttSampleCount: doublePrecision('viewer_rtt_sample_count').generatedAlwaysAs(sql`
+    CASE
+      WHEN jsonb_typeof(metadata->'viewerRtt') = 'object'
+       AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
+      THEN (metadata->'viewerRtt'->>'sampleCount')::double precision
+    END
+  `),
 }, (table) => ({
   // Indexes for common query patterns
   clientIdx: index('sessions_client_idx').on(table.clientId),
@@ -41,6 +79,26 @@ export const sessions = pgTable('sessions', {
   // Composite indexes for common query combinations
   clientTimeIdx: index('sessions_client_time_idx').on(table.clientId, table.createdAt),
   clusterTimeIdx: index('sessions_cluster_time_idx').on(table.clusterName, table.createdAt),
+  // Cover the full historical-dashboard projections so old, all-visible rows
+  // can be answered without fetching the 222 MB sessions heap.
+  createdAnalyticsIdx: index('sessions_created_analytics_idx').on(
+    table.createdAt,
+    table.region,
+    table.clientName,
+    table.allocationLatencyMs,
+    table.viewerRttAvgMs,
+    table.viewerRttP50Ms,
+    table.viewerRttP95Ms,
+    table.viewerRttSampleCount,
+  ),
+  endedAnalyticsIdx: index('sessions_ended_analytics_idx').on(
+    table.endedAt,
+    table.createdAt,
+    table.status,
+    table.viewerRttAvgMs,
+    table.viewerRttP50Ms,
+    table.viewerRttP95Ms,
+  ),
 }));
 
 // Event audit log - for detailed tracking (optional, can be disabled for performance)
