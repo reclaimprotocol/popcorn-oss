@@ -18,6 +18,27 @@ import (
 	"github.com/flynn/noise"
 )
 
+func TestBrowserKioskMode(t *testing.T) {
+	modeFile := filepath.Join(t.TempDir(), "browser-mode")
+	t.Setenv("BROWSER_MODE_FILE", modeFile)
+
+	if !browserKioskMode() {
+		t.Fatal("missing mode file must default to kiosk")
+	}
+	if err := os.WriteFile(modeFile, []byte("normal\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if browserKioskMode() {
+		t.Fatal("normal mode file must disable kiosk fullscreen management")
+	}
+	if err := os.WriteFile(modeFile, []byte("kiosk\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !browserKioskMode() {
+		t.Fatal("kiosk mode file must enable kiosk fullscreen management")
+	}
+}
+
 func TestCDPReadyGate(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/json/version" {

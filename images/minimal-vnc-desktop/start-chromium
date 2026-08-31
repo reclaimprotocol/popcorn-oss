@@ -23,12 +23,26 @@ CDP_INTERNAL_PORT="${CDP_INTERNAL_PORT:-${CHROME_REMOTE_DEBUGGING_PORT:-9223}}"
 CHROME_REMOTE_DEBUGGING_ADDRESS="${CHROME_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
 PROXY_EXTENSION_DIR="${PROXY_EXTENSION_DIR:-/home/kernel/extensions/proxy}"
 ENABLE_PROXY_EXTENSION="${ENABLE_PROXY_EXTENSION:-true}"
+BROWSER_KIOSK="${BROWSER_KIOSK:-true}"
+BROWSER_MODE_FILE="${BROWSER_MODE_FILE:-/tmp/popcorn-browser-mode}"
 CHROMIUM_POLICY_DIR="${CHROMIUM_POLICY_DIR:-/etc/chromium/policies/managed}"
 CHROMIUM_POLICY_VARIANT_DIR="${CHROMIUM_POLICY_VARIANT_DIR:-/etc/chromium/policy-variants}"
 
 BROWSER_PROFILE_DIR="${BROWSER_PROFILE_DIR:-$HOME/user-data}"
 mkdir -p "$BROWSER_PROFILE_DIR"
 rm -f "$BROWSER_PROFILE_DIR/SingletonLock" "$BROWSER_PROFILE_DIR/SingletonSocket" "$BROWSER_PROFILE_DIR/SingletonCookie"
+
+# The noVNC/CDP proxy starts before allocation, so publish the selected mode in
+# a tiny shared file it can re-read while the managed launcher switches this pod.
+# Missing/invalid files fail closed to kiosk in the proxy.
+if [[ "$BROWSER_KIOSK" == "true" ]]; then
+  BROWSER_MODE=kiosk
+  BROWSER_KIOSK_JS=true
+else
+  BROWSER_MODE=normal
+  BROWSER_KIOSK_JS=false
+fi
+printf '%s\n' "$BROWSER_MODE" >"$BROWSER_MODE_FILE"
 
 if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
   reclaim_policy="${CHROMIUM_POLICY_VARIANT_DIR}/policy.reclaim-portal.json"
@@ -439,11 +453,15 @@ flags=(
   "${cloak_flags[@]}"
 )
 
-if [[ "${BROWSER_KIOSK:-true}" == "true" ]]; then
+if [[ "$BROWSER_KIOSK" == "true" ]]; then
   flags+=("--kiosk")
 fi
 
 if [[ "$ENABLE_PROXY_EXTENSION" == "true" && -f "${PROXY_EXTENSION_DIR}/manifest.json" ]]; then
+  # The extension normally keeps kiosk popups chromeless. Give each isolated
+  # pod's unpacked extension the same mode so normal MCP windows retain chrome.
+  printf 'globalThis.POPCORN_BROWSER_KIOSK = %s;\n' "$BROWSER_KIOSK_JS" \
+    >"${PROXY_EXTENSION_DIR}/browser-mode.js"
   flags+=(
     "--disable-extensions-except=${PROXY_EXTENSION_DIR}"
     "--load-extension=${PROXY_EXTENSION_DIR}"

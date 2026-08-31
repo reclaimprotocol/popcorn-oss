@@ -31,6 +31,15 @@ const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 var websocketBridgeSequence atomic.Uint64
 
+func browserKioskMode() bool {
+	modeFile := envDefault("BROWSER_MODE_FILE", "/tmp/popcorn-browser-mode")
+	mode, err := os.ReadFile(modeFile)
+	if err != nil {
+		return true
+	}
+	return strings.TrimSpace(string(mode)) != "normal"
+}
+
 func main() {
 	listen := flag.String("listen", envDefault("NOVNC_LISTEN", ":6080"), "HTTP listen address")
 	vnc := flag.String("vnc", envDefault("VNC_ADDR", "127.0.0.1:5900"), "upstream VNC address")
