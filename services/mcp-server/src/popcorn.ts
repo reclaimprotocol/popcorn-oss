@@ -13,6 +13,8 @@ export type PopcornSession = {
   url?: string;
   vncUrl?: string;
   cdpUrl?: string;
+  /** Trusted full-CDP endpoint used only by the MCP agent. */
+  cdpInternalUrl?: string;
   expiresAt?: string;
   region?: string;
   [key: string]: unknown;
@@ -22,7 +24,7 @@ export type PopcornSession = {
 export type SessionView = {
   sessionId: string;
   liveViewUrl: string | null;
-  cdpUrl: string | null;
+  agentCdpUrl: string | null;
   expiresAt: string | null;
   region: string | null;
   raw: PopcornSession;
@@ -32,7 +34,9 @@ export function toSessionView(session: PopcornSession): SessionView {
   return {
     sessionId: session.sessionId,
     liveViewUrl: (session.vncUrl as string) ?? (session.url as string) ?? null,
-    cdpUrl: (session.cdpUrl as string) ?? null,
+    // MCP agents need the full DevTools protocol. Never fall back to cdpUrl:
+    // that route intentionally applies the public/restricted command policy.
+    agentCdpUrl: (session.cdpInternalUrl as string) ?? null,
     expiresAt: (session.expiresAt as string) ?? null,
     region: (session.region as string) ?? null,
     raw: session,

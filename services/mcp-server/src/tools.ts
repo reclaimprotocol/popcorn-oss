@@ -297,7 +297,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const payload = {
         session_id: view.sessionId,
         live_view_url: view.liveViewUrl,
-        cdp_url: view.cdpUrl,
+        cdp_url: view.agentCdpUrl,
         expires_at: view.expiresAt,
         region: view.region,
         isolation: 'Fresh isolated browser. No local Chrome profile, cookies, or saved passwords.',
@@ -320,7 +320,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         session_id: view.sessionId,
         purpose: record.purpose,
         live_view_url: view.liveViewUrl,
-        cdp_url: view.cdpUrl,
+        cdp_url: view.agentCdpUrl,
         expires_at: view.expiresAt,
         region: view.region,
       });
@@ -334,7 +334,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const connection = popcorn.toSessionView(result.data);
       return ok({
         session_id: record.sessionId,
-        cdp_url: connection.cdpUrl,
+        cdp_url: connection.agentCdpUrl,
         region: connection.region,
         expires_at: connection.expiresAt,
       });
