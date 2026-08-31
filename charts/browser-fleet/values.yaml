@@ -61,6 +61,18 @@ browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime
 
 extraBrowserRuntimeEnv: []
 
+# Optional pre-warmed fleet for clients that need ordinary browser chrome.
+# It is separate because Chromium starts before an Agones session is allocated.
+normalViewFleet:
+  enabled: false
+  name: browser-fleet-normal
+  replicas: 1
+  autoscaler:
+    bufferSize: 1
+    minReplicas: 1
+    maxReplicas: 10
+    syncSeconds: 30
+
 # Merge-friendly, operator-owned same-pod services. Each named extension may
 # provide browser ports/containers and image-prepuller containers. The matching
 # platform chart consumes the optional `routing` section from the same values
