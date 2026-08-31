@@ -29,9 +29,9 @@ implementation.
 | Tool | Billed | Purpose |
 | --- | --- | --- |
 | `get_balance` | – | Remaining usage credit, or `null` when unmetered |
-| `create_browser_session` | ✓ | Isolated session: id, live-view URL, CDP URL, expiry |
+| `create_browser_session` | ✓ | Isolated session: id, live-view URL, trusted internal CDP URL, expiry |
 | `get_browser_session` | – | State of a session the caller owns |
-| `get_browser_connection` | – | Agent-facing CDP URL, region, expiry |
+| `get_browser_connection` | – | Agent-facing trusted internal CDP URL, region, expiry |
 | `get_live_view` | – | Human-facing live-view URL for a login handoff |
 | `verify_runtime` | – | Isolation posture and attestation when available |
 | `end_browser_session` | – | End early |
