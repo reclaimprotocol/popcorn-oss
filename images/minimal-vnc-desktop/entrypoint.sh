@@ -186,7 +186,7 @@ default_ready_window_pattern() {
   command_bin="${command_bin##*/}"
 
   case "$command_bin" in
-    *chromium* | *chrome*)
+    *chromium* | *chrome* | *run-chromium-managed*)
       printf '%s\n' 'chromium|chrome'
       ;;
     "")

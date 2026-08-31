@@ -57,7 +57,7 @@ async function agonesFetch(path: string, opts: any = {}) {
 }
 
 export const Agones = {
-    async allocate(namespace: string = RuntimeConfig.gameServerNamespace, fleetName: string = RuntimeConfig.gameServerFleet, sessionId?: string, liveViewE2e?: LiveViewE2eRequest): Promise<AllocationResponse> {
+    async allocate(namespace: string = RuntimeConfig.gameServerNamespace, fleetName: string = RuntimeConfig.gameServerFleet, sessionId?: string, liveViewE2e?: LiveViewE2eRequest, browserMode: "kiosk" | "normal" = "kiosk"): Promise<AllocationResponse> {
         console.log(`🎮 Requesting allocation via K8s API [${fleetName}]...`);
 
         try {
@@ -81,6 +81,7 @@ export const Agones = {
                     },
                     annotations: {
                         "popcorn.dev/session-id": sessionId,
+                        "popcorn.dev/browser-mode": browserMode,
                         ...(liveViewE2e ? {
                             [E2E_VERSION_ANNOTATION]: String(liveViewE2e.version),
                             ...(liveViewE2e.clientPublicKey ? {
@@ -125,8 +126,9 @@ export const Agones = {
                 try {
                     await K8s.patchGameServer(namespace, status.gameServerName, {
                         metadata: {
-                            annotations: {
-                                "popcorn.dev/session-id": sessionId
+                    annotations: {
+                        "popcorn.dev/session-id": sessionId,
+                        "popcorn.dev/browser-mode": browserMode
                             }
                         }
                     });

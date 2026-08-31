@@ -262,6 +262,7 @@ async function allocateSessionLocally(
     accessPolicy: SessionAccessPolicy = { tokenMode: "expiring", cdpScope: "restricted" },
     proxy: SessionProxy = null,
     liveViewE2e?: LiveViewE2eRequest,
+    browserMode: "kiosk" | "normal" = "kiosk",
 ) {
     const allocationRequestedAt = new Date();
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
@@ -282,11 +283,30 @@ async function allocateSessionLocally(
     console.log(`🚀 Allocation request for session: ${sessionId} (client: ${identity.clientId})`);
 
     try {
-        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e);
+        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e, browserMode);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
         const port = browserRoutePort(allocation.ports);
         const podUrl = `http://${allocation.address}:${port}`;
+
+        if (browserMode === "normal") {
+            // The in-pod launcher reads allocation metadata from its local
+            // Agones sidecar, then replaces only Chromium.
+            // Wait past that edge before accepting the first healthy full-CDP
+            // response so callers never receive the old kiosk process.
+            await Bun.sleep(750);
+            const browserReady = await retry(async () => {
+                try {
+                    const response = await fetch(`http://${allocation.address}:9226/json/version`, {
+                        signal: AbortSignal.timeout(1_000),
+                    });
+                    return response.ok;
+                } catch {
+                    return false;
+                }
+            }, { attempts: 20, delayMs: 250, shouldRetryResult: (ready) => !ready });
+            if (!browserReady) throw new Error("NORMAL_BROWSER_RESTART_FAILED");
+        }
 
         const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
         const bound = await annotatePodWithSessionMetadata(podMetadata.namespace, allocation.gameServerName, sessionId);
@@ -463,6 +483,10 @@ async function createControlPlaneSession(c: any): Promise<Response> {
         }
         const proxy = readSessionProxy(body);
         if ("error" in proxy) return c.json({ error: proxy.error }, 400);
+        const browserMode = body?.browserMode === undefined ? "kiosk" : body.browserMode;
+        if (browserMode !== "kiosk" && browserMode !== "normal") {
+            return c.json({ error: "browserMode must be kiosk or normal" }, 400);
+        }
 
         if (expiresAt && access.value.tokenExpiresAt
             && Date.parse(access.value.tokenExpiresAt) < Date.parse(expiresAt)) {
@@ -477,6 +501,7 @@ async function createControlPlaneSession(c: any): Promise<Response> {
             access.value.accessPolicy,
             proxy.value,
             liveViewE2e.value,
+            browserMode,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (e) {
@@ -602,6 +627,10 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
         }
         const proxy = readSessionProxy(body);
         if ("error" in proxy) return c.json({ success: false, error: proxy.error }, 400);
+        const browserMode = body?.browserMode === undefined ? "kiosk" : body.browserMode;
+        if (browserMode !== "kiosk" && browserMode !== "normal") {
+            return c.json({ success: false, error: "browserMode must be kiosk or normal" }, 400);
+        }
 
         const clientId = typeof body?.clientId === "string" && body.clientId.trim()
             ? body.clientId.trim()
@@ -647,6 +676,7 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
             access.value.accessPolicy,
             proxy.value,
             liveViewE2e,
+            browserMode,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (error) {

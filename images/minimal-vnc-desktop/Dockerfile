@@ -83,7 +83,7 @@ ENV CHROME_REMOTE_DEBUGGING_PORT=9223
 ENV CDP_RESTRICTED_PORT=9222
 ENV CDP_FULL_PORT=9226
 ENV MVD_EMULATOR_OFF=0
-ENV APP_COMMAND=/usr/local/bin/start-chromium
+ENV APP_COMMAND=/usr/local/bin/run-chromium-managed
 ENV APP_URL=
 ENV READY_FILE=/tmp/minimal-vnc-ready
 ENV READY_TIMEOUT=30
@@ -242,6 +242,7 @@ RUN set -eux; \
 COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
 COPY --chmod=0755 start-chromium /usr/local/bin/start-chromium
+COPY --chmod=0755 run-chromium-managed /usr/local/bin/run-chromium-managed
 COPY liveview.html /usr/share/novnc/liveview.html
 COPY kbd-autofocus.js /usr/share/novnc/kbd-autofocus.js
 COPY kbd /usr/share/novnc/kbd
@@ -314,6 +315,7 @@ RUN set -eux; \
         /usr/local/bin/novnc-proxy \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
+        /usr/local/bin/run-chromium-managed \
         /usr/share/novnc/liveview.html \
         /usr/share/novnc/liveview.html.gz \
         /usr/share/novnc/liveview.html.br \
