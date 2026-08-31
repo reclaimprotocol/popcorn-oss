@@ -37,6 +37,11 @@ implementation.
 | `end_browser_session` | – | End early |
 | `list_browser_sessions` | – | Recent sessions for this identity |
 
+`create_browser_session` accepts optional `regions` in nearest-first fallback
+order and an optional two-letter `proxy_country`. Proxy URLs and credentials are
+never accepted from MCP callers; the selected country uses the deployment-owned
+proxy preset.
+
 ## Billing is an extension point
 
 This service performs the **browser** effect, so it owns operation idempotency
@@ -142,6 +147,7 @@ Bring your own provider by implementing the interface and wiring it in
 | `MCP_TOKEN_SIGNING_KEY` | dev key | Signs tokens and derives subjects; rotating it invalidates both |
 | `MCP_SESSION_TTL_SECONDS` | `600` | Fixed block of browser time per billed operation |
 | `MCP_OPERATION_LEASE_SECONDS` | `120` | When one retry may recover a crashed operation |
+| `MCP_AVAILABLE_REGIONS` | – | Comma-separated region names advertised for nearest-first placement |
 | `MCP_BILLING_PROVIDER` | `none` | `none` or `external` |
 | `MCP_BILLING_BASE_URL` | – | Billing service base URL (external only) |
 | `MCP_BILLING_AUTH_TOKEN` | – | Bearer token for that service |

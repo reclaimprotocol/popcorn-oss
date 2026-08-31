@@ -7,6 +7,13 @@ import type { McpStore } from './store';
 export type ToolContext = { store: McpStore; subject: string; billing: BillingProvider };
 export type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean; structuredContent?: unknown };
 
+const regionItems = {
+  type: 'string',
+  minLength: 1,
+  maxLength: 64,
+  ...(McpConfig.availableRegions.length ? { enum: McpConfig.availableRegions } : {}),
+};
+
 function ok(data: unknown): ToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], structuredContent: data };
 }
@@ -152,7 +159,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'create_browser_session',
     description:
-      `Start one isolated Popcorn browser session. One operation buys one fixed block of ${McpConfig.sessionTtlSeconds} seconds; the duration is not negotiable. Returns session id, live-view URL for the human, CDP URL for the agent, and expiry. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.`,
+      `Start one isolated Popcorn browser session. One operation buys one fixed block of ${McpConfig.sessionTtlSeconds} seconds; the duration is not negotiable. Prefer a region close to the human to reduce live-view and automation latency. Returns session id, live-view URL for the human, CDP URL for the agent, selected region, and expiry. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -160,6 +167,20 @@ export const TOOL_DEFINITIONS = [
         idempotency_key: {
           type: 'string',
           description: 'Reuse the same key when retrying: you get back the same session, never a second one.',
+        },
+        regions: {
+          type: 'array',
+          minItems: 1,
+          maxItems: 8,
+          items: regionItems,
+          description:
+            `Optional Popcorn region names ordered closest-to-human first; later entries are allocation fallbacks. Omit to use the deployment default order.${McpConfig.availableRegions.length ? ` Available regions: ${McpConfig.availableRegions.join(', ')}.` : ''}`,
+        },
+        proxy_country: {
+          type: 'string',
+          pattern: '^[A-Za-z]{2}$',
+          description:
+            'Optional ISO 3166-1 alpha-2 country code for a deployment-managed proxy exit (for example US or IN). This selects a country, never a proxy URL.',
         },
       },
       required: ['purpose', 'idempotency_key'],
@@ -251,6 +272,33 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       if (!purpose) return fail({ error: 'invalid_request', message: 'purpose is required' });
       const key = idempotencyKey(args.idempotency_key);
       if (!key) return fail({ error: 'invalid_request', message: 'idempotency_key is required (max 200 characters)' });
+      let regions: string[] | undefined;
+      if (args.regions !== undefined) {
+        if (!Array.isArray(args.regions) || args.regions.length < 1 || args.regions.length > 8
+          || args.regions.some((region: unknown) => typeof region !== 'string' || !region.trim() || region.trim().length > 64)) {
+          return fail({
+            error: 'invalid_request',
+            message: 'regions must contain 1-8 Popcorn region names ordered nearest-first',
+          });
+        }
+        regions = [...new Set(args.regions.map((region: string) => region.trim()))];
+        const unknown = regions.find((region) => McpConfig.availableRegions.length
+          && !McpConfig.availableRegions.includes(region));
+        if (unknown) {
+          return fail({
+            error: 'invalid_request',
+            message: `unknown region: ${unknown}`,
+            available_regions: McpConfig.availableRegions,
+          });
+        }
+      }
+      let proxyCountry: string | undefined;
+      if (args.proxy_country !== undefined) {
+        if (typeof args.proxy_country !== 'string' || !/^[A-Za-z]{2}$/.test(args.proxy_country.trim())) {
+          return fail({ error: 'invalid_request', message: 'proxy_country must be a two-letter ISO country code' });
+        }
+        proxyCountry = args.proxy_country.trim().toUpperCase();
+      }
       const ref = `session:${ctx.subject}:${key}`;
       const sessionId = sessionIdForOperation(ref);
 
@@ -268,6 +316,8 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         sessionId,
         ttlSeconds: McpConfig.sessionTtlSeconds,
         metadata: { subject: ctx.subject, purpose },
+        regions,
+        proxyCountry,
       });
       // A recovered operation uses the same deterministic id. The normal API
       // reports the already-created effect as 409, so fetch and replay it.
@@ -300,6 +350,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         cdp_url: view.agentCdpUrl,
         expires_at: view.expiresAt,
         region: view.region,
+        proxy_country: proxyCountry ?? null,
         isolation: 'Fresh isolated browser. No local Chrome profile, cookies, or saved passwords.',
         human_handoff: 'Send live_view_url to the human for any login; do not ask them for credentials.',
         // False means the session is live but its usage has not been confirmed

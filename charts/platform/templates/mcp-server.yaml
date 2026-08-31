@@ -39,6 +39,18 @@ spec:
               value: {{ $mcp.sessionBlockSeconds | quote }}
             - name: MCP_OPERATION_LEASE_SECONDS
               value: {{ $mcp.operationLeaseSeconds | quote }}
+            {{- if .Values.controlPlane.regions }}
+            {{- $mcpRegionNames := list }}
+            {{- range .Values.controlPlane.regions }}
+            {{- if not .x402Only }}
+            {{- $mcpRegionNames = append $mcpRegionNames .name }}
+            {{- end }}
+            {{- end }}
+            {{- if $mcpRegionNames }}
+            - name: MCP_AVAILABLE_REGIONS
+              value: {{ join "," $mcpRegionNames | quote }}
+            {{- end }}
+            {{- end }}
             - name: MCP_BILLING_PROVIDER
               value: {{ $mcp.billing.provider | quote }}
             {{- if eq $mcp.billing.provider "external" }}
