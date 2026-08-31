@@ -5,6 +5,7 @@ POLL_SECONDS="${BROWSER_MODE_POLL_SECONDS:-0.25}"
 AGONES_SDK_HOST="${AGONES_SDK_HOST:-127.0.0.1}"
 AGONES_SDK_HTTP_PORT="${AGONES_SDK_HTTP_PORT:-${AGONES_SDK_PORT:-9358}}"
 CHROMIUM_LAUNCHER="${CHROMIUM_LAUNCHER:-/usr/local/bin/start-chromium}"
+NORMAL_BROWSER_PROFILE_DIR="${NORMAL_BROWSER_PROFILE_DIR:-$HOME/user-data-normal}"
 
 read_mode() {
   local response
@@ -32,7 +33,10 @@ trap stop_child EXIT INT TERM
 
 while true; do
   if [[ "$mode" == normal ]]; then
-    BROWSER_KIOSK=false "$CHROMIUM_LAUNCHER" &
+    # A kiosk launch persists fullscreen UI state in its profile. Reusing that
+    # profile makes a later process look kiosked even without --kiosk, so the
+    # allocated normal-view process gets a clean profile of its own.
+    BROWSER_KIOSK=false BROWSER_PROFILE_DIR="$NORMAL_BROWSER_PROFILE_DIR" "$CHROMIUM_LAUNCHER" &
   else
     BROWSER_KIOSK=true "$CHROMIUM_LAUNCHER" &
   fi

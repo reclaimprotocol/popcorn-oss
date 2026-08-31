@@ -26,8 +26,9 @@ ENABLE_PROXY_EXTENSION="${ENABLE_PROXY_EXTENSION:-true}"
 CHROMIUM_POLICY_DIR="${CHROMIUM_POLICY_DIR:-/etc/chromium/policies/managed}"
 CHROMIUM_POLICY_VARIANT_DIR="${CHROMIUM_POLICY_VARIANT_DIR:-/etc/chromium/policy-variants}"
 
-mkdir -p "$HOME/user-data"
-rm -f "$HOME/user-data/SingletonLock" "$HOME/user-data/SingletonSocket" "$HOME/user-data/SingletonCookie"
+BROWSER_PROFILE_DIR="${BROWSER_PROFILE_DIR:-$HOME/user-data}"
+mkdir -p "$BROWSER_PROFILE_DIR"
+rm -f "$BROWSER_PROFILE_DIR/SingletonLock" "$BROWSER_PROFILE_DIR/SingletonSocket" "$BROWSER_PROFILE_DIR/SingletonCookie"
 
 if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
   reclaim_policy="${CHROMIUM_POLICY_VARIANT_DIR}/policy.reclaim-portal.json"
@@ -59,7 +60,7 @@ fi
 # reporting Etc/UTC + lang=C is the tell that closes it. So seed, timezone,
 # and locale are all persisted in user-data and stay stable across restarts
 # (flipping any of them against the same cookie jar is itself a bot signal).
-CLOAK_PROFILE_DIR="$HOME/user-data"
+CLOAK_PROFILE_DIR="$BROWSER_PROFILE_DIR"
 mkdir -p "$CLOAK_PROFILE_DIR"
 
 # Optional profile-seed bundle: if $CLOAK_PROFILE_SEED points at a tarball and
@@ -417,7 +418,7 @@ flags=(
   "--remote-debugging-address=${CHROME_REMOTE_DEBUGGING_ADDRESS}"
   "--remote-debugging-port=${CDP_INTERNAL_PORT}"
   "--remote-allow-origins=*"
-  "--user-data-dir=${HOME}/user-data"
+  "--user-data-dir=${BROWSER_PROFILE_DIR}"
   "--password-store=basic"
   "--no-sandbox"
   "--disable-setuid-sandbox"

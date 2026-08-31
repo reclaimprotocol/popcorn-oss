@@ -389,6 +389,7 @@ commands the probes need):
 | --- | --- | --- |
 | `APP_COMMAND` | `/usr/local/bin/run-chromium-managed` | GUI launcher. Warm pods start in kiosk mode and, after allocation, honor the GameServer's `popcorn.dev/browser-mode` annotation for that pod only. |
 | `BROWSER_KIOSK` | `true` | Passed to `start-chromium`; set to `false` by the managed launcher only for an allocated normal-view pod. |
+| `BROWSER_PROFILE_DIR` | `$HOME/user-data` | Chromium profile directory. The managed launcher uses `$HOME/user-data-normal` for a normal-view restart so kiosk fullscreen state cannot carry over. |
 | `APP_URL` | depends on `REPLACE_DEFAULT_PAGE` | Default startup URL for `start-chromium`. When unset, falls back to DuckDuckGo (`REPLACE_DEFAULT_PAGE=false`, default) or the Reclaim loading page (`REPLACE_DEFAULT_PAGE=true`). Set explicitly to override both. |
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
