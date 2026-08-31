@@ -1216,7 +1216,7 @@ func (e *emulator) session() error {
 	defer e.resetSessions()
 	defer e.resetDialogs()
 
-	// Kiosk fullscreen watchdog. Chrome's tab strip shows ONLY when a window is in
+	// Window-state watchdog. Chrome's tab strip shows ONLY when a window is in
 	// windowState 'normal' (measured: 'fullscreen' and 'maximized' are chromeless,
 	// 'normal' shows a 35px toolbar even under --kiosk). Our proxy never sets
 	// 'normal' — but Chromium can put a window there on its own (a window.open popup
@@ -1224,9 +1224,8 @@ func (e *emulator) session() error {
 	// path can miss a window that flips AFTER creation, since a single-window kiosk
 	// fires no focus-change to re-check on. This connection is always alive, so it is
 	// the reliable place to re-assert: each tick we ask for every tracked page's
-	// window, and the getWindowForTarget reply handler above forces it fullscreen.
-	// Idempotent on an already-fullscreen window (a no-op setWindowBounds), so the
-	// cost is one round-trip per page per tick.
+	// window, and the reply handler below applies the pod's current browser mode.
+	// The mode file is written by start-chromium and defaults to kiosk when absent.
 	watchdog := time.NewTicker(2 * time.Second)
 	defer watchdog.Stop()
 
@@ -1574,25 +1573,23 @@ func (e *emulator) session() error {
 			// Command responses (have an id).
 			if _, hasID := m["id"]; hasID {
 				if result, ok := m["result"].(map[string]any); ok {
-					// Browser.getWindowForTarget reply → fullscreen that window
-					// (browser-level, no session). This is how popups lose their
-					// location bar and fill the screen.
+					// Browser.getWindowForTarget reply → apply the requested pod
+					// mode (browser-level, no session). Kiosk popups lose their location
+					// bar; normal MCP windows explicitly retain browser chrome.
 					//
-					// FULLSCREEN IS THE ONLY STATE WE MAY EVER SET. Chromium's --kiosk
-					// suppresses the tab strip and omnibox only while the window is
-					// fullscreen: a window put into `normal` state draws its full chrome
-					// inside the same geometry, so the user gets a real URL bar in a
-					// session that is supposed to be a locked-down viewer. An earlier
-					// version of this handler resized the window with explicit normal
-					// bounds to cover a taller framebuffer, and that is exactly what it
-					// leaked — measured 796px of browser UI inside the window. Do not
-					// reintroduce a normal-state resize here; if a window must chase the
-					// screen, the sanctioned path is the X-level fit in window.go
-					// (requestWindowFit below), never un-fullscreening the kiosk.
+					// Kiosk mode may only set fullscreen: a normal-state resize would
+					// leak the tab strip and omnibox into a locked-down viewer. Normal
+					// MCP mode intentionally does the inverse and sets `normal` so those
+					// controls remain visible. Geometry in either mode is handled by the
+					// X-level fit in window.go (requestWindowFit below).
 					if wid, ok := result["windowId"]; ok {
+						desiredState := "fullscreen"
+						if !browserKioskMode() {
+							desiredState = "normal"
+						}
 						send("Browser.setWindowBounds", map[string]any{
 							"windowId": wid,
-							"bounds":   map[string]any{"windowState": "fullscreen"},
+							"bounds":   map[string]any{"windowState": desiredState},
 						}, "")
 						// A window seen OUTSIDE fullscreen is a real transition (a popup just
 						// opened normal+chromed), and the size openbox grants it may reflect a
@@ -1601,7 +1598,7 @@ func (e *emulator) session() error {
 						// watchdog tick for already-fullscreen windows, and spawning xdotool
 						// that often costs fd budget under Rosetta (see window.go).
 						if b, _ := result["bounds"].(map[string]any); b != nil {
-							if state, _ := b["windowState"].(string); state != "fullscreen" {
+							if state, _ := b["windowState"].(string); state != desiredState {
 								requestWindowFit(log.Printf)
 							}
 						}
