@@ -501,8 +501,9 @@ func (h *kbdHub) publish(sender *kbdClient, payload []byte) {
 // viewerEnvelope names a state so a /kbd frame is self-describing: the viewer
 // routes on the key (see signal.js), not on a type field.
 func viewerEnvelope(key string, state []byte) []byte {
-	b := make([]byte, 0, len(state)+len(key)+4)
-	b = append(b, '{', '"')
+	// Avoid computing a capacity from caller-controlled lengths. The payloads
+	// are small, and append already grows the buffer safely as required.
+	b := []byte{'{', '"'}
 	b = append(b, key...)
 	b = append(b, '"', ':')
 	b = append(b, state...)
