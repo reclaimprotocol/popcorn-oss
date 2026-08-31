@@ -1,0 +1,15 @@
+{
+  "schemaVersion":1,"name":"native-dialog-alert","testDescription":"A blocking alert must be answerable, and the page must resume only after the acknowledgement: the marker turns green in the browser and through LiveView alike.","testPage":"cases/native-dialog-alert.html",
+  "baseline":{"fixturePath":"cases/native-dialog-alert.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL",
+  "recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[
+    {"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},
+    {"type":"screenshot","name":"before-alert","syncWith":"ready"},
+    {"type":"tapRelativeToColor","name":"open-alert","color":"#e6007a"},
+    {"type":"wait","ms":1200},
+    {"type":"tapNativeElement","name":"acknowledge-alert","android":{"text":"OK"},"ios":{"label":"OK"},"settleMs":600},
+    {"type":"waitForColor","name":"alert-acknowledged","color":"#00ff6a","timeoutMs":15000},
+    {"type":"screenshot","name":"after-alert","syncWith":"alert-acknowledged"}
+  ],
+  "compare":{"profile":"relative-transition-diff","from":"before-alert","to":"after-alert","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

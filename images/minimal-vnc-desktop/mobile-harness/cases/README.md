@@ -22,6 +22,15 @@ app's web view. That is a behavioral choice, so the case names the target and
 nothing else; bundle ids, activities, binary paths, and host-app options live in
 the environment. See [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md).
 
+`native-dialog-alert` is the worked example for browser-drawn UI. `alert()`
+BLOCKS the page, so the fixture's after-marker can only turn green once the
+dialog has actually been answered — the marker proves acknowledgement rather
+than proving a dialog was requested. One shared `tapNativeElement` named `OK`
+answers both sides: the platform alert in the browser, and LiveView's own dialog
+sheet, which labels its button the same. Cases like this one only exercise the
+transport the environment selects, so run the suite against the transport your
+deployment serves (see [../docs/CONFIGURATION.md](../docs/CONFIGURATION.md)).
+
 `webview-embed-widget` is a worked example of a web-view case,
 including how a third-party widget gets visible phase markers without
 reaching into its document. See

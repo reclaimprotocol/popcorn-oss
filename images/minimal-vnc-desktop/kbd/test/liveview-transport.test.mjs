@@ -80,3 +80,47 @@ test('one viewer maps its existing controls onto the optional E2E transport', as
     globalThis.WebSocket = oldWebSocket;
   }
 });
+
+// The pod names the state in the envelope's `type`, so the payload it carries is
+// the BARE dialog/popup state. The viewer adds the key back exactly once — the
+// same frame the plain /kbd socket delivers — because signal.js routes on that key
+// and unwraps a single level. When the pod cached the already-wrapped form, this
+// arrived as {dialog:{dialog:{…}}}: the sheet read open:undefined, tore itself
+// down, and no dialog, popup or FedCM chooser was ever drawn under e2e.
+test('a dialog envelope reaches the sheet through exactly one wrapper', async () => {
+  const oldWindow = globalThis.window;
+  const oldLocation = globalThis.location;
+  const oldNavigator = globalThis.navigator;
+  const oldWebSocket = globalThis.WebSocket;
+  globalThis.window = globalThis;
+  globalThis.location = { search: '?encryption=e2e', pathname: '/liveview/s/token/liveview.html' };
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { sendBeacon: null } });
+  globalThis.WebSocket = FakeWebSocket;
+  try {
+    const transport = await import(`../liveview-transport.js?test=${Date.now()}`);
+    const channel = new FakeControlChannel();
+    transport.configureEncryptedControl(async () => channel);
+    const signal = transport.openViewerSocket('wss://gateway.example/kbd');
+    const frames = [];
+    signal.onmessage = (event) => frames.push(JSON.parse(event.data));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    channel.receive('dialog', { open: true, seq: 7, type: 'alert', message: 'hi' });
+    channel.receive('popup', { open: true, seq: 2 });
+    assert.deepEqual(frames, [
+      { dialog: { open: true, seq: 7, type: 'alert', message: 'hi' } },
+      { popup: { open: true, seq: 2 } },
+    ]);
+
+    // The HTTP-fallback shim answers in the same shape the pod's /kbdstate does,
+    // so signal.js's bridge unwraps once there too.
+    const state = await (await transport.viewerFetch('/kbdstate')).json();
+    assert.deepEqual(state.dialog, { open: true, seq: 7, type: 'alert', message: 'hi' });
+    assert.deepEqual(state.popup, { open: true, seq: 2 });
+  } finally {
+    globalThis.window = oldWindow;
+    globalThis.location = oldLocation;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: oldNavigator });
+    globalThis.WebSocket = oldWebSocket;
+  }
+});

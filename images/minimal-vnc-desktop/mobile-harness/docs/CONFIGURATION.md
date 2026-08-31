@@ -23,7 +23,8 @@ Configure:
 | `android.launchTargets`, `ios.launchTargets` | Apps that can host the page, keyed by name |
 | `android.defaultLaunchTarget`, `ios.defaultLaunchTarget` | Launch target used when a case names none |
 | `popcorn.sessionProvider` | Session transport, control-plane address, cluster, and region |
-| `popcorn.liveview` | Public gateway, host page, and shared flags such as `magnify=1` |
+| `popcorn.liveview` | Public gateway, host page, transport, and shared flags such as `magnify=1` |
+| `popcorn.liveview.encryption` | `"e2e"` to run the encrypted transport, omitted to run plaintext |
 | `popcorn.navigation` | Optional override for the built-in pre-record remote navigation |
 | `defaults` | Shared timing and navigation defaults |
 | `healthChecks` | HTTP checks that must pass before a pair starts |
@@ -64,6 +65,26 @@ framebuffer and visible markers remain the sole test oracle.
 `magnify` and other cluster-wide LiveView flags belong in
 `popcorn.liveview.hostParams`. Nested host parameters are merged, so adding a
 case-only parameter does not accidentally disable `magnify`.
+
+## Transport
+
+`popcorn.liveview.encryption` selects which transport the candidate side runs.
+Set it to `"e2e"` to match a deployment that serves end-to-end encrypted
+sessions; omit it to run the plaintext transport. It is an environment value and
+never a case value: it describes the deployment under test, not the behavior.
+
+Set it to whatever production serves. Keyboard state, touch and geometry travel
+the same way on both transports, but the viewer's own chrome — the JavaScript
+dialog sheet, the popup close button, the FedCM account chooser — reaches the
+viewer through a different envelope under `e2e`. A suite that only ever runs the
+plaintext transport cannot see a break in the encrypted one, however many cases
+it has.
+
+The flag drives BOTH ends of the run: the session is provisioned with
+`liveViewEncryption`, and the viewer URL is assembled with `?encryption=e2e`
+plus the `#popcorn-e2e` enrollment fragment that carries the session key. If the
+two ever disagree the run stops with an error rather than quietly falling back
+to plaintext and reporting a pass.
 
 ## Comparison profiles
 

@@ -498,7 +498,36 @@ func (h *kbdHub) publish(sender *kbdClient, payload []byte) {
 	}
 }
 
-// broadcastDialog fans a dialog state out to every viewer and caches it for
+// viewerEnvelope names a state so a /kbd frame is self-describing: the viewer
+// routes on the key (see signal.js), not on a type field.
+func viewerEnvelope(key string, state []byte) []byte {
+	b := make([]byte, 0, len(state)+len(key)+4)
+	b = append(b, '{', '"')
+	b = append(b, key...)
+	b = append(b, '"', ':')
+	b = append(b, state...)
+	return append(b, '}')
+}
+
+// viewerState strips that key back off, and is what the emulator's payloads pass
+// through on the way in. Everything downstream of the hub adds an envelope of its
+// own — the e2e channel wraps the state in {type,payload}, /kbdstate writes it
+// under a "dialog"/"popup" key, and enqueueDialog rebuilds the /kbd frame — so a
+// cache holding the ALREADY-wrapped payload produced {"dialog":{"dialog":{…}}} on
+// every path except the plain socket. The viewer unwraps exactly once, so the
+// sheet then saw open:undefined and tore itself down: under e2e no dialog, popup
+// or FedCM chooser was ever drawn, and the page stayed blocked until the
+// alertAckWait backstop. The cache holds the inner state; wrapping is per-path.
+func viewerState(payload []byte, key string) []byte {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err == nil {
+		if state, ok := envelope[key]; ok && len(state) > 0 {
+			return append([]byte(nil), state...)
+		}
+	}
+	return append([]byte(nil), payload...)
+}
+
 // snapshot returns cached viewer state for the HTTP fallback.
 func (h *kbdHub) snapshot() (state, dialog, popup []byte) {
 	h.mu.Lock()
@@ -509,13 +538,13 @@ func (h *kbdHub) snapshot() (state, dialog, popup []byte) {
 	return state, h.lastDialog, h.lastPopup
 }
 
-// late joiners. Unlike publish it never touches lastState — a dialog must not
+// broadcastDialog fans a dialog state out to every viewer and caches it for late
+// joiners. Unlike publish it never touches lastState — a dialog must not
 // overwrite the cached focus signal, or a reconnecting viewer would be resynced
 // with a dialog in place of its keyboard state. An `open:false` state clears the
 // cache so a dismissed dialog is never replayed to the next viewer.
 func (h *kbdHub) broadcastDialog(payload []byte, open bool) {
-	buf := make([]byte, len(payload))
-	copy(buf, payload)
+	buf := viewerState(payload, "dialog")
 
 	h.mu.Lock()
 	if open {
@@ -547,8 +576,7 @@ func (h *kbdHub) broadcastDialog(payload []byte, open bool) {
 // it for late joiners. Same shape as broadcastDialog, separate slot and cache:
 // the two states are independent and a popup can itself raise a dialog.
 func (h *kbdHub) broadcastPopup(payload []byte, open bool) {
-	buf := make([]byte, len(payload))
-	copy(buf, payload)
+	buf := viewerState(payload, "popup")
 
 	h.mu.Lock()
 	if open {
@@ -588,9 +616,9 @@ func (c *kbdClient) enqueue(payload []byte) {
 	}
 }
 
-func (c *kbdClient) enqueueDialog(payload []byte) {
+func (c *kbdClient) enqueueDialog(state []byte) {
 	c.mailMu.Lock()
-	c.pendingDialog = payload
+	c.pendingDialog = viewerEnvelope("dialog", state)
 	c.mailMu.Unlock()
 	select {
 	case c.notify <- struct{}{}:
@@ -608,9 +636,9 @@ func (c *kbdClient) takeDialog() []byte {
 	return p
 }
 
-func (c *kbdClient) enqueuePopup(payload []byte) {
+func (c *kbdClient) enqueuePopup(state []byte) {
 	c.mailMu.Lock()
-	c.pendingPopup = payload
+	c.pendingPopup = viewerEnvelope("popup", state)
 	c.mailMu.Unlock()
 	select {
 	case c.notify <- struct{}{}:

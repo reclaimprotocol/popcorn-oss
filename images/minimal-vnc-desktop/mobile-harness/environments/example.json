@@ -83,6 +83,7 @@
       "region": "local"
     },
     "liveview": {
+      "encryption": "e2e",
       "gatewayOrigin": "http://popcorn-host.example:8080",
       "hostPage": "http://fixture-host.example/host/test-host.html",
       "hostParams": {

@@ -31,6 +31,7 @@ import {
   resolveEnvironmentLaunchTargets,
 } from './environment.mjs';
 import { androidMultiTouchPayload, pointerGestures } from './android-touch.mjs';
+import { liveviewHostUrl, readEncryption } from './liveview-url.mjs';
 import { actionsForTarget, runsOnPlatform } from './pair-actions.mjs';
 import { colorGeometry } from './pinch-integrity.mjs';
 import { shellQuote } from './shell-quote.mjs';
@@ -386,19 +387,13 @@ function resolveScenarioUrl(scenario, scenarioFile) {
   const sessionFile = path.resolve(path.dirname(scenarioFile), scenario.liveview.sessionFile);
   const session = JSON.parse(readFileSync(sessionFile, 'utf8'));
   if (!session.vncUrl) throw new Error('LiveView session file has no vncUrl');
-  const viewer = new URL(session.vncUrl);
-  const gateway = new URL(scenario.liveview.gatewayOrigin);
-  viewer.protocol = gateway.protocol;
-  viewer.host = gateway.host;
-  viewer.pathname = viewer.pathname.replace(/\/liveview\.html$/, '');
-  viewer.search = '';
-  viewer.hash = '';
-  const host = new URL(scenario.liveview.hostPage);
-  host.searchParams.set('viewer', viewer.toString());
-  for (const [key, value] of Object.entries(scenario.liveview.hostParams ?? {})) {
-    host.searchParams.set(key, String(value));
-  }
-  return host.toString();
+  return liveviewHostUrl({
+    vncUrl: session.vncUrl,
+    gatewayOrigin: scenario.liveview.gatewayOrigin,
+    hostPage: scenario.liveview.hostPage,
+    hostParams: scenario.liveview.hostParams ?? {},
+    encryption: scenario.liveview.encryption,
+  });
 }
 
 function sanitizeAppiumLog(file) {
@@ -2356,13 +2351,21 @@ function runRemoteScript(sshTarget, script) {
   return result.stdout.trim();
 }
 
-function provisionPairSession(provider, pairName) {
+function provisionPairSession(provider, pairName, encryption) {
   if (!provider?.ssh || !provider?.adminToken) throw new Error('sessionProvider requires ssh and adminToken');
   const controlPlaneUrl = provider.controlPlaneUrl ?? 'http://127.0.0.1:8081';
   const cluster = provider.cluster ?? 'local';
   const sessionId = `${slug(pairName)}-${Date.now()}`;
   const clientBody = JSON.stringify({ name: `mobile pair ${pairName}`, allowedClusters: [cluster] });
-  const sessionBody = JSON.stringify({ sessionId, regions: [provider.region ?? cluster] });
+  // liveViewEncryption is what makes the control plane mint an enrolled viewer URL
+  // (?encryption=e2e plus the #popcorn-e2e bootstrap). Asking for it here and
+  // reading it back in liveviewHostUrl is one decision made in two places, so the
+  // URL builder fails loudly if they ever disagree.
+  const sessionBody = JSON.stringify({
+    sessionId,
+    regions: [provider.region ?? cluster],
+    ...(readEncryption(encryption) ? { liveViewEncryption: readEncryption(encryption) } : {}),
+  });
   const script = `set -eu
 control_plane=${shellQuote(controlPlaneUrl)}
 admin_token=${shellQuote(provider.adminToken)}
@@ -2607,7 +2610,7 @@ async function runPair(pairFile, outputOverride, environmentFile, simulatorName)
     pairManifest.baseline = path.relative(outputDir, baselineRun);
     saveManifest(pairManifestFile, pairManifest);
     if (pair.sessionProvider) {
-      sessionHandle = provisionPairSession(pair.sessionProvider, pair.name);
+      sessionHandle = provisionPairSession(pair.sessionProvider, pair.name, pair.candidate?.liveview?.encryption);
       localSessionFile = path.join(outputDir, '.liveview-session.json');
       saveManifest(localSessionFile, sessionHandle.session);
       pairManifest.session = {

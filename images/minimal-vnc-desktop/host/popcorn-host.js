@@ -271,6 +271,18 @@
     return out;
   }
 
+  // The e2e enrollment (session key, pod public key, binding secret) rides in the
+  // viewer URL's FRAGMENT, which is never sent to any server — that is what keeps
+  // the gateway out of the trust chain. A fragment is invisible to forwardParams,
+  // so an embedder that only forwards query parameters hands the viewer
+  // ?encryption=e2e with no key material: it selects the encrypted transport and
+  // then has nothing to open it with. Every hop must pass this down too, so it
+  // lives here beside VIEWER_PARAMS for the same reason that list does.
+  function forwardFragment(hash) {
+    var raw = String(hash == null ? global.location.hash : hash);
+    return /^#popcorn-e2e=[A-Za-z0-9_=-]+$/.test(raw) ? raw : '';
+  }
+
   // Re-post geometry on a slow heartbeat even when nothing changes. The viewer
   // ages host samples out after 8s and falls back to its own detectors, which is
   // the right behavior if this page dies — but it means a quiet period with the
@@ -955,6 +967,7 @@
     VIEWER_PARAMS: VIEWER_PARAMS,
     /** Those of them present in `search`, as 'k=v' strings. */
     forwardParams: forwardParams,
+    forwardFragment: forwardFragment,
     LAYER_CSS: LAYER_CSS,
   };
 })(typeof window !== 'undefined' ? window : this);

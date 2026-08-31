@@ -200,7 +200,7 @@ func TestE2EBindingRejectsPlaintextLiveViewAtPodBoundary(t *testing.T) {
 	}
 	liveView := noVNCMux(web, "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
 	for _, route := range []string{
-		"/kbd", "/kbdstate", "/dialog", "/emulate", "/geometry", "/input",
+		"/kbd", "/kbdstate", "/dialog", "/emulate", "/input",
 		"/klog", "/rtstats", "/websockify", "/vnc-ws/session", "/liveview-ws/session",
 	} {
 		rec := httptest.NewRecorder()
@@ -210,9 +210,23 @@ func TestE2EBindingRejectsPlaintextLiveViewAtPodBoundary(t *testing.T) {
 		}
 	}
 
+	// Occupancy is the sole public runtime-status read. It must remain available
+	// before an E2E session is enrolled, otherwise two harnesses can both drive
+	// the pod's one X screen. It carries no session or control data.
+	rec := httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/geometry", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"viewers":0`) {
+		t.Fatalf("e2e geometry status = %d body = %q, want public occupancy", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://pod.example/geometry", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("e2e geometry POST status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
 	// The unified viewer shell is public code and must remain loadable. The
 	// selected transport is enforced when it attempts to open a data channel.
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/liveview.html", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("static viewer status = %d, want %d", rec.Code, http.StatusOK)
