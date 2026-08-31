@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { toSessionView } from './popcorn';
+import { createSessionRequestBody, toSessionView } from './popcorn';
 import { RESOURCE_URI, issueAccessToken, resourceMatches, verifyAccessToken } from './oauth';
 
 describe('control-plane wire contract', () => {
@@ -17,6 +17,27 @@ describe('control-plane wire contract', () => {
     });
     expect(view.agentCdpUrl).toBe('wss://gw/cdp-internal/s/internal-token/');
     expect(toSessionView({ sessionId: 's', cdpUrl: 'wss://gw/cdp/s/restricted-token/' }).agentCdpUrl).toBeNull();
+  });
+
+  test('session placement forwards nearest-first regions and a managed proxy country', () => {
+    expect(createSessionRequestBody({
+      sessionId: 's',
+      ttlSeconds: 600,
+      metadata: { purpose: 'test' },
+      regions: ['asia-south1', 'us-central1'],
+      proxyCountry: 'IN',
+    })).toEqual({
+      sessionId: 's',
+      ttlSeconds: 600,
+      metadata: { purpose: 'test' },
+      regions: ['asia-south1', 'us-central1'],
+      proxy: { country: 'IN' },
+    });
+  });
+
+  test('session placement omits proxy and region fields when not requested', () => {
+    expect(createSessionRequestBody({ sessionId: 's', ttlSeconds: 600, metadata: {} }))
+      .toEqual({ sessionId: 's', ttlSeconds: 600, metadata: {} });
   });
 });
 

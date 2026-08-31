@@ -9,6 +9,10 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function list(name: string): string[] {
+  return [...new Set(env(name).split(',').map((value) => value.trim()).filter(Boolean))];
+}
+
 function databaseUrl(): string {
   const direct = env('DATABASE_URL');
   if (direct) return direct;
@@ -39,6 +43,8 @@ export const McpConfig = {
   sessionTtlSeconds: num('MCP_SESSION_TTL_SECONDS', 600),
   /** How long one worker owns an operation before a retry may recover it. */
   operationLeaseSeconds: num('MCP_OPERATION_LEASE_SECONDS', 120),
+  /** Region names advertised to MCP clients for nearest-first placement. */
+  availableRegions: list('MCP_AVAILABLE_REGIONS'),
   /**
    * Billing. `none` (default) meters nothing — the right choice for
    * self-hosters. `external` delegates balance/reserve/commit/release to an

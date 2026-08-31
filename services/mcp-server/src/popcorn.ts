@@ -45,6 +45,26 @@ export function toSessionView(session: PopcornSession): SessionView {
 
 export type PopcornResult<T> = { ok: true; data: T } | { ok: false; status: number; error: string };
 
+export type CreateSessionInput = {
+  sessionId: string;
+  ttlSeconds: number;
+  metadata: Record<string, unknown>;
+  /** Popcorn region names, ordered nearest-first with later entries as fallback. */
+  regions?: string[];
+  /** Deployment-managed proxy exit country; callers never provide proxy URLs. */
+  proxyCountry?: string;
+};
+
+export function createSessionRequestBody(input: CreateSessionInput): Record<string, unknown> {
+  return {
+    sessionId: input.sessionId,
+    ttlSeconds: input.ttlSeconds,
+    metadata: input.metadata,
+    ...(input.regions ? { regions: input.regions } : {}),
+    ...(input.proxyCountry ? { proxy: { country: input.proxyCountry } } : {}),
+  };
+}
+
 function authHeader(): Record<string, string> {
   return {
     authorization: `Bearer ${McpConfig.controlPlaneClientId}:${McpConfig.controlPlaneClientSecret}`,
@@ -70,14 +90,10 @@ async function call<T>(path: string, init: RequestInit): Promise<PopcornResult<T
   return { ok: true, data: body as T };
 }
 
-export function createSession(input: {
-  sessionId: string;
-  ttlSeconds: number;
-  metadata: Record<string, unknown>;
-}): Promise<PopcornResult<PopcornSession>> {
+export function createSession(input: CreateSessionInput): Promise<PopcornResult<PopcornSession>> {
   return call<PopcornSession>('/v1/sessions', {
     method: 'POST',
-    body: JSON.stringify({ sessionId: input.sessionId, ttlSeconds: input.ttlSeconds, metadata: input.metadata }),
+    body: JSON.stringify(createSessionRequestBody(input)),
   });
 }
 

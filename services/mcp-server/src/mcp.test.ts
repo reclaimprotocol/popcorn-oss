@@ -124,6 +124,21 @@ describe('billing boundary', () => {
     expect((response as any).result.structuredContent.error).toBe('billing_unavailable');
   });
 
+  test('invalid placement is rejected before reserving credit', async () => {
+    const billing = new RecordingBilling();
+    const response = await handleRpc(ctx(billing), {
+      jsonrpc: '2.0',
+      id: 70,
+      method: 'tools/call',
+      params: {
+        name: 'create_browser_session',
+        arguments: { purpose: 'x', idempotency_key: 'bad-placement', regions: [], proxy_country: 'USA' },
+      },
+    });
+    expect((response as any).result.structuredContent.error).toBe('invalid_request');
+    expect(billing.calls).toEqual([]);
+  });
+
   test('a refused reservation releases the claim so the same key can be retried', async () => {
     const billing = new RecordingBilling({ ok: false, reason: 'insufficient_credit' });
     const context = ctx(billing);
