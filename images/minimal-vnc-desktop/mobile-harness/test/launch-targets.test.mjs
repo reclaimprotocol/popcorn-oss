@@ -32,7 +32,8 @@ const liveviewUrl = 'http://gateway.example/host/test-host.html?viewer=http%3A%2
 test('Chrome still launches through VIEW intent data', () => {
   assert.equal(
     androidLaunchCommand(defaultAndroidLaunchTarget, 'http://fixtures.example/a.html'),
-    "am start -W -a android.intent.action.VIEW -p 'com.android.chrome' -d 'http://fixtures.example/a.html'",
+    "am start -W -a android.intent.action.VIEW -p 'com.android.chrome' -d 'http://fixtures.example/a.html'"
+    + " --es 'com.android.browser.application_id' 'com.android.chrome'",
   );
 });
 
@@ -147,4 +148,30 @@ test('the Chrome target carries first-run preparation and the shells do not', ()
   assert.equal(androidShell.preparation, undefined);
   assert.equal(iosShell.preparation, undefined);
   assert.equal(defaultIosLaunchTarget.preparation, undefined);
+});
+
+// Chrome opens a NEW tab per VIEW intent unless the intent names the launching
+// app. A suite is ~90 launches, and once the emulator cannot start another
+// renderer the tab shows Chrome's crashed-page glyph — which the runner reports as
+// a ready marker that never appeared, indistinguishable from a product failure.
+test('a Chrome view-intent reuses its tab instead of stacking a new one', () => {
+  const command = androidLaunchCommand(
+    { name: 'chrome', package: 'com.android.chrome', urlDelivery: 'view-intent' },
+    'http://example.test/fixture.html',
+  );
+  assert.match(command, /--es 'com\.android\.browser\.application_id' 'com\.android\.chrome'/);
+});
+
+test('a target may override the reuse id through extras', () => {
+  const command = androidLaunchCommand(
+    {
+      name: 'chrome',
+      package: 'com.android.chrome',
+      urlDelivery: 'view-intent',
+      extras: { 'com.android.browser.application_id': 'org.example.other' },
+    },
+    'http://example.test/fixture.html',
+  );
+  assert.match(command, /application_id' 'org\.example\.other'/);
+  assert.equal(command.match(/application_id/g).length, 1, 'exactly one id is sent');
 });

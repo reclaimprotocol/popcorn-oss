@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { loadEnvironment, materializePair } from '../src/environment.mjs';
+import { checkEnvironment, loadEnvironment, materializePair } from '../src/environment.mjs';
 
 test('environment supplies infrastructure without changing the case', () => {
   const directory = mkdtempSync(path.join(os.tmpdir(), 'popcorn-harness-environment-'));
@@ -129,4 +129,36 @@ test('missing environment token fails before a run starts', () => {
     () => loadEnvironment(environmentFile, {}),
     /environment variable MISSING_TEST_TOKEN/,
   );
+});
+
+// A DHCP lease that moves leaves the fixture host addressed by an IP this machine
+// no longer answers to. The run then fails deep inside a case — a page that never
+// loads, or a stale one that lingers — so the preflight says it plainly instead.
+test('a health check against an address this machine lost says so', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'popcorn-harness-addr-'));
+  const environmentFile = path.join(directory, 'lab.local.json');
+  writeFileSync(environmentFile, JSON.stringify({
+    schemaVersion: 1,
+    name: 'lab',
+    // .0 in a private range: reserved, so nothing answers and no lab machine owns it.
+    healthChecks: [{ name: 'fixture host', url: 'http://192.168.31.0:8090/', timeoutSeconds: 1 }],
+  }));
+
+  const [result] = checkEnvironment(loadEnvironment(environmentFile, {}));
+  assert.equal(result.ok, false);
+  assert.match(result.error, /this machine is not 192\.168\.31\.0/);
+});
+
+test('a health check against a public host is not second-guessed', () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), 'popcorn-harness-addr-public-'));
+  const environmentFile = path.join(directory, 'lab.local.json');
+  writeFileSync(environmentFile, JSON.stringify({
+    schemaVersion: 1,
+    name: 'lab',
+    healthChecks: [{ name: 'gateway', url: 'http://127.0.0.1:9/', timeoutSeconds: 1 }],
+  }));
+
+  const [result] = checkEnvironment(loadEnvironment(environmentFile, {}));
+  assert.equal(result.ok, false);
+  assert.doesNotMatch(result.error, /this machine is not/);
 });

@@ -45,3 +45,24 @@ test('fraction 0 is honoured rather than treated as missing', () => {
   assert.equal(resolved.fromY, 0);
   assert.equal(resolved.toY, 844);
 });
+
+// The offset gestures displace from a marker, so their DISTANCE is the part that
+// has to scale. A literal 420px reached the list edge on one device and landed
+// past the bottom of a shorter window, where the drag is rejected out of bounds.
+test('a delta fraction scales the displacement to the window', () => {
+  const resolved = resolveWindowFractions({ deltaYFraction: 0.45 }, { width: 402, height: 874 });
+  assert.equal(resolved.deltaY, 393);
+  assert.equal(resolved.deltaYFraction, undefined);
+});
+
+test('a delta fraction may be negative — a displacement has a direction', () => {
+  const resolved = resolveWindowFractions({ deltaXFraction: -0.5 }, { width: 402, height: 874 });
+  assert.equal(resolved.deltaX, -201);
+});
+
+test('a delta fraction outside -1..1 fails before the gesture runs', () => {
+  assert.throws(
+    () => resolveWindowFractions({ deltaYFraction: 1.5 }, { width: 402, height: 874 }),
+    /deltaYFraction=1\.5 must be a fraction between -1 and 1/,
+  );
+});

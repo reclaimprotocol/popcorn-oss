@@ -254,7 +254,15 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 	// The viewer reads this to cap its resize requests rather than guessing from
 	// the (sticky-across-sessions) connect-time framebuffer. See
 	// geometryHTTPHandler in emulate.go.
-	mux.HandleFunc("/geometry", geometryHTTPHandler())
+	// Declared here, assigned below: the handler is registered before the keeper
+	// exists and reads it per request.
+	var keeper *screenKeeper
+	mux.HandleFunc("/geometry", geometryHTTPHandler(func() int {
+		if keeper == nil {
+			return 0
+		}
+		return keeper.clientCount()
+	}))
 	// Native touch input: the viewer streams touch points here and we dispatch
 	// CDP Input.dispatchTouchEvent, so the remote page handles scroll/drag/
 	// sliders/pinch itself (VNC only carries mouse). See emulate.go.
@@ -274,7 +282,7 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 	// Restore to the BOOT geometry (WIDTH x FB_HEIGHT); the kiosk window follows
 	// the restored screen at the X level (window.go), in both directions.
 	bootW, bootH := envInt("WIDTH", 1920), envInt("FB_HEIGHT", envInt("HEIGHT", 1080))
-	keeper := newScreenKeeper(screenRestoreDelay, restoreScreenFunc(bootW, bootH, em, log.Printf))
+	keeper = newScreenKeeper(screenRestoreDelay, restoreScreenFunc(bootW, bootH, em, log.Printf))
 	keeper.logf = log.Printf
 	// The FIRST viewer of a session must start from boot geometry, not from
 	// whatever the previous session left: connecting inside the restore delay
@@ -326,6 +334,16 @@ func liveViewTransportGuard(e *noiseEndpoint, next http.Handler) http.Handler {
 			return
 		}
 		if e.requiresE2E() {
+			// Runtime occupancy is deliberately public and read-only. It contains
+			// only boot dimensions plus the number of attached VNC clients; no
+			// session identifier, control state or user data. The mobile harness
+			// needs this before it provisions an enrolled session so two E2E runs
+			// cannot resize the shared X screen under each other. The handler itself
+			// rejects every mutating method.
+			if r.URL.Path == "/geometry" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			if r.URL.Path == "/dialog" && isLoopbackRemote(r.RemoteAddr) {
 				next.ServeHTTP(w, r)
 				return

@@ -22,14 +22,27 @@ const PAIRS = [
   ['toY', 'toYFraction', 'height'],
 ];
 
+// The offset gestures displace from a marker rather than naming two points, so their
+// distance needs the same treatment: a literal 420px reaches the list edge on the
+// device it was calibrated on and lands past the bottom of a shorter window, where the
+// drag is rejected as out of bounds. Signed, because a displacement has a direction.
+const DELTA_PAIRS = [
+  ['deltaX', 'deltaXFraction', 'width'],
+  ['deltaY', 'deltaYFraction', 'height'],
+];
+
 export function resolveWindowFractions(action, rect) {
   const resolved = { ...action };
-  for (const [absolute, fraction, dimension] of PAIRS) {
+  for (const [absolute, fraction, dimension, signed] of [
+    ...PAIRS.map((pair) => [...pair, false]),
+    ...DELTA_PAIRS.map((pair) => [...pair, true]),
+  ]) {
     const value = action?.[fraction];
     if (value === undefined) continue;
     const number = Number(value);
-    if (!Number.isFinite(number) || number < 0 || number > 1) {
-      throw new Error(`${fraction}=${value} must be a fraction between 0 and 1`);
+    const low = signed ? -1 : 0;
+    if (!Number.isFinite(number) || number < low || number > 1) {
+      throw new Error(`${fraction}=${value} must be a fraction between ${low} and 1`);
     }
     const extent = Number(rect?.[dimension]);
     if (!Number.isFinite(extent) || extent <= 0) {

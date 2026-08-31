@@ -1,6 +1,9 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -203,5 +206,43 @@ func TestLateRestoreYieldsToConnectingViewer(t *testing.T) {
 	k.finishRestore(gen) // genuinely idle this time
 	if restores() != 1 {
 		t.Fatalf("restore ran %d times on the idle screen, want 1", restores())
+	}
+}
+
+// The geometry endpoint carries the live viewer count so a second harness run can
+// find out the container is already driving a session — one X screen serves every
+// viewer, so two runs flap it between their device geometries and corrupt each
+// other's evidence (and have aborted Xvnc).
+func TestGeometryHandlerReportsAttachedViewers(t *testing.T) {
+	keeper := newScreenKeeper(time.Millisecond, func() {})
+
+	rec := httptest.NewRecorder()
+	geometryHTTPHandler(func() int { return keeper.clientCount() })(rec, httptest.NewRequest(http.MethodGet, "/geometry", nil))
+	if !strings.Contains(rec.Body.String(), `"viewers":0`) {
+		t.Fatalf("idle container should report no viewers, got %s", rec.Body.String())
+	}
+
+	keeper.connect(true)
+	defer keeper.disconnect()
+	rec = httptest.NewRecorder()
+	geometryHTTPHandler(func() int { return keeper.clientCount() })(rec, httptest.NewRequest(http.MethodGet, "/geometry", nil))
+	if !strings.Contains(rec.Body.String(), `"viewers":1`) {
+		t.Fatalf("attached viewer should be reported, got %s", rec.Body.String())
+	}
+}
+
+func TestGeometryHandlerWithoutKeeper(t *testing.T) {
+	rec := httptest.NewRecorder()
+	geometryHTTPHandler(nil)(rec, httptest.NewRequest(http.MethodGet, "/geometry", nil))
+	if !strings.Contains(rec.Body.String(), `"viewers":0`) {
+		t.Fatalf("a handler with no keeper must still answer, got %s", rec.Body.String())
+	}
+}
+
+func TestGeometryHandlerIsReadOnly(t *testing.T) {
+	rec := httptest.NewRecorder()
+	geometryHTTPHandler(nil)(rec, httptest.NewRequest(http.MethodPost, "/geometry", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
 	}
 }

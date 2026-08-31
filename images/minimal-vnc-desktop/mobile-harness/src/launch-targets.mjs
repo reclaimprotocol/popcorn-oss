@@ -59,10 +59,20 @@ export function androidLaunchCommand(target, url) {
       extras,
     ].filter(Boolean).join(' ');
   }
+  // application_id makes Chrome REUSE the tab it last opened for this id instead of
+  // stacking a new one. Without it every launch adds a tab — two per pair, ~90 over a
+  // suite — and the emulator eventually cannot start another renderer: the run then
+  // fails with a crashed-tab page and a marker that "never appeared", which reads
+  // like a product fault and is really just tab exhaustion. A target may override it
+  // through extras.
+  const reuseTab = target.extras && 'com.android.browser.application_id' in target.extras
+    ? ''
+    : `--es ${shellQuote('com.android.browser.application_id')} ${shellQuote(target.package)}`;
   return [
     'am start -W -a android.intent.action.VIEW',
     `-p ${shellQuote(target.package)}`,
     `-d ${shellQuote(url)}`,
+    reuseTab,
     extras,
   ].filter(Boolean).join(' ');
 }

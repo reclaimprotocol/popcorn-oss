@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { networkInterfaces } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import {
   defaultAndroidLaunchTarget,
@@ -266,11 +267,45 @@ function curlCheck(check) {
   };
 }
 
+// A fixture host addressed by a DHCP address stops answering the moment the lease
+// moves, and the failure surfaces far from its cause: the simulator and the remote
+// kiosk simply stop reaching the fixtures, so a page never loads or a stale one
+// stays up and cases fail for reasons that look like the product. The address is
+// still the operator's to choose — the kiosk runs in a container, so loopback is
+// not a substitute — but when a check against a private literal fails, say whether
+// this machine still answers to that address.
+function localIPv4Addresses() {
+  return Object.values(networkInterfaces())
+    .flat()
+    .filter((entry) => entry && entry.family === 'IPv4' && !entry.internal)
+    .map((entry) => entry.address);
+}
+
+function staleAddressHint(url, error) {
+  let hostname;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  if (!/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(hostname)) return null;
+  const local = localIPv4Addresses();
+  if (local.includes(hostname)) return null;
+  return `${error} — this machine is not ${hostname}`
+    + (local.length ? ` (its addresses: ${local.join(', ')})` : ' (it has no external IPv4 address)');
+}
+
 export function checkEnvironment(loadedEnvironment) {
   if (!loadedEnvironment) return [];
   return (loadedEnvironment.value.healthChecks ?? []).map((check) => {
     if (!check.url) return { name: check.name ?? 'unnamed check', ok: false, error: 'missing url' };
     if (check.via === 'ssh' && !check.ssh) return { name: check.name ?? check.url, ok: false, error: 'missing ssh target' };
-    return curlCheck(check);
+    const result = curlCheck(check);
+    // Only for a check reached from THIS machine: over ssh the address is resolved
+    // somewhere else and our interfaces say nothing about it.
+    if (!result.ok && result.error && check.via !== 'ssh') {
+      result.error = staleAddressHint(check.url, result.error) ?? result.error;
+    }
+    return result;
   });
 }

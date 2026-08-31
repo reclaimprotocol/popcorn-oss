@@ -40,6 +40,7 @@ import {
   iosKeySequence,
   nativeElementSelector,
 } from './text-entry.mjs';
+import { refuseBusyRuntime } from './runtime-busy.mjs';
 import { resolveWindowFractions } from './window-fractions.mjs';
 import { describeSpec, resolveTapTarget, scrollGestureFor } from './android-ui.mjs';
 import { buildTouchTracks, coordinateExpression, recordingTimeline } from './touch-tracks.mjs';
@@ -959,7 +960,10 @@ async function tapRelativeToVisibleColor(driver, action, rect) {
 // Scrolling anchored to a marker instead of a literal start point. The start of a
 // scroll matters more than it looks: a fixed coordinate calibrated in a browser lands
 // on the browser's own chrome in a web view, so the page never receives the gesture.
-async function swipeRelativeToVisibleColorByOffset(driver, action, rect) {
+async function swipeRelativeToVisibleColorByOffset(driver, rawAction, rect) {
+  // deltaYFraction/deltaXFraction scale the displacement to the window, so a case
+  // that reaches the list edge here reaches it on a shorter screen too.
+  const action = resolveWindowFractions(rawAction, rect);
   const encoded = await driver.takeScreenshot();
   const png = PNG.sync.read(Buffer.from(encoded, 'base64'));
   const scale = png.width / rect.width;
@@ -1027,9 +1031,44 @@ async function hideDeviceKeyboard(driver, action, device) {
     if (action.settleMs) await driver.pause(Math.max(0, Number(action.settleMs)));
     return { kind: 'hide-keyboard', pressed: shown, at, completedAt: new Date().toISOString() };
   }
-  await driver.hideKeyboard();
-  if (action.settleMs) await driver.pause(Math.max(0, Number(action.settleMs)));
-  return { kind: 'hide-keyboard', pressed: true, at, completedAt: new Date().toISOString() };
+  // iOS has no dumpsys, but WDA reports keyboard visibility directly. hideKeyboard()
+  // alone is not enough: from iOS 26 it raises "Did not know how to dismiss the
+  // keyboard" for Safari's web keyboards, which carry no dismiss key of their own.
+  // The form accessory bar above them does, and it is a separate element, so it is
+  // asked first; hideKeyboard stays the fallback for the app UIs and web views that
+  // still answer it. Only a keyboard that survives both is an error.
+  if (!(await driver.isKeyboardShown())) {
+    if (action.settleMs) await driver.pause(Math.max(0, Number(action.settleMs)));
+    return { kind: 'hide-keyboard', pressed: false, at, completedAt: new Date().toISOString() };
+  }
+  // iOS 26 has no safe programmatic dismissal for Safari's web keyboards, and the
+  // obvious workaround is worse than the failure. Tapping the form accessory bar's
+  // Done DOES dismiss, but it tells WebKit the user is finished with form input and
+  // the NEXT raise is then torn down ~200ms after it opens: the keyboard visibly
+  // appears, the visual viewport shrinks, and Safari blurs the viewer's proxy with no
+  // JS blur() anywhere in the stack. Every later keystroke is silently lost and the
+  // session wedges, which grades as a product FAIL — a harness action inventing a
+  // defect in the thing it is measuring. Tapping outside does not help either: the
+  // LiveView keyboard belongs to the viewer's hidden proxy, and only a tap the viewer
+  // itself classifies as a non-input 'miss' calls its dismissKeyboard.
+  //
+  // So fail loudly instead. An INFRA_ERROR that names the limitation is honest; a
+  // dismissal that poisons the rest of the run is not.
+  let via = null;
+  try {
+    await driver.hideKeyboard();
+    via = 'wda-hide-keyboard';
+  } catch (error) {
+    throw new Error(
+      `hideKeyboard is not available on this iOS build (${error.message.split('\n')[0]}). `
+      + 'Do NOT substitute a tap on the keyboard accessory bar\'s Done button: it dismisses, '
+      + 'but WebKit then tears down the next keyboard ~200ms after it opens and every '
+      + 'subsequent keystroke is lost. The case needs a dismissal the viewer performs itself.',
+    );
+  }
+  await driver.pause(Math.max(0, Number(action.settleMs ?? 250)));
+  if (await driver.isKeyboardShown()) throw new Error(`hideKeyboard failed: keyboard still shown (${via})`);
+  return { kind: 'hide-keyboard', pressed: true, via, at, completedAt: new Date().toISOString() };
 }
 
 // Native pickers are OS windows with no fixture colors in them, so they are addressed
@@ -1149,6 +1188,7 @@ async function dragRelativeToVisibleColors(driver, action, rect) {
 }
 
 async function dragRelativeToVisibleColorByOffset(driver, action, rect) {
+  action = resolveWindowFractions(action, rect); // see swipeRelativeToVisibleColorByOffset
   const encoded = await driver.takeScreenshot();
   const png = PNG.sync.read(Buffer.from(encoded, 'base64'));
   const scale = png.width / rect.width;
@@ -2378,6 +2418,27 @@ function cdpCommand(socket, id, method, params = {}, sessionId) {
   });
 }
 
+// Poll the page target's URL until it is the one we asked for. Compares pathname
+// only: a fixture may carry a cache-buster or pick up a hash, and neither means the
+// kiosk is on the wrong page.
+async function navigationLanded(socket, targetUrl, timeoutMs = 8000) {
+  const wanted = new URL(targetUrl).pathname;
+  const deadline = Date.now() + timeoutMs;
+  let url = null;
+  for (let id = 100; Date.now() < deadline; id += 1) {
+    const targets = await cdpCommand(socket, id, 'Target.getTargets');
+    const page = targets.targetInfos?.find((item) => item.type === 'page');
+    url = page?.url ?? null;
+    if (url) {
+      try {
+        if (new URL(url).pathname === wanted) return { ok: true, url };
+      } catch { /* about:blank and friends are simply not there yet */ }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return { ok: false, url };
+}
+
 async function navigateSession(session, gatewayOrigin, targetUrl) {
   const rawEndpoint = session.cdpInternalUrl ?? session.cdpUrl;
   if (!rawEndpoint) throw new Error('Session response has no CDP endpoint for startup navigation');
@@ -2399,12 +2460,22 @@ async function navigateSession(session, gatewayOrigin, targetUrl) {
       if (!target) throw new Error('CDP startup navigation found no page target');
       const attached = await cdpCommand(socket, 2, 'Target.attachToTarget', { targetId: target.targetId, flatten: true });
       await cdpCommand(socket, 3, 'Page.navigate', { url: targetUrl }, attached.sessionId);
+      // Page.navigate's acknowledgement says the command was accepted, not that the
+      // kiosk left the previous case's page. A navigation that never lands leaves the
+      // PRIOR fixture on screen, and fixtures share their ready marker — so the stale
+      // page satisfies the ready gate and the run continues until some later action
+      // fails, which candidateActionFailureVerdict then grades FAIL. That is an infra
+      // failure wearing a product verdict, so settle it here where it is still infra.
+      // Target metadata only, in keeping with this step never reading page state.
+      const landed = await navigationLanded(socket, targetUrl);
+      if (!landed.ok) throw new Error(`CDP startup navigation did not land: kiosk is on ${redactUrl(landed.url ?? 'an unknown page')}`);
       return {
         method: 'cdp-page-navigate',
         targetUrl: redactUrl(targetUrl),
         acknowledged: true,
+        landed: true,
         attempts: attempt,
-        verification: 'simulator-recording-start-marker',
+        verification: 'cdp-target-url-then-simulator-recording-start-marker',
       };
     } catch (error) {
       // Some navigation targets replace the attached page before the flattened
@@ -2475,6 +2546,7 @@ async function runPair(pairFile, outputOverride, environmentFile, simulatorName)
   if (failedHealth.length) {
     throw new Error(`Environment preflight failed: ${failedHealth.map((check) => `${check.name}: ${check.error ?? `HTTP ${check.statusCode}`}`).join('; ')}`);
   }
+  await refuseBusyRuntime(loadedEnvironment);
   const pair = materializePair(
     JSON.parse(readFileSync(pairFile, 'utf8')),
     pairFile,

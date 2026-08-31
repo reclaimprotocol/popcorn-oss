@@ -66,6 +66,11 @@ Edit the ignored local file with the iOS simulator or Android emulator, ports,
 fixture host, Popcorn cluster, gateway, control plane, and shared LiveView flags. Keep
 credentials in environment variables. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md).
 
+Set `popcorn.liveview.encryption` to the transport your deployment serves
+(`"e2e"`, or omit it for plaintext). The viewer's own chrome — dialog sheet,
+popup close button, account chooser — travels differently on the two, so a suite
+run only against one of them cannot see a break in the other.
+
 Check the complete environment before recording anything:
 
 ```bash
@@ -105,6 +110,23 @@ one compressed 30 fps touch-overlay video, continuously tracks every native
 pointer (including both fingers of a pinch), removes the temporary raw recording,
 performs the same native actions on both sides, and compares
 marker-synchronized checkpoints.
+
+One browser runtime serves one run at a time. Every viewer shares a single X
+screen, so a second run resizes that screen to its own device's geometry and the
+two flap it back and forth several times a second — each side's candidate is then
+recorded at the other's resolution, markers land in the wrong place, and cases
+fail for reasons that read exactly like product defects. An iOS suite and an
+Android suite pointed at the same runtime will quietly corrupt each other's
+evidence, and the churn has aborted Xvnc outright. A run therefore refuses to
+start when the runtime already reports an attached viewer:
+
+```text
+Browser runtime already has 1 viewer(s) attached at http://127.0.0.1:18080.
+```
+
+Wait for the other run, give it its own runtime, or set
+`POPCORN_HARNESS_ALLOW_SHARED_RUNTIME=1` for a deliberate shared run. The check
+is skipped against a runtime too old to report `viewers` on `/geometry`.
 
 Dashboard video URLs include the evidence artifact digest, so rerunning a case
 cannot leave an older recording in the browser cache under the same path.

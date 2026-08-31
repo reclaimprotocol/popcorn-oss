@@ -33,7 +33,7 @@
     { "type": "screenshot", "name": "message-focused", "syncWith": "message-focused" },
     { "type": "typeText", "name": "type-message-one", "text": "q" },
     { "type": "typeText", "name": "type-message-two", "text": "w" },
-    { "type": "waitForColor", "name": "message-typed", "color": "#3f6212", "timeoutMs": 30000 },
+    { "type": "waitForColor", "name": "message-typed", "color": "#86198f", "timeoutMs": 30000 },
     { "type": "screenshot", "name": "message-typed", "syncWith": "message-typed" },
     { "type": "swipe", "name": "scroll-back-to-first-one", "durationMs": 800, "fromXFraction": 0.846, "toXFraction": 0.846, "fromYFraction": 0.26, "toYFraction": 0.474 },
     { "type": "swipe", "name": "scroll-back-to-first-two", "durationMs": 800, "fromXFraction": 0.846, "toXFraction": 0.846, "fromYFraction": 0.26, "toYFraction": 0.474 },

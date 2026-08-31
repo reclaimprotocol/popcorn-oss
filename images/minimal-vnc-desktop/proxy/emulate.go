@@ -522,13 +522,29 @@ func envInt(name string, fallback int) int {
 // (reflects the boot env, matched to defaultEmulation/screen-restore) and
 // dynamic (fetched at runtime, no hardcoding). Cheap constant; no ready gate
 // needed.
-func geometryHTTPHandler() http.HandlerFunc {
+// `viewers` is the count of VNC clients attached RIGHT NOW, which is a different
+// kind of fact from the boot geometry beside it — it exists so a tool can find out
+// that this container is already in use before it starts driving it. One X screen
+// serves every viewer, so a second one resizes it under the first: two harness runs
+// against the same container flap the screen between their two device geometries
+// several times a second, each corrupting the other's evidence, and Xvnc has been
+// seen to abort under that churn. Counting is enough to refuse.
+func geometryHTTPHandler(viewers func() int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		width := envInt("WIDTH", 1920)
 		height := envInt("FB_HEIGHT", envInt("HEIGHT", 1080))
+		attached := 0
+		if viewers != nil {
+			attached = viewers()
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write([]byte(`{"width":` + strconv.Itoa(width) + `,"height":` + strconv.Itoa(height) + `}`))
+		_, _ = w.Write([]byte(`{"width":` + strconv.Itoa(width) + `,"height":` + strconv.Itoa(height) +
+			`,"viewers":` + strconv.Itoa(attached) + `}`))
 	}
 }
 
