@@ -159,6 +159,7 @@ jobs:
           set -euo pipefail
           services=(
             services/control-plane
+            services/mcp-server
             services/pool-manager
           )
 
@@ -219,6 +220,16 @@ jobs:
           helm template popcorn-platform charts/platform \
             --values examples/helm/platform-values.yaml \
             > /tmp/popcorn-platform.yaml
+
+          helm template popcorn-platform-mcp charts/platform \
+            --values examples/helm/platform-values.yaml \
+            --set mcpServer.enabled=true \
+            --set mcpServer.publicUrl=https://mcp.example.com \
+            --set mcpServer.billing.provider=external \
+            --set mcpServer.billing.baseUrl=http://popcorn-billing:3000 \
+            > /tmp/popcorn-platform-mcp.yaml
+          grep -q 'name: mcp-server' /tmp/popcorn-platform-mcp.yaml
+          grep -q 'name: MCP_BILLING_BASE_URL' /tmp/popcorn-platform-mcp.yaml
 
           helm template browser-fleet charts/browser-fleet \
             --values examples/helm/browser-fleet-values.yaml \
@@ -285,6 +296,8 @@ jobs:
             context: services/ttl-controller
           - service: control-plane
             context: services/control-plane
+          - service: mcp-server
+            context: services/mcp-server
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -341,7 +354,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for service in pool-manager gateway ttl-controller control-plane; do
+          for service in pool-manager gateway ttl-controller control-plane mcp-server; do
             docker manifest inspect \
               "ghcr.io/reclaimprotocol/popcorn-oss/${service}:sha-${GITHUB_SHA}" \
               >/dev/null

@@ -20,6 +20,56 @@ secrets:
 # platform consumes each enabled extension's `routing` section.
 sessionExtensions: {}
 
+# Optional remote MCP endpoint (services/mcp-server). Disabled by default.
+# The OSS service performs browser operations only; usage credit, if any, is
+# delegated to an operator-run billing service (see docs/mcp-server.md).
+mcpServer:
+  enabled: false
+  replicas: 2
+  imagePullPolicy: Always
+  updateStrategy:
+    maxSurge: 1
+    maxUnavailable: 0
+  # Public origin of the MCP endpoint, e.g. https://mcp.popcorn.example
+  publicUrl: ""
+  domainName: ""
+  staticIpName: ""
+  serviceType: ClusterIP
+  servicePort: 80
+  publicPaths:
+    - /mcp
+    - /oauth
+    - /.well-known
+    - /health
+  allowedOrigins: []
+  controlPlaneUrl: http://control-plane
+  # One purchase/operation buys exactly this much browser time.
+  sessionBlockSeconds: 600
+  operationLeaseSeconds: 120
+  billing:
+    # none = every authenticated request is allowed (self-hosting default).
+    # external = delegate balance/reserve/commit/release to `baseUrl`.
+    provider: none
+    baseUrl: ""
+    # Key in `secretName` holding the service token for that billing API.
+    authTokenKey: MCP_BILLING_AUTH_TOKEN
+  # Secret holding DATABASE_URL, the token signing key, the control-plane
+  # client credentials, and (for external billing) the billing service token.
+  secretName: mcp-server-secret
+  # Existing platform database Secret with host, port, database, username and password.
+  databaseSecretName: analytics-db-secret
+  secretKeys:
+    tokenSigningKey: MCP_TOKEN_SIGNING_KEY
+    popcornClientId: POPCORN_CLIENT_ID
+    popcornClientSecret: POPCORN_CLIENT_SECRET
+  resources:
+    requests:
+      memory: 128Mi
+      cpu: 100m
+    limits:
+      memory: 512Mi
+      cpu: 500m
+
 poolManager:
   enabled: false
   replicas: 1
