@@ -127,9 +127,6 @@
           "type": "string",
           "minLength": 1
         },
-        "normalGameServerFleet": {
-          "type": "string"
-        },
         "jwtSecretName": {
           "type": "string"
         },
