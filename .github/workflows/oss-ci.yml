@@ -253,6 +253,11 @@ jobs:
             | grep -q 'value: "true"'
           grep -Fq 'REPLACE_DEFAULT_PAGE="${REPLACE_DEFAULT_PAGE:-false}"' \
             images/minimal-vnc-desktop/start-chromium
+          if grep -Eq -- '--no-sandbox|--disable-setuid-sandbox' \
+            images/minimal-vnc-desktop/start-chromium; then
+            echo 'Chrome sandbox must remain enabled in the browser image' >&2
+            exit 1
+          fi
 
           grep -Fq 'location ~ ^/liveview/' services/gateway/nginx.conf
           grep -Fq 'route:liveview:' services/pool-manager/src/services/session-db.ts

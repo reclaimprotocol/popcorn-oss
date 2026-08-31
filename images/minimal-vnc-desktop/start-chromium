@@ -434,8 +434,6 @@ flags=(
   "--remote-allow-origins=*"
   "--user-data-dir=${BROWSER_PROFILE_DIR}"
   "--password-store=basic"
-  "--no-sandbox"
-  "--disable-setuid-sandbox"
   "--no-first-run"
   "--no-default-browser-check"
   "--disable-background-networking"
