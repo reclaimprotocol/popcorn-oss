@@ -435,9 +435,14 @@ flags=(
   # login flows silently die. Real user clicks are gestures, but kiosk + the
   # blocker still interfere; disabling the blocker makes popups reliable.
   "--disable-popup-blocking"
-  "--kiosk"
   "${cloak_flags[@]}"
 )
+
+# Pre-warmed fleets choose their browser chrome at pod startup. Keep kiosk as
+# the deployment default; the MCP normal-view fleet opts out explicitly.
+if [[ "${BROWSER_KIOSK:-true}" == "true" ]]; then
+  flags+=("--kiosk")
+fi
 
 if [[ "$ENABLE_PROXY_EXTENSION" == "true" && -f "${PROXY_EXTENSION_DIR}/manifest.json" ]]; then
   flags+=(

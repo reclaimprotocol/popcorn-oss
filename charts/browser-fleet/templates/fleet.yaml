@@ -1,16 +1,22 @@
-{{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" .Values.secrets.browserRuntimeProxyName }}
-{{- $securityProfile := default "legacy" .Values.browserRuntimeSecurityProfile }}
+{{- $root := . }}
+{{- $fleets := list (dict "name" "browser-fleet" "replicas" $root.Values.fleet.replicas "kiosk" true) }}
+{{- if $root.Values.normalViewFleet.enabled }}
+{{- $fleets = append $fleets (dict "name" $root.Values.normalViewFleet.name "replicas" $root.Values.normalViewFleet.replicas "kiosk" false) }}
+{{- end }}
+{{- range $fleet := $fleets }}
+{{- $browserRuntimeProxySecret := default "browser-runtime-proxy-secret" $root.Values.secrets.browserRuntimeProxyName }}
+{{- $securityProfile := default "legacy" $root.Values.browserRuntimeSecurityProfile }}
 {{- if not (has $securityProfile (list "legacy" "hardened")) }}
 {{- fail "browserRuntimeSecurityProfile must be one of 'legacy' or 'hardened'" }}
 {{- end }}
 apiVersion: agones.dev/v1
 kind: Fleet
 metadata:
-  name: browser-fleet
-  namespace: {{ .Release.Namespace }}
+  name: {{ $fleet.name }}
+  namespace: {{ $root.Release.Namespace }}
 spec:
-  replicas: {{ .Values.fleet.replicas }}
-  scheduling: {{ .Values.fleet.scheduling }}
+  replicas: {{ $fleet.replicas }}
+  scheduling: {{ $root.Values.fleet.scheduling }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -23,9 +29,9 @@ spec:
     spec:
       container: browser-runtime
       health:
-        initialDelaySeconds: {{ .Values.fleet.health.initialDelaySeconds }}
-        periodSeconds: {{ .Values.fleet.health.periodSeconds }}
-        failureThreshold: {{ .Values.fleet.health.failureThreshold }}
+        initialDelaySeconds: {{ $root.Values.fleet.health.initialDelaySeconds }}
+        periodSeconds: {{ $root.Values.fleet.health.periodSeconds }}
+        failureThreshold: {{ $root.Values.fleet.health.failureThreshold }}
       ports:
         - name: novnc
           containerPort: 6080
@@ -39,53 +45,53 @@ spec:
           containerPort: 9226
           portPolicy: None
           protocol: TCP
-{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- range $extensionName, $extension := $root.Values.sessionExtensions }}
 {{- if dig "enabled" true $extension }}
 {{- with dig "browser" "ports" (list) $extension }}
-{{ tpl (toYaml .) $ | nindent 8 }}
+{{ tpl (toYaml .) $root | nindent 8 }}
 {{- end }}
 {{- end }}
 {{- end }}
       template:
         spec:
-{{- if .Values.serviceAccount.create }}
+{{- if $root.Values.serviceAccount.create }}
           serviceAccountName: browser-sa
-          automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+          automountServiceAccountToken: {{ $root.Values.serviceAccount.automountServiceAccountToken }}
 {{- end }}
-{{- with .Values.runtimeClassName }}
+{{- with $root.Values.runtimeClassName }}
           runtimeClassName: {{ . | quote }}
 {{- end }}
-{{- with .Values.fleet.nodeSelector }}
+{{- with $root.Values.fleet.nodeSelector }}
           nodeSelector:
 {{ toYaml . | nindent 12 }}
 {{- end }}
-{{- with .Values.fleet.tolerations }}
+{{- with $root.Values.fleet.tolerations }}
           tolerations:
 {{ toYaml . | nindent 12 }}
 {{- end }}
-{{- with .Values.fleet.affinity }}
+{{- with $root.Values.fleet.affinity }}
           affinity:
 {{ toYaml . | nindent 12 }}
 {{- end }}
-{{- with .Values.podSecurityContext }}
+{{- with $root.Values.podSecurityContext }}
           securityContext:
 {{- toYaml . | nindent 12 }}
 {{- end }}
-{{- with .Values.imagePullSecrets }}
+{{- with $root.Values.imagePullSecrets }}
           imagePullSecrets:
 {{ toYaml . | nindent 12 }}
 {{- end }}
           containers:
             - name: browser-runtime
-              image: {{ .Values.browserRuntimeImage | quote }}
-              imagePullPolicy: {{ .Values.browserRuntimeImagePullPolicy }}
+              image: {{ $root.Values.browserRuntimeImage | quote }}
+              imagePullPolicy: {{ $root.Values.browserRuntimeImagePullPolicy }}
               resources:
                 requests:
-                  memory: {{ .Values.fleet.browserRuntimeMemoryRequest }}
-                  cpu: {{ .Values.fleet.browserRuntimeCpuRequest | quote }}
+                  memory: {{ $root.Values.fleet.browserRuntimeMemoryRequest }}
+                  cpu: {{ $root.Values.fleet.browserRuntimeCpuRequest | quote }}
                 limits:
-                  memory: {{ .Values.fleet.browserRuntimeMemoryLimit }}
-                  cpu: {{ .Values.fleet.browserRuntimeCpuLimit | quote }}
+                  memory: {{ $root.Values.fleet.browserRuntimeMemoryLimit }}
+                  cpu: {{ $root.Values.fleet.browserRuntimeCpuLimit | quote }}
               securityContext:
 {{- if eq $securityProfile "hardened" }}
                 allowPrivilegeEscalation: false
@@ -124,29 +130,31 @@ spec:
                       key: HTTPS_PROXY_URL
                       optional: true
                 - name: REPLACE_DEFAULT_PAGE
-                  value: {{ eq .Values.browserPolicy.variant "reclaim-portal" | quote }}
+                  value: {{ eq $root.Values.browserPolicy.variant "reclaim-portal" | quote }}
                 - name: POPCORN_BROWSER_STREAMING_MODE
                   value: "vnc"
-{{- with .Values.extraBrowserRuntimeEnv }}
-{{ tpl (toYaml .) $ | nindent 16 }}
+                - name: BROWSER_KIOSK
+                  value: {{ $fleet.kiosk | quote }}
+{{- with $root.Values.extraBrowserRuntimeEnv }}
+{{ tpl (toYaml .) $root | nindent 16 }}
 {{- end }}
               volumeMounts:
                 - mountPath: /dev/shm
                   name: dshm
                 - mountPath: /var/log/app
                   name: app-logs
-{{- if .Values.browserRuntimeAttestor.enabled }}
+{{- if $root.Values.browserRuntimeAttestor.enabled }}
             - name: browser-runtime-attestor
-              image: {{ .Values.browserRuntimeAttestorImage | quote }}
-              imagePullPolicy: {{ .Values.browserRuntimeAttestor.imagePullPolicy }}
+              image: {{ $root.Values.browserRuntimeAttestorImage | quote }}
+              imagePullPolicy: {{ $root.Values.browserRuntimeAttestor.imagePullPolicy }}
               resources:
                 requests:
-                  memory: {{ .Values.fleet.browserRuntimeAttestorMemoryRequest }}
-                  cpu: {{ .Values.fleet.browserRuntimeAttestorCpuRequest | quote }}
+                  memory: {{ $root.Values.fleet.browserRuntimeAttestorMemoryRequest }}
+                  cpu: {{ $root.Values.fleet.browserRuntimeAttestorCpuRequest | quote }}
                   google.com/cc: "1"
                 limits:
-                  memory: {{ .Values.fleet.browserRuntimeAttestorMemoryLimit }}
-                  cpu: {{ .Values.fleet.browserRuntimeAttestorCpuLimit | quote }}
+                  memory: {{ $root.Values.fleet.browserRuntimeAttestorMemoryLimit }}
+                  cpu: {{ $root.Values.fleet.browserRuntimeAttestorCpuLimit | quote }}
                   google.com/cc: "1"
               ports:
                 - name: proof-http
@@ -158,9 +166,9 @@ spec:
                     fieldRef:
                       fieldPath: metadata.name
                 - name: ATTESTATION_TOKEN_AUDIENCE
-                  value: {{ printf "https://%s" .Values.gatewayDomain | quote }}
+                  value: {{ printf "https://%s" $root.Values.gatewayDomain | quote }}
                 - name: CONFIDENTIAL_COMPUTING_LOCATION
-                  value: {{ .Values.region | quote }}
+                  value: {{ $root.Values.region | quote }}
                 - name: TPM_EVENT_LOG_PATH
                   value: /var/run/cc/tpm0/binary_bios_measurements
               volumeMounts:
@@ -168,10 +176,10 @@ spec:
                   name: tpm-eventlog
                   readOnly: true
 {{- end }}
-{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- range $extensionName, $extension := $root.Values.sessionExtensions }}
 {{- if dig "enabled" true $extension }}
 {{- with dig "browser" "containers" (list) $extension }}
-{{ tpl (toYaml .) $ | nindent 12 }}
+{{ tpl (toYaml .) $root | nindent 12 }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -182,9 +190,10 @@ spec:
                 sizeLimit: 2Gi
             - name: app-logs
               emptyDir: {}
-{{- if .Values.browserRuntimeAttestor.enabled }}
+{{- if $root.Values.browserRuntimeAttestor.enabled }}
             - name: tpm-eventlog
               hostPath:
                 path: /sys/kernel/security/tpm0
                 type: Directory
+{{- end }}
 {{- end }}
