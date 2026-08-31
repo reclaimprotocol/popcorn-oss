@@ -33,6 +33,8 @@ spec:
               value: "3000"
             - name: MCP_PUBLIC_URL
               value: {{ required "mcpServer.publicUrl is required when mcpServer.enabled" $mcp.publicUrl | quote }}
+            - name: MCP_ACCESS_TOKEN_TTL_SECONDS
+              value: {{ $mcp.accessTokenTtlSeconds | quote }}
             - name: CONTROL_PLANE_URL
               value: {{ $mcp.controlPlaneUrl | quote }}
             - name: MCP_SESSION_TTL_SECONDS

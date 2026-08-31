@@ -145,6 +145,7 @@ Bring your own provider by implementing the interface and wiring it in
 | `CONTROL_PLANE_URL` | `http://control-plane:3000` | Popcorn control plane |
 | `POPCORN_CLIENT_ID` / `POPCORN_CLIENT_SECRET` | – | Control-plane client this server acts as |
 | `MCP_TOKEN_SIGNING_KEY` | dev key | Signs tokens and derives subjects; rotating it invalidates both |
+| `MCP_ACCESS_TOKEN_TTL_SECONDS` | `3600` | OAuth access-token lifetime; clients must reconnect after expiry because refresh tokens are not currently issued |
 | `MCP_SESSION_TTL_SECONDS` | `600` | Fixed block of browser time per billed operation |
 | `MCP_OPERATION_LEASE_SECONDS` | `120` | When one retry may recover a crashed operation |
 | `MCP_AVAILABLE_REGIONS` | – | Comma-separated region names advertised for nearest-first placement |
