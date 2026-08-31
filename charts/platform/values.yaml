@@ -43,6 +43,9 @@ mcpServer:
     - /health
   allowedOrigins: []
   controlPlaneUrl: http://control-plane
+  # OAuth access-token lifetime. Keep the OSS default conservative; operators
+  # may raise this for trusted MCP clients that do not support refresh tokens.
+  accessTokenTtlSeconds: 3600
   # One purchase/operation buys exactly this much browser time.
   sessionBlockSeconds: 600
   operationLeaseSeconds: 120
