@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+POLL_SECONDS="${BROWSER_MODE_POLL_SECONDS:-0.25}"
+AGONES_SDK_HOST="${AGONES_SDK_HOST:-127.0.0.1}"
+AGONES_SDK_HTTP_PORT="${AGONES_SDK_HTTP_PORT:-${AGONES_SDK_PORT:-9358}}"
+CHROMIUM_LAUNCHER="${CHROMIUM_LAUNCHER:-/usr/local/bin/start-chromium}"
+
+read_mode() {
+  local response
+  response="$(curl --silent --fail --max-time 1 \
+    "http://${AGONES_SDK_HOST}:${AGONES_SDK_HTTP_PORT}/gameserver" 2>/dev/null || true)"
+  if [[ "$response" == *'"popcorn.dev/browser-mode":"normal"'* ]]; then
+    printf 'normal'
+  elif [[ "$response" == *'"popcorn.dev/browser-mode":"kiosk"'* ]]; then
+    printf 'kiosk'
+  fi
+}
+
+requested="$(read_mode)"
+mode="${requested:-kiosk}"
+locked=false
+[[ -z "$requested" ]] || locked=true
+child=""
+
+stop_child() {
+  [[ -n "$child" ]] || return 0
+  kill "$child" 2>/dev/null || true
+  wait "$child" 2>/dev/null || true
+}
+trap stop_child EXIT INT TERM
+
+while true; do
+  if [[ "$mode" == normal ]]; then
+    BROWSER_KIOSK=false "$CHROMIUM_LAUNCHER" &
+  else
+    BROWSER_KIOSK=true "$CHROMIUM_LAUNCHER" &
+  fi
+  child="$!"
+  echo "[browser-mode] started Chromium in ${mode} mode (pid ${child})"
+
+  if [[ "$locked" == true ]]; then
+    wait "$child"
+    exit $?
+  fi
+
+  while kill -0 "$child" 2>/dev/null; do
+    sleep "$POLL_SECONDS"
+    requested="$(read_mode)"
+    if [[ -n "$requested" ]]; then
+      locked=true
+      if [[ "$requested" != "$mode" ]]; then
+        echo "[browser-mode] switching this pod from ${mode} to ${requested} mode"
+        mode="$requested"
+        stop_child
+        child=""
+      fi
+      break
+    fi
+  done
+
+  if [[ -n "$child" ]]; then
+    wait "$child"
+    exit $?
+  fi
+done

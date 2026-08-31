@@ -438,8 +438,6 @@ flags=(
   "${cloak_flags[@]}"
 )
 
-# Pre-warmed fleets choose their browser chrome at pod startup. Keep kiosk as
-# the deployment default; the MCP normal-view fleet opts out explicitly.
 if [[ "${BROWSER_KIOSK:-true}" == "true" ]]; then
   flags+=("--kiosk")
 fi

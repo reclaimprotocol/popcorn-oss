@@ -283,13 +283,30 @@ async function allocateSessionLocally(
     console.log(`🚀 Allocation request for session: ${sessionId} (client: ${identity.clientId})`);
 
     try {
-        const fleet = browserMode === "normal" ? RuntimeConfig.normalGameServerFleet : GAME_SERVER_FLEET;
-        if (!fleet) throw new Error("NORMAL_BROWSER_FLEET_NOT_CONFIGURED");
-        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, fleet, sessionId, liveViewE2e);
+        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e, browserMode);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
         const port = browserRoutePort(allocation.ports);
         const podUrl = `http://${allocation.address}:${port}`;
+
+        if (browserMode === "normal") {
+            // The in-pod launcher reads allocation metadata from its local
+            // Agones sidecar, then replaces only Chromium.
+            // Wait past that edge before accepting the first healthy full-CDP
+            // response so callers never receive the old kiosk process.
+            await Bun.sleep(750);
+            const browserReady = await retry(async () => {
+                try {
+                    const response = await fetch(`http://${allocation.address}:9226/json/version`, {
+                        signal: AbortSignal.timeout(1_000),
+                    });
+                    return response.ok;
+                } catch {
+                    return false;
+                }
+            }, { attempts: 20, delayMs: 250, shouldRetryResult: (ready) => !ready });
+            if (!browserReady) throw new Error("NORMAL_BROWSER_RESTART_FAILED");
+        }
 
         const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
         const bound = await annotatePodWithSessionMetadata(podMetadata.namespace, allocation.gameServerName, sessionId);

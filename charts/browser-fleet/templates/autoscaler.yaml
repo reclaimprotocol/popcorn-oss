@@ -1,24 +1,17 @@
-{{- $root := . }}
-{{- $autoscalers := list (dict "name" "browser-autoscaler" "fleetName" "browser-fleet" "values" .Values.autoscaler) }}
-{{- if .Values.normalViewFleet.enabled }}
-{{- $autoscalers = append $autoscalers (dict "name" "browser-normal-autoscaler" "fleetName" .Values.normalViewFleet.name "values" .Values.normalViewFleet.autoscaler) }}
-{{- end }}
-{{- range $autoscaler := $autoscalers }}
 apiVersion: autoscaling.agones.dev/v1
 kind: FleetAutoscaler
 metadata:
-  name: {{ $autoscaler.name }}
-  namespace: {{ $root.Release.Namespace }}
+  name: browser-autoscaler
+  namespace: {{ .Release.Namespace }}
 spec:
-  fleetName: {{ $autoscaler.fleetName }}
+  fleetName: browser-fleet
   policy:
     type: Buffer
     buffer:
-      bufferSize: {{ $autoscaler.values.bufferSize }}
-      minReplicas: {{ $autoscaler.values.minReplicas }}
-      maxReplicas: {{ $autoscaler.values.maxReplicas }}
+      bufferSize: {{ .Values.autoscaler.bufferSize }}
+      minReplicas: {{ .Values.autoscaler.minReplicas }}
+      maxReplicas: {{ .Values.autoscaler.maxReplicas }}
   sync:
     type: FixedInterval
     fixedInterval:
-      seconds: {{ $autoscaler.values.syncSeconds }}
-{{- end }}
+      seconds: {{ .Values.autoscaler.syncSeconds }}

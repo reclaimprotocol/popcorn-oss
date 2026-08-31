@@ -26,5 +26,4 @@ function readNamespace(): string {
 export const RuntimeConfig = {
     gameServerNamespace: readNamespace(),
     gameServerFleet: readOptionalEnv("GAME_SERVER_FLEET") || "browser-fleet",
-    normalGameServerFleet: readOptionalEnv("GAME_SERVER_NORMAL_FLEET"),
 };
