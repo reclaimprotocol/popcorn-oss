@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/flynn/noise"
 )
 
 func TestCDPReadyGate(t *testing.T) {
@@ -185,6 +188,149 @@ func TestNoVNCMuxRequiresReadyFile(t *testing.T) {
 		t.Fatalf("noVNC before readiness status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 
+}
+
+func TestE2EBindingRejectsPlaintextLiveViewAtPodBoundary(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", ClientKey: client.Public, PodUID: "pod-1"})
+
+	web := t.TempDir()
+	if err := os.WriteFile(filepath.Join(web, "liveview.html"), []byte("viewer shell"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	liveView := noVNCMux(web, "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
+	for _, route := range []string{
+		"/kbd", "/kbdstate", "/dialog", "/emulate", "/input",
+		"/klog", "/rtstats", "/websockify", "/vnc-ws/session", "/liveview-ws/session",
+	} {
+		rec := httptest.NewRecorder()
+		liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example"+route, nil))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want %d", route, rec.Code, http.StatusForbidden)
+		}
+	}
+
+	// Occupancy is the sole public runtime-status read. It must remain available
+	// before an E2E session is enrolled, otherwise two harnesses can both drive
+	// the pod's one X screen. It carries no session or control data.
+	rec := httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/geometry", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"viewers":0`) {
+		t.Fatalf("e2e geometry status = %d body = %q, want public occupancy", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://pod.example/geometry", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("e2e geometry POST status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	// The unified viewer shell is public code and must remain loadable. The
+	// selected transport is enforced when it attempts to open a data channel.
+	rec = httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/liveview.html", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("static viewer status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Chromium's extension publishes dialogs over loopback for both transport
+	// modes. External callers cannot use that plaintext control endpoint.
+	loopbackDialog := httptest.NewRequest(http.MethodGet, "http://pod.example/dialog", nil)
+	loopbackDialog.RemoteAddr = "127.0.0.1:12345"
+	rec = httptest.NewRecorder()
+	liveView.ServeHTTP(rec, loopbackDialog)
+	if rec.Code == http.StatusForbidden {
+		t.Fatal("loopback dialog publisher was blocked")
+	}
+
+	cdpUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer cdpUpstream.Close()
+	cdp := cdpMux(cdpUpstream.URL, true, readyGate{})
+	rec = httptest.NewRecorder()
+	cdp.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/json/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("server-side CDP status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestE2EAllocationTerminatesPlaintextWebSocketOpenedWhilePodWasIdle(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	handler := liveViewTransportGuard(e, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		close(started)
+		_, _ = conn.Read(make([]byte, 1))
+		close(finished)
+	}))
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	u, _ := url.Parse(server.URL)
+	viewer, err := net.Dial("tcp", u.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer viewer.Close()
+	if _, err = viewer.Write([]byte("GET /websockify HTTP/1.1\r\nHost: " + u.Host + "\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("plaintext handler did not start")
+	}
+	if err = viewer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", BindingSecretHash: make([]byte, 32), PodUID: "pod-uid"})
+	if _, err = viewer.Read(make([]byte, 1)); err == nil {
+		t.Fatal("plaintext WebSocket survived E2E allocation")
+	}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("plaintext handler remained open")
+	}
+}
+
+func TestUnboundPodKeepsDefaultTransportAvailable(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveView := noVNCMux(t.TempDir(), "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
+	rec := httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/kbdstate", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default control status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{})
+	}))
+	defer upstream.Close()
+	cdp := cdpMux(upstream.URL, true, readyGate{})
+	rec = httptest.NewRecorder()
+	cdp.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/json/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default CDP status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
 }
 
 // Content negotiation for the precompressed viewer bundle. A client that says it
@@ -448,5 +594,47 @@ func TestWebsocketCloseInfo(t *testing.T) {
 	}
 	if code, reason := websocketCloseInfo([]byte{1}); code != 0 || reason != "" {
 		t.Fatalf("short payload = (%d, %q), want empty", code, reason)
+	}
+}
+
+// The keyboard extension is an in-pod publisher, not user-facing transport. Its
+// field rects and remote viewport are what let a tap map to a remote coordinate
+// and raise the keyboard.
+func TestE2EBindingAllowsTheLoopbackKeyboardPublisher(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", ClientKey: client.Public, PodUID: "pod-1"})
+	liveView := noVNCMux(t.TempDir(), "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
+
+	ask := func(target, remote, origin string) int {
+		r := httptest.NewRequest(http.MethodGet, "http://pod.example"+target, nil)
+		r.RemoteAddr = remote
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		liveView.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	if code := ask("/kbd?role=pub", "127.0.0.1:12345", "chrome-extension://abc"); code == http.StatusForbidden {
+		t.Error("the pod's own keyboard publisher was blocked; the session loses every field rect")
+	}
+	// The carve-out is exactly the publisher trust level, nothing wider.
+	for _, c := range []struct {
+		name, target, remote, origin string
+	}{
+		{"remote publisher", "/kbd?role=pub", "203.0.113.7:443", "chrome-extension://abc"},
+		{"page origin", "/kbd?role=pub", "127.0.0.1:12345", "https://example.test"},
+		{"loopback subscriber", "/kbd", "127.0.0.1:12345", ""},
+	} {
+		if code := ask(c.target, c.remote, c.origin); code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want %d", c.name, code, http.StatusForbidden)
+		}
 	}
 }

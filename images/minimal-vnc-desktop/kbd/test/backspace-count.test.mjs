@@ -61,3 +61,33 @@ test('mixed run sums per-cluster: ascii + emoji + indic', () => {
   // "ab" (2) + 😀 (1) + "कि" (2) = 5
   assert.equal(backspaceCountFor('ab😀कि'), 5);
 });
+
+// The keys.js note names Devanagari, Tamil, Bengali and Malayalam as the scripts
+// whose ZWJ/virama conjuncts Blink still deletes per code point. Only Devanagari
+// was covered; a regression in the grapheme heuristic would have gone unnoticed
+// in the other three, and under-deleting leaves residual characters in the field.
+test('virama conjuncts count per code unit across Indic scripts', () => {
+  const cases = [
+    ['Devanagari क्ष', 'क्ष', 3],   // KA + VIRAMA + SSA
+    ['Tamil க்ஷ',      'க்ஷ', 3],   // KA + VIRAMA + SSA
+    ['Bengali ক্ষ',     'ক্ষ', 3],   // KA + VIRAMA + SSA
+    ['Malayalam ക്ക',   'ക്ക', 3],   // KA + VIRAMA + KA
+  ];
+  for (const [name, s, expect] of cases) {
+    assert.equal([...s].length, expect, name + ' should be ' + expect + ' code points');
+    assert.equal(backspaceCountFor(s), expect, name + ' must send one Backspace per code point');
+  }
+});
+
+test('a matra-bearing syllable deletes per code point, not per visual cluster', () => {
+  // These render as ONE glyph cluster each but are multiple code points, which is
+  // exactly the case a grapheme-collapsing heuristic gets wrong.
+  for (const [s, n] of [['को', 2], ['தி', 2], ['কি', 2], ['കി', 2]]) {
+    assert.equal(backspaceCountFor(s), n, JSON.stringify(s));
+  }
+});
+
+test('Indic mixed with emoji: only the emoji collapses', () => {
+  // 'क्ष' (3) + family emoji (1) + 'कि' (2) = 6
+  assert.equal(backspaceCountFor('क्ष\u{1F468}‍\u{1F469}‍\u{1F467}कि'), 6);
+});

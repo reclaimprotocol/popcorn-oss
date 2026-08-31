@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Non-responsive desktop login</title>
+<!-- DELIBERATELY no viewport meta: this is the desktop-only site shape the
+     magnify/fit layer exists for. Fixed 1200px canvas, small type, fields far
+     from the left edge, so a phone must zoom to read or type. -->
+<style>
+  body{margin:0;background:#eef2f7;font:13px/1.5 Arial,Helvetica,sans-serif}
+  .page{width:1200px;margin:0 auto;background:#fff;border:1px solid #c7d2e0;padding:24px}
+  h1{font-size:19px;margin:0 0 4px}
+  .cols{display:flex;gap:40px;margin-top:18px}
+  .col{flex:1}
+  label{display:block;font-size:12px;color:#456;margin:12px 0 3px}
+  input{width:340px;height:26px;font-size:13px;padding:0 6px;border:1px solid #9fb0c4}
+  .out{margin-top:6px;font:11px ui-monospace,Menlo,monospace;color:#036;word-break:break-all}
+  .far{margin-left:760px}
+  button{margin-top:14px;height:28px;padding:0 14px}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Account sign-in (desktop layout, 1200px, no viewport meta)</h1>
+  <div class="cols">
+    <div class="col">
+      <label for="username">Username</label>
+      <input id="username" name="user[login]" type="text" autocomplete="username">
+      <div class="out" id="o-username">len 0</div>
+      <label for="password">Password</label>
+      <input id="password" name="user[password]" type="password" autocomplete="current-password">
+      <div class="out" id="o-password">len 0</div>
+    </div>
+    <div class="col">
+      <label for="far" class="far">Field far right (needs pan when zoomed)</label>
+      <input id="far" class="far" type="text" name="notes">
+      <div class="out far" id="o-far">len 0</div>
+    </div>
+  </div>
+  <button id="go">Sign in</button>
+</div>
+<script>
+'use strict';
+// Code points only, never the characters — same rule as the other fixtures.
+function render(id){
+  var el=document.getElementById(id), out=document.getElementById('o-'+id);
+  var cps=Array.from(el.value).map(function(c){return c.codePointAt(0);});
+  out.textContent='len '+cps.length+'  cps '+cps.join(' ');
+}
+['username','password','far'].forEach(function(id){
+  var el=document.getElementById(id);
+  ['input','change'].forEach(function(t){el.addEventListener(t,function(){render(id);});});
+  render(id);
+});
+window.__wsDiag=function(){
+  var o={};
+  ['username','password','far'].forEach(function(id){
+    var el=document.getElementById(id);
+    o[id]={length:Array.from(el.value).length,
+           codePoints:Array.from(el.value).map(function(c){return c.codePointAt(0);}),
+           hasWhitespace:/\s/.test(el.value)};
+  });
+  return o;
+};
+</script>
+</body>
+</html>

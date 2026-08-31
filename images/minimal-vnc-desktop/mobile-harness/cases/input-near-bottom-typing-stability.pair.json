@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "name": "input-near-bottom-typing-stability",
+  "testDescription": "Typing into a focused field near the bottom of the viewport must keep the field and surrounding page visible without introducing a black band or an extra page jump.",
+  "testPage": "cases/input-near-bottom-typing-stability.html",
+  "baseline": { "fixturePath": "cases/input-near-bottom-typing-stability.html" },
+  "candidate": { "setupActions": [] },
+  "recordingStart": { "name": "case-ready", "color": "#4d00a8", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#4d00a8", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-focus", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "focus-input", "color": "#4d00a8", "offsetX": -140, "offsetY": 62 },
+    { "type": "waitForColor", "name": "focused", "color": "#ff00e5", "timeoutMs": 30000 },
+    { "type": "tapRelativeToColor", "name": "confirm-native-focus", "color": "#f59e0b", "offsetX": 0, "offsetY": 0, "platformTargetOverrides": {"iOS": {"baseline": {"type": "wait", "ms": 0}, "candidate": {"type": "wait", "ms": 0}}} },
+    { "type": "wait", "ms": 1500 },
+    { "type": "waitForColor", "name": "focus-settled", "color": "#ff00e5", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "focused", "syncWith": "focus-settled" },
+    { "type": "typeText", "name": "type-first-key", "text": "q" },
+    { "type": "waitForColor", "name": "one-character", "color": "#ffea00", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "typed-one", "syncWith": "one-character" },
+    { "type": "typeText", "name": "type-second-key", "text": "w" },
+    { "type": "waitForColor", "name": "two-characters", "color": "#00ff6a", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 1000 },
+    { "type": "waitForColor", "name": "typing-settled", "color": "#00ff6a", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "typed-two", "syncWith": "typing-settled" }
+  ],
+  "compare": { "profile": "checkpoint-pixel-diff", "from": "focused", "to": "typed-two", "pixelThreshold": 0.15, "maxChangedPixelRatio": null }
+}

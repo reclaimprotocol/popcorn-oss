@@ -1,5 +1,10 @@
 import type { RegionConfig } from './config';
 import { summarizeAttemptError, type RegionAttempt } from './regions';
+import {
+  isLiveViewE2eResponse,
+  type LiveViewE2eRequest,
+  type LiveViewE2eResponse,
+} from './liveview-e2e';
 
 export interface RoutedSessionAccessPolicy {
   tokenMode: 'expiring' | 'route-bound';
@@ -15,18 +20,20 @@ export interface RoutedSessionRequest {
   tokenExpiresAt?: string;
   accessPolicy?: RoutedSessionAccessPolicy;
   proxy?: { country: string };
+  liveViewE2e?: LiveViewE2eRequest;
 }
 
 export interface PoolManagerSessionResponse {
   success: boolean;
   sessionId: string;
   url: string;
-  cdpUrl: string;
+  cdpUrl?: string;
   cdpInternalUrl?: string;
   apiUrl: string;
   vncUrl: string;
   vncWsUrl: string;
   browserPodId?: string;
+  liveViewE2e?: LiveViewE2eResponse;
   [key: string]: unknown;
 }
 
@@ -66,13 +73,15 @@ function regionServiceAuthToken(region: RegionConfig, fallbackToken: string): st
 export function isRoutedSessionResponse(body: unknown, expectedSessionId: string): body is PoolManagerSessionResponse {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
   const candidate = body as Record<string, unknown>;
+  const e2e = candidate.liveViewE2e !== undefined;
   return candidate.success === true
     && candidate.sessionId === expectedSessionId
     && typeof candidate.url === 'string' && candidate.url.length > 0
     && typeof candidate.cdpUrl === 'string' && candidate.cdpUrl.length > 0
     && typeof candidate.apiUrl === 'string' && candidate.apiUrl.length > 0
     && typeof candidate.vncUrl === 'string' && candidate.vncUrl.length > 0
-    && typeof candidate.vncWsUrl === 'string' && candidate.vncWsUrl.length > 0;
+    && typeof candidate.vncWsUrl === 'string' && candidate.vncWsUrl.length > 0
+    && (!e2e || isLiveViewE2eResponse(candidate.liveViewE2e));
 }
 
 function sessionTokenFromUrl(value: unknown, sessionId: string): string | null {
@@ -174,6 +183,18 @@ export async function allocateInRegion(
         },
       };
     }
+    if (request.liveViewE2e && !isLiveViewE2eResponse((sessionBody as PoolManagerSessionResponse).liveViewE2e)) {
+      return {
+        attempt: {
+          region: region.name,
+          clusterName: region.clusterName,
+          status: 'failed',
+          statusCode: response.status,
+          latencyMs: Date.now() - startedAt,
+          error: 'Pool manager did not bind the requested LiveView E2EE session',
+        },
+      };
+    }
 
     return {
       session: {
@@ -248,7 +269,7 @@ export async function reallocateExpiredRegionalSession(
   expiresAt: string,
   serviceAuthToken: string,
   request?: Pick<RoutedSessionRequest,
-    'clientId' | 'clientName' | 'tokenExpiresAt' | 'accessPolicy' | 'proxy'>,
+    'clientId' | 'clientName' | 'tokenExpiresAt' | 'accessPolicy' | 'proxy' | 'liveViewE2e'>,
 ) {
   const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/reallocate-expired`, {
     method: 'POST',

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "name": "native-select-all-countries",
+  "testDescription": "A 195-country select must remain usable through sustained picker scrolling and commit the final country, Zimbabwe, to the page.",
+  "testPage": "cases/native-select-all-countries.html",
+  "baseline": { "fixturePath": "cases/native-select-all-countries.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "waitForColor", "name": "country-count", "color": "#ff8a00", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-picker", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "open-country-select", "color": "#fef3c7", "tolerance": 8 },
+    { "type": "wait", "ms": 900 },
+    { "type": "screenshot", "name": "picker-open" },
+    { "type": "wait", "ms": 700 },
+    { "type": "screenshot", "name": "picker-at-end" },
+    { "type": "tapNativeElement", "name": "choose-zimbabwe", "android": {"text": "Zimbabwe", "scroll": true}, "ios": {"pickerValue": "Zimbabwe"}, "timeoutMs": 30000, "settleMs": 500, "maxScrolls": 40 },
+    { "type": "waitForColor", "name": "zimbabwe-selected", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-selection", "syncWith": "zimbabwe-selected" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

@@ -156,6 +156,10 @@ describe('cluster workspace layout', () => {
     expect(html).toContain('class="cluster-command-bar"');
     expect(html).toContain('id="region-scope-select"');
     expect(html).toContain('data-pod-inventory');
+    expect(html).toContain('name="liveViewEncryption"');
+    expect(html).toContain('<option value="" selected="">Default transport</option>');
+    expect(html).toContain('<option value="e2e">End-to-end encrypted</option>');
+    expect(html).toContain('Server-side CDP remains available over its authenticated TLS route.');
     expect(html).toContain('data-pod-search');
     expect(html).toContain('data-pod-status');
     expect(html).toContain('data-pod-status-value="allocated"');

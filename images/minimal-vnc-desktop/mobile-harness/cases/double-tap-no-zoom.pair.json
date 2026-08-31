@@ -1,0 +1,7 @@
+{
+  "schemaVersion":1,"name":"double-tap-no-zoom","testDescription":"An XCUITest native coordinate double-tap on the control must leave the visual viewport scale and layout stable; the mandatory touch video records both contacts.","testPage":"cases/double-tap-no-zoom.html",
+  "baseline":{"fixturePath":"cases/double-tap-no-zoom.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL",
+  "recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-double-tap","syncWith":"ready"},{"type":"doubleTapRelativeToColor","name":"native-double-tap","color":"#8b5cf6"},{"type":"wait","ms":1400},{"type":"waitForColor","name":"viewport-still-stable","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"after-double-tap","syncWith":"viewport-still-stable"}],
+  "compare":{"profile":"relative-transition-diff","from":"before-double-tap","to":"after-double-tap","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

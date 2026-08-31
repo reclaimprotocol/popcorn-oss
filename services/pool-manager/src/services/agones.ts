@@ -4,6 +4,8 @@ import { RuntimeConfig } from "../config";
 import { K8s } from "./k8s";
 import { buildK8sFetchRequest, getK8sClusterServer } from "./k8s-fetch";
 import { retry } from "./retry";
+import type { LiveViewE2eRequest } from "../liveview-e2e";
+import { E2E_BINDING_SECRET_HASH_ANNOTATION, E2E_CLIENT_PUBLIC_KEY_ANNOTATION, E2E_VERSION_ANNOTATION } from "../liveview-e2e";
 
 const kc = new KubeConfig();
 const EXTRA_ROUTE_PORTS = readExtraRoutePorts(process.env.POOL_MANAGER_SESSION_EXTENSION_ROUTE_PORTS);
@@ -55,7 +57,7 @@ async function agonesFetch(path: string, opts: any = {}) {
 }
 
 export const Agones = {
-    async allocate(namespace: string = RuntimeConfig.gameServerNamespace, fleetName: string = RuntimeConfig.gameServerFleet, sessionId?: string): Promise<AllocationResponse> {
+    async allocate(namespace: string = RuntimeConfig.gameServerNamespace, fleetName: string = RuntimeConfig.gameServerFleet, sessionId?: string, liveViewE2e?: LiveViewE2eRequest): Promise<AllocationResponse> {
         console.log(`🎮 Requesting allocation via K8s API [${fleetName}]...`);
 
         try {
@@ -78,7 +80,16 @@ export const Agones = {
                         "popcorn.dev/session-id": sessionId
                     },
                     annotations: {
-                        "popcorn.dev/session-id": sessionId
+                        "popcorn.dev/session-id": sessionId,
+                        ...(liveViewE2e ? {
+                            [E2E_VERSION_ANNOTATION]: String(liveViewE2e.version),
+                            ...(liveViewE2e.clientPublicKey ? {
+                                [E2E_CLIENT_PUBLIC_KEY_ANNOTATION]: liveViewE2e.clientPublicKey,
+                            } : {}),
+                            ...(liveViewE2e.bindingSecretHash ? {
+                                [E2E_BINDING_SECRET_HASH_ANNOTATION]: liveViewE2e.bindingSecretHash,
+                            } : {}),
+                        } : {}),
                     }
                 };
                 console.log(`📝 Adding session metadata to allocation:`, JSON.stringify(body.spec.metadata));

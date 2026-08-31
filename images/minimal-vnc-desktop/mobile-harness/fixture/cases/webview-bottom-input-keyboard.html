@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Bottom input, keyboard occlusion</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { font: 15px/1.4 system-ui, sans-serif; background: #f8fafc; color: #0f172a;
+      display: flex; flex-direction: column; }
+    #fill { flex: 1 1 auto; background: linear-gradient(#e2e8f0, #cbd5e1); }
+    /* Everything the harness must see lives in ONE fixed bottom bar. A browser
+       scrolls the visual viewport when the keyboard opens, so a marker at the top
+       of the page would leave the framebuffer entirely; pinned to the bottom it
+       stays visible whether the platform shrinks the visual or the layout
+       viewport. */
+    #bar { position: fixed; left: 0; right: 0; bottom: 0; padding: 8px; background: #0f172a; }
+    #phases { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 8px; }
+    #phases div { height: 44px; border-radius: 8px; background: #1e293b; }
+    #ready.on   { background: #00c8ff; }  /* page ready */
+    #reflow.on  { background: #ffd400; }  /* the LAYOUT viewport changed: the page reflowed */
+    #visible.on { background: #00ff6a; }  /* the tapped field is still fully visible */
+    /* The tap target: a unique colour the harness can resolve from the
+       framebuffer, wrapped tight around the field a user reaches for last. */
+    #wrap { padding: 8px; border-radius: 10px; background: #6a007a; }
+    #field { width: 100%; height: 50px; font-size: 17px; border: 3px solid #fff;
+      border-radius: 7px; padding: 0 10px; }
+  </style>
+</head>
+<body>
+  <div id="fill"></div>
+  <div id="bar">
+    <div id="phases"><div id="ready"></div><div id="reflow"></div><div id="visible"></div></div>
+    <div id="wrap"><input id="field" type="text" placeholder="tap to type" autocomplete="off"></div>
+  </div>
+  <script>
+    const phases = {
+      ready: document.querySelector('#ready'),
+      reflow: document.querySelector('#reflow'),
+      visible: document.querySelector('#visible'),
+    };
+    const field = document.querySelector('#field');
+    const vv = window.visualViewport;
+    const layoutHeightAtRest = window.innerHeight;
+    let focused = false;
+
+    // What the user can actually see, whichever way the platform reports the
+    // keyboard: a browser shrinks the VISUAL viewport, an adjustResize WebView
+    // shrinks the LAYOUT viewport instead.
+    const visibleBottom = () => (vv ? vv.offsetTop + vv.height : window.innerHeight);
+
+    function evaluate() {
+      // The adjustResize signature, and nothing else: the LAYOUT viewport lost
+      // about a keyboard's worth of height while the VISUAL viewport did not
+      // scroll. Any innerHeight change is too loose a test - a browser
+      // collapsing its URL bar trips that too, which lit this marker on Chrome
+      // as well and made it say nothing.
+      const layoutLost = layoutHeightAtRest - window.innerHeight;
+      const visualScrolled = vv ? vv.offsetTop > 4 : false;
+      if (layoutLost > 100 && !visualScrolled) phases.reflow.classList.add('on');
+      if (!focused) return;
+      const rect = field.getBoundingClientRect();
+      // LATCH, and allow a few pixels of slack. Both matter for a framebuffer
+      // marker: the visual viewport lands on fractional offsets and drifts by
+      // under a pixel as the keyboard animates, so a toggle flickers between
+      // polls and the harness never sees the same marker twice in a row
+      // (observed: max pixels 38560, but never two consecutive matches).
+      // Latched, the marker means "the field became fully visible while the
+      // keyboard was up", which is the actual expectation.
+      const occluded = rect.bottom - visibleBottom() > 4;
+      if (!occluded) phases.visible.classList.add('on');
+    }
+
+    field.addEventListener('focus', () => { focused = true; evaluate(); });
+    field.addEventListener('blur', () => { focused = false; phases.visible.classList.remove('on'); });
+    addEventListener('resize', evaluate);
+    addEventListener('scroll', evaluate, { passive: true });
+    if (vv) { vv.addEventListener('resize', evaluate); vv.addEventListener('scroll', evaluate); }
+    setInterval(evaluate, 300);
+    requestAnimationFrame(() => phases.ready.classList.add('on'));
+  </script>
+</body>
+</html>

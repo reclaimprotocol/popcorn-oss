@@ -7,6 +7,7 @@ export interface SessionUrlInput {
     restrictedToken: string;
     automationToken?: string | null;
     internalToken: string;
+    includeE2e?: boolean;
 }
 
 function normalizedBaseUrl(baseUrl: string): URL {
@@ -32,14 +33,21 @@ export function websocketBaseUrl(baseUrl: string): string {
 export function buildSessionUrls(input: SessionUrlInput): Record<string, string> {
     const baseUrl = normalizedBaseUrl(input.baseUrl).href.replace(/\/+$/, "");
     const wsBase = websocketBaseUrl(baseUrl);
+    const liveViewQuery = input.includeE2e ? `${LIVEVIEW_QUERY}&encryption=e2e` : LIVEVIEW_QUERY;
     return {
-        url: `${baseUrl}/liveview/${input.sessionId}/${input.restrictedToken}/liveview.html?${LIVEVIEW_QUERY}`,
+        url: `${baseUrl}/liveview/${input.sessionId}/${input.restrictedToken}/liveview.html?${liveViewQuery}`,
         cdpUrl: input.automationToken
             ? `${wsBase}/cdp-agent/${input.sessionId}/${input.automationToken}/`
             : `${wsBase}/cdp/${input.sessionId}/${input.restrictedToken}/`,
         cdpInternalUrl: `${wsBase}/cdp-internal/${input.sessionId}/${input.internalToken}/`,
         apiUrl: `${baseUrl}/api/${input.sessionId}/${input.internalToken}/`,
-        vncUrl: `${baseUrl}/liveview/${input.sessionId}/${input.restrictedToken}/liveview.html?${LIVEVIEW_QUERY}`,
+        vncUrl: `${baseUrl}/liveview/${input.sessionId}/${input.restrictedToken}/liveview.html?${liveViewQuery}`,
+        // Compatibility-only noVNC aliases. They are not part of the E2EE
+        // protocol and a trusted viewer must use the explicit E2EE endpoints.
         vncWsUrl: `${wsBase}/liveview-ws/${input.sessionId}/${input.restrictedToken}`,
+        ...(input.includeE2e ? {
+            e2eRfbUrl: `${wsBase}/liveview-e2e-rfb/${input.sessionId}/${input.restrictedToken}`,
+            e2eControlUrl: `${wsBase}/liveview-e2e-control/${input.sessionId}/${input.restrictedToken}`,
+        } : {}),
     };
 }

@@ -27,7 +27,7 @@ const { PopcornHost } = makeHostWindow();
 // The full set a device test tunes, in the order the forwarder emits them.
 const SEARCH = '?viewer=https%3A%2F%2Fpod.test&nest=1&magnify=1&quality=9&compression=9' +
   '&resize=scale&fill=1&fbcap=411x732&smooth=1&password=p&path=%2Fws&reconnect=0' +
-  '&reconnect_delay=900&stateless=1&mirror=1&diag=1&e2e=1';
+  '&reconnect_delay=900&stateless=1&mirror=1&diag=1&e2e=1&encryption=e2e';
 
 test('every viewer-facing parameter in the URL is forwarded', () => {
   const pass = PopcornHost.forwardParams(SEARCH);
@@ -36,7 +36,7 @@ test('every viewer-facing parameter in the URL is forwarded', () => {
     ['magnify', '1'], ['quality', '9'], ['compression', '9'], ['resize', 'scale'],
     ['fill', '1'], ['fbcap', '411x732'], ['smooth', '1'], ['password', 'p'],
     ['reconnect', '0'], ['reconnect_delay', '900'], ['stateless', '1'],
-    ['mirror', '1'], ['diag', '1'], ['e2e', '1'],
+    ['mirror', '1'], ['diag', '1'], ['e2e', '1'], ['encryption', 'e2e'],
   ]) {
     assert.equal(got.get(k), v, k + ' survived');
   }
@@ -130,4 +130,28 @@ test('the bare-iframe control page forwards the same set', () => {
     'test-min.html forwards via the shared list');
   assert.ok(!/var PASSTHROUGH = \[/.test(MINIMAL), 'and keeps no private copy');
   assert.ok(/PopcornHost\.layer\(/.test(MINIMAL), 'and applies the layout contract in code');
+});
+
+// The e2e enrollment (session key, pod public key, binding secret) rides in the
+// FRAGMENT so it never reaches the gateway — which also means forwardParams cannot
+// see it. An embedder that forwards only the query hands the viewer
+// ?encryption=e2e with nothing to open the channel with, so every hop must pass
+// the fragment down too.
+test('the e2e bootstrap fragment survives a hop', () => {
+  assert.equal(
+    PopcornHost.forwardFragment('#popcorn-e2e=eyJzZXNzaW9uSWQiOiJzMSJ9'),
+    '#popcorn-e2e=eyJzZXNzaW9uSWQiOiJzMSJ9',
+  );
+});
+
+test('encryption itself is a viewer parameter, so the query half rides along', () => {
+  assert.ok(PopcornHost.forwardParams('?encryption=e2e').includes('encryption=e2e'));
+});
+
+// Anything else in the fragment belongs to the embedding page (a scroll anchor, a
+// router path) and must not be pasted onto the viewer URL.
+test('an unrelated fragment is not forwarded', () => {
+  assert.equal(PopcornHost.forwardFragment('#section-2'), '');
+  assert.equal(PopcornHost.forwardFragment('#popcorn-e2e=not valid base64url'), '');
+  assert.equal(PopcornHost.forwardFragment(''), '');
 });

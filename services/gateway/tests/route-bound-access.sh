@@ -63,18 +63,29 @@ test "$liveview_status" = "200"
 liveview_ws_url="http://127.0.0.1:$host_port/liveview-ws/$session_id/$token"
 liveview_ws_status=$(curl -sS -o /dev/null -w '%{http_code}' "$liveview_ws_url")
 test "$liveview_ws_status" = "200"
+e2e_rfb_url="http://127.0.0.1:$host_port/liveview-e2e-rfb/$session_id/$token"
+e2e_rfb_status=$(curl -sS -o /dev/null -w '%{http_code}' "$e2e_rfb_url")
+test "$e2e_rfb_status" = "200"
+e2e_control_url="http://127.0.0.1:$host_port/liveview-e2e-control/$session_id/$token"
+e2e_control_status=$(curl -sS -o /dev/null -w '%{http_code}' "$e2e_control_url")
+test "$e2e_control_status" = "200"
 api_url="http://127.0.0.1:$host_port/api/$session_id/$internal_token/reclaim/prove"
 api_status=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$api_url")
 test "$api_status" = "200"
 
 past_deadline=$(bun -e 'console.log(Date.now() - 1)')
 docker exec "$redis" redis-cli set "auth:route-bound:$session_id" "$past_deadline" PX 60000 >/dev/null
+# OpenResty's cached time is refreshed at event-loop boundaries. Give the
+# worker one tick before asserting an immediately-past millisecond deadline.
+sleep 1
 expired_status=$(curl -sS -o /dev/null -w '%{http_code}' "$url")
 test "$expired_status" = "403"
+expired_e2e_status=$(curl -sS -o /dev/null -w '%{http_code}' "$e2e_rfb_url")
+test "$expired_e2e_status" = "403"
 
 extended_deadline=$(bun -e 'console.log(Date.now() + 120000)')
 docker exec "$redis" redis-cli set "auth:route-bound:$session_id" "$extended_deadline" PX 120000 >/dev/null
 extended_status=$(curl -sS -o /dev/null -w '%{http_code}' "$url")
 test "$extended_status" = "200"
 
-echo "route-bound gateway access: active=$active_status liveview=$liveview_status liveview_ws=$liveview_ws_status api=$api_status expired=$expired_status extended_same_url=$extended_status"
+echo "route-bound gateway access: active=$active_status liveview=$liveview_status liveview_ws=$liveview_ws_status e2e_rfb=$e2e_rfb_status e2e_control=$e2e_control_status api=$api_status expired=$expired_status expired_e2e=$expired_e2e_status extended_same_url=$extended_status"

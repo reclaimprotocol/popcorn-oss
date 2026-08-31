@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "native-time-picker",
+  "testDescription": "A time input must open the iOS wheel picker in Safari and LiveView, preserve its constraints, and commit 11:16 to the remote page.",
+  "testPage": "cases/native-time-picker.html",
+  "baseline": { "fixturePath": "cases/native-time-picker.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-picker", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "open-time-picker", "color": "#dcfce7", "tolerance": 8 },
+    { "type": "wait", "ms": 800 },
+    { "type": "screenshot", "name": "picker-open" },
+    { "type": "tapNativeElement", "name": "switch-to-text-entry", "android": {"resourceId": "android:id/toggle_mode"}, "platforms": ["Android"], "settleMs": 500 },
+    { "type": "typeText", "name": "choose-hour-11", "text": "11", "platforms": ["Android"], "settleMs": 400 },
+    { "type": "tapNativeElement", "name": "set-hour-wheel", "ios": {"pickerValue": "11", "wheelIndex": 1}, "platforms": ["iOS"], "settleMs": 300 },
+    { "type": "typeText", "name": "choose-minute-16", "text": "16", "platforms": ["Android"], "settleMs": 400 },
+    { "type": "tapNativeElement", "name": "set-minute-wheel", "ios": {"pickerValue": "16", "wheelIndex": 2}, "platforms": ["iOS"], "settleMs": 300 },
+    { "type": "tapNativeElement", "name": "confirm-time", "android": {"resourceId": "android:id/button1"}, "ios": {"label": "Done"}, "settleMs": 400 },
+    { "type": "waitForColor", "name": "time-selected", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-selection", "syncWith": "time-selected" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

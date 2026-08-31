@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "native-select-picker",
+  "testDescription": "Opening a native select control, choosing a different option, and dismissing the picker must update the visible selection.",
+  "testPage": "cases/native-select-picker.html",
+  "baseline": { "fixturePath": "cases/native-select-picker.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-picker", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "open-select", "color": "#fef3c7", "tolerance": 8 },
+    { "type": "wait", "ms": 900 },
+    { "type": "screenshot", "name": "picker-open" },
+    { "type": "tapNativeElement", "name": "choose-business-option", "android": {"text": "Business"}, "ios": {"pickerValue": "Business"}, "settleMs": 400 },
+    { "type": "waitForColor", "name": "business-selected", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-selection", "syncWith": "business-selected" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

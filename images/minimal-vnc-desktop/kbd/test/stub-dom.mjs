@@ -100,6 +100,17 @@ export function findProxy() {
   return null;
 }
 
+// The Android SECURE surface (<input type=password>) the core swaps in for
+// password/OTP/card fields. It carries an extra class precisely so findProxy()
+// above keeps returning the default (EditContext) surface.
+export function findSecureProxy() {
+  for (let i = createdElements.length - 1; i >= 0; i--) {
+    const cls = createdElements[i].className || '';
+    if (cls.indexOf('mobile-proxy-secure') !== -1) return createdElements[i];
+  }
+  return null;
+}
+
 // ---- synthetic events ------------------------------------------------------
 // Build an event object and invoke every recorded listener for `type` on `el`.
 // Returns the event so tests can assert on defaultPrevented.
@@ -296,6 +307,10 @@ const PROFILES = {
   },
   'android-input': { // Android WITHOUT EditContext → hidden-<input> value-diff path
     ua: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/120 Mobile',
+    maxTouchPoints: 5, coarse: true, editContext: false,
+  },
+  'firefox-android': { // Gecko on Android — reports the keyboard unlike any Blink
+    ua: 'Mozilla/5.0 (Android 14; Mobile; rv:154.0) Gecko/154.0 Firefox/154.0',
     maxTouchPoints: 5, coarse: true, editContext: false,
   },
   'android-ec': { // Android WITH EditContext → EC path

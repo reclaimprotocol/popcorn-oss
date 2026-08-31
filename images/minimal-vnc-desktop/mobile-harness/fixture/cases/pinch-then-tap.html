@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=3,viewport-fit=cover">
+  <title>Pinch zoom integrity</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; overflow: hidden; }
+    body { margin: 0; background: #f5f3ff; color: #2e1065; font-family: system-ui, sans-serif; }
+    header { padding: 18px; background: #2e1065; color: white; font-weight: 900; }
+    main { padding: 18px 16px; text-align: center; }
+    .ready { height: 42px; display: grid; grid-template-columns: 42px 1fr 42px; align-items: center; padding: 0 8px; border-radius: 12px; background: #2b005f; color: white; font-weight: 900; }
+    .sentinel { width: 30px; height: 30px; border: 4px solid #111827; border-radius: 8px; }
+    .sentinel-left { background: #ff2d55; }
+    .sentinel-right { justify-self: end; background: #00cfff; }
+    .viewport { height: 500px; margin-top: 14px; overflow: hidden; border: 5px solid #5b21b6; border-radius: 22px; background: #ddd6fe; touch-action: none; }
+    .stage { position: relative; width: 100%; height: 100%; background: #8b5cf6; transform-origin: center; transform: scale(var(--fixture-scale, 1)); }
+    .grid { position: absolute; inset: 0; background: linear-gradient(#ffffff35 2px, transparent 2px), linear-gradient(90deg, #ffffff35 2px, transparent 2px); background-size: 54px 54px; }
+    .zoom-marker { position: absolute; left: 50%; top: 50%; width: 70px; height: 70px; transform: translate(-50%, -50%); border: 5px solid #052e16; border-radius: 50%; background: #00d084; pointer-events: none; }
+    .target { position: absolute; left: 50%; top: calc(50% - 112px); width: 118px; height: 62px; transform: translate(-50%, -50%); border: 5px solid #082f49; border-radius: 16px; background: #007aff; color: white; font-weight: 950; }
+    .done .target { background: #b5ff00; color: #052e16; }
+    .hint { position: absolute; left: 50%; top: calc(50% + 62px); transform: translateX(-50%); width: 250px; padding: 9px; border-radius: 10px; background: white; font-weight: 900; }
+  </style>
+</head>
+<body>
+  <header>PINCH ZOOM, THEN TAP</header>
+  <main>
+    <div class="ready"><span class="sentinel sentinel-left"></span><span>OUTSIDE ZOOM AREA</span><span class="sentinel sentinel-right"></span></div>
+    <div class="viewport" id="viewport">
+      <div class="stage" id="stage">
+        <div class="grid"></div>
+        <div class="zoom-marker" aria-hidden="true"></div>
+        <button class="target" id="target">TAP AFTER ZOOM</button>
+        <div class="hint">PINCH OUT AROUND THE GREEN MARKER</div>
+      </div>
+    </div>
+  </main>
+  <script>
+    const viewport = document.querySelector('#viewport');
+    const stage = document.querySelector('#stage');
+    const target = document.querySelector('#target');
+    let initialDistance = 0;
+    const distance = (touches) => Math.hypot(
+      touches[0].clientX - touches[1].clientX,
+      touches[0].clientY - touches[1].clientY,
+    );
+    viewport.addEventListener('touchstart', (event) => {
+      if (event.touches.length === 2) initialDistance = distance(event.touches);
+    }, { passive: true });
+    viewport.addEventListener('touchmove', (event) => {
+      if (event.touches.length !== 2 || !initialDistance) return;
+      stage.style.setProperty('--fixture-scale', Math.min(2, Math.max(1, distance(event.touches) / initialDistance)).toFixed(3));
+    }, { passive: true });
+    target.addEventListener('click', () => document.body.classList.add('done'));
+  </script>
+</body>
+</html>

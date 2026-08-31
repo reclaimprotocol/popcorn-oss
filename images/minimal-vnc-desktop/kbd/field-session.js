@@ -21,11 +21,22 @@ import { fieldRejectsSpace } from './ime-hints.js';
 import { dismissDelay, linkLatency, noteTapConfirm } from './latency.js';
 import { formatRects } from './diag-geometry.js';
 
+// Did the reported editable geometry actually move? Report-to-report identity is the
+// common case, and only a real change invalidates a tap's hit-test verdict.
+function rectsMoved(prev, next) {
+  if (prev.length !== next.length) return true;
+  for (let i = 0; i < next.length; i++) {
+    const a = prev[i], b = next[i];
+    if (a.x !== b.x || a.y !== b.y || a.w !== b.w || a.h !== b.h) return true;
+  }
+  return false;
+}
+
 export function createFieldSession({
-  tap, fit, input, echo,
+  tap, fit, input, echo, sendCompatClick,
   mirrorOn, seedProxyMirror,
   clearEcho, reconcileEcho, sendSpecialKey,
-  applyProxyImeHints, zoomToField, applyLift, currentVisibleBottom,
+  applyFieldSurface, zoomToField, applyLift, currentVisibleBottom,
   focusProxyDesktop, blurProxyDesktop,
   mirrorBarShown, showMirrorBar,
   raiseKeyboard, dismissKeyboard,
@@ -42,6 +53,9 @@ export function createFieldSession({
   // kbd/tap.js and the xf note in extensions/proxy/content.js.
   let currentXFrames = [];
   let lastNonEmptyRectsAt = 0;   // when we last got a populated rect set (flap stickiness)
+  // Bumped whenever the rect GEOMETRY changes, so a tap verdict can tell whether it was
+  // judged against the layout that is still on screen (see tap.js lastTapWasMiss).
+  let rectsGen = 0;
   let rectsTruncated = false;    // rects[] was capped by the extension merge (background.js)
   // Some remote frame reported that it HAS editable fields but cannot place them
   // yet — a cross-origin frame still waiting to be positioned by its parent (see
@@ -237,6 +251,9 @@ export function createFieldSession({
     remoteFocusKey = null;
     echo.setAllowed(false);
     sensitiveField = false;
+    // Back to the default surface with the field identity: a stale password
+    // surface would cost the next prose field its glide typing and prediction bar.
+    if (applyFieldSurface) applyFieldSurface(false);
     remoteValue = ''; mirrorNeedsSeed = false;
     spaceRepairKey = null; spaceRepairs = 0;
     clearEcho();
@@ -281,13 +298,21 @@ export function createFieldSession({
       // rectsTruncated is set ONLY where currentInputRects is, so it always describes the list actually in
       // use — during a transient flap we keep the old rects, and must keep their flag too.
       if (state.rects.length > 0) {
+        if (rectsMoved(currentInputRects, state.rects)) rectsGen++;
         currentInputRects = state.rects;
         rectsTruncated = !!state.rtrunc; // capped list → a tap matching nothing proves nothing
         lastNonEmptyRectsAt = nowMs();
       } else if (nowMs() - lastNonEmptyRectsAt >= RECTS_STICKY_MS) {
+        if (currentInputRects.length) rectsGen++;
         currentInputRects = state.rects; // sustained empty → accept the clear
         rectsTruncated = false;
       } // else: keep the last non-empty rects through the transient flap
+    }
+    // A tap the browser never turned into a click (see nc in extensions/proxy/content.js):
+    // replay it as a real mouse click so click-activated controls work.
+    if (state.nc && sendCompatClick && isFinite(state.nc.x) && isFinite(state.nc.y)) {
+      dbg('compat click replay at ' + Math.round(state.nc.x) + ',' + Math.round(state.nc.y));
+      sendCompatClick({ x: state.nc.x, y: state.nc.y });
     }
     coverageBlind = state.blind === true;
     if (Array.isArray(state.xf)) currentXFrames = state.xf;
@@ -320,7 +345,9 @@ export function createFieldSession({
       // Local-echo bookkeeping (detectDrift has just refreshed baseline/delta):
       const sync = state.sync || {};
       echo.setAllowed(!(sync && sync.sensitive)); // never echo password/OTP/card
+      const wasSensitive = sensitiveField;
       sensitiveField = !!(sync && sync.sensitive); // gate auto-space + Indic guess
+      const secrecyChanged = sensitiveField !== wasSensitive;
       // Mirror: track the remote field's real text. A new field resets it (a
       // sensitive field publishes no val, so it stays empty and is never seeded).
       if (typeof sync.val === 'string') remoteValue = sync.val;
@@ -380,11 +407,17 @@ export function createFieldSession({
           const observed = nowMs() - tap.lastTapAt();
           if (observed > 0 && observed < 8000) noteTapConfirm(observed);
         }
-        // Reshape the proxy IME for the new field — including field-to-field
-        // tabbing while the keyboard stays up (text -> number should switch
-        // Gboard to a numeric pad).
-        applyProxyImeHints();
       }
+      // Reshape the proxy for this field: keypad/capitalisation hints, and on
+      // Android whether it needs the password surface at all (applyFieldSurface).
+      //
+      // A new field OR a secrecy change, because neither implies the other: a
+      // "show password" toggle flips type on ONE element, and pages that reuse a
+      // single focusKey change field without ever looking new (the carry-over hunt
+      // logged a constant focusKey for a whole session) — which is how a password
+      // ends up still wearing the previous field's prose keyboard. The isNewField
+      // half is what re-pads Gboard when tabbing text -> number.
+      if (isNewField || secrecyChanged) applyFieldSurface(sensitiveField);
       // Whole-page desktop-fit (novp): mirror mobile Safari — once the keyboard is
       // up on a field, zoom into it so it's readable (the field is often
       // auto-focused, so this can't gate on isNewField). Re-zooms per new field.
@@ -529,11 +562,13 @@ export function createFieldSession({
 
     // getters for the rest of the layer
     rect: () => currentRect,
+    remoteFocusKey: () => remoteFocusKey,
     hints: () => currentHints,
     viewport: () => currentViewport,
     inputRects: () => currentInputRects,
     xframes: () => currentXFrames,
     lastNonEmptyRectsAt: () => lastNonEmptyRectsAt,
+    rectsGen: () => rectsGen,
     rectsTruncated: () => rectsTruncated,
     coverageBlind: () => coverageBlind,
     remoteScrollBottom: () => remoteScrollBottom,

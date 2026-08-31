@@ -15,6 +15,7 @@
 
 import { nowMs, siblingPath } from './env.js';
 import { linkLatency } from './latency.js';
+import { viewerFetch, viewerSendBeacon } from './liveview-transport.js';
 
 function safeLS(k) { try { return localStorage.getItem(k); } catch (_) { return null; } }
 export const KBD_DEBUG = /[?&]kbddebug=1/.test(location.search) || safeLS('pcnKbdDebug') === '1';
@@ -55,10 +56,10 @@ function klogFlush() {
   try {
     const body = JSON.stringify(payload);
     // sendBeacon survives unload and needs no preflight; fetch is the fallback.
-    if (navigator.sendBeacon && body.length < 60000) {
-      navigator.sendBeacon(klogURL, new Blob([body], { type: 'application/json' }));
+    if (body.length < 60000 && viewerSendBeacon(klogURL, new Blob([body], { type: 'application/json' }))) {
+      // queued by the selected transport
     } else if (window.fetch) {
-      fetch(klogURL, { method: 'POST', body: body, keepalive: true,
+      viewerFetch(klogURL, { method: 'POST', body: body, keepalive: true,
         headers: { 'Content-Type': 'application/json' } }).catch(function () {});
     }
   } catch (_) {}

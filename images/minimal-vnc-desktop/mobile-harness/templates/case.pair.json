@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "name": "replace-with-case-name",
+  "testDescription": "One observable statement describing the expected visible behavior.",
+  "testPage": "cases/replace-with-case.html",
+  "baseline": {
+    "fixturePath": "cases/replace-with-case.html"
+  },
+  "candidate": {
+    "setupActions": []
+  },
+  "recordingStart": {
+    "name": "case-ready",
+    "color": "#00d084",
+    "timeoutMs": 30000
+  },
+  "actions": [
+    {
+      "type": "waitForColor",
+      "name": "before-state",
+      "color": "#00d084",
+      "timeoutMs": 30000
+    },
+    {
+      "type": "screenshot",
+      "name": "before",
+      "syncWith": "before-state"
+    },
+    {
+      "type": "tapRelativeToColor",
+      "name": "replace-with-native-action",
+      "color": "#ff6b00",
+      "tolerance": 8
+    },
+    {
+      "type": "waitForColor",
+      "name": "after-state",
+      "color": "#00ff6a",
+      "timeoutMs": 30000
+    },
+    {
+      "type": "screenshot",
+      "name": "after",
+      "syncWith": "after-state"
+    }
+  ],
+  "compare": {
+    "profile": "checkpoint-pixel-diff",
+    "from": "before",
+    "to": "after",
+    "pixelThreshold": 0.15,
+    "maxChangedPixelRatio": null
+  }
+}

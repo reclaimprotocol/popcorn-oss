@@ -29,12 +29,14 @@ export function createTap({
   sendTouch, sendPointerClick, collectPoints, queueMove, cancelPendingMove, flushPendingMove, touchToRemote, // touch-channel
   onMagButton, pasteFromDevice,     // controls
   onDialogSheet,                    // JS dialog sheet (kbd/dialog.js) — own UI, not the stream
+  describeNativeSelectAt,           // what the local select overlays think is at a point (diag only)
   flushLocalClipboard,              // clipboard
   raiseKeyboard, dismissKeyboard, armDismiss, parkProxyOffscreen, // core (hoisted)
   zoomToHitField,                    // immediate legacy-page field zoom (core)
   inputReady,                        // is the CDP touch channel usable right now?
   getKeyboardActive, getKeyboardJustDismissed, getEcMode,
   getRemoteFocusKey, getInputRects, getXFrames, getViewport, getLastNonEmptyRectsAt, getRectsTruncated,
+  getRectsGen,
   getCoverageBlind,
   getRemoteScrollBottom, getFocusedScrollContainer,
   getGestureID,
@@ -95,6 +97,7 @@ export function createTap({
   let lastTapAt = 0;
   let lastTapX = 0, lastTapY = 0;
   let tapSeq = 0;
+  let missGen = -1;              // rect generation the miss verdict below was judged against
   let lastTapWasMiss = false;    // last tap was a confirmed non-input (see handleTap):
                                  // suppresses the recovery-raise so an ambient focus
                                  // flap can't re-summon the keyboard onto a tap that
@@ -153,13 +156,32 @@ export function createTap({
     const n = e.touches ? e.touches.length : 1;
     if (isTouch) {
       if (n === 2) {
-        // EXACTLY two fingers = client pinch-zoom, handled locally in BOTH magnify
-        // and desktop mode (noVNC gives the base fit via scaleViewport; our CSS
-        // transform zooms on top). Cancel any remote touch the first finger began.
+        // A normal two-finger gesture belongs to the remote website whenever the
+        // native touch channel is available. The first finger may already be down;
+        // a second touchStart containing the current point set adds the new contact
+        // without converting the gesture into viewer zoom.
         cancelPendingMove();
-        if (remoteTouchActive) { sendTouch('cancel', []); remoteTouchActive = false; }
-        tapStart = null; kbdPan = null; vt.clearPan();
-        beginPinch(e);
+        // Whoever owns the presentation owns the pinch, and the remote cannot
+        // serve one here — the extension pins the page's viewport meta. Fit mode
+        // is viewer-owned by definition (it picked the layout width AND the
+        // readable zoom), so it keeps the gesture at every zoom including the
+        // floor; off fit, a zoom above the floor is the viewer's too (a tap that
+        // zoomed to a field). Anything else belongs to the remote website.
+        const viewerOwnsZoom = vt.fitMode() || vt.zoomScale() > vt.minZoom() + 0.01;
+        if (TOUCH_INPUT && inputReady() && !viewerOwnsZoom) {
+          vt.clearGesture();
+          sendTouch('start', collectPoints(e));
+          remoteTouchActive = true;
+          tapStart = null; kbdPan = null;
+        } else {
+          // Viewer-owned zoom, or the offline/non-native fallback: handle the
+          // pinch locally. Cancel a partial remote stream before taking it over.
+          dbg('pinch local (' + (viewerOwnsZoom ? 'viewer owns zoom' : 'no native touch') +
+              ') z=' + vt.zoomScale().toFixed(2) + '/' + vt.minZoom().toFixed(2));
+          if (remoteTouchActive) { sendTouch('cancel', []); remoteTouchActive = false; }
+          tapStart = null; kbdPan = null; vt.clearPan();
+          beginPinch(e);
+        }
         e.stopPropagation();
         if (e.cancelable) e.preventDefault();
         return;
@@ -556,6 +578,9 @@ export function createTap({
     // The rect list was capped, so the field under this tap may simply not be in it.
     // 'unknown' keeps the optimistic path (no dismiss); a real miss still needs a full list.
     if (getRectsTruncated && getRectsTruncated()) return 'unknown';
+    // A real nav zeroes lastNonEmptyRectsAt, so a zero while we still hold rects means
+    // they belong to the previous document — a miss against them proves nothing.
+    if (getLastNonEmptyRectsAt() === 0) return 'unknown';
     return 'miss';
   }
 
@@ -577,6 +602,7 @@ export function createTap({
     // recovery. 'unknown' (no coverage — cross-origin/shadow field) must still
     // allow recovery, so it counts as not-a-miss.
     lastTapWasMiss = (hit === 'miss');
+    missGen = getRectsGen ? getRectsGen() : 0;
     const m = screenToRemote(x, y);
     const vp = getViewport();
     const canvas = m && m.cr;
@@ -589,6 +615,7 @@ export function createTap({
       ' z=' + vt.zoomScale().toFixed(2) + '/' + vt.minZoom().toFixed(2) +
       ' pan=' + formatPoint(vt.panX(), vt.panY()) +
       ' kinset=' + Math.round(vt.kbdPanInset()) +
+      ' nsel=' + (describeNativeSelectAt ? describeNativeSelectAt(x, y) : '-') +
       ' rects=' + formatRects(getInputRects()) +
       (hitRect ? ' matched=' + formatRects([hitRect]) : ''));
     if (hit === 'hit') {
@@ -740,7 +767,9 @@ export function createTap({
     // applySignal's recovery window + latency learn; raiseKeyboard's proxy spot
     lastTapAt: () => lastTapAt,
     diagnosticTag: () => tapSeq ? ('tap#' + tapSeq + '/+' + Math.round(nowMs() - lastTapAt) + 'ms') : 'tap#-',
-    lastTapWasMiss: () => lastTapWasMiss,
+    // A miss expires once the geometry it judged moves: a page that relaid out after the tap
+    // (a login error banner shifting the fields) must not keep blocking the recovery raise.
+    lastTapWasMiss: () => lastTapWasMiss && (!getRectsGen || getRectsGen() === missGen),
     lastTapXY: () => ({ x: lastTapX, y: lastTapY }),
     clearLastTap() { lastTapAt = 0; }, // deliberate dismiss must beat a late confirm
   };

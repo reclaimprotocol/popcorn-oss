@@ -556,7 +556,7 @@ test('a touch gesture always delivers its terminal event', async ({ cdp, page })
   }
 });
 
-test('a field in a cross-origin iframe is positioned in TOP coordinates', async ({ cdp }) => {
+test('a field in a cross-origin iframe is positioned in TOP coordinates', async ({ cdp, page }) => {
   const parent = await cdp.newPage(`http://${HOSTGW}:8099/`);
   const viewer = await Viewer.open();
   try {
@@ -595,7 +595,11 @@ test('a field in a cross-origin iframe is positioned in TOP coordinates', async 
   } finally {
     viewer.close();
     await cdp.send('Target.closeTarget', { targetId: parent.targetId }).catch(() => {});
-    await sleep(500);
+    // Closing the foreground cross-origin test tab does not reliably emit a
+    // focus transition for the shared page. Restore it explicitly so the next
+    // extension descriptor is attributed to the active tab rather than timing
+    // out against a stale background-worker tab id.
+    await focusPage(cdp, page);
   }
 });
 
@@ -646,6 +650,222 @@ test('the select picker refuses options a native control forbids', async ({ cdp,
   }
 });
 
+test('native select descriptors and choices round-trip through the extension', async ({ cdp, page }) => {
+  await focusPage(cdp, page);
+  const viewer = await Viewer.open();
+  try {
+    viewer.clear();
+    await cdp.eval(page.sessionId, `(function(){
+      var old = document.getElementById('native-proxy-select'); if (old) old.remove();
+      var s = document.createElement('select'); s.id = 'native-proxy-select';
+      s.setAttribute('aria-label', 'Account type');
+      s.style.cssText = 'position:absolute;left:44px;top:96px;width:240px;height:58px';
+      s.innerHTML = '<option>Personal</option><option>Business</option><option disabled>Blocked</option>';
+      window.__selectEvents = [];
+      s.addEventListener('input', function(){ window.__selectEvents.push('input:' + s.selectedIndex); });
+      s.addEventListener('change', function(){ window.__selectEvents.push('change:' + s.selectedIndex); });
+      document.body.appendChild(s); return 1;
+    })()`);
+    const state = await viewer.waitFor((f) => f.editable === false && Array.isArray(f.selects) &&
+      f.selects.some((s) => s.a === 'Account type'), 12000, 'a native select descriptor');
+    const descriptor = state.selects.find((s) => s.a === 'Account type');
+    assert(descriptor.k && descriptor.r && descriptor.o.length === 3,
+      `bad descriptor: ${JSON.stringify(descriptor)}`);
+    assertEq(descriptor.s, 0, 'initial selected index');
+    assertEq(descriptor.o[1].t, 'Business', 'option label');
+    assertEq(descriptor.o[2].d, true, 'disabled option metadata');
+
+    // A static page sends no mutation/scroll/focus report after this descriptor.
+    // The offered local picker must still be committable after the frame-cache
+    // freshness window, because the background continues to advertise it.
+    await sleep(6500);
+    viewer.send({ selectChoice: { key: descriptor.k, index: 1 } });
+    const deadline = Date.now() + 8000;
+    let result;
+    do {
+      result = JSON.parse(await cdp.eval(page.sessionId,
+        `JSON.stringify({index:document.getElementById('native-proxy-select').selectedIndex,events:window.__selectEvents})`));
+      if (result.index === 1 && result.events.length >= 2) break;
+      await sleep(100);
+    } while (Date.now() < deadline);
+    assertEq(result.index, 1, 'viewer choice reached the remote select');
+    assertEq(result.events.join(','), 'input:1,change:1', 'native input/change semantics');
+
+    viewer.send({ selectChoice: { key: descriptor.k, index: 2 } });
+    await sleep(500);
+    assertEq(await cdp.eval(page.sessionId, `document.getElementById('native-proxy-select').selectedIndex`), 1,
+      'disabled option is rejected at commit time');
+  } finally {
+    viewer.close();
+    await cdp.eval(page.sessionId, `(function(){var s=document.getElementById('native-proxy-select');if(s)s.remove();})()`).catch(() => {});
+    await sleep(300);
+  }
+});
+
+test('a 195-option country select stays native and commits its final option', async ({ cdp, page }) => {
+  await focusPage(cdp, page);
+  const viewer = await Viewer.open();
+  try {
+    viewer.clear();
+    await cdp.eval(page.sessionId, `(function(){
+      var old = document.getElementById('native-country-select'); if (old) old.remove();
+      var s = document.createElement('select'); s.id = 'native-country-select';
+      s.setAttribute('aria-label', 'Country');
+      s.style.cssText = 'position:absolute;left:44px;top:180px;width:300px;height:58px';
+      for (var i = 0; i < 195; i++) {
+        var o = document.createElement('option');
+        o.textContent = i === 194 ? 'Zimbabwe' : 'Country ' + String(i + 1).padStart(3, '0');
+        s.appendChild(o);
+      }
+      window.__countrySelectEvents = [];
+      s.addEventListener('input', function(){ window.__countrySelectEvents.push('input:' + s.selectedIndex); });
+      s.addEventListener('change', function(){ window.__countrySelectEvents.push('change:' + s.selectedIndex); });
+      document.body.appendChild(s); return s.options.length;
+    })()`);
+    const state = await viewer.waitFor((f) => f.editable === false && Array.isArray(f.selects) &&
+      f.selects.some((s) => s.a === 'Country' && s.o.length === 195), 12000, 'a 195-option native select descriptor');
+    const descriptor = state.selects.find((s) => s.a === 'Country');
+    assertEq(descriptor.o.length, 195, 'all country options cross the /kbd channel');
+    assertEq(descriptor.o[194].t, 'Zimbabwe', 'the final country is not truncated');
+    assert(new TextEncoder().encode(JSON.stringify(state)).length < 24000,
+      'country descriptor must stay inside the merged wire budget');
+
+    viewer.send({ selectChoice: { key: descriptor.k, index: 194 } });
+    const deadline = Date.now() + 8000;
+    let result;
+    do {
+      result = JSON.parse(await cdp.eval(page.sessionId,
+        `JSON.stringify({index:document.getElementById('native-country-select').selectedIndex,events:window.__countrySelectEvents})`));
+      if (result.index === 194 && result.events.length >= 2) break;
+      await sleep(100);
+    } while (Date.now() < deadline);
+    assertEq(result.index, 194, 'last country choice reached the remote select');
+    assertEq(result.events.join(','), 'input:194,change:194', 'long native select input/change semantics');
+  } finally {
+    viewer.close();
+    await cdp.eval(page.sessionId,
+      `(function(){var s=document.getElementById('native-country-select');if(s)s.remove();})()`).catch(() => {});
+    await sleep(300);
+  }
+});
+
+test('native date descriptor and value round-trip through the extension', async ({ cdp, page }) => {
+  await focusPage(cdp, page);
+  const viewer = await Viewer.open();
+  try {
+    viewer.clear();
+    await cdp.eval(page.sessionId, `(function(){
+      var old = document.getElementById('native-date-input'); if (old) old.remove();
+      var input = document.createElement('input'); input.id = 'native-date-input'; input.type = 'date';
+      input.value = '2026-08-21'; input.min = '2026-08-01'; input.max = '2026-08-31'; input.step = '1';
+      input.setAttribute('aria-label', 'Travel date');
+      input.style.cssText = 'position:absolute;left:44px;top:260px;width:300px;height:58px';
+      window.__dateEvents = [];
+      input.addEventListener('input', function(){ window.__dateEvents.push('input:' + input.value); });
+      input.addEventListener('change', function(){ window.__dateEvents.push('change:' + input.value); });
+      document.body.appendChild(input); return 1;
+    })()`);
+    const state = await viewer.waitFor((f) => f.editable === false && Array.isArray(f.pickers) &&
+      f.pickers.some((p) => p.a === 'Travel date'), 12000, 'a native date descriptor');
+    const descriptor = state.pickers.find((p) => p.a === 'Travel date');
+    assertEq(descriptor.t, 'date', 'picker type');
+    assertEq(descriptor.v, '2026-08-21', 'initial date');
+    assertEq(descriptor.min, '2026-08-01', 'minimum date');
+    assertEq(descriptor.max, '2026-08-31', 'maximum date');
+
+    viewer.send({ pickerChoice: { key: descriptor.k, value: '2026-08-22' } });
+    const deadline = Date.now() + 8000;
+    let result;
+    do {
+      result = JSON.parse(await cdp.eval(page.sessionId,
+        `JSON.stringify({value:document.getElementById('native-date-input').value,events:window.__dateEvents})`));
+      if (result.value === '2026-08-22' && result.events.length >= 2) break;
+      await sleep(100);
+    } while (Date.now() < deadline);
+    assertEq(result.value, '2026-08-22', 'viewer date reached the remote input');
+    assertEq(result.events.join(','),
+      'input:2026-08-22,change:2026-08-22', 'native date input/change semantics');
+
+    viewer.send({ pickerChoice: { key: descriptor.k, value: '2026-09-01' } });
+    await sleep(500);
+    assertEq(await cdp.eval(page.sessionId, `document.getElementById('native-date-input').value`), '2026-08-22',
+      'out-of-range date is rejected at commit time');
+  } finally {
+    viewer.close();
+    await cdp.eval(page.sessionId,
+      `(function(){var input=document.getElementById('native-date-input');if(input)input.remove();})()`).catch(() => {});
+    await sleep(300);
+  }
+});
+
+test('remaining native temporal descriptors and values round-trip through the extension', async ({ cdp, page }) => {
+  await focusPage(cdp, page);
+  const viewer = await Viewer.open();
+  const specs = [
+    { type: 'time', label: 'Meeting time', initial: '10:15', min: '09:00', max: '17:00', next: '11:30', bad: '18:00' },
+    { type: 'datetime-local', label: 'Local appointment', initial: '2026-08-23T10:15', min: '2026-08-20T09:00', max: '2026-08-30T17:00', next: '2026-08-24T11:30', bad: '2026-09-01T10:00' },
+    { type: 'month', label: 'Billing month', initial: '2026-08', min: '2026-01', max: '2026-12', next: '2026-09', bad: '2027-01' },
+    { type: 'week', label: 'Delivery week', initial: '2026-W34', min: '2026-W30', max: '2026-W39', next: '2026-W35', bad: '2026-W40' },
+  ];
+  try {
+    viewer.clear();
+    await cdp.eval(page.sessionId, `(function(){
+      document.querySelectorAll('[data-native-temporal-test]').forEach(function(el){ el.remove(); });
+      window.__temporalEvents = {};
+      var specs = ${JSON.stringify(specs)};
+      specs.forEach(function(s, i){
+        var input = document.createElement('input');
+        input.dataset.nativeTemporalTest = '1'; input.id = 'native-temporal-' + i; input.type = s.type;
+        input.value = s.initial; input.min = s.min; input.max = s.max; input.step = '1'; input.required = true;
+        input.setAttribute('aria-label', s.label);
+        input.style.cssText = 'position:absolute;left:44px;top:' + (180 + i * 72) + 'px;width:300px;height:58px';
+        window.__temporalEvents[s.type] = [];
+        input.addEventListener('input', function(){ window.__temporalEvents[s.type].push('input:' + input.value); });
+        input.addEventListener('change', function(){ window.__temporalEvents[s.type].push('change:' + input.value); });
+        document.body.appendChild(input);
+      });
+      return 1;
+    })()`);
+    const state = await viewer.waitFor((f) => f.editable === false && Array.isArray(f.pickers) &&
+      specs.every((s) => f.pickers.some((p) => p.a === s.label)), 12000, 'all temporal picker descriptors');
+    for (const spec of specs) {
+      const descriptor = state.pickers.find((p) => p.a === spec.label);
+      assertEq(descriptor.t, spec.type, `${spec.type} picker type`);
+      assertEq(descriptor.v, spec.initial, `${spec.type} initial value`);
+      assertEq(descriptor.min, spec.min, `${spec.type} minimum`);
+      assertEq(descriptor.max, spec.max, `${spec.type} maximum`);
+      assertEq(descriptor.req, true, `${spec.type} required flag`);
+
+      viewer.send({ pickerChoice: { key: descriptor.k, value: spec.next } });
+      const deadline = Date.now() + 8000;
+      let result;
+      do {
+        result = JSON.parse(await cdp.eval(page.sessionId, `(function(){
+          var input = Array.from(document.querySelectorAll('[data-native-temporal-test]')).find(function(el){ return el.type === ${JSON.stringify(spec.type)}; });
+          return JSON.stringify({value:input && input.value,events:window.__temporalEvents[${JSON.stringify(spec.type)}]});
+        })()`));
+        if (result.value === spec.next && result.events.length >= 2) break;
+        await sleep(100);
+      } while (Date.now() < deadline);
+      assertEq(result.value, spec.next, `${spec.type} choice reached the remote input`);
+      assertEq(result.events.join(','), `input:${spec.next},change:${spec.next}`, `${spec.type} input/change semantics`);
+
+      viewer.send({ pickerChoice: { key: descriptor.k, value: spec.bad } });
+      await sleep(300);
+      const valueAfterBad = await cdp.eval(page.sessionId, `(function(){
+        var input = Array.from(document.querySelectorAll('[data-native-temporal-test]')).find(function(el){ return el.type === ${JSON.stringify(spec.type)}; });
+        return input && input.value;
+      })()`);
+      assertEq(valueAfterBad, spec.next, `${spec.type} out-of-range value is rejected`);
+    }
+  } finally {
+    viewer.close();
+    await cdp.eval(page.sessionId,
+      `(function(){document.querySelectorAll('[data-native-temporal-test]').forEach(function(el){el.remove();});})()`).catch(() => {});
+    await sleep(300);
+  }
+});
+
 // ---------------------------------------------------------------------------
 const PARENT_HTML = `<!doctype html><title>parent</title>
 <body style="margin:0"><h1>parent</h1>
@@ -679,6 +899,17 @@ async function main() {
 
     for (const t of tests) {
       if (ONLY && !t.name.includes(ONLY)) { skipped++; continue; }
+      // The preceding dialog/popup/cross-origin cases deliberately create,
+      // activate, and destroy several page targets. Chromium can keep the
+      // original shared document `hasFocus()`-true while its extension frame
+      // cache still belongs to a destroyed foreground target. Native-control
+      // tests need a clean document identity, not state leaked from those window
+      // lifecycle tests, so establish the isolation boundary once here.
+      if (t.name === 'native select descriptors and choices round-trip through the extension') {
+        await cdp.send('Target.closeTarget', { targetId: page.targetId }).catch(() => {});
+        page = await cdp.newPage(`http://${HOSTGW}:8099/`);
+        await focusPage(cdp, page);
+      }
       const started = Date.now();
       try {
         await t.fn({ cdp, page });

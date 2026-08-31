@@ -28,16 +28,11 @@ import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
 import { buildSessionAllocationEvent, buildSessionAnalyticsMetadata, normalizeViewerRttSummary } from './src/session-analytics';
 import {
-  getActiveSessionCount,
-  getSessionsByRegion,
-  getSessionAllocationStats,
-  getSessionRttStats,
+  getActiveSessionStats,
+  getAnalyticsTimeSeries,
+  getSessionDimensions,
+  getSessionOverviewStats,
   getSessionRttStatsByRegion,
-  getSessionTimeSeries,
-  getSessionWindowStats,
-  getViewerRttTimeSeries,
-  getStaleActiveSessionCount,
-  getTopClients,
 } from './src/stats';
 import { expiresAtFromTtlSeconds, extendExpiresAt, readOptionalSeconds, validateTtlSeconds } from './src/ttl';
 import { X402PaymentGateway } from './src/x402-payment';
@@ -47,6 +42,7 @@ import { X402Store } from './src/x402-store';
 import { selectTrustedClientAddress } from './src/x402-utils';
 import { readBoundedJsonBody } from './src/http-body';
 import { readCountryProxy } from './src/proxy-country';
+import { createLiveViewE2eEnrollment, readLiveViewE2eRequest, readLiveViewEncryption, withLiveViewE2eBootstrapFragment } from './src/liveview-e2e';
 import {
   renderClientSessionsPanelHtml,
   renderAnalyticsViewHtml,
@@ -488,6 +484,16 @@ async function routeSession(
   const expiresAt = ttlSeconds ? expiresAtFromTtlSeconds(ttlSeconds) : undefined;
   const proxy = readCountryProxy(body);
   if ('error' in proxy) return { status: 400, body: { error: proxy.error } };
+  const encryption = readLiveViewEncryption(body?.liveViewEncryption);
+  if (encryption.error) return { status: 400, body: { error: encryption.error } };
+  if (encryption.enabled && body?.liveViewE2e !== undefined) {
+    return { status: 400, body: { error: 'Use liveViewEncryption or liveViewE2e, not both' } };
+  }
+  const enrollment = encryption.enabled ? createLiveViewE2eEnrollment() : undefined;
+  const liveViewE2e = enrollment
+    ? { value: enrollment.request }
+    : readLiveViewE2eRequest(body?.liveViewE2e);
+  if (liveViewE2e.error) return { status: 400, body: { error: liveViewE2e.error } };
 
   const selection = selectRegions(ControlPlaneConfig.regions, body?.regions, identity.allowedClusters);
   if (selection.error) {
@@ -515,6 +521,7 @@ async function routeSession(
       clientId: identity.clientId,
       clientName: identity.clientName,
       expiresAt,
+      ...(liveViewE2e.value ? { liveViewE2e: liveViewE2e.value } : {}),
       ...(proxy.value ? { proxy: proxy.value } : {}),
     }, ControlPlaneConfig.serviceAuthToken);
     attempts.push(result.attempt);
@@ -539,6 +546,13 @@ async function routeSession(
         region.name,
         {
           ...(expiresAt ? { expiresAt } : {}),
+          ...(liveViewE2e.value && result.session.liveViewE2e ? { liveViewE2e: {
+            version: result.session.liveViewE2e.version,
+            ...(liveViewE2e.value.clientPublicKey ? { clientPublicKey: liveViewE2e.value.clientPublicKey } : {}),
+            ...(liveViewE2e.value.bindingSecretHash ? { bindingSecretHash: liveViewE2e.value.bindingSecretHash } : {}),
+            podPublicKey: result.session.liveViewE2e.podPublicKey,
+            podUid: result.session.liveViewE2e.podUid,
+          } } : {}),
           ...analyticsMetadata,
         },
       );
@@ -551,7 +565,31 @@ async function routeSession(
         attempts,
         region: region.name,
       })));
-      return { status: 200, body: { ...result.session, attempts } };
+      const responseSession = {
+        ...result.session,
+        ...(enrollment && result.session.liveViewE2e ? {
+          liveViewE2e: {
+            ...result.session.liveViewE2e,
+            bindingSecret: enrollment.bindingSecret,
+          },
+        } : {}),
+        attempts,
+      };
+      if (enrollment && responseSession.liveViewE2e) {
+        responseSession.url = withLiveViewE2eBootstrapFragment(
+          responseSession.url,
+          sessionId,
+          enrollment.sessionKey,
+          responseSession.liveViewE2e,
+        );
+        responseSession.vncUrl = withLiveViewE2eBootstrapFragment(
+          responseSession.vncUrl,
+          sessionId,
+          enrollment.sessionKey,
+          responseSession.liveViewE2e,
+        );
+      }
+      return { status: 200, body: responseSession };
     } catch (error) {
       await deleteRegionalSession(region, sessionId, ControlPlaneConfig.serviceAuthToken).catch(() => null);
       console.error('❌ Error recording routed session:', error);
@@ -732,13 +770,94 @@ function normalizeWindowHours(raw: string | number | undefined): number {
 }
 
 // Pick a trend-chart bucket count so longer ranges keep useful granularity
-// without over-crowding the x-axis (getSessionTimeSeries caps at 48).
+// without over-crowding the x-axis (getAnalyticsTimeSeries caps at 48).
 function bucketsForWindow(windowHours: number): number {
   if (windowHours <= 24) return 12;   // 1h→5m, 6h→30m, 24h→2h
   if (windowHours <= 72) return 12;   // 2d→4h, 3d→6h
   if (windowHours <= 168) return 14;  // 7d→12h
   if (windowHours <= 336) return 14;  // 14d→1d
   return 15;                          // 30d→2d
+}
+
+type HistoricalSessionAnalytics = {
+  overview: Awaited<ReturnType<typeof getSessionOverviewStats>>;
+  rttByRegion: Awaited<ReturnType<typeof getSessionRttStatsByRegion>>;
+  timeSeries: Awaited<ReturnType<typeof getAnalyticsTimeSeries>>;
+  dimensions: Awaited<ReturnType<typeof getSessionDimensions>>;
+};
+
+type HistoricalSessionAnalyticsCacheEntry = {
+  value?: HistoricalSessionAnalytics;
+  expiresAt: number;
+  inFlight?: Promise<HistoricalSessionAnalytics>;
+};
+
+const HISTORICAL_ANALYTICS_CACHE_MAX_ENTRIES = 16;
+const historicalAnalyticsCache = new Map<number, HistoricalSessionAnalyticsCacheEntry>();
+
+function historicalAnalyticsTtlMs(windowHours: number) {
+  if (windowHours >= 168) return 60_000;
+  if (windowHours >= 24) return 30_000;
+  return 15_000;
+}
+
+async function loadHistoricalSessionAnalytics(windowHours: number): Promise<HistoricalSessionAnalytics> {
+  // Keep the two most expensive percentile phases separate to bound peak
+  // memory on PostgreSQL. Queries inside each phase reuse covering indexes.
+  const [overview, rttByRegion] = await Promise.all([
+    getSessionOverviewStats(windowHours),
+    getSessionRttStatsByRegion(windowHours),
+  ]);
+  const [timeSeries, dimensions] = await Promise.all([
+    getAnalyticsTimeSeries(windowHours, bucketsForWindow(windowHours)),
+    getSessionDimensions(windowHours),
+  ]);
+  return { overview, rttByRegion, timeSeries, dimensions };
+}
+
+function startHistoricalAnalyticsRefresh(
+  windowHours: number,
+  entry: HistoricalSessionAnalyticsCacheEntry,
+): Promise<HistoricalSessionAnalytics> {
+  const inFlight = loadHistoricalSessionAnalytics(windowHours)
+    .then((value) => {
+      historicalAnalyticsCache.delete(windowHours);
+      historicalAnalyticsCache.set(windowHours, {
+        value,
+        expiresAt: Date.now() + historicalAnalyticsTtlMs(windowHours),
+      });
+      while (historicalAnalyticsCache.size > HISTORICAL_ANALYTICS_CACHE_MAX_ENTRIES) {
+        const oldestKey = historicalAnalyticsCache.keys().next().value;
+        if (oldestKey === undefined) break;
+        historicalAnalyticsCache.delete(oldestKey);
+      }
+      return value;
+    })
+    .catch((error) => {
+      if (entry.value) {
+        entry.inFlight = undefined;
+        historicalAnalyticsCache.set(windowHours, entry);
+      } else {
+        historicalAnalyticsCache.delete(windowHours);
+      }
+      throw error;
+    });
+  entry.inFlight = inFlight;
+  historicalAnalyticsCache.set(windowHours, entry);
+  return inFlight;
+}
+
+async function getHistoricalSessionAnalytics(windowHours: number): Promise<HistoricalSessionAnalytics> {
+  const entry = historicalAnalyticsCache.get(windowHours) ?? { expiresAt: 0 };
+  if (entry.value && entry.expiresAt > Date.now()) return entry.value;
+  if (entry.value) {
+    if (!entry.inFlight) {
+      void startHistoricalAnalyticsRefresh(windowHours, entry)
+        .catch((error) => console.error('Failed to refresh historical analytics cache:', error));
+    }
+    return entry.value;
+  }
+  return entry.inFlight ?? startHistoricalAnalyticsRefresh(windowHours, entry);
 }
 
 // Combines live Agones gauges (via pool managers) with cumulative Postgres
@@ -760,19 +879,24 @@ async function buildX402AnalyticsPayload(windowHours: number): Promise<X402Analy
 }
 
 async function buildStatsPayload(windowHours: number): Promise<AnalyticsData> {
-  const [regions, windowStats, allocationStats, rttStats, rttByRegion, rttSeries, activeSessions, staleActiveSessions, series, regionSessions, topClients] = await Promise.all([
+  // Live fleet state remains uncached. Historical aggregates use a short,
+  // bounded stale-while-refresh cache so manual refreshes do not repeatedly
+  // sort the same 30-day percentile data.
+  const [regions, historical, activeSessionStats] = await Promise.all([
     loadAdminRegions(),
-    getSessionWindowStats(windowHours),
-    getSessionAllocationStats(windowHours),
-    getSessionRttStats(windowHours),
-    getSessionRttStatsByRegion(windowHours),
-    getViewerRttTimeSeries(windowHours, bucketsForWindow(windowHours)),
-    getActiveSessionCount(),
-    getStaleActiveSessionCount(),
-    getSessionTimeSeries(windowHours, bucketsForWindow(windowHours)),
-    getSessionsByRegion(windowHours),
-    getTopClients(windowHours),
+    getHistoricalSessionAnalytics(windowHours),
+    getActiveSessionStats(),
   ]);
+  const { overview, rttByRegion, timeSeries, dimensions } = historical;
+  const windowStats = overview.window;
+  const allocationStats = overview.allocation;
+  const rttStats = overview.viewerRtt;
+  const series = timeSeries.sessions;
+  const rttSeries = timeSeries.viewerRtt;
+  const activeSessions = activeSessionStats.active;
+  const staleActiveSessions = activeSessionStats.stale;
+  const regionSessions = dimensions.byRegion;
+  const topClients = dimensions.topClients;
 
   const enabledRegions = regions.filter((region) => region.enabled);
   const servers = enabledRegions.flatMap((region) => region.servers || []);
@@ -927,7 +1051,9 @@ app.use('/v1/x402/*', async (c, next) => {
 
 app.post('/v1/x402/sessions', async (c) => {
   if (!X402_CONTROLLER) return c.json({ error: 'x402 sessions are not enabled' }, 404);
-  const parsed = await readX402JsonBody(c, 64);
+  // An optional LiveView E2EE request carries a 43-character X25519 public
+  // key. Keep this intentionally small while allowing that fixed payload.
+  const parsed = await readX402JsonBody(c, 256);
   if (parsed.error) return parsed.error;
   const result = await X402_CONTROLLER.create({
     idempotencyKey: c.req.header('Idempotency-Key'),
@@ -1271,15 +1397,17 @@ app.post('/admin/ui/sessions', async (c) => {
   const form = await c.req.formData();
   const region = String(form.get('region') || '').trim();
   const sessionId = String(form.get('sessionId') || '').trim();
+  const liveViewEncryption = String(form.get('liveViewEncryption') || '').trim();
   const result = await routeSession({ clientId: ADMIN_CLIENT_ID, clientName: ADMIN_CLIENT_NAME, allowedClusters: null }, {
     regions: region ? [region] : undefined,
     sessionId: sessionId || undefined,
+    liveViewEncryption: liveViewEncryption || undefined,
   });
   const notice: ActionNotice = result.status >= 200 && result.status < 300
     ? {
       tone: 'success',
       title: 'Pod created',
-      message: `Created ${result.body.sessionId} in ${result.body.region}.`,
+      message: `Created ${result.body.sessionId} in ${result.body.region}${liveViewEncryption === 'e2e' ? ' with end-to-end encrypted LiveView' : ''}.`,
       href: result.body.url,
     }
     : {

@@ -35,33 +35,53 @@ function toNumber(value: unknown): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-// Cumulative session stats for the given window.
-// - Duration/outcome metrics are keyed off `ended_at` (sessions that ended in the window).
-// - `created` is keyed off `created_at` (inflow / demand in the window).
-export async function getSessionWindowStats(windowHours = 1): Promise<SessionWindowStats> {
-  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
+export interface SessionOverviewStats {
+  window: SessionWindowStats;
+  allocation: SessionAllocationStats;
+  viewerRtt: ViewerRttStats;
+}
 
+// Scan sessions ending in the window once for lifecycle metrics and sessions
+// created in the window once for demand, allocation, and viewer RTT metrics.
+// Previously those created rows were read three separate times.
+export async function getSessionOverviewStats(windowHours = 1): Promise<SessionOverviewStats> {
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
   const rows = (await db.execute(sql`
-    WITH ended AS (
-      SELECT status,
-             EXTRACT(EPOCH FROM (ended_at - created_at)) AS dur
+    WITH ended_agg AS (
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'deleted') AS deleted,
+        COUNT(*) FILTER (WHERE status = 'expired') AS expired,
+        COUNT(*) AS ended,
+        COALESCE(AVG(EXTRACT(EPOCH FROM (ended_at - created_at))), 0) AS avg_duration_s,
+        COALESCE(SUM(EXTRACT(EPOCH FROM (ended_at - created_at))), 0) AS total_duration_s,
+        COALESCE(percentile_cont(0.5) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (ended_at - created_at))), 0) AS p50_duration_s,
+        COALESCE(percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (ended_at - created_at))), 0) AS p95_duration_s
       FROM sessions
       WHERE ended_at IS NOT NULL
         AND ended_at >= NOW() - make_interval(hours => ${hours})
     ),
-    ended_agg AS (
-      SELECT
-        COUNT(*) FILTER (WHERE status = 'deleted')                       AS deleted,
-        COUNT(*) FILTER (WHERE status = 'expired')                       AS expired,
-        COUNT(*)                                                         AS ended,
-        COALESCE(AVG(dur), 0)                                            AS avg_duration_s,
-        COALESCE(SUM(dur), 0)                                            AS total_duration_s,
-        COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY dur), 0)    AS p50_duration_s,
-        COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY dur), 0)   AS p95_duration_s
-      FROM ended
-    ),
     created_agg AS (
-      SELECT COUNT(*) AS created
+      SELECT
+        COUNT(*) AS created,
+        COUNT(allocation_latency_ms) AS allocation_measured_sessions,
+        COALESCE(AVG(allocation_latency_ms), 0) AS avg_latency_ms,
+        COALESCE(percentile_cont(0.5) WITHIN GROUP (
+          ORDER BY allocation_latency_ms
+        ) FILTER (WHERE allocation_latency_ms IS NOT NULL), 0) AS p50_latency_ms,
+        COALESCE(percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY allocation_latency_ms
+        ) FILTER (WHERE allocation_latency_ms IS NOT NULL), 0) AS p95_latency_ms,
+        COUNT(viewer_rtt_avg_ms) AS rtt_measured_sessions,
+        COALESCE(SUM(viewer_rtt_sample_count), 0) AS rtt_total_samples,
+        COALESCE(AVG(viewer_rtt_avg_ms), 0) AS avg_rtt_ms,
+        COALESCE(percentile_cont(0.5) WITHIN GROUP (
+          ORDER BY viewer_rtt_p50_ms
+        ) FILTER (WHERE viewer_rtt_p50_ms IS NOT NULL), 0) AS p50_rtt_ms,
+        COALESCE(percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY viewer_rtt_p95_ms
+        ) FILTER (WHERE viewer_rtt_p95_ms IS NOT NULL), 0) AS p95_rtt_ms
       FROM sessions
       WHERE created_at >= NOW() - make_interval(hours => ${hours})
     )
@@ -70,79 +90,30 @@ export async function getSessionWindowStats(windowHours = 1): Promise<SessionWin
 
   const row = rows[0] ?? {};
   return {
-    windowHours: hours,
-    created: toNumber(row.created),
-    deleted: toNumber(row.deleted),
-    expired: toNumber(row.expired),
-    ended: toNumber(row.ended),
-    avgDurationSeconds: toNumber(row.avg_duration_s),
-    p50DurationSeconds: toNumber(row.p50_duration_s),
-    p95DurationSeconds: toNumber(row.p95_duration_s),
-    totalDurationSeconds: toNumber(row.total_duration_s),
-  };
-}
-
-// Allocation latency is stored in session metadata so this remains backwards
-// compatible with existing rows. measuredSessions makes partial rollout
-// coverage explicit instead of silently mixing measured and unmeasured data.
-export async function getSessionAllocationStats(windowHours = 1): Promise<SessionAllocationStats> {
-  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
-  const rows = (await db.execute(sql`
-    WITH measured AS (
-      SELECT (metadata->>'allocationLatencyMs')::double precision AS latency_ms
-      FROM sessions
-      WHERE created_at >= NOW() - make_interval(hours => ${hours})
-        AND jsonb_typeof(metadata->'allocationLatencyMs') = 'number'
-    )
-    SELECT
-      COUNT(*) AS measured_sessions,
-      COALESCE(AVG(latency_ms), 0) AS avg_latency_ms,
-      COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms), 0) AS p50_latency_ms,
-      COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms), 0) AS p95_latency_ms
-    FROM measured
-  `)) as unknown as Array<Record<string, unknown>>;
-
-  const row = rows[0] ?? {};
-  return {
-    measuredSessions: toNumber(row.measured_sessions),
-    avgLatencyMs: toNumber(row.avg_latency_ms),
-    p50LatencyMs: toNumber(row.p50_latency_ms),
-    p95LatencyMs: toNumber(row.p95_latency_ms),
-  };
-}
-
-// Viewer-measured tunnel RTT (metadata.viewerRtt). Each session contributes its
-// own avg/p50/p95, so fleet percentiles are over sessions, not raw samples — a
-// single chatty session cannot dominate the fleet picture.
-export async function getSessionRttStats(windowHours = 1): Promise<ViewerRttStats> {
-  const hours = Number.isFinite(windowHours) && windowHours > 0 ? Math.min(168, windowHours) : 1;
-  const rows = (await db.execute(sql`
-    WITH measured AS (
-      SELECT (metadata->'viewerRtt'->>'avgMs')::double precision AS avg_ms,
-             (metadata->'viewerRtt'->>'p50Ms')::double precision AS p50_ms,
-             (metadata->'viewerRtt'->>'p95Ms')::double precision AS p95_ms,
-             COALESCE((metadata->'viewerRtt'->>'sampleCount')::double precision, 0) AS samples
-      FROM sessions
-      WHERE created_at >= NOW() - make_interval(hours => ${hours})
-        AND jsonb_typeof(metadata->'viewerRtt') = 'object'
-        AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
-    )
-    SELECT
-      COUNT(*) AS measured_sessions,
-      COALESCE(SUM(samples), 0) AS total_samples,
-      COALESCE(AVG(avg_ms), 0) AS avg_rtt_ms,
-      COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY p50_ms), 0) AS p50_rtt_ms,
-      COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY p95_ms), 0) AS p95_rtt_ms
-    FROM measured
-  `)) as unknown as Array<Record<string, unknown>>;
-
-  const row = rows[0] ?? {};
-  return {
-    measuredSessions: toNumber(row.measured_sessions),
-    totalSamples: toNumber(row.total_samples),
-    avgRttMs: toNumber(row.avg_rtt_ms),
-    p50RttMs: toNumber(row.p50_rtt_ms),
-    p95RttMs: toNumber(row.p95_rtt_ms),
+    window: {
+      windowHours: hours,
+      created: toNumber(row.created),
+      deleted: toNumber(row.deleted),
+      expired: toNumber(row.expired),
+      ended: toNumber(row.ended),
+      avgDurationSeconds: toNumber(row.avg_duration_s),
+      p50DurationSeconds: toNumber(row.p50_duration_s),
+      p95DurationSeconds: toNumber(row.p95_duration_s),
+      totalDurationSeconds: toNumber(row.total_duration_s),
+    },
+    allocation: {
+      measuredSessions: toNumber(row.allocation_measured_sessions),
+      avgLatencyMs: toNumber(row.avg_latency_ms),
+      p50LatencyMs: toNumber(row.p50_latency_ms),
+      p95LatencyMs: toNumber(row.p95_latency_ms),
+    },
+    viewerRtt: {
+      measuredSessions: toNumber(row.rtt_measured_sessions),
+      totalSamples: toNumber(row.rtt_total_samples),
+      avgRttMs: toNumber(row.avg_rtt_ms),
+      p50RttMs: toNumber(row.p50_rtt_ms),
+      p95RttMs: toNumber(row.p95_rtt_ms),
+    },
   };
 }
 
@@ -157,17 +128,16 @@ export interface RegionViewerRttStat {
 // Session-level viewer RTT grouped by region; percentiles are over the sessions
 // within each region, so regions stay comparable regardless of traffic volume.
 export async function getSessionRttStatsByRegion(windowHours = 1): Promise<RegionViewerRttStat[]> {
-  const hours = Number.isFinite(windowHours) && windowHours > 0 ? Math.min(168, windowHours) : 1;
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
   const rows = (await db.execute(sql`
-    WITH measured AS (
+    WITH measured AS MATERIALIZED (
       SELECT COALESCE(region, 'unknown') AS key,
-             (metadata->'viewerRtt'->>'avgMs')::double precision AS avg_ms,
-             (metadata->'viewerRtt'->>'p50Ms')::double precision AS p50_ms,
-             (metadata->'viewerRtt'->>'p95Ms')::double precision AS p95_ms
+             viewer_rtt_avg_ms AS avg_ms,
+             viewer_rtt_p50_ms AS p50_ms,
+             viewer_rtt_p95_ms AS p95_ms
       FROM sessions
       WHERE created_at >= NOW() - make_interval(hours => ${hours})
-        AND jsonb_typeof(metadata->'viewerRtt') = 'object'
-        AND jsonb_typeof(metadata->'viewerRtt'->'avgMs') = 'number'
+        AND viewer_rtt_avg_ms IS NOT NULL
     )
     SELECT
       key,
@@ -198,70 +168,6 @@ export interface SessionTimeBucket {
   avgDurationSeconds: number;
 }
 
-// Time-bucketed session activity across the window, for trend charts.
-// Buckets are generated so empty intervals appear as zeros (no gaps).
-// `ended`/`deleted`/`expired`/duration are keyed off ended_at; `created` off created_at.
-export async function getSessionTimeSeries(windowHours = 1, buckets = 12): Promise<SessionTimeBucket[]> {
-  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
-  const n = Number.isFinite(buckets) && buckets > 0 ? Math.min(48, Math.floor(buckets)) : 12;
-  const bucketSeconds = Math.max(1, Math.round((hours * 3600) / n));
-
-  const rows = (await db.execute(sql`
-    WITH params AS (
-      SELECT NOW() - make_interval(hours => ${hours}) AS window_start,
-             NOW() AS window_end
-    ),
-    grid AS (
-      SELECT gs AS bucket_start
-      FROM params,
-           generate_series(
-             (SELECT window_start FROM params),
-             (SELECT window_end FROM params) - make_interval(secs => ${bucketSeconds}),
-             make_interval(secs => ${bucketSeconds})
-           ) AS gs
-    ),
-    ended AS (
-      SELECT g.bucket_start,
-             COUNT(s.session_id) FILTER (WHERE s.status = 'deleted')          AS deleted,
-             COUNT(s.session_id) FILTER (WHERE s.status = 'expired')          AS expired,
-             COUNT(s.session_id)                                              AS ended,
-             COALESCE(AVG(EXTRACT(EPOCH FROM (s.ended_at - s.created_at))), 0) AS avg_duration_s
-      FROM grid g
-      LEFT JOIN sessions s
-        ON s.ended_at IS NOT NULL
-       AND s.ended_at >= g.bucket_start
-       AND s.ended_at < g.bucket_start + make_interval(secs => ${bucketSeconds})
-      GROUP BY g.bucket_start
-    ),
-    created AS (
-      SELECT g.bucket_start,
-             COUNT(s.session_id) AS created
-      FROM grid g
-      LEFT JOIN sessions s
-        ON s.created_at >= g.bucket_start
-       AND s.created_at < g.bucket_start + make_interval(secs => ${bucketSeconds})
-      GROUP BY g.bucket_start
-    )
-    SELECT e.bucket_start AS bucket_start,
-           e.deleted, e.expired, e.ended, e.avg_duration_s,
-           c.created
-    FROM ended e
-    JOIN created c USING (bucket_start)
-    ORDER BY e.bucket_start
-  `)) as unknown as Array<Record<string, unknown>>;
-
-  return rows.map((row) => ({
-    bucketStart: row.bucket_start instanceof Date
-      ? row.bucket_start.toISOString()
-      : String(row.bucket_start),
-    created: toNumber(row.created),
-    deleted: toNumber(row.deleted),
-    expired: toNumber(row.expired),
-    ended: toNumber(row.ended),
-    avgDurationSeconds: toNumber(row.avg_duration_s),
-  }));
-}
-
 export interface ViewerRttSeriesPoint {
   bucketStart: string;
   measuredSessions: number;
@@ -269,52 +175,102 @@ export interface ViewerRttSeriesPoint {
   p95RttMs: number;
 }
 
-// Viewer RTT over time. Summaries are written at teardown, so each session
-// lands in the bucket its ended_at falls into (like the duration trend).
-export async function getViewerRttTimeSeries(windowHours = 1, buckets = 12): Promise<ViewerRttSeriesPoint[]> {
-  const hours = Number.isFinite(windowHours) && windowHours > 0 ? Math.min(168, windowHours) : 1;
+export interface AnalyticsTimeSeries {
+  sessions: SessionTimeBucket[];
+  viewerRtt: ViewerRttSeriesPoint[];
+}
+
+// Bucket lifecycle and RTT trends together. date_bin assigns each row to one
+// interval after a single range scan; the prior grid join repeatedly
+// materialized the same RTT rows for every bucket and spilled hundreds of MB.
+export async function getAnalyticsTimeSeries(windowHours = 1, buckets = 12): Promise<AnalyticsTimeSeries> {
+  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
   const n = Number.isFinite(buckets) && buckets > 0 ? Math.min(48, Math.floor(buckets)) : 12;
   const bucketSeconds = Math.max(1, Math.round((hours * 3600) / n));
 
   const rows = (await db.execute(sql`
     WITH params AS (
       SELECT NOW() - make_interval(hours => ${hours}) AS window_start,
-             NOW() AS window_end
+             NOW() AS window_end,
+             make_interval(secs => ${bucketSeconds}) AS bucket_width
     ),
     grid AS (
       SELECT gs AS bucket_start
       FROM params,
-           generate_series(
-             (SELECT window_start FROM params),
-             (SELECT window_end FROM params) - make_interval(secs => ${bucketSeconds}),
-             make_interval(secs => ${bucketSeconds})
-           ) AS gs
+           generate_series(window_start, window_end - bucket_width, bucket_width) AS gs
+    ),
+    ended_rows AS MATERIALIZED (
+      SELECT date_bin(p.bucket_width, s.ended_at, p.window_start) AS bucket_start,
+             s.status,
+             EXTRACT(EPOCH FROM (s.ended_at - s.created_at)) AS duration_s,
+             s.viewer_rtt_p50_ms AS rtt_p50_ms,
+             s.viewer_rtt_p95_ms AS rtt_p95_ms,
+             s.viewer_rtt_avg_ms AS rtt_measured
+      FROM sessions s
+      CROSS JOIN params p
+      WHERE s.ended_at >= p.window_start
+        AND s.ended_at < p.window_end
+    ),
+    ended AS (
+      SELECT bucket_start,
+             COUNT(*) FILTER (WHERE status = 'deleted') AS deleted,
+             COUNT(*) FILTER (WHERE status = 'expired') AS expired,
+             COUNT(*) AS ended,
+             AVG(duration_s) AS avg_duration_s,
+             COUNT(rtt_measured) AS measured_sessions,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY rtt_p50_ms)
+               FILTER (WHERE rtt_p50_ms IS NOT NULL) AS p50_rtt_ms,
+             percentile_cont(0.95) WITHIN GROUP (ORDER BY rtt_p95_ms)
+               FILTER (WHERE rtt_p95_ms IS NOT NULL) AS p95_rtt_ms
+      FROM ended_rows
+      GROUP BY bucket_start
+    ),
+    created AS (
+      SELECT date_bin(p.bucket_width, s.created_at, p.window_start) AS bucket_start,
+             COUNT(*) AS created
+      FROM sessions s
+      CROSS JOIN params p
+      WHERE s.created_at >= p.window_start
+        AND s.created_at < p.window_end
+      GROUP BY 1
     )
     SELECT g.bucket_start AS bucket_start,
-           COUNT(s.session_id) AS measured_sessions,
-           COALESCE(percentile_cont(0.5) WITHIN GROUP (
-             ORDER BY (s.metadata->'viewerRtt'->>'p50Ms')::double precision), 0) AS p50_rtt_ms,
-           COALESCE(percentile_cont(0.95) WITHIN GROUP (
-             ORDER BY (s.metadata->'viewerRtt'->>'p95Ms')::double precision), 0) AS p95_rtt_ms
+           COALESCE(c.created, 0) AS created,
+           COALESCE(e.deleted, 0) AS deleted,
+           COALESCE(e.expired, 0) AS expired,
+           COALESCE(e.ended, 0) AS ended,
+           COALESCE(e.avg_duration_s, 0) AS avg_duration_s,
+           COALESCE(e.measured_sessions, 0) AS measured_sessions,
+           COALESCE(e.p50_rtt_ms, 0) AS p50_rtt_ms,
+           COALESCE(e.p95_rtt_ms, 0) AS p95_rtt_ms
     FROM grid g
-    LEFT JOIN sessions s
-      ON s.ended_at IS NOT NULL
-     AND s.ended_at >= g.bucket_start
-     AND s.ended_at < g.bucket_start + make_interval(secs => ${bucketSeconds})
-     AND jsonb_typeof(s.metadata->'viewerRtt') = 'object'
-     AND jsonb_typeof(s.metadata->'viewerRtt'->'avgMs') = 'number'
-    GROUP BY g.bucket_start
+    LEFT JOIN ended e USING (bucket_start)
+    LEFT JOIN created c USING (bucket_start)
     ORDER BY g.bucket_start
   `)) as unknown as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({
-    bucketStart: row.bucket_start instanceof Date
+  const bucketStart = (row: Record<string, unknown>) => (
+    row.bucket_start instanceof Date
       ? row.bucket_start.toISOString()
-      : String(row.bucket_start),
-    measuredSessions: toNumber(row.measured_sessions),
-    p50RttMs: toNumber(row.p50_rtt_ms),
-    p95RttMs: toNumber(row.p95_rtt_ms),
-  }));
+      : String(row.bucket_start)
+  );
+
+  return {
+    sessions: rows.map((row) => ({
+      bucketStart: bucketStart(row),
+      created: toNumber(row.created),
+      deleted: toNumber(row.deleted),
+      expired: toNumber(row.expired),
+      ended: toNumber(row.ended),
+      avgDurationSeconds: toNumber(row.avg_duration_s),
+    })),
+    viewerRtt: rows.map((row) => ({
+      bucketStart: bucketStart(row),
+      measuredSessions: toNumber(row.measured_sessions),
+      p50RttMs: toNumber(row.p50_rtt_ms),
+      p95RttMs: toNumber(row.p95_rtt_ms),
+    })),
+  };
 }
 
 export interface DimensionCount {
@@ -322,57 +278,71 @@ export interface DimensionCount {
   sessions: number;
 }
 
-// Sessions created in the window grouped by region (usage distribution).
-export async function getSessionsByRegion(windowHours = 1): Promise<DimensionCount[]> {
-  const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
-  const rows = (await db.execute(sql`
-    SELECT COALESCE(region, 'unknown') AS key, COUNT(*) AS sessions
-    FROM sessions
-    WHERE created_at >= NOW() - make_interval(hours => ${hours})
-    GROUP BY COALESCE(region, 'unknown')
-    ORDER BY sessions DESC
-  `)) as unknown as Array<Record<string, unknown>>;
-
-  return rows.map((row) => ({ key: String(row.key), sessions: toNumber(row.sessions) }));
+export interface SessionDimensions {
+  byRegion: DimensionCount[];
+  topClients: DimensionCount[];
 }
 
-// Top clients by sessions created in the window.
-export async function getTopClients(windowHours = 1, limit = 8): Promise<DimensionCount[]> {
+// Reuse one narrow materialized window for both dimension breakdowns instead
+// of scanning the sessions table once per grouping.
+export async function getSessionDimensions(windowHours = 1, limit = 8): Promise<SessionDimensions> {
   const hours = Number.isFinite(windowHours) && windowHours > 0 ? windowHours : 1;
   const cap = Number.isFinite(limit) && limit > 0 ? Math.min(50, Math.floor(limit)) : 8;
   const rows = (await db.execute(sql`
-    SELECT client_name AS key, COUNT(*) AS sessions
-    FROM sessions
-    WHERE created_at >= NOW() - make_interval(hours => ${hours})
-    GROUP BY client_name
-    ORDER BY sessions DESC
-    LIMIT ${cap}
+    WITH recent AS MATERIALIZED (
+      SELECT region, client_name
+      FROM sessions
+      WHERE created_at >= NOW() - make_interval(hours => ${hours})
+    ),
+    by_region AS (
+      SELECT COALESCE(region, 'unknown') AS key, COUNT(*) AS sessions
+      FROM recent
+      GROUP BY COALESCE(region, 'unknown')
+    ),
+    top_clients AS (
+      SELECT client_name AS key, COUNT(*) AS sessions
+      FROM recent
+      GROUP BY client_name
+      ORDER BY sessions DESC
+      LIMIT ${cap}
+    )
+    SELECT 'region' AS dimension, key, sessions FROM by_region
+    UNION ALL
+    SELECT 'client' AS dimension, key, sessions FROM top_clients
+    ORDER BY dimension, sessions DESC, key
   `)) as unknown as Array<Record<string, unknown>>;
 
-  return rows.map((row) => ({ key: String(row.key), sessions: toNumber(row.sessions) }));
+  const mapRow = (row: Record<string, unknown>) => ({
+    key: String(row.key),
+    sessions: toNumber(row.sessions),
+  });
+  return {
+    byRegion: rows.filter((row) => row.dimension === 'region').map(mapRow),
+    topClients: rows.filter((row) => row.dimension === 'client').map(mapRow),
+  };
 }
 
-// Count of sessions currently marked active (DB view of allocation).
-// Live allocation/capacity should be read from Agones; this is a cross-check.
-export async function getActiveSessionCount(): Promise<number> {
-  const rows = (await db.execute(sql`
-    SELECT COUNT(*) AS active
-    FROM sessions
-    WHERE status = 'active' AND ended_at IS NULL
-  `)) as unknown as Array<Record<string, unknown>>;
-
-  return toNumber(rows[0]?.active);
+export interface ActiveSessionStats {
+  active: number;
+  stale: number;
 }
 
-export async function getStaleActiveSessionCount(maxAgeHours = 24): Promise<number> {
+// Count active and stale sessions in one pass. Live allocation/capacity still
+// comes from Agones; these values are the database cross-check.
+export async function getActiveSessionStats(maxAgeHours = 24): Promise<ActiveSessionStats> {
   const hours = Number.isFinite(maxAgeHours) && maxAgeHours > 0 ? maxAgeHours : 24;
   const rows = (await db.execute(sql`
-    SELECT COUNT(*) AS stale
+    SELECT COUNT(*) AS active,
+           COUNT(*) FILTER (
+             WHERE created_at < NOW() - make_interval(hours => ${hours})
+           ) AS stale
     FROM sessions
     WHERE status = 'active'
       AND ended_at IS NULL
-      AND created_at < NOW() - make_interval(hours => ${hours})
   `)) as unknown as Array<Record<string, unknown>>;
 
-  return toNumber(rows[0]?.stale);
+  return {
+    active: toNumber(rows[0]?.active),
+    stale: toNumber(rows[0]?.stale),
+  };
 }

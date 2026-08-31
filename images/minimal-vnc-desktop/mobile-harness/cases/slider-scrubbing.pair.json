@@ -1,0 +1,5 @@
+{
+  "schemaVersion":1,"name":"slider-scrubbing","testDescription":"Dragging a native range thumb across the track must emit input updates and reach the target value.","testPage":"cases/slider-scrubbing.html","baseline":{"fixturePath":"cases/slider-scrubbing.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-scrub","syncWith":"ready"},{"type":"dragRelativeToColors","name":"scrub-slider","sourceColor":"#e6007a","targetColor":"#007aff","durationMs":900,"steps":18},{"type":"waitForColor","name":"slider-target-reached","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-scrub","syncWith":"slider-target-reached"}],
+  "compare":{"profile":"relative-transition-diff","from":"before-scrub","to":"after-scrub","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

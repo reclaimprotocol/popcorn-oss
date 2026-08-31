@@ -26,6 +26,7 @@ ARTIFACT_CONTEXT="${MINIMAL_VNC_ARTIFACT_CONTEXT:-$HOME/.cache/popcorn/minimal-v
 docker buildx build \
   --platform "$PLATFORM" \
   --build-context "minimal-vnc-artifacts=$ARTIFACT_CONTEXT" \
+  --build-context "trusted-liveview=$REPO_ROOT/packages/trusted-liveview" \
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
   --build-arg "UBUNTU_SNAPSHOT=$UBUNTU_SNAPSHOT" \
   ${FORTRESS_IMAGE:+--build-arg "FORTRESS_IMAGE=$FORTRESS_IMAGE"} \

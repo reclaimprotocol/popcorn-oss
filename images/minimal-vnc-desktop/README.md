@@ -164,6 +164,95 @@ Three defences, so a misconfigured embedder degrades to "no help" rather than
 `host/test-host.html?legacybridge=1` exercises the translation; add `&legacyxlate=0`
 to reproduce the original break.
 
+### adjustResize hosts: the keyboard nobody can see
+
+In an Android WebView with `softInputMode=adjustResize` — the common shape for a
+portal-in-a-host-app embed — the soft keyboard shrinks the **layout** viewport
+rather than occluding a visual one: `innerHeight` and `visualViewport.height` move
+together (measured on a university login page through a two-hop embed chain — customer
+page -> portal -> viewer: 839 -> 527 for both). Nothing is occluded, so `popcorn-host.js`
+honestly computes `occludedBottom = innerHeight - vv.height - vv.offsetTop = 0`, and the viewer logs
+`host geom occ=0 ignored`. Meanwhile the emulated remote — and so the canvas — keeps its
+pre-keyboard height (839), and the field the user just tapped (y=592) ends up behind the
+keys with nothing able to reveal it:
+
+- a transform lift cannot help, because `#screen` *is* the shrunken 527px box — translating
+  it up only exposes the background below the canvas;
+- the local layout-resize detector knows the keyboard is up (it measured the reflow) but
+  historically drew the conclusion "the layout already made room", which is only true when
+  the framebuffer shrank with it.
+
+So when the framebuffer stayed taller than the window, the viewer now **scrolls the remote**
+instead: a synthesized swipe, in a column clear of the field's own rect (a tap there would
+land a caret in a masked field), of exactly the deficit between the field's bottom and the
+visible band. The extension re-reports the moved rects, so tap hit-testing follows.
+
+A host that *can* measure should still do so — in this cell the honest number is
+`baselineInnerHeight - innerHeight` (learn the baseline while no keyboard is up, and only
+trust it when the width is unchanged, since a rotation moves both). Posting that puts the
+viewer back on its authoritative path, and the remote scroll above stays as the fallback.
+
+### The keyboard that never comes up (`rects=[]`, `rfk=0`)
+
+One log signature covers a whole class of "the keyboard doesn't work" reports: every
+tap line reads `hit=unknown kbd=0 rfk=0 ... rects=[]` with `remote=- vp=- canvas=-`,
+and there is not a single `SIG` line in the session. The taps themselves are fine —
+the remote page focuses fields exactly as it should (`Input Focused: ...` in the pod's
+own logs) — but the viewer never learns it, so it has neither a rect to hit-test
+against nor the remote's `editable:true`, and an `unknown` tap deliberately does not
+pop the keyboard. What the user sees is a login form that swallows every tap; the only
+way in is the keyboard button on the controls bar, which raises blind
+(`focusClosestInput: no target (rects=0)`).
+
+The cause is upstream of all of that: the pod-side publisher stopped publishing.
+Field state is fanned out by ONE tab at a time (see `kbdActiveTab` in
+`extensions/proxy/background.js`) and a top frame that reports window focus claims
+that role. Automation opens windows — an agent's scratch target, a `about:blank`
+popup — and a new window takes focus, so its empty top frame claimed the stream and
+the page the user was typing into became a "background tab" that is never published
+again. Its parting `editable:false, rects:[]` also wipes the rects the viewer already
+had. Measured end to end: with one tab the hub sees a steady `editable=true rects=2`;
+the moment a second window opens, one empty frame arrives and then nothing, for the
+rest of the session.
+
+So a blank/internal document can no longer take the stream — not by a focus claim, not
+by the initial seed, and not through `chrome.tabs.onActivated` (which knows only a tab
+id, and now answers the question from that tab's own last top-frame report). Such a
+window claims normally once it navigates somewhere real, so a genuine popup the user
+is looking at still works.
+
+### Controls that only activate on a click
+
+Tapping a checkbox and having nothing happen has two distinct causes, and both look
+identical on screen.
+
+A tap travels to the remote as CDP touch, and Chromium is the one that decides whether
+that touch also becomes the compatibility `mousedown/mouseup/click` sequence. For ordinary
+controls it does (verified end to end through the customer page -> portal -> viewer chain:
+one native tap on the phone produced exactly one `touchstart/touchend`, one compat click,
+and one toggle). A widget whose activation lives *only* in a `click` handler on a
+transparent overlay — the shape jQuery iCheck and friends generate — is dead in the cell
+where that synthesis does not happen, which is what was measured on a university login
+page: the `.iCheck-helper` received `pointerdown/touchstart/pointerup/touchend` and no
+click, while a real click on the same pixel toggled it fine.
+
+So the extension watches for exactly that signature — a tap (not a drag) on something
+activatable that produced no click within 250ms — and reports the point as `nc`; the viewer
+replays it as a real click on the pointer path. It cannot simply click on every tap:
+where Chromium *does* synthesize, that double-fires, and a double submit is worse than a
+dead checkbox. Two guards keep it honest: `preventDefault` on the touch (read after the
+page's own handlers have run, since the detector listens in the capture phase) means the
+page suppressed the click deliberately, and a target that looks inert is left alone.
+
+The second cause is duplication. A toggle is the one control where an extra tap is not
+harmless — two clicks return it to where it started, so a doubled tap reads as "my tap
+did nothing" while the same duplication is invisible on a text field, which just focuses
+twice. Anything that lets one gesture reach the remote twice (several viewers attached to
+one session is the easy way to arrange it) therefore shows up first on a checkbox.
+
+`mobile-harness/cases/click-activated-checkbox.pair.json` pins the behaviour natively: one
+tap, exactly one activation.
+
 ### `.on('health')` — the viewer's verdict on your integration
 
 Every failure in this chain that has cost real time degraded *silently*: the viewer

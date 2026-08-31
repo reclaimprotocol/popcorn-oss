@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Nested scrolling: inner panel</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; color: #172554; }
+    * { box-sizing: border-box; }
+    html { min-height: 100%; background: #eef2ff; }
+    body { min-height: 1020px; margin: 0; overflow-x: hidden; background: #eef2ff; }
+    header { height: 66px; padding: 12px 16px; background: #172554; color: white;
+      font-weight: 950; letter-spacing: .04em; }
+    header small { display: block; margin-top: 4px; color: #bfdbfe; font-size: 11px;
+      letter-spacing: 0; }
+    main { width: min(620px, calc(100% - 28px)); margin: 0 auto; padding: 18px 0 120px; }
+    #outer-proof { display: grid; place-items: center; width: 100%; height: 54px; margin-bottom: 16px;
+      border: 4px solid #172554; border-radius: 14px; background: #2b005f; color: white;
+      font: 950 12px/1 ui-monospace, monospace; }
+    #outer-proof.failed { background: #b91c1c; }
+    .description { margin: 0 0 14px; color: #334155; font-size: 13px; font-weight: 750; line-height: 1.4; }
+    #panel { height: 286px; overflow-y: auto; overflow-x: hidden; border: 5px solid #2563eb;
+      border-radius: 18px; background: white; box-shadow: 0 14px 35px #1e3a8a2b;
+      -webkit-overflow-scrolling: touch; touch-action: pan-y; overscroll-behavior: contain; }
+    #panel-title { position: sticky; z-index: 2; top: 0; display: flex; align-items: center;
+      justify-content: space-between; height: 44px; padding: 0 14px; background: #dbeafe;
+      color: #172554; font-size: 12px; font-weight: 950; letter-spacing: .04em; }
+    #panel-title span { color: #1d4ed8; font: 900 11px/1 ui-monospace, monospace; }
+    .row { display: flex; align-items: center; gap: 10px; height: 58px; padding: 0 14px;
+      border-bottom: 2px solid #e2e8f0; color: #334155; font-size: 14px; font-weight: 850; }
+    .row .index { display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 auto;
+      border-radius: 50%; background: #cbd5e1; color: #172554; font: 950 11px/1 ui-monospace, monospace; }
+    #target-row { min-height: 58px; background: #00d084; color: #052e16; }
+    #target-row .index { background: #052e16; color: #bbf7d0; }
+    #target-row strong { font-weight: 950; }
+    #footer { height: 230px; margin-top: 18px; padding: 18px; border: 3px solid #cbd5e1;
+      border-radius: 16px; background: white; color: #475569; font-size: 13px; font-weight: 750; }
+  </style>
+</head>
+<body>
+  <header>NESTED SCROLLING <small>SWIPE INSIDE THE BLUE PANEL TO REVEAL THE TARGET ROW</small></header>
+  <main>
+    <div id="outer-proof">OUTER PAGE STABLE</div>
+    <p class="description">The blue panel has its own scroll position. A vertical touch that starts inside it must reveal the target row while the outer page stays at its original position.</p>
+    <section id="panel" aria-label="inner scrollable list">
+      <div id="panel-title">INNER LIST <span>SWIPE HERE</span></div>
+      <div class="row"><span class="index">01</span>Visible row one</div>
+      <div class="row"><span class="index">02</span>Visible row two</div>
+      <div class="row"><span class="index">03</span>Visible row three</div>
+      <div class="row"><span class="index">04</span>Visible row four</div>
+      <div class="row"><span class="index">05</span>Scroll to continue</div>
+      <div class="row"><span class="index">06</span>Continue scrolling</div>
+      <div class="row"><span class="index">07</span>More inner content</div>
+      <div class="row"><span class="index">08</span>Almost at the end</div>
+      <div id="target-row" class="row"><span class="index">OK</span><strong>FINAL TARGET REVEALED</strong></div>
+    </section>
+    <div id="footer">Outer content below the panel is intentionally tall enough to scroll. If the gesture escapes the inner list, the outer stability marker immediately turns red and the case fails.</div>
+  </main>
+  <script>
+    const outerProof = document.querySelector('#outer-proof');
+    const initialOuterY = window.scrollY;
+    window.addEventListener('scroll', () => {
+      if (Math.abs(window.scrollY - initialOuterY) <= 4) return;
+      outerProof.classList.add('failed');
+      outerProof.textContent = 'OUTER PAGE MOVED — FAILURE';
+    }, { passive: true });
+  </script>
+</body>
+</html>

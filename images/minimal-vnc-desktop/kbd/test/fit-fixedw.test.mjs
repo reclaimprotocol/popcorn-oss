@@ -156,6 +156,17 @@ describe('?fixedw fixed-width rendering', () => {
     await settleDance();
   });
 
+  it('honors an explicit numeric viewport width instead of substituting 980', async () => {
+    const { fit, emulates, screen } = makeFit();
+    fit.handleTopDocSignal({ pid: 'fixed-720', novp: true, vpw: 720, vw: 390, sw: 680 });
+
+    assert.equal(fit.fitMode(), true);
+    assert.equal(fit.fixedFit(), false, 'numeric viewport keeps native whole-page focus behavior');
+    assert.equal(screen.style.width, '720px');
+    assert.equal(emulates.at(-1).width, 720);
+    await settleDance();
+  });
+
   it('re-detects on a real navigation', async () => {
     // Entering is per-page, so navigating away from the overflowing page drops the
     // fit and the next page is judged on its own measurements.

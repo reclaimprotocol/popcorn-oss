@@ -50,6 +50,13 @@
       "when": 1785843000000,
       "tag": "0006_replace_x402_management_token",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788105600000,
+      "tag": "0007_add_session_analytics_projections",
+      "breakpoints": true
     }
   ]
 }

@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Multiple input types: native switching</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; --ink: #172554; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 145vh; }
+    body { overflow-x: hidden; background: #f8fafc; color: var(--ink); }
+    header { position: fixed; z-index: 5; inset: 0 0 auto; min-height: 58px; padding: 10px 16px;
+      background: var(--ink); color: white; font-weight: 900; letter-spacing: .035em; }
+    #status { display: block; margin-top: 3px; color: #bfdbfe; font-size: 11px; letter-spacing: 0; }
+    .page-landmark { position: fixed; z-index: 2; left: 10px; right: 10px; height: 5px;
+      border-radius: 4px; pointer-events: none; }
+    .page-landmark.top { top: 72px; background: #f97316; }
+    .page-landmark.bottom { bottom: env(safe-area-inset-bottom, 0); background: #7c3aed; }
+    main { min-height: 145vh; padding: 96px 14px 120px; }
+    .instructions { max-width: 560px; margin: 0 auto; color: #334155; font-size: 13px;
+      font-weight: 700; line-height: 1.35; }
+    .target-card { position: absolute; z-index: 3; top: calc(100vh - 390px); left: 14px; right: 14px;
+      min-height: 354px; padding: 16px 14px 15px; border: 4px solid #2563eb; border-radius: 18px;
+      background: white; box-shadow: 0 18px 50px rgb(30 64 175 / .22); }
+    .card-landmark { position: absolute; left: 12px; right: 12px; height: 5px; border-radius: 4px;
+      background: #fb923c; pointer-events: none; }
+    .card-landmark.top { top: 7px; }
+    .card-landmark.bottom { bottom: 7px; background: #22c55e; }
+    #phase { position: absolute; z-index: 4; top: 11px; right: 11px; width: 38px; height: 38px;
+      display: grid; place-items: center; border: 3px solid white; border-radius: 8px; color: white;
+      font: 900 11px/1 ui-monospace, monospace; background: #35007d; }
+    #phase[data-phase="text-focus"] { background: #ff00cb; }
+    #phase[data-phase="text-value"] { background: #ffdd00; color: #111827; }
+    #phase[data-phase="email-focus"] { background: #00c7ff; color: #111827; }
+    #phase[data-phase="email-value"] { background: #00ff63; color: #111827; }
+    #phase[data-phase="tel-focus"] { background: #ff4e00; }
+    #phase[data-phase="tel-value"] { background: #adff00; color: #111827; }
+    h1 { margin: 3px 52px 8px 0; font-size: 15px; letter-spacing: .025em; }
+    .field { position: relative; margin-top: 8px; padding-right: 34px; }
+    label { display: block; margin-bottom: 3px; font-size: 11px; font-weight: 900; }
+    input { width: 100%; height: 52px; border: 3px solid #64748b; border-radius: 11px; padding: 0 11px;
+      background: white; font: 750 18px/1 system-ui, sans-serif; }
+    input:focus { outline: 4px solid #f59e0b; border-color: #b45309; }
+    .anchor { position: absolute; right: 0; bottom: 10px; width: 26px; height: 26px;
+      border: 2px solid white; border-radius: 6px; box-shadow: 0 0 0 2px #334155; }
+    .text-anchor { background: #5f006e; }
+    .email-anchor { background: #008a99; }
+    .tel-anchor { background: #7a3e00; }
+    #echo { margin: 8px 0 0; color: #166534; font-size: 11px; font-weight: 900; }
+  </style>
+</head>
+<body>
+  <header>MULTI-INPUT NATIVE SWITCHING <span id="status">READY: TEXT → EMAIL → TELEPHONE</span></header>
+  <div class="page-landmark top" aria-hidden="true"></div>
+  <div class="page-landmark bottom" aria-hidden="true"></div>
+  <main>
+    <p class="instructions">Type in Text, use the native Next control to switch to Email and Telephone, and type once in each. Every field must stay visible without a black band or extra jump.</p>
+    <section class="target-card">
+      <div class="card-landmark top" aria-hidden="true"></div>
+      <div class="card-landmark bottom" aria-hidden="true"></div>
+      <div id="phase" data-phase="ready" aria-label="visible phase marker">R</div>
+      <h1>THREE REAL INPUT TYPES</h1>
+      <div class="field">
+        <label for="text-input">1 · TEXT</label>
+        <input id="text-input" type="text" inputmode="text" autocomplete="off" autocapitalize="none"
+          spellcheck="false" placeholder="text value">
+        <span class="anchor text-anchor" aria-hidden="true"></span>
+      </div>
+      <div class="field">
+        <label for="email-input">2 · EMAIL</label>
+        <input id="email-input" type="email" inputmode="email" autocomplete="off" autocapitalize="none"
+          spellcheck="false" placeholder="email value">
+        <span class="anchor email-anchor" aria-hidden="true"></span>
+      </div>
+      <div class="field">
+        <label for="tel-input">3 · TELEPHONE</label>
+        <input id="tel-input" type="tel" inputmode="tel" autocomplete="off" placeholder="telephone value">
+        <span class="anchor tel-anchor" aria-hidden="true"></span>
+      </div>
+      <p id="echo">REMOTE VALUES: TEXT 0 · EMAIL 0 · TEL 0</p>
+    </section>
+  </main>
+  <script>
+    const phase = document.querySelector('#phase');
+    const status = document.querySelector('#status');
+    const echo = document.querySelector('#echo');
+    const fields = {
+      text: document.querySelector('#text-input'),
+      email: document.querySelector('#email-input'),
+      tel: document.querySelector('#tel-input'),
+    };
+    const labels = { text: 'TEXT', email: 'EMAIL', tel: 'TEL' };
+
+    function renderEcho() {
+      echo.textContent = `REMOTE VALUES: TEXT ${fields.text.value.length} · EMAIL ${fields.email.value.length} · TEL ${fields.tel.value.length}`;
+    }
+
+    function setPhase(kind, hasValue) {
+      phase.dataset.phase = `${kind}-${hasValue ? 'value' : 'focus'}`;
+      phase.textContent = hasValue ? `${labels[kind][0]}1` : `${labels[kind][0]}F`;
+      status.textContent = `${labels[kind]} ${hasValue ? 'RECEIVED 1+ CHARACTER' : 'FOCUSED: CORRECT KEYBOARD EXPECTED'}`;
+    }
+
+    Object.entries(fields).forEach(([kind, input]) => {
+      input.addEventListener('focus', () => setPhase(kind, input.value.length > 0));
+      input.addEventListener('input', () => {
+        setPhase(kind, input.value.length > 0);
+        renderEcho();
+      });
+    });
+  </script>
+</body>
+</html>

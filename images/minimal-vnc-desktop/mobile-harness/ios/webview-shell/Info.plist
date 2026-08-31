@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>CFBundleDisplayName</key>
+  <string>Popcorn WebView Shell</string>
+  <key>CFBundleExecutable</key>
+  <string>PopcornWebViewShell</string>
+  <key>CFBundleIdentifier</key>
+  <string>org.reclaimprotocol.popcorn.webviewshell</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>PopcornWebViewShell</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0</string>
+  <key>CFBundleVersion</key>
+  <string>1</string>
+  <key>CFBundleSupportedPlatforms</key>
+  <array>
+    <string>iPhoneSimulator</string>
+  </array>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <key>MinimumOSVersion</key>
+  <string>16.0</string>
+  <key>UIDeviceFamily</key>
+  <array>
+    <integer>1</integer>
+    <integer>2</integer>
+  </array>
+  <key>UILaunchScreen</key>
+  <dict/>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <!-- Fixture and gateway hosts are plain HTTP inside the lab network. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Pages under test may capture a document or a face.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Pages under test may request microphone access.</string>
+  <!-- The harness navigates the running shell with popcorn-shell://open?url=... -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>org.reclaimprotocol.popcorn.webviewshell.launch</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>popcorn-shell</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
