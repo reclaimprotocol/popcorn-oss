@@ -200,7 +200,7 @@ func TestE2EBindingRejectsPlaintextLiveViewAtPodBoundary(t *testing.T) {
 	}
 	liveView := noVNCMux(web, "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
 	for _, route := range []string{
-		"/kbd", "/kbdstate", "/dialog", "/emulate", "/geometry", "/input",
+		"/kbd", "/kbdstate", "/dialog", "/emulate", "/input",
 		"/klog", "/rtstats", "/websockify", "/vnc-ws/session", "/liveview-ws/session",
 	} {
 		rec := httptest.NewRecorder()
@@ -210,9 +210,23 @@ func TestE2EBindingRejectsPlaintextLiveViewAtPodBoundary(t *testing.T) {
 		}
 	}
 
+	// Occupancy is the sole public runtime-status read. It must remain available
+	// before an E2E session is enrolled, otherwise two harnesses can both drive
+	// the pod's one X screen. It carries no session or control data.
+	rec := httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/geometry", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"viewers":0`) {
+		t.Fatalf("e2e geometry status = %d body = %q, want public occupancy", rec.Code, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "http://pod.example/geometry", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("e2e geometry POST status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
 	// The unified viewer shell is public code and must remain loadable. The
 	// selected transport is enforced when it attempts to open a data channel.
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	liveView.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://pod.example/liveview.html", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("static viewer status = %d, want %d", rec.Code, http.StatusOK)
@@ -573,5 +587,47 @@ func TestWebsocketCloseInfo(t *testing.T) {
 	}
 	if code, reason := websocketCloseInfo([]byte{1}); code != 0 || reason != "" {
 		t.Fatalf("short payload = (%d, %q), want empty", code, reason)
+	}
+}
+
+// The keyboard extension is an in-pod publisher, not user-facing transport. Its
+// field rects and remote viewport are what let a tap map to a remote coordinate
+// and raise the keyboard.
+func TestE2EBindingAllowsTheLoopbackKeyboardPublisher(t *testing.T) {
+	e, err := newNoiseEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := noise.DH25519.GenerateKeypair(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.setBinding(noiseBinding{SessionID: "encrypted-session", ClientKey: client.Public, PodUID: "pod-1"})
+	liveView := noVNCMux(t.TempDir(), "127.0.0.1:5900", "127.0.0.1:9223", readyGate{}, e)
+
+	ask := func(target, remote, origin string) int {
+		r := httptest.NewRequest(http.MethodGet, "http://pod.example"+target, nil)
+		r.RemoteAddr = remote
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		rec := httptest.NewRecorder()
+		liveView.ServeHTTP(rec, r)
+		return rec.Code
+	}
+	if code := ask("/kbd?role=pub", "127.0.0.1:12345", "chrome-extension://abc"); code == http.StatusForbidden {
+		t.Error("the pod's own keyboard publisher was blocked; the session loses every field rect")
+	}
+	// The carve-out is exactly the publisher trust level, nothing wider.
+	for _, c := range []struct {
+		name, target, remote, origin string
+	}{
+		{"remote publisher", "/kbd?role=pub", "203.0.113.7:443", "chrome-extension://abc"},
+		{"page origin", "/kbd?role=pub", "127.0.0.1:12345", "https://example.test"},
+		{"loopback subscriber", "/kbd", "127.0.0.1:12345", ""},
+	} {
+		if code := ask(c.target, c.remote, c.origin); code != http.StatusForbidden {
+			t.Errorf("%s status = %d, want %d", c.name, code, http.StatusForbidden)
+		}
 	}
 }

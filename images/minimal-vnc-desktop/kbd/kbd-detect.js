@@ -14,7 +14,7 @@
 // grace pattern), and the vt lift/postViewport verbs. layoutResizeMode is owned
 // here (read by vt's applyLift via accessor; reset by dismissKeyboard).
 
-import { isAndroid, nowMs } from './env.js';
+import { isAndroid, isFirefox, nowMs } from './env.js';
 import { dbg } from './diag.js';
 import {
   hostGeometry, hostGeometryActive, hostGeometryAge,
@@ -24,7 +24,7 @@ import { reportHealth } from './health.js';
 
 export function createKbdDetect({
   getKeyboardActive, setKeyboardActive, getKeyboardOpening, getProxy,
-  applyLift, clearLift, postViewport, currentVisibleBottom,
+  applyLift, clearLift, postViewport, currentVisibleBottom, framebufferFitsWindow, revealFocusedRemote,
   hideMirrorBar, startWatchdog, flagJustDismissed, getLastInputAt,
 }) {
   let lastViewportShrink = false;
@@ -205,6 +205,17 @@ export function createKbdDetect({
     if (!window.visualViewport) return;
     const viewportHeight = window.visualViewport.height;
     const windowHeight = window.innerHeight;
+    // A sample whose visual viewport reaches BEYOND the layout viewport is
+    // internally impossible — offsetTop + height can't exceed innerHeight — and
+    // Gecko emits exactly that mid-animation (measured: offsetTop 290 with
+    // height 779 against innerHeight 779, a visible bottom of 1070). Acting on
+    // it drives the lift to a position that does not exist.
+    const offsetTop = Number(window.visualViewport.offsetTop) || 0;
+    if (offsetTop + viewportHeight > windowHeight + 4) {
+      dbg('VP sample inconsistent (top=' + Math.round(offsetTop) + ' h='
+        + Math.round(viewportHeight) + ' win=' + Math.round(windowHeight) + ') -> ignored');
+      return;
+    }
     const shrunk = (windowHeight - viewportHeight) > 50;
     // The gate, now evidence-aware: stand down for the embedder unless we can
     // positively see something it is getting wrong (see hostContradicted).
@@ -233,6 +244,21 @@ export function createKbdDetect({
     const proxyStillFocused = document.activeElement === proxy;
     const focusGuard = isAndroid ? false : proxyStillFocused;
     if (Math.abs(viewportHeight - windowHeight) < 50 && getKeyboardActive() && !focusGuard) {
+      // GECKO: the grow is not evidence of anything. Measured on Fenix 154, one
+      // tap on a field: the visual viewport shrinks to 465, pans, and then
+      // REVERTS to the full 779 while the IME is still on screen
+      // (dumpsys: mInputShown=true). Believing it blurred the proxy and closed a
+      // keyboard the user was about to type into — the "opens then closes"
+      // report. Blink settles at the shrunken height and stays there, so this is
+      // engine-specific, not a race: on Gecko keep the keyboard and drop only the
+      // lift, and let the explicit paths end it (a real blur, the remote saying
+      // the field is gone, the keyboard toggle, or the watchdog).
+      if (isFirefox) {
+        dbg('VP grew on gecko -> keep kbd (viewport reverts while the IME is up)');
+        clearLift();
+        postViewport(viewportHeight, 0);
+        return;
+      }
       // Floating/split keyboard just went non-occluding but is still up — recent
       // proxy input proves it; keep the keyboard, only drop the lift.
       if (nowMs() - getLastInputAt() < 1000) { clearLift(); postViewport(viewportHeight, 0); return; }
@@ -315,7 +341,16 @@ export function createKbdDetect({
       setKeyboardActive(true);
       layoutResizeMode = true;
       startWatchdog();
-      clearLift();                 // layout already reflowed; no transform lift
+      // Our layout reflowed, but an EMBEDDED viewer's framebuffer did not: the stream keeps its
+      // pre-keyboard height and the focused remote field stays behind the keys. Measured in the
+      // portal-in-WebView cell (adjustResize): win 839->527 with the canvas still 839, host
+      // geometry reporting occ=0 because nothing was occluded, and no lift from anyone. So when
+      // the framebuffer did not follow, report the shrink as the occlusion it is for the stream.
+      clearLift();                 // #screen is the shrunken box: a transform would expose background
+      // Our window shrank but the stream did not, so the focused field can sit below the fold with
+      // nothing local able to reveal it — measured in the portal-in-WebView cell: win 839->527,
+      // canvas still 839, host geometry reporting occ=0, field at y=592.
+      if (!framebufferFitsWindow() && revealFocusedRemote) revealFocusedRemote(h);
       postViewport(h, 0);
     } else if (getKeyboardActive() && layoutResizeMode && !shrunk) {
       dbg('layout-resize grew -> kbd=false (dismiss)');

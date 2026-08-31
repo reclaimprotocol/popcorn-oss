@@ -6,6 +6,10 @@
 
 const ua = navigator.userAgent || '';
 export const isAndroid = /android/i.test(ua);
+// Gecko, which reports the soft keyboard differently from every Blink engine —
+// see the Firefox branch in kbd/kbd-detect.js for what it does and why the
+// viewport cannot be trusted to say the keyboard went away there.
+export const isFirefox = /Firefox\/|FxiOS/i.test(ua);
 export const isIOS =
   /iPad|iPhone|iPod/.test(ua) ||
   // iPadOS reports a desktop Mac UA; detect it by a Mac UA WITH touch points. A
@@ -18,8 +22,17 @@ export const isIOS =
 // window — it's true in desktop Chrome, which falsely turned on the whole mobile
 // layer (and the magnify button) on the desktop viewer.
 const mm = window.matchMedia ? (q) => window.matchMedia(q).matches : () => false;
+// Third clause: a device with touch points that cannot HOVER is touch-primary,
+// whatever it claims about pointer precision. Measured in an Android WebView on
+// an emulator: maxTouchPoints 5, hover:none true, but pointer:coarse FALSE and
+// pointer:fine TRUE (the host mouse drives the input), so both clauses above
+// failed and DESKTOP came out true — the entire touch/keyboard layer never
+// installed, a tap on a remote field logged `tap#-` and no keyboard was ever
+// raised. The same shape reaches real users on a WebView that reports a fine
+// pointer. A touch laptop stays excluded: it has touch points but hover:hover.
 export const isTouch = mm('(pointer: coarse)') ||
-  ((navigator.maxTouchPoints || 0) > 0 && !mm('(pointer: fine)'));
+  ((navigator.maxTouchPoints || 0) > 0 && !mm('(pointer: fine)')) ||
+  ((navigator.maxTouchPoints || 0) > 0 && mm('(hover: none)'));
 // Desktop (mouse) viewer. noVNC has NO IME support — it ignores keyCode 229 —
 // so CJK/Japanese/Korean composition is dead on desktop. We run the same proxy
 // IME capture as mobile, plus a full keysym forwarder for nav/shortcut keys,

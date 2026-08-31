@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "modal-input-workflow",
+  "testDescription": "Opening an overlay, focusing its input, showing the keyboard, and typing must keep the modal field visible and accept text.",
+  "testPage": "cases/modal-input-workflow.html",
+  "baseline": { "fixturePath": "cases/modal-input-workflow.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-modal", "syncWith": "ready" },
+    { "type": "tapRelativeToColor", "name": "open-modal", "color": "#7c3aed" },
+    { "type": "waitForColor", "name": "modal-visible", "color": "#00cfff", "timeoutMs": 30000 },
+    { "type": "tapRelativeToColor", "name": "focus-modal-input", "color": "#fef3c7" },
+    { "type": "waitForColor", "name": "modal-input-focused", "color": "#ff00d8", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "modal-input-focused", "syncWith": "modal-input-focused" },
+    { "type": "typeText", "name": "type-q", "text": "q" },
+    { "type": "waitForColor", "name": "modal-input-typed", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-modal-input", "syncWith": "modal-input-typed" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-modal", "to": "after-modal-input", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

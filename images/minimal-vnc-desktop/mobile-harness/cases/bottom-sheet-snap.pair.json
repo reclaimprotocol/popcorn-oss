@@ -1,0 +1,5 @@
+{
+  "schemaVersion":1,"name":"bottom-sheet-snap","testDescription":"Dragging a bottom-sheet handle upward must cross the snap threshold and leave the sheet fully open.","testPage":"cases/bottom-sheet-snap.html","baseline":{"fixturePath":"cases/bottom-sheet-snap.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL","recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-drag","syncWith":"ready"},{"type":"dragRelativeToColors","name":"open-sheet","sourceColor":"#e6007a","targetColor":"#007aff","durationMs":800,"steps":16},{"type":"wait","ms":500},{"type":"waitForColor","name":"sheet-open","color":"#00d084","timeoutMs":30000},{"type":"screenshot","name":"after-snap","syncWith":"sheet-open"}],
+  "compare":{"profile":"relative-transition-diff","from":"before-drag","to":"after-snap","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

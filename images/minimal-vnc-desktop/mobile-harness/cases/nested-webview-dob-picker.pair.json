@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "name": "nested-webview-dob-picker",
+  "testDescription": "A date-of-birth input two iframes deep inside a host app's web view must open the platform calendar in the browser and in LiveView, and commit 18 March 1994 back up the whole frame chain.",
+  "testPage": "cases/nested-webview-dob-picker.html",
+  "launchTarget": "webview-shell",
+  "baseline": { "fixturePath": "cases/nested-webview-dob-picker.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 45000 },
+  "actions": [
+    { "type": "waitForColor", "name": "chain-ready", "color": "#2b005f", "timeoutMs": 45000 },
+    { "type": "screenshot", "name": "before-picker", "syncWith": "chain-ready" },
+    { "type": "tapRelativeToColor", "name": "open-dob-picker", "color": "#dcfce7", "tolerance": 8 },
+    { "type": "wait", "ms": 900 },
+    { "type": "screenshot", "name": "picker-open" },
+    { "type": "tapNativeElement", "name": "choose-18-march-1994", "android": { "text": "18" }, "ios": { "label": "18" }, "settleMs": 300 },
+    { "type": "tapNativeElement", "name": "confirm-date", "android": { "resourceId": "android:id/button1" }, "ios": { "label": "Done" }, "settleMs": 400 },
+    { "type": "waitForColor", "name": "dob-committed", "color": "#00d084", "timeoutMs": 45000 },
+    { "type": "screenshot", "name": "after-selection", "syncWith": "dob-committed" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-picker", "to": "after-selection", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

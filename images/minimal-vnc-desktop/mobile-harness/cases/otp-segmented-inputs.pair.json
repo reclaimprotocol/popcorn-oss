@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "otp-segmented-inputs",
+  "testDescription": "Typing four digits into a segmented OTP control must auto-advance focus through all four fields and complete the code.",
+  "testPage": "cases/otp-segmented-inputs.html",
+  "baseline": { "fixturePath": "cases/otp-segmented-inputs.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "tapRelativeToColor", "name": "focus-first-cell", "color": "#dcfce7", "offsetX": -110, "tolerance": 8 },
+    { "type": "wait", "name": "keyboard-settle", "ms": 1800 },
+    { "type": "screenshot", "name": "before-typing", "syncWith": "ready" },
+    { "type": "typeText", "name": "digit-1", "text": "1" },
+    { "type": "wait", "ms": 250 },
+    { "type": "typeText", "name": "digit-2", "text": "2" },
+    { "type": "wait", "ms": 250 },
+    { "type": "typeText", "name": "digit-3", "text": "3" },
+    { "type": "wait", "ms": 250 },
+    { "type": "typeText", "name": "digit-4", "text": "4" },
+    { "type": "waitForColor", "name": "otp-complete", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-typing", "syncWith": "otp-complete" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-typing", "to": "after-typing", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

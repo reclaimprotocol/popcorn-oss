@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Click-activated checkbox</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f8fafc;color:#0f172a;font-family:system-ui,sans-serif}header{padding:18px;background:#0f172a;color:#fff;font-weight:900}main{padding:24px 16px;text-align:center}.ready{height:44px;background:#2b005f;color:#fff;display:grid;place-items:center;border-radius:12px;font-weight:900}
+.row{margin:52px auto 0;width:250px;display:flex;align-items:center;gap:14px;font-size:20px;font-weight:800}
+.box{position:relative;width:120px;height:120px;border:5px solid #334155;border-radius:14px;background:#e6007a}
+.box ins{position:absolute;inset:-6px;display:block;background:transparent}
+.on .box{background:#00d084}
+.state{margin-top:22px;font-size:24px;font-weight:950}
+</style></head><body><header>CLICK-ACTIVATED CHECKBOX</header><main><div class="ready">READY</div>
+<div class="row" id="row"><span class="box" id="box"><input type="checkbox" id="cb" hidden><ins id="helper"></ins></span> REMEMBER ME</div>
+<div class="state" id="state">OFF</div></main><script>
+// A widget whose activation lives ONLY in a click handler on a transparent
+// overlay (the shape jQuery iCheck and friends generate). A tap that reaches the
+// page as touch events but never becomes a click leaves it dead, and a tap that
+// arrives twice toggles it back — both look identical to a user: nothing landed.
+helper.addEventListener('click', (e) => {
+  e.preventDefault();
+  cb.checked = !cb.checked;
+  row.classList.toggle('on', cb.checked);
+  state.textContent = cb.checked ? 'ON' : 'OFF';
+});
+</script></body></html>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Nested date-of-birth picker</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { font: 16px/1.35 system-ui, sans-serif; background: #f0fdf4; color: #14532d;
+      display: flex; flex-direction: column; }
+    header { padding: 14px 16px; background: #14532d; color: #fff; font-weight: 900; letter-spacing: .03em; }
+    /* Every marker colour is unique across all three documents, and none of them
+       is the input's #dcfce7. */
+    .ready { height: 42px; margin: 10px 12px 0; background: #2b005f; color: #fff;
+      display: grid; place-items: center; border-radius: 12px; font-weight: 900; }
+    #chain { flex: 1 1 auto; margin: 10px 12px; border: 4px solid #166534; border-radius: 14px;
+      background: #fff; display: flex; }
+    #chain iframe { flex: 1 1 auto; width: 100%; border: 0; border-radius: 10px; display: block; }
+    .result { display: none; height: 58px; margin: 0 12px 12px; border-radius: 13px;
+      place-items: center; font-weight: 950; }
+    body.done .success { display: grid; background: #00d084; }
+    body.wrong .failure { display: grid; background: #ff3b30; color: #fff; }
+  </style>
+</head>
+<body>
+  <header>DEPTH 1 — HOST APP PAGE</header>
+  <!-- Painted only once the innermost form has reported itself, so READY means
+       all three documents are up rather than just this one. -->
+  <div class="ready" id="ready" hidden>READY</div>
+  <div id="chain"><iframe id="relay" title="partner relay" src="./nested-webview-dob-relay.html"></iframe></div>
+  <div class="result success">18 MARCH 1994 SELECTED</div>
+  <div class="result failure" id="failure">WRONG DATE</div>
+
+  <script>
+    // The chain is host page -> partner relay -> signup form, and the date input
+    // lives at the bottom of it. The publisher measures that input's rect inside
+    // its own frame, so the rect only lands on the streamed pixels if both iframe
+    // origins are added to it. A green marker here means the tap reached a
+    // platform calendar, the chosen date came back into the depth-3 input, and
+    // its change event travelled back up two frame boundaries.
+    const ready = document.querySelector('#ready');
+    const failure = document.querySelector('#failure');
+    const WANTED = '1994-03-18';
+
+    window.addEventListener('message', (e) => {
+      const d = e.data;
+      if (!d || !d.pcnDob) return;
+      if (d.pcnDob === 'ready') { ready.hidden = false; return; }
+      if (d.pcnDob !== 'change') return;
+      document.body.classList.remove('done', 'wrong');
+      if (d.value === WANTED) {
+        document.body.classList.add('done');
+      } else {
+        document.body.classList.add('wrong');
+        failure.textContent = 'WRONG DATE: ' + (d.value || 'empty');
+      }
+    });
+  </script>
+</body>
+</html>

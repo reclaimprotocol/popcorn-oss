@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "name": "nested-scrolling",
+  "testDescription": "Three forward native swipes, one reverse swipe, and a final forward swipe inside an inner scrollable list must reveal its target row while the outer page remains at the same scroll position. Rendering scale and exact scroll distance may differ between Safari and LiveView.",
+  "testPage": "cases/nested-scrolling.html",
+  "baseline": { "fixturePath": "cases/nested-scrolling.html" },
+  "candidate": { "setupActions": [] },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": { "name": "case-ready", "color": "#2b005f", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "before-inner-scroll", "syncWith": "ready" },
+    { "type": "swipeRelativeToColorByOffset", "name": "scroll-inner-list-one", "color": "#2563eb", "tolerance": 10, "minPixels": 500, "offsetX": 0, "offsetY": 80, "deltaX": 0, "deltaY": -160, "durationMs": 700, "platformOverrides": {"Android": {"durationMs": 300}} },
+    { "type": "wait", "ms": 350 },
+    { "type": "swipeRelativeToColorByOffset", "name": "scroll-inner-list-two", "color": "#2563eb", "tolerance": 10, "minPixels": 500, "offsetX": 0, "offsetY": 80, "deltaX": 0, "deltaY": -160, "durationMs": 700, "platformOverrides": {"Android": {"durationMs": 300}} },
+    { "type": "wait", "ms": 350 },
+    { "type": "swipeRelativeToColorByOffset", "name": "scroll-inner-list-three", "color": "#2563eb", "tolerance": 10, "minPixels": 500, "offsetX": 0, "offsetY": 80, "deltaX": 0, "deltaY": -160, "durationMs": 700, "platformOverrides": {"Android": {"durationMs": 300}} },
+    { "type": "wait", "ms": 350 },
+    { "type": "swipeRelativeToColorByOffset", "name": "scroll-inner-list-reverse", "color": "#2563eb", "tolerance": 10, "minPixels": 500, "offsetX": 0, "offsetY": -80, "deltaX": 0, "deltaY": 160, "durationMs": 650, "platformOverrides": {"Android": {"durationMs": 300}} },
+    { "type": "wait", "ms": 350 },
+    { "type": "swipeRelativeToColorByOffset", "name": "scroll-inner-list-final", "color": "#2563eb", "tolerance": 10, "minPixels": 500, "offsetX": 0, "offsetY": 80, "deltaX": 0, "deltaY": -160, "durationMs": 700, "platformOverrides": {"Android": {"durationMs": 300}} },
+    { "type": "waitForColor", "name": "target-row-visible", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "waitForColor", "name": "outer-page-stable", "color": "#2b005f", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 600 },
+    { "type": "waitForColor", "name": "nested-scroll-settled", "color": "#00d084", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "after-inner-scroll", "syncWith": "nested-scroll-settled" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "before-inner-scroll", "to": "after-inner-scroll", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

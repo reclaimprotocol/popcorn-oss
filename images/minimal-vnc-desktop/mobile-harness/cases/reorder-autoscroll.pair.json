@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "name": "reorder-autoscroll",
+  "testDescription": "Dragging a list item toward the overflow edge must autoscroll the list and reorder the item at the newly revealed end.",
+  "testPage": "cases/reorder-autoscroll.html",
+  "baseline": {
+    "fixturePath": "cases/reorder-autoscroll.html"
+  },
+  "candidate": {
+    "setupActions": []
+  },
+  "candidateActionFailureVerdict": "FAIL",
+  "recordingStart": {
+    "name": "case-ready",
+    "color": "#2b005f",
+    "timeoutMs": 30000
+  },
+  "actions": [
+    {
+      "type": "waitForColor",
+      "name": "ready",
+      "color": "#2b005f",
+      "timeoutMs": 30000
+    },
+    {
+      "type": "screenshot",
+      "name": "before-drag",
+      "syncWith": "ready"
+    },
+    {
+      "type": "dragRelativeToColorByOffset",
+      "name": "drag-to-list-edge",
+      "sourceColor": "#e6007a",
+      "durationMs": 1500,
+      "holdMs": 180,
+      "releasePauseMs": 350,
+      "steps": 24,
+      "deltaYFraction": 0.45
+    },
+    {
+      "type": "wait",
+      "ms": 500
+    },
+    {
+      "type": "waitForColor",
+      "name": "reordered",
+      "color": "#00d084",
+      "timeoutMs": 30000
+    },
+    {
+      "type": "screenshot",
+      "name": "after-reorder",
+      "syncWith": "reordered"
+    }
+  ],
+  "compare": {
+    "profile": "relative-transition-diff",
+    "from": "before-drag",
+    "to": "after-reorder",
+    "pixelThreshold": 0.15,
+    "maxTransitionRatioDelta": 0.2
+  }
+}

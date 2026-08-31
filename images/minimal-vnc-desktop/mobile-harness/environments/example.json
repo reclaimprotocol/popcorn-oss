@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "name": "replace-with-environment-name",
+  "defaultSimulator": "primary",
+  "simulators": {
+    "primary": {
+      "device": {
+        "platformName": "iOS",
+        "udid": "REPLACE_WITH_SIMULATOR_UDID",
+        "name": "iPhone model",
+        "platformVersion": "iOS version"
+      },
+      "appiumPort": 4723,
+      "wdaLocalPort": 8100,
+      "mjpegServerPort": 9100,
+      "derivedDataPath": "/tmp/popcorn-wda-primary"
+    },
+    "android": {
+      "device": {
+        "platformName": "Android",
+        "udid": "emulator-5554",
+        "name": "Pixel model",
+        "platformVersion": "Android version",
+        "avd": "REPLACE_WITH_ANDROID_AVD_NAME"
+      }
+    }
+  },
+  "fixtures": {
+    "baseUrl": "http://fixture-host.example/mobile-harness/fixture/"
+  },
+  "android": {
+    "defaultLaunchTarget": "chrome",
+    "launchTargets": {
+      "chrome": {
+        "label": "Chrome",
+        "package": "com.android.chrome",
+        "urlDelivery": "view-intent"
+      },
+      "webview-shell": {
+        "label": "Android WebView",
+        "package": "org.reclaimprotocol.popcorn.webviewshell",
+        "activity": "org.reclaimprotocol.popcorn.webviewshell.ShellActivity",
+        "urlDelivery": "extra",
+        "urlExtra": "url",
+        "apk": "../android/webview-shell/build/popcorn-webview-shell.apk",
+        "reinstall": false,
+        "extras": {
+          "fullscreen": false,
+          "wideViewPort": true,
+          "clearData": true
+        }
+      }
+    }
+  },
+  "ios": {
+    "defaultLaunchTarget": "safari",
+    "launchTargets": {
+      "safari": {
+        "label": "Safari",
+        "browserName": "Safari",
+        "urlDelivery": "open-url"
+      },
+      "webview-shell": {
+        "label": "iOS WebView",
+        "bundleId": "org.reclaimprotocol.popcorn.webviewshell",
+        "urlDelivery": "launch-args",
+        "urlArgument": "url",
+        "app": "../ios/webview-shell/build/PopcornWebViewShell.app",
+        "reinstall": false,
+        "extras": {
+          "fullscreen": false,
+          "clearData": true
+        }
+      }
+    }
+  },
+  "popcorn": {
+    "sessionProvider": {
+      "ssh": "user@popcorn-host.example",
+      "controlPlaneUrl": "http://127.0.0.1:8081",
+      "adminTokenEnv": "POPCORN_ADMIN_TOKEN",
+      "cluster": "local",
+      "region": "local"
+    },
+    "liveview": {
+      "encryption": "e2e",
+      "gatewayOrigin": "http://popcorn-host.example:8080",
+      "hostPage": "http://fixture-host.example/host/test-host.html",
+      "hostParams": {
+        "nest": 1,
+        "magnify": 1,
+        "panel": 0
+      }
+    }
+  },
+  "defaults": {
+    "settleMs": 7000,
+    "candidateSettleMs": 10000,
+    "recordingLeadInMs": 250,
+    "nativeOpenUrl": true
+  },
+  "healthChecks": [
+    {
+      "name": "fixture host",
+      "url": "http://fixture-host.example/mobile-harness/fixture/",
+      "acceptStatuses": [
+        200
+      ]
+    },
+    {
+      "name": "Popcorn control plane",
+      "via": "ssh",
+      "ssh": "user@popcorn-host.example",
+      "url": "http://127.0.0.1:8081/health",
+      "acceptStatuses": [
+        200
+      ]
+    },
+    {
+      "name": "Popcorn gateway",
+      "url": "http://popcorn-host.example:8080/",
+      "acceptStatuses": [
+        200,
+        404
+      ]
+    }
+  ]
+}

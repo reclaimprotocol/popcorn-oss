@@ -174,6 +174,9 @@ func TestKbdHubViewerMsgAllowlist(t *testing.T) {
 	}{
 		{"dialog reply", `{"dialogReply":{"seq":1,"accept":true}}`, true},
 		{"popup close", `{"popupClose":{"seq":1}}`, true},
+		// Relayed directly to the trusted publisher, never to the server/CDP handler.
+		{"native select choice", `{"selectChoice":{"key":"abc:1","index":2}}`, false},
+		{"native picker choice", `{"pickerChoice":{"key":"abc:1","value":"2026-08-22"}}`, false},
 		// Handled by the hub itself (mirror state), so it must NOT reach onViewerMsg.
 		{"mirror opt-in", `{"mirror":{"on":true}}`, false},
 		{"unknown control frame", `{"somethingElse":{"seq":1}}`, false},
@@ -214,6 +217,105 @@ func TestKbdHubViewerMsgAllowlist(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestKbdHubRelaysCanonicalSelectChoiceToPublisherOnly(t *testing.T) {
+	hub := newKbdHub()
+	pub, pubReader, pubConn := newTestClient()
+	pub.publisher = true
+	defer pubConn.Close()
+	hub.add(pub)
+	readText(t, pubReader, pubConn) // connect-time mirror state
+
+	viewer, viewerReader, viewerConn := newTestClient()
+	defer viewerConn.Close()
+	hub.add(viewer)
+
+	if !hub.relaySelectChoice([]byte(`{"selectChoice":{"key":"abc:7","index":2,"ignored":"x"},"alsoIgnored":true}`)) {
+		t.Fatal("valid choice was not relayed")
+	}
+	if got := readText(t, pubReader, pubConn); got != `{"selectChoice":{"index":2,"key":"abc:7"}}` {
+		t.Fatalf("publisher got %q", got)
+	}
+	_ = viewerConn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, opcode, payload, err := readFrame(viewerReader); err == nil && opcode == 0x1 {
+		t.Fatalf("choice leaked to another viewer: %s", payload)
+	}
+}
+
+func TestKbdHubRejectsMalformedSelectChoice(t *testing.T) {
+	hub := newKbdHub()
+	for _, payload := range []string{
+		`{"selectChoice":{"key":"","index":0}}`,
+		`{"selectChoice":{"key":"abc:1","index":-1}}`,
+		`{"selectChoice":{"key":"../../tab","index":1}}`,
+		`{"selectChoice":{"key":"abc:1","index":70000}}`,
+	} {
+		if hub.relaySelectChoice([]byte(payload)) {
+			t.Fatalf("malformed choice accepted: %s", payload)
+		}
+	}
+}
+
+func TestKbdHubRelaysCanonicalPickerChoiceToPublisherOnly(t *testing.T) {
+	hub := newKbdHub()
+	pub, pubReader, pubConn := newTestClient()
+	pub.publisher = true
+	defer pubConn.Close()
+	hub.add(pub)
+	readText(t, pubReader, pubConn) // connect-time mirror state
+
+	viewer, viewerReader, viewerConn := newTestClient()
+	defer viewerConn.Close()
+	hub.add(viewer)
+
+	if !hub.relayPickerChoice([]byte(`{"pickerChoice":{"key":"abc:7","value":"2026-08-22","ignored":"x"},"alsoIgnored":true}`)) {
+		t.Fatal("valid picker choice was not relayed")
+	}
+	if got := readText(t, pubReader, pubConn); got != `{"pickerChoice":{"key":"abc:7","value":"2026-08-22"}}` {
+		t.Fatalf("publisher got %q", got)
+	}
+	_ = viewerConn.SetReadDeadline(time.Now().Add(150 * time.Millisecond))
+	if _, opcode, payload, err := readFrame(viewerReader); err == nil && opcode == 0x1 {
+		t.Fatalf("picker choice leaked to another viewer: %s", payload)
+	}
+}
+
+func TestKbdHubRelaysEveryTemporalPickerValue(t *testing.T) {
+	for _, value := range []string{"", "2026-08-23", "10:15", "10:15:30.125", "2026-08-23T10:15", "2026-09", "2026-W35"} {
+		hub := newKbdHub()
+		pub, pubReader, pubConn := newTestClient()
+		pub.publisher = true
+		defer pubConn.Close()
+		hub.add(pub)
+		readText(t, pubReader, pubConn) // connect-time mirror state
+		payload := `{"pickerChoice":{"key":"abc:8","value":"` + value + `"}}`
+		if !hub.relayPickerChoice([]byte(payload)) {
+			t.Fatalf("valid temporal value %q was not relayed", value)
+		}
+		if got := readText(t, pubReader, pubConn); got != payload {
+			t.Fatalf("value %q: publisher got %q, want %q", value, got, payload)
+		}
+	}
+}
+
+func TestKbdHubRejectsMalformedPickerChoice(t *testing.T) {
+	hub := newKbdHub()
+	for _, payload := range []string{
+		`{"pickerChoice":{"key":"","value":"2026-08-22"}}`,
+		`{"pickerChoice":{"key":"../../tab","value":"2026-08-22"}}`,
+		`{"pickerChoice":{"key":"abc:1","value":"2026-8-22"}}`,
+		`{"pickerChoice":{"key":"abc:1","value":"2026/08/22"}}`,
+		`{"pickerChoice":{"key":"abc:1","value":"2026-08-22x"}}`,
+		`{"pickerChoice":{"key":"abc:1","value":"24:00"}}`,
+		`{"pickerChoice":{"key":"abc:1","value":"2026-13"}}`,
+		`{"pickerChoice":{"key":"abc:1","value":"2026-W54"}}`,
+		`{"pickerChoice":{"key":"abc:1","value":"2026-08-23 10:15"}}`,
+	} {
+		if hub.relayPickerChoice([]byte(payload)) {
+			t.Fatalf("malformed picker choice accepted: %s", payload)
+		}
 	}
 }
 

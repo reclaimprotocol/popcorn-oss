@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -240,7 +241,8 @@ type kbdClient struct {
 	// dialog (an OAuth window running a confirm()), so the two states genuinely
 	// coexist and sharing a slot would drop whichever arrived first.
 	pendingPopup []byte
-	// Control frames for the PUBLISHER (dialog-bridge token, mirror on/off). A
+	// Control frames for the PUBLISHER (dialog-bridge token, mirror on/off,
+	// native-select choice). A
 	// short QUEUE rather than a coalescing slot: these are distinct one-shot
 	// messages, so the newer one must not overwrite an undelivered older one.
 	pendingCtl [][]byte
@@ -249,7 +251,7 @@ type kbdClient struct {
 }
 
 // kbdMaxCtlQueue bounds the publisher control queue. Only the proxy itself writes
-// to it and there are two message kinds, so this is a leak guard, not a limit
+// to it and there are a few small message kinds, so this is a leak guard, not a limit
 // anything legitimate reaches.
 const kbdMaxCtlQueue = 8
 
@@ -383,6 +385,91 @@ func (h *kbdHub) setMirror(c *kbdClient, payload []byte) {
 	}
 }
 
+// relaySelectChoice is the one viewer->publisher relay. It canonicalizes a tiny
+// allowlisted message rather than forwarding viewer JSON verbatim; the extension
+// then checks the key/index against its active-frame descriptor cache, and the
+// content script checks the live element once more before committing.
+func (h *kbdHub) relaySelectChoice(payload []byte) bool {
+	var msg struct {
+		SelectChoice *struct {
+			Key   string `json:"key"`
+			Index int    `json:"index"`
+		} `json:"selectChoice"`
+	}
+	if json.Unmarshal(payload, &msg) != nil || msg.SelectChoice == nil ||
+		len(msg.SelectChoice.Key) < 1 || len(msg.SelectChoice.Key) > 128 ||
+		msg.SelectChoice.Index < 0 || msg.SelectChoice.Index > 65535 {
+		return false
+	}
+	for _, r := range msg.SelectChoice.Key {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == ':' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	canonical, err := json.Marshal(map[string]any{
+		"selectChoice": map[string]any{"key": msg.SelectChoice.Key, "index": msg.SelectChoice.Index},
+	})
+	if err != nil {
+		return false
+	}
+	h.mu.Lock()
+	pubs := make([]*kbdClient, 0, h.publishers)
+	for c := range h.clients {
+		if c.publisher {
+			pubs = append(pubs, c)
+		}
+	}
+	h.mu.Unlock()
+	for _, p := range pubs {
+		p.enqueueCtl(canonical)
+	}
+	return len(pubs) > 0
+}
+
+var pickerChoiceValuePattern = regexp.MustCompile(`^(|[0-9]{4,6}-[0-9]{2}-[0-9]{2}|([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\.[0-9]{1,3})?)?|[0-9]{4,6}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\.[0-9]{1,3})?)?|[0-9]{4,6}-(0[1-9]|1[0-2])|[0-9]{4,6}-W(0[1-9]|[1-4][0-9]|5[0-3]))$`)
+
+// relayPickerChoice canonicalizes a local platform temporal-picker result. The
+// extension still revalidates the advertised descriptor and the live input;
+// this hop permits only the stable element key and a normalized HTML temporal value.
+func (h *kbdHub) relayPickerChoice(payload []byte) bool {
+	var msg struct {
+		PickerChoice *struct {
+			Key   string `json:"key"`
+			Value string `json:"value"`
+		} `json:"pickerChoice"`
+	}
+	if json.Unmarshal(payload, &msg) != nil || msg.PickerChoice == nil ||
+		len(msg.PickerChoice.Key) < 1 || len(msg.PickerChoice.Key) > 128 ||
+		len(msg.PickerChoice.Value) > 64 || !pickerChoiceValuePattern.MatchString(msg.PickerChoice.Value) {
+		return false
+	}
+	for _, r := range msg.PickerChoice.Key {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == ':' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	canonical, err := json.Marshal(map[string]any{
+		"pickerChoice": map[string]any{"key": msg.PickerChoice.Key, "value": msg.PickerChoice.Value},
+	})
+	if err != nil {
+		return false
+	}
+	h.mu.Lock()
+	pubs := make([]*kbdClient, 0, h.publishers)
+	for c := range h.clients {
+		if c.publisher {
+			pubs = append(pubs, c)
+		}
+	}
+	h.mu.Unlock()
+	for _, p := range pubs {
+		p.enqueueCtl(canonical)
+	}
+	return len(pubs) > 0
+}
+
 // publish caches the state and fans it out to every client except the sender
 // (the extension never needs to hear its own signal echoed back).
 func (h *kbdHub) publish(sender *kbdClient, payload []byte) {
@@ -411,7 +498,37 @@ func (h *kbdHub) publish(sender *kbdClient, payload []byte) {
 	}
 }
 
-// broadcastDialog fans a dialog state out to every viewer and caches it for
+// viewerEnvelope names a state so a /kbd frame is self-describing: the viewer
+// routes on the key (see signal.js), not on a type field.
+func viewerEnvelope(key string, state []byte) []byte {
+	// Avoid computing a capacity from caller-controlled lengths. The payloads
+	// are small, and append already grows the buffer safely as required.
+	b := []byte{'{', '"'}
+	b = append(b, key...)
+	b = append(b, '"', ':')
+	b = append(b, state...)
+	return append(b, '}')
+}
+
+// viewerState strips that key back off, and is what the emulator's payloads pass
+// through on the way in. Everything downstream of the hub adds an envelope of its
+// own — the e2e channel wraps the state in {type,payload}, /kbdstate writes it
+// under a "dialog"/"popup" key, and enqueueDialog rebuilds the /kbd frame — so a
+// cache holding the ALREADY-wrapped payload produced {"dialog":{"dialog":{…}}} on
+// every path except the plain socket. The viewer unwraps exactly once, so the
+// sheet then saw open:undefined and tore itself down: under e2e no dialog, popup
+// or FedCM chooser was ever drawn, and the page stayed blocked until the
+// alertAckWait backstop. The cache holds the inner state; wrapping is per-path.
+func viewerState(payload []byte, key string) []byte {
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &envelope); err == nil {
+		if state, ok := envelope[key]; ok && len(state) > 0 {
+			return append([]byte(nil), state...)
+		}
+	}
+	return append([]byte(nil), payload...)
+}
+
 // snapshot returns cached viewer state for the HTTP fallback.
 func (h *kbdHub) snapshot() (state, dialog, popup []byte) {
 	h.mu.Lock()
@@ -422,13 +539,13 @@ func (h *kbdHub) snapshot() (state, dialog, popup []byte) {
 	return state, h.lastDialog, h.lastPopup
 }
 
-// late joiners. Unlike publish it never touches lastState — a dialog must not
+// broadcastDialog fans a dialog state out to every viewer and caches it for late
+// joiners. Unlike publish it never touches lastState — a dialog must not
 // overwrite the cached focus signal, or a reconnecting viewer would be resynced
 // with a dialog in place of its keyboard state. An `open:false` state clears the
 // cache so a dismissed dialog is never replayed to the next viewer.
 func (h *kbdHub) broadcastDialog(payload []byte, open bool) {
-	buf := make([]byte, len(payload))
-	copy(buf, payload)
+	buf := viewerState(payload, "dialog")
 
 	h.mu.Lock()
 	if open {
@@ -460,8 +577,7 @@ func (h *kbdHub) broadcastDialog(payload []byte, open bool) {
 // it for late joiners. Same shape as broadcastDialog, separate slot and cache:
 // the two states are independent and a popup can itself raise a dialog.
 func (h *kbdHub) broadcastPopup(payload []byte, open bool) {
-	buf := make([]byte, len(payload))
-	copy(buf, payload)
+	buf := viewerState(payload, "popup")
 
 	h.mu.Lock()
 	if open {
@@ -501,9 +617,9 @@ func (c *kbdClient) enqueue(payload []byte) {
 	}
 }
 
-func (c *kbdClient) enqueueDialog(payload []byte) {
+func (c *kbdClient) enqueueDialog(state []byte) {
 	c.mailMu.Lock()
-	c.pendingDialog = payload
+	c.pendingDialog = viewerEnvelope("dialog", state)
 	c.mailMu.Unlock()
 	select {
 	case c.notify <- struct{}{}:
@@ -521,9 +637,9 @@ func (c *kbdClient) takeDialog() []byte {
 	return p
 }
 
-func (c *kbdClient) enqueuePopup(payload []byte) {
+func (c *kbdClient) enqueuePopup(state []byte) {
 	c.mailMu.Lock()
-	c.pendingPopup = payload
+	c.pendingPopup = viewerEnvelope("popup", state)
 	c.mailMu.Unlock()
 	select {
 	case c.notify <- struct{}{}:
@@ -714,6 +830,16 @@ func (h *kbdHub) readLoop(c *kbdClient, reader *bufio.Reader) {
 				}
 			} else if c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload {
 				h.publish(c, payload)
+			} else if !c.publisher && len(payload) > 0 && len(payload) <= 1024 &&
+				(bytes.Contains(payload, []byte(`"selectChoice"`)) || bytes.Contains(payload, []byte(`"pickerChoice"`))) {
+				// Native form-control choice made in the LOCAL viewer. This is relayed only
+				// to the trusted extension publisher after strict canonicalization;
+				// unlike a focus state it is never fanned out to other viewers.
+				if bytes.Contains(payload, []byte(`"pickerChoice"`)) {
+					h.relayPickerChoice(payload)
+				} else {
+					h.relaySelectChoice(payload)
+				}
 			} else if !c.publisher && len(payload) > 0 && len(payload) <= kbdMaxPayload &&
 				(bytes.Contains(payload, []byte(`"dialogReply"`)) || bytes.Contains(payload, []byte(`"popupClose"`))) {
 				// A viewer answering a JS dialog, or asking to close the foreground

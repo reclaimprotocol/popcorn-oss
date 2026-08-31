@@ -21,7 +21,7 @@ const WS_BACKOFF_MIN = 500, WS_BACKOFF_MAX = 10000;
 const WS_CONNECT_TIMEOUT_MS = 8000;
 const KBD_STALE_MS = 45000;
 
-export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, getInputSock }) {
+export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, getInputSock, onConnection }) {
   let wsBackoff = WS_BACKOFF_MIN;
   let sock = null;
   let signalReconnectTimer = null;
@@ -142,6 +142,7 @@ export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, 
       dbg('kbd socket open');
       stopStateBridge(); // the socket is authoritative from here
       everOpened = true;
+      if (onConnection) onConnection(true);
       wsBackoff = WS_BACKOFF_MIN; lastKbdMsgAt = nowMs(); startPinging(s);
       // Opt IN to field-value mirroring. The extension publishes the focused
       // field's text only while some viewer has asked for it, so ?mirror=1 has to
@@ -177,6 +178,7 @@ export function createSignal({ applySignal, applyDialog, applyPopup, kickInput, 
       if (sock !== s) { dbg('kbd: stale socket callback ignored'); return; }
       sock = null;
       stopPinging();
+      if (onConnection) onConnection(false);
       dbg('kbd socket down -> reconnect in ' + wsBackoff + 'ms');
       startStateBridge(); // keep state flowing across the gap
       scheduleReconnect();

@@ -23,15 +23,67 @@ test('append-only edits send just the new tail', async () => {
   assert.deepEqual(rfb.tapped(), keysymsFor('hello'));
 });
 
-test('value shrink sends grapheme-aware backspaces', async () => {
+test('one backspace press removes one character', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
   type(proxy, 'hey');
   rfb.clearKeys();
-  type(proxy, 'h', 'deleteContentBackward'); // clean-suffix shrink by 2… but
-  // NOTE: explicit deleteContentBackward inputType short-circuits to ONE Backspace
-  // (the per-keystroke delete path), matching the real event stream where each
-  // press fires its own input event.
+  type(proxy, 'he', 'deleteContentBackward');
   assert.deepEqual(rfb.tapped(), [BS]);
+});
+
+test('a backspace with an empty buffer still deletes on the remote', async () => {
+  // Nothing shrinks locally, so only the inputType says a delete happened.
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  rfb.clearKeys();
+  type(proxy, '', 'deleteContentBackward');
+  assert.deepEqual(rfb.tapped(), [BS]);
+});
+
+test('a selection delete backspaces the whole removed range', async () => {
+  // Gboard and SwiftKey report a selection delete (and a cut) as one
+  // deleteContentBackward carrying the entire range. Sending a fixed single
+  // Backspace left the rest of the selection on the remote while lastSentValue
+  // said it was gone, desyncing every edit after it.
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  type(proxy, 'hey');
+  rfb.clearKeys();
+  type(proxy, 'h', 'deleteContentBackward');
+  assert.deepEqual(rfb.tapped(), [BS, BS]);
+});
+
+test('a cut backspaces the whole removed range', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  type(proxy, 'hello');
+  rfb.clearKeys();
+  type(proxy, 'he', 'deleteByCut');
+  assert.deepEqual(rfb.tapped(), [BS, BS, BS]);
+});
+
+test('deleting one emoji sends one backspace, not one per code unit', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  type(proxy, 'hi\u{1f600}');
+  rfb.clearKeys();
+  type(proxy, 'hi', 'deleteContentBackward');
+  assert.deepEqual(rfb.tapped(), [BS]);
+});
+
+test('a suggestion tap that swaps a same-length word reaches the remote', async () => {
+  // Gboard and Grammarly deliver a picked suggestion as insertReplacementText.
+  // At equal length that used to fall past every branch and send NOTHING, so the
+  // remote silently kept the typo the user had just corrected.
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  type(proxy, 'teh');
+  rfb.clearKeys();
+  type(proxy, 'the', 'insertReplacementText');
+  assert.deepEqual(rfb.tapped(), [BS, BS, BS, ...keysymsFor('the')]);
+});
+
+test('a suggestion tap that lengthens the word reaches the remote', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  type(proxy, 'thn');
+  rfb.clearKeys();
+  type(proxy, 'then', 'insertReplacementText');
+  assert.deepEqual(rfb.tapped(), [BS, BS, BS, ...keysymsFor('then')]);
 });
 
 test('shrink WITHOUT delete inputType backspaces the whole removed tail', async () => {
@@ -142,13 +194,29 @@ test('a real character cancels the deferred Unidentified backspace', async () =>
   assert.deepEqual(rfb.tapped(), keysymsFor('a')); // no spurious Backspace
 });
 
-test('sensitive field: Unidentified never guesses a backspace', async () => {
+test('sensitive field: Unidentified deletes too — a secret must be correctable', async () => {
+  // This used to assert the opposite ("never guess on a secret"), trading a rare
+  // wrong guess for a constant silent one: Gboard glide, Indic, SwiftKey and
+  // Samsung all report delete as 'Unidentified', so on a password it did NOTHING
+  // and the login failed on a correct secret. A real character still cancels the
+  // deferral (test above), which is what makes it safe.
   const { rfb, proxy } = await freshViewer(createMockRfb);
   pushSignal({ editable: true, focusKey: 'pw2', rect: { x: 0, y: 0, w: 10, h: 10 },
     hints: { type: 'password' }, sync: { sensitive: true, len: 0 } });
   fire(proxy, 'keydown', { key: 'Unidentified', keyCode: 229 });
   await sleep(150);
-  assert.deepEqual(rfb.tapped(), []);
+  assert.deepEqual(rfb.tapped(), [BS]);
+});
+
+test('sensitive field: a real character still cancels the deferred backspace', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'pw3', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: { type: 'password' }, sync: { sensitive: true, len: 0 } });
+  fire(proxy, 'keydown', { key: 'Unidentified', keyCode: 229 });
+  fire(proxy, 'beforeinput', { inputType: 'insertText', data: 'a' });
+  type(proxy, 'a');
+  await sleep(150);
+  assert.deepEqual(rfb.tapped(), keysymsFor('a'));
 });
 
 test('remote-driven field switch clears the stale proxy buffer (no cross-field corruption)', async () => {

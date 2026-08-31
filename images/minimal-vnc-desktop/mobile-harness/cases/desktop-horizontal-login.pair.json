@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "name": "desktop-horizontal-login-focus",
+  "testDescription": "On a fixed-width desktop-only page, horizontal scroll distance may differ, but tapping the visibly marked login input must focus that input, show the keyboard, accept text, and keep the field visible.",
+  "testPage": "cases/desktop-horizontal-login.html",
+  "baseline": { "fixturePath": "cases/desktop-horizontal-login.html" },
+  "candidate": { "setupActions": [] },
+  "recordingStart": { "name": "case-ready", "color": "#310074", "timeoutMs": 30000 },
+  "actions": [
+    { "type": "waitForColor", "name": "ready", "color": "#310074", "timeoutMs": 30000 },
+    { "type": "swipe", "name": "scroll-right-first", "durationMs": 520, "fromXFraction": 0.897, "toXFraction": 0.133, "fromYFraction": 0.462, "toYFraction": 0.462 },
+    { "type": "swipe", "name": "scroll-right-second", "durationMs": 520, "fromXFraction": 0.897, "toXFraction": 0.133, "fromYFraction": 0.462, "toYFraction": 0.462 },
+    { "type": "swipe", "name": "scroll-right-third", "durationMs": 520, "fromXFraction": 0.897, "toXFraction": 0.133, "fromYFraction": 0.462, "toYFraction": 0.462 },
+    { "type": "waitForColor", "name": "login-visible", "color": "#6a007a", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "login-visible", "syncWith": "login-visible" },
+    { "type": "tapRelativeToColor", "name": "focus-visible-username", "color": "#6a007a", "offsetX": 0, "offsetY": 0 },
+    { "type": "waitForColor", "name": "username-focused", "color": "#ff00cb", "timeoutMs": 30000 },
+    { "type": "wait", "ms": 1200 },
+    { "type": "waitForColor", "name": "focus-settled", "color": "#ff00cb", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "username-focused", "syncWith": "focus-settled" },
+    { "type": "typeText", "name": "type-username-q", "text": "q" },
+    { "type": "waitForColor", "name": "username-typed", "color": "#00ff6a", "timeoutMs": 30000 },
+    { "type": "screenshot", "name": "username-typed", "syncWith": "username-typed" }
+  ],
+  "compare": { "profile": "relative-transition-diff", "from": "login-visible", "to": "username-focused", "pixelThreshold": 0.15, "maxTransitionRatioDelta": 0.2 }
+}

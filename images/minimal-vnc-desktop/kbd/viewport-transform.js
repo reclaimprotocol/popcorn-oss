@@ -1,13 +1,11 @@
 // viewport-transform.js — the #screen CSS transform: pinch-zoom, pan, and the
 // keyboard field-lift, composed in one place.
 //
-// Pinch-zoom is done ENTIRELY viewer-side, exactly like a real mobile browser:
-// we scale/translate #screen with a CSS transform, instantly and with no remote
-// round-trip. Forwarding pinch to the remote (the old behavior) needed the
-// network AND desynced tap coordinates (visual vs layout viewport), which left
-// fingers stuck and zoomed the remote forever. getBoundingClientRect() on the
-// canvas reflects this transform, so the screen->remote tap mapping
-// (touchToRemote / screenToRemote) keeps working unchanged at any zoom.
+// Viewer-side pinch is the fallback when the native touch channel is unavailable.
+// With that channel connected, ordinary two-finger gestures are forwarded to the
+// remote website so maps, canvases, and touch handlers receive native multi-touch.
+// The local path scales/translates #screen instantly; getBoundingClientRect() on
+// the canvas reflects the transform, so screen->remote tap mapping remains valid.
 //
 // Owns: zoomScale / panX / panY / minZoom / appliedLift and the pinch/pan
 // gesture state machines. Gesture CLASSIFICATION (which touch means what) stays
@@ -37,7 +35,7 @@ const LAYER_IDLE_MS = 200;
 export function createViewportTransform({
   getScreenElement, getCurrentRect, getCurrentViewport, getLayoutResizeMode,
   getZoomedToField, positionMirrorBar, getReadableZoom, onZoomSettled, getFitMode,
-  onZoomFreeze,
+  onZoomFreeze, onTransform,
 }) {
   // Edge-triggered so the per-frame compose doesn't spam the (rfb-touching) setter.
   let zoomFrozen = false;
@@ -66,6 +64,21 @@ export function createViewportTransform({
   // occlusion but the local layout also reflowed) — the layout has already made
   // room, so any pan extension there would run into blank space below the
   // framebuffer.
+  // layoutResizeMode means our own layout made room for the keyboard — which only helps when
+  // the framebuffer shrank with it. An embedded viewer keeps the pre-keyboard framebuffer, so
+  // the stream (and the focused field) stay behind the keys until we lift/pan after all.
+  function framebufferFitsWindow() {
+    const screen = getScreenElement();
+    const canvas = screen ? screen.querySelector('canvas') : null;
+    // The untransformed box the stream occupies, same sources the clamp reads.
+    const fbCss = (canvas && (canvas.offsetHeight || canvas.clientHeight)) || 0;
+    if (!fbCss) return true;
+    return fbCss <= (window.innerHeight || 0) + 4; // slack: fractional dpr rounding
+  }
+
+  // The pan EXTENSION stays off in layout-resize mode: the window itself shrank, so the canvas
+  // already overflows it and clampPan lets a finger reach that strip — an inset on top would
+  // double-count it and pan into blank space. Only the LIFT needs the framebuffer check.
   function effKbdInset() {
     return getLayoutResizeMode() ? 0 : kbdInset;
   }
@@ -115,6 +128,7 @@ export function createViewportTransform({
     if (tx !== 0 || ty !== 0) parts.push('translate(' + tx.toFixed(2) + 'px,' + ty.toFixed(2) + 'px)');
     if (zoomScale !== 1) parts.push('scale(' + zoomScale.toFixed(4) + ')');
     screen.style.transform = parts.join(' ');
+    if (onTransform) onTransform();
     restoreCanvasInterpolation();
     // Any zoom away from 1:1 must freeze the remote framebuffer size, because
     // noVNC sizes it from this element's (now transformed) bounding rect. Reported
@@ -388,9 +402,8 @@ export function createViewportTransform({
     // Zoom-to-field (novp whole-page fit) already positions the field above the
     // keyboard via pan; the lift's no-zoom geometry would double-shift it off-screen.
     if (getZoomedToField()) return;
-    // Layout-resize browsers (Firefox Android, WebView adjustResize) already
-    // reflowed #screen to the smaller height, so the remote is fully visible —
-    // a transform lift would push it partly off-screen. No lift needed there.
+    // Layout-resize browsers (Firefox Android, WebView adjustResize) reflowed #screen ITSELF to
+    // the smaller height, so translating it up only exposes background — see revealFocusedRemote.
     if (getLayoutResizeMode()) return;
     const screen = getScreenElement();
     if (!screen) return;
@@ -546,11 +559,14 @@ export function createViewportTransform({
   return {
     composeScreenTransform, clampPan, zoomToField, toggleMagnify, installPointerZoomFix,
     beginPinch, updatePinch, endPinch, beginPan, updatePan,
-    applyLift, clearLift, currentVisibleBottom, postViewport, isZoomed,
+    applyLift, clearLift, currentVisibleBottom, postViewport, isZoomed, framebufferFitsWindow,
 
     // Accessors/mutators replacing the core's former direct variable touches.
     zoomScale: () => zoomScale,
     minZoom: () => minZoom,
+    // Fit mode means the VIEWER owns how the page is presented (it chose the
+    // layout width and the readable zoom), so gesture routing has to know.
+    fitMode: () => !!(getFitMode && getFitMode()),
     // Keyboard-pan gesture reads (kbd/tap.js): the live pan for its
     // desired-vs-actual handoff math, and the effective occlusion budget that
     // gates the gesture (0 with no keyboard, a floating keyboard, or in

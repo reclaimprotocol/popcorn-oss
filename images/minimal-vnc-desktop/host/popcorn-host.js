@@ -271,6 +271,18 @@
     return out;
   }
 
+  // The e2e enrollment (session key, pod public key, binding secret) rides in the
+  // viewer URL's FRAGMENT, which is never sent to any server — that is what keeps
+  // the gateway out of the trust chain. A fragment is invisible to forwardParams,
+  // so an embedder that only forwards query parameters hands the viewer
+  // ?encryption=e2e with no key material: it selects the encrypted transport and
+  // then has nothing to open it with. Every hop must pass this down too, so it
+  // lives here beside VIEWER_PARAMS for the same reason that list does.
+  function forwardFragment(hash) {
+    var raw = String(hash == null ? global.location.hash : hash);
+    return /^#popcorn-e2e=[A-Za-z0-9_=-]+$/.test(raw) ? raw : '';
+  }
+
   // Re-post geometry on a slow heartbeat even when nothing changes. The viewer
   // ages host samples out after 8s and falls back to its own detectors, which is
   // the right behavior if this page dies — but it means a quiet period with the
@@ -288,6 +300,11 @@
   // always wins the race; short enough that a hand-rolled embed isn't left
   // without a lift for a noticeable time.
   var UPSTREAM_GRACE_MS = 2000;
+  // A soft keyboard is worth at least this much height. Below it, a height-only
+  // change is a URL bar, a pinch, or rounding — see LAYOUT_KEYBOARD_MIN's use in
+  // measure(). Matches the viewport-shrink threshold the viewer's own
+  // layout-resize detector uses (kbd/kbd-detect.js).
+  var LAYOUT_KEYBOARD_MIN = 150;
 
   function logWarn(m) { try { if (global.console) global.console.warn('[popcorn-host] ' + m); } catch (_) {} }
   function logInfo(m) { try { if (global.console) global.console.info('[popcorn-host] ' + m); } catch (_) {} }
@@ -333,6 +350,11 @@
     // Resolved stance: relay until proven otherwise when embedded under 'auto'.
     var relay = mode === 'relay' || (mode === 'auto' && embedded);
     var upstreamSeen = false;
+    // The viewer tells us when it raises and dismisses a keyboard
+    // (POPCORN_KBD_STATE). That is independent evidence — it knows the user tapped
+    // an editable field — and measure() needs it before reading a layout-viewport
+    // shrink as a keyboard, so a split-screen resize cannot fake one.
+    var viewerKeyboardActive = false;
     var graceTimer = null;
     var listeners = {};
     var lastSent = null;
@@ -530,6 +552,30 @@
         // this is ordinary page/browser-chrome geometry.  Relearn downward as
         // well so an expanded URL bar is not mistaken for a keyboard.
         if (!measuredOccluding && Math.abs(innerH - vv.height) < 50) {
+          // Both viewports agree. Usually that IS ordinary page/browser-chrome
+          // geometry — but an adjustResize Android WebView reports the soft
+          // keyboard exactly this way: it shrinks the LAYOUT viewport, so
+          // innerHeight and visualViewport.height move together and the delta
+          // above stays zero. Relearning the baseline down to the shrunken height
+          // then made this host blind for the entire keyboard session. Measured at
+          // depth 3 of a real embed chain: occludedBottom=0 reported every
+          // heartbeat with rawInner=rawVv=527 against an 839 baseline, so the
+          // viewer had no authoritative rect at all.
+          //
+          // A keyboard never changes the viewport WIDTH (the same invariant the
+          // rotation guard above and the viewer's own detector rely on), so a
+          // large height-only loss against the learned baseline is the keyboard.
+          // Requires the viewer's raise: a large height-only shrink is ALSO what
+          // a split-screen drag or a foldable posture change looks like, and the
+          // width guard cannot tell those apart. Without this gate the host would
+          // report a phantom keyboard and the viewer would lift the page for it.
+          var lost = layoutBaselineHeight - innerH;
+          if (viewerKeyboardActive && lost >= LAYOUT_KEYBOARD_MIN && layoutBaselineWidth === innerW) {
+            measuredOccluding = true;
+            // innerH already excludes the keyboard here — the layout reflowed —
+            // so it IS the visible height, and the loss is what the keyboard took.
+            return { visibleHeight: innerH, occludedBottom: lost };
+          }
           layoutBaselineHeight = innerH;
           return { visibleHeight: innerH, occludedBottom: 0 };
         }
@@ -705,7 +751,10 @@
             break;
           case 'POPCORN_DISCONNECT': emit('disconnect', d); break;
           case 'POPCORN_ERROR': emit('error', d); break;
-          case 'POPCORN_KBD_STATE': emit('kbdstate', d); break;
+          case 'POPCORN_KBD_STATE':
+            viewerKeyboardActive = !!d.active;
+            emit('kbdstate', d);
+            break;
           case 'POPCORN_INPUT_DRIFT': emit('inputdrift', d); break;
           case 'POPCORN_INTERACTION': emit('interaction', d); break;
           case 'POPCORN_RTT': emit('rtt', d); break;
@@ -918,6 +967,7 @@
     VIEWER_PARAMS: VIEWER_PARAMS,
     /** Those of them present in `search`, as 'k=v' strings. */
     forwardParams: forwardParams,
+    forwardFragment: forwardFragment,
     LAYER_CSS: LAYER_CSS,
   };
 })(typeof window !== 'undefined' ? window : this);

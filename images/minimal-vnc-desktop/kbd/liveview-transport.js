@@ -149,6 +149,10 @@ class EncryptedControlManager {
     if (message.mirror) { this.sendEnvelope('mirror', { on: !!message.mirror.on }); return; }
     if (message.dialogReply) { this.sendEnvelope('dialog-reply', message.dialogReply); return; }
     if (message.popupClose) { this.sendEnvelope('popup-close', message.popupClose); return; }
+    // A choice made in a local native control. The wrapper stays on so the pod can
+    // hand the payload to the same canonicalizing relay the /kbd path uses.
+    if (message.selectChoice) { this.sendEnvelope('select-choice', { selectChoice: message.selectChoice }); return; }
+    if (message.pickerChoice) { this.sendEnvelope('picker-choice', { pickerChoice: message.pickerChoice }); return; }
     throw new TypeError('unsupported encrypted control message');
   }
 

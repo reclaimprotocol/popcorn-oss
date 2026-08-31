@@ -63,7 +63,7 @@ import { createClipboard } from './kbd/clipboard.js';
 import { createTouchChannel } from './kbd/touch-channel.js';
 import { createWatchdog } from './kbd/watchdog.js';
 import { reportHealth } from './kbd/health.js';
-import { applyImeHints } from './kbd/ime-hints.js';
+import { applyImeHints, secureSurfaceWanted } from './kbd/ime-hints.js';
 import { createAutoSpaceFilter } from './kbd/autospace.js';
 import { createDesktopBridge } from './kbd/desktop-bridge.js';
 import { createViewportTransform } from './kbd/viewport-transform.js';
@@ -74,12 +74,14 @@ import { createTransport } from './kbd/transport.js';
 import { createImeInput } from './kbd/ime-input.js';
 import { createKbdDetect } from './kbd/kbd-detect.js';
 import { createTap } from './kbd/tap.js';
-import { buildProxy } from './kbd/proxy-setup.js';
+import { buildProxy, buildSecureProxy } from './kbd/proxy-setup.js';
 import { createFieldSession } from './kbd/field-session.js';
 import { createSignal } from './kbd/signal.js';
 import { createDialog } from './kbd/dialog.js';
 import { createPopupBar } from './kbd/popup-bar.js';
-import { installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
+import { createNativeSelectProxy } from './kbd/native-select.js';
+import { createNativePickerProxy } from './kbd/native-picker.js';
+import { hostGeometry, installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
 import { initE2E } from './kbd/e2e.js';
 import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
@@ -89,7 +91,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // Deploy stamp, logged in the "setup env" klog line. Bump on every deploy so a
   // stale-cache session is provable from the log alone (many "still broken"
   // reports were pages running old JS).
-  const BUILD_TAG = 'bundle-80';
+  const BUILD_TAG = 'bundle-83-native-temporal-pickers';
 
   // ---- RFB transport (replaces CDP Input.*) --------------------------------
   // Lives in ./kbd/transport.js: sendText/sendSpecialKey, per-burst WebSocket
@@ -108,6 +110,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     echoBackspace: (n) => echoBackspace(n),
     onSent: (delta) => session.noteSent(delta), // drift-recon feed (field-session)
     getFocusKey: () => session.focusKey(),       // tag queued keys so a reconnect can't replay them into another field
+    getSensitiveField: () => session.sensitive(), // keep the address-space filter off passwords
   });
   const sendText = transport.sendText;
   const sendSpecialKey = transport.sendSpecialKey;
@@ -119,8 +122,20 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // What stays here is the state SHARED across subsystems.
 
   let proxy = null;              // hidden <input> the OS IME composes into
+  // Android only: the two surfaces the IME can compose into, and which one is
+  // live. The EditContext div is the default (glide typing, prediction bar); the
+  // secure <input type=password> takes over on password/OTP/card fields, because
+  // EditContext cannot tell the IME a field is a secret and the prose pipeline
+  // then commits characters the user never typed. applyFieldSurface() picks one.
+  let ecProxy = null;            // EditContext div  (non-sensitive fields)
+  let secureProxy = null;        // <input type=password> (sensitive fields)
 
   let keyboardActive = false;    // soft keyboard is up (visualViewport shrunk)
+  // Was the user typing when we went to the background? The OS dismisses the keyboard on the way
+  // out, so by the time we come back keyboardActive is already false and only this remembers.
+  let kbdUpWhenHidden = false;
+  let lastRaiseAt = 0;
+  let kbdFieldWhenHidden = null;
   let keyboardOpening = false;   // between focus() and viewport actually shrinking
   // Intentional-blur window: an app-driven blur (dismiss, paste, control tap)
   // arms a short deadline, and onSystemBlur ignores any blur landing before it —
@@ -271,19 +286,75 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   const seedProxyMirror = input.seedProxyMirror;
   const mirrorOn = input.mirrorOn;
 
+  // ---- field surface (keypad hints + Android secrecy) ----------------------
+  // The ONE place that reshapes the proxy for the focused remote field, on a new
+  // field or a secrecy change (neither implies the other — see field-session.js).
+  //
+  // A credential field must reach the IME as an <input type=password> or the
+  // keyboard runs its prose pipeline on the secret — suggestion strip, word+SPACE
+  // on a tap, double-space to ". " (measured, Android 14/Gboard). The send side
+  // cannot undo it: those filters skip secrets on purpose. Two mechanisms, since
+  // the Android paths differ: the hidden-<input> path retypes its one proxy;
+  // EditContext cannot express "secret" at all, so the IME moves to a separate
+  // password <input> built at setup.
+  let surfaceSecure = false; // secrecy of the surface as last applied
+  function applyFieldSurface(sensitive) {
+    // ime-hints owns WHICH fields qualify (it excludes OTP and numeric pads);
+    // this is the platform half. iOS keeps type=text so the Passwords AutoFill
+    // accessory cannot steal proxy focus, and desktop has no prose pipeline to
+    // fight — a password proxy there would only attract the browser's own
+    // password manager onto a hidden 1px input.
+    const want = !isIOS && !DESKTOP && secureSurfaceWanted(session.hints(), sensitive);
+    const changed = want !== surfaceSecure;
+    surfaceSecure = want;
+    if (changed) {
+      // A secrecy change is always a different field, so the buffer belongs to the
+      // one we are leaving; diffing the new field against it would type the
+      // previous field's characters into a password, or backspace over it.
+      // Retyping an <input> preserves its value, so this clear is not free.
+      clearProxy();
+      input.resetComposition();
+    }
+    if (changed && secureProxy && ecProxy) {
+      // EditContext path only: move the IME to the other element. Swapping moves
+      // DOM focus, so arm the intentional-blur window first — otherwise the
+      // outgoing blur reads as a back-button dismiss and tears the keyboard down
+      // mid-login. Android keeps it up across a move between editable elements and
+      // just re-reads EditorInfo, which is the whole point.
+      const next = want ? secureProxy : ecProxy;
+      if (next !== proxy) {
+        const hadFocus = document.activeElement === proxy;
+        proxy = next;
+        input.setProxy(proxy);
+        input.setEcMode(proxy === ecProxy);
+        // Clear the INCOMING surface too: clearProxy() is per-surface, so a
+        // password <input> re-entered later would still hold the previous secret
+        // while lastSentValue reads empty, and the first diff would re-send it.
+        clearProxy();
+        if (hadFocus || keyboardActive) {
+          armAllowBlur();
+          try { proxy.focus(); } catch (_) {}
+        }
+      }
+    }
+    // Hints last: on the <input> paths this is what actually sets type=password,
+    // and after a swap it re-derives inputmode/capitalisation for the new element.
+    applyProxyImeHints();
+  }
+
   // ---- IME hints (shape the proxy so platform keyboards pick the layout) ---
   // The derivation lives in ./kbd/ime-hints.js (pure function of proxy + hints
   // + mirror flag); this wrapper supplies the core's live currentHints/mirrorOn.
 
   function applyProxyImeHints() {
-    const h = applyImeHints(proxy, session.hints(), { mirrorOn });
+    const h = applyImeHints(proxy, session.hints(), { mirrorOn, secure: surfaceSecure });
     // What the extension REPORTED vs what we derived. Logged here (not in the pure
     // ime-hints module) and only under ?kbddebug=1 — it is the single value that
     // decides keyboard layout, capitalisation and the address-field space filter.
     if (h && KBD_DEBUG) {
       dbg('hints tag=' + h.tag + ' type=' + h.type + ' im=' + h.im + ' ac=' + h.ac +
           ' pat=' + h.pat + ' nm=' + h.nm + ' ph=' + h.ph +
-          ' -> literal=' + h.literal + ' nospace=' + h.nospace +
+          ' -> literal=' + h.literal + ' nospace=' + h.nospace + ' secure=' + (surfaceSecure ? 1 : 0) +
           ' cap=' + h.cap + ' correct=' + h.correct);
     }
   }
@@ -306,6 +377,25 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // A successful reclaim means somebody up there stole it. That is an
     // integration bug the embedder cannot see from its own side, so say so.
     onFocusStolen: () => reportHealth('focus-stolen'),
+    // Does something that CAN see the keyboard still report it occluding? Only
+    // an authoritative source counts: the embedder's posted rect, or a live
+    // VirtualKeyboard rect. Used to tell "focus dropped but the IME is still up"
+    // apart from "the keyboard is gone".
+    keyboardOccluding: () => {
+      const g = hostGeometry();
+      if (g && g.occludedBottom > 0) return true;
+      try {
+        const vk = navigator.virtualKeyboard;
+        if (vk && vk.boundingRect && vk.boundingRect.height > 0) return true;
+      } catch (_) {}
+      // The adjustResize WebView cell, measured at depth 3 in a real embed chain:
+      // the layout viewport shrank for the keyboard, so BOTH the embedder's
+      // innerHeight and its visualViewport moved together and it reports
+      // occludedBottom=0 — no authoritative rect exists anywhere. Our own
+      // layout-resize latch is then the only thing that knows the keyboard is up,
+      // and it is exactly as authoritative here: it measured the reflow.
+      return detect.layoutResizeMode();
+    },
   });
   const startWatchdog = watchdog.start;
   const stopWatchdog = watchdog.stop;
@@ -314,6 +404,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
   function raiseKeyboard(reason) {
     if (!proxy) return;
+    lastRaiseAt = nowMs();
     dbg('-> raiseKeyboard(' + (reason || '?') + ') ' + tap.diagnosticTag());
     // Tell the host the keyboard is coming up so it can hide its own bottom-pinned
     // chrome (which would otherwise sit on top of the keys). Sent on INTENT, not on
@@ -482,14 +573,28 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   function reconcileKeyboardOnForeground() {
     if (!isTouch) return;
     setTimeout(() => {
-      if (!keyboardActive || document.hidden) return;
+      if (document.hidden) return;
       const shrunk = (window.innerHeight - currentVisibleBottom()) > 50;
-      if (!shrunk) {
+      if (keyboardActive && !shrunk) {
         dbg('foreground reconcile: kbd actually down -> dismiss stale state');
         dismissKeyboard();
       }
+      if (shrunk || keyboardActive) return; // genuinely up: nothing to reconcile
+      // The keyboard the user was typing on is gone (the OS dismisses it on the way out) while
+      // the remote still holds that field focused, so nothing can be typed and a fresh tap is
+      // the only way back — which reads as "the field won't take input" after a trip to a
+      // password manager. Restore what the user left. Keyed on the SAME field we raised for, so
+      // a keyboard the user deliberately dismissed does not come back. iOS is excluded: it
+      // forbids a programmatic raise outside a gesture.
+      if (!kbdUpWhenHidden || isIOS) return;
+      kbdUpWhenHidden = false;
+      const key = session.remoteFocusKey();
+      if (!key || key !== kbdFieldWhenHidden) return;
+      dbg('foreground reconcile: field still focused remotely -> re-raise');
+      raiseKeyboard('foreground');
     }, 300);
   }
+
 
   // ---- Field lift + client-side pinch-zoom/pan ------------------------------
   // The #screen transform subsystem (zoom/pan/lift state, pinch+pan gesture
@@ -499,6 +604,11 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // core functions that later stages move into their own modules (fit/controls).
 
   function screenElement() { return document.getElementById('screen'); }
+
+  // Assigned after the field session is constructed. viewport-transform and
+  // tap receive deferred closures because they are instantiated earlier.
+  let nativeSelect = null;
+  let nativePicker = null;
 
   const vt = createViewportTransform({
     getScreenElement: () => screenElement(),
@@ -513,6 +623,10 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // Deferred (fit is instantiated below): a CSS zoom must freeze the remote
     // framebuffer size, since noVNC derives it from #screen's transformed rect.
     onZoomFreeze: (on) => fit.setZoomFreeze(on),
+    onTransform: () => {
+      if (nativeSelect) nativeSelect.refresh();
+      if (nativePicker) nativePicker.refresh();
+    },
   });
   const zoomToField = vt.zoomToField;
   const beginPinch = vt.beginPinch;
@@ -572,6 +686,8 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     clearLift,
     postViewport,
     currentVisibleBottom,
+    framebufferFitsWindow: vt.framebufferFitsWindow,
+    revealFocusedRemote,
     hideMirrorBar: () => hideMirrorBar(),
     startWatchdog,
     flagJustDismissed,
@@ -597,7 +713,12 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // Every forwarded scroll/drag funnels through here, so it doubles as the
     // 'scroll' interaction report for an embedding host's analytics. Already
     // coalesced upstream (touch-channel batches moves), so this is not per-pixel.
-    noteRemoteScroll: () => { tap.noteRemoteScroll(); quality.noteMotion(); reportInteraction('scroll'); },
+    noteRemoteScroll: () => {
+      tap.noteRemoteScroll(); quality.noteMotion(); reportInteraction('scroll');
+      // The remote page just moved under rects we published before it did.
+      if (nativeSelect) nativeSelect.noteRemoteScroll();
+      if (nativePicker) nativePicker.noteRemoteScroll();
+    },
   });
   const connectInput = tc.connectInput;
   const sendTouch = tc.sendTouch;
@@ -607,6 +728,32 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   const queueMove = tc.queueMove;
   const cancelPendingMove = tc.cancelPendingMove;
 
+  // In the adjustResize cell (Android WebView, Firefox Android) the keyboard shrinks OUR window,
+  // so #screen is the small box and no transform can reveal the field — only the remote scrolling
+  // can. Synthesize the swipe a finger would make, in a column clear of the field's own rect so it
+  // cannot land a caret. Bounded: one reveal per focused field per keyboard open.
+  let revealedFor = '';
+  function revealFocusedRemote(visibleBottom) {
+    const rect = session.rect();
+    const viewport = session.viewport();
+    if (!rect || !viewport || !(visibleBottom > 0)) return false;
+    const key = session.remoteFocusKey ? String(session.remoteFocusKey()) : '';
+    const deficit = Math.round(rect.y + rect.h + 24 - visibleBottom);
+    if (deficit <= 8) { revealedFor = ''; return false; }
+    if (revealedFor === key + ':' + deficit) return false;
+    revealedFor = key + ':' + deficit;
+    const x = Math.max(8, Math.min(rect.x - 24, viewport.w - 8));
+    const y0 = Math.max(40, visibleBottom - 40);
+    const y1 = Math.max(8, y0 - deficit);
+    dbg('reveal: remote scroll ' + deficit + 'px (field ' + Math.round(rect.y) + ' vs visible ' + Math.round(visibleBottom) + ')');
+    sendTouch('start', [{ x, y: y0 }]);
+    for (let i = 1; i <= 3; i++) {
+      sendTouch('move', [{ x, y: Math.round(y0 + (y1 - y0) * (i / 3)) }]);
+    }
+    sendTouch('end', [{ x, y: y1 }]);
+    return true;
+  }
+
   const tap = createTap({
     vt,
     beginPinch, updatePinch, endPinch, beginPan, updatePan,
@@ -614,7 +761,9 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     flushPendingMove: tc.flushPendingMove,
     touchToRemote,
     onMagButton: (t) => onMagButton(t),        // controls alias (defined earlier — arrow for uniform deferral)
-    onDialogSheet: (t) => dialog.owns(t) || popupBar.owns(t), // viewer chrome (sheet or popup close bar), not the remote's
+    describeNativeSelectAt: (x, y) => (nativeSelect ? nativeSelect.describeAt(x, y) : '-'),
+    onDialogSheet: (t) => (nativeSelect && nativeSelect.owns(t)) ||
+      (nativePicker && nativePicker.owns(t)) || dialog.owns(t) || popupBar.owns(t), // viewer chrome, not remote touch
     pasteFromDevice: () => pasteFromDevice(),
     flushLocalClipboard,
     raiseKeyboard, dismissKeyboard, parkProxyOffscreen, // hoisted
@@ -637,6 +786,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     getViewport: () => session.viewport(),
     getLastNonEmptyRectsAt: () => session.lastNonEmptyRectsAt(),
     getRectsTruncated: () => session.rectsTruncated(),
+    getRectsGen: () => session.rectsGen(),
     getCoverageBlind: () => session.coverageBlind(),
     getRemoteScrollBottom: () => session.remoteScrollBottom(),
     getFocusedScrollContainer: () => session.focusedScrollContainer(),
@@ -721,6 +871,11 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // sibling modules directly (tap/fit/input/echo instances) and reaches the
   // keyboard lifecycle via the hoisted raise/dismiss declarations.
   const session = createFieldSession({
+    // Replay a tap's missing click over the SAME ordered CDP queue the cross-origin compat
+    // click uses, so it cannot race the touch before it. No VNC fallback: that path wants
+    // screen coords and this point is in remote px, and a tap with no /input socket had no
+    // touch to complete either.
+    sendCompatClick: (p) => sendTouch('click', [p]),
     tap,
     fit,
     input,
@@ -732,7 +887,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     // Trailing-space repair sends a remote Backspace of its own (see
     // repairTrailingSpace); onSent already feeds the drift counter from here.
     sendSpecialKey,
-    applyProxyImeHints,
+    applyFieldSurface,
     zoomToField,
     applyLift,
     currentVisibleBottom,
@@ -749,7 +904,21 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     getZoomedToField: () => zoomedToField,
     setZoomedToField: (v) => { zoomedToField = v; },
   });
-  const applySignal = session.applySignal;
+  nativeSelect = createNativeSelectProxy({
+    enabled: isTouch && MAGNIFY,
+    getScreenElement: () => screenElement(),
+    sendChoice: (choice) => sig.sendControl({ selectChoice: choice }),
+  });
+  nativePicker = createNativePickerProxy({
+    enabled: isTouch && MAGNIFY,
+    getScreenElement: () => screenElement(),
+    sendChoice: (choice) => sig.sendControl({ pickerChoice: choice }),
+  });
+  const applySignal = (state) => {
+    session.applySignal(state);
+    nativeSelect.applySignal(state);
+    nativePicker.applySignal(state);
+  };
   const armDismiss = session.armDismiss;
 
   // The /kbd focus-signal WebSocket transport (connect, backoff-reconnect, the
@@ -778,6 +947,10 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     applyPopup: (p) => popupBar.apply(p),
     kickInput: tc.kick,
     getInputSock: tc.getInputSock,
+    onConnection: (open) => {
+      nativeSelect.setTransportReady(open);
+      nativePicker.setTransportReady(open);
+    },
   });
   const connectSignal = sig.connectSignal;
   const kickReconnects = sig.kickReconnects;
@@ -917,6 +1090,16 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     proxy = built.proxy;
     input.setProxy(proxy); // the input state machine's handlers use a local ref
     if (built.editCtx) input.setEditContext(built.editCtx);
+    if (ecMode) {
+      // Built up front, not on the first sensitive field: creating and focusing an
+      // <input> in the same turn as the signal asking for it races the keyboard's
+      // own restart, and a password is where a dropped keyboard costs most.
+      ecProxy = built.proxy;
+      secureProxy = buildSecureProxy({
+        onProxyBeforeInput, onProxyInput, onProxyKeyDown,
+        onProxyBlur, onCompositionStart, onCompositionUpdate, onCompositionEnd,
+      });
+    }
 
     if (DESKTOP) {
       connectSignal(); // /kbd focus signal drives proxy focus on desktop too
@@ -957,10 +1140,9 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     });
     parkProxyOffscreen(); // start off-screen; raiseKeyboard brings it in when needed
 
-    // Kill the browser's OWN pinch-zoom / double-tap-zoom on the stream in every
-    // touch mode (magnify AND plain desktop-scale). Without this, in desktop mode
-    // a pinch zoomed the whole viewer PAGE, which desynced tap->remote coordinates
-    // and the keyboard proxy. We provide controlled client zoom instead.
+    // Kill the viewer browser's own page zoom on the stream. Native two-finger
+    // gestures are routed through /input to the remote website; when that channel
+    // is unavailable, the controlled client transform is the fallback.
     if (isTouch) { try { const sc = screenElement(); if (sc) sc.style.touchAction = 'none'; } catch (_) {} }
     if (isTouch) makeMagnifyButton(); // floating zoom/fit toggle (mobile only)
 
@@ -1001,11 +1183,15 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     window.addEventListener('online', kickReconnects);
     window.addEventListener('pageshow', () => { kickReconnects(); reconcileKeyboardOnForeground(); });
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        kickReconnects();
-        reconcileKeyboardOnForeground();
-        setTimeout(() => fit.refreshAfterVisibility(), 0);
+      // A system dismiss can beat this event, so accept a very recent raise as "was typing" too.
+      if (document.hidden) {
+        kbdUpWhenHidden = keyboardActive || (nowMs() - lastRaiseAt < 15000);
+        kbdFieldWhenHidden = kbdUpWhenHidden ? session.remoteFocusKey() : null;
+        return;
       }
+      kickReconnects();
+      reconcileKeyboardOnForeground();
+      setTimeout(() => fit.refreshAfterVisibility(), 0);
     });
   }
 
@@ -1092,7 +1278,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
       // floating over a dead stream, but a SOFT detach keeps it — the popup is
       // still open on the remote across a 3G blip, and the hub resyncs it on
       // reconnect, so tearing it down would hide the user's only way out.
-      if (!(opts && opts.soft)) { dialog.reset(); popupBar.reset(); }
+      if (!(opts && opts.soft)) { dialog.reset(); popupBar.reset(); nativeSelect.reset(); nativePicker.reset(); }
       // Soft detach (auto-reconnect): keep the keyboard up and the proxy focused
       // so a 3G blip doesn't dismiss the keyboard mid-typing. Keys typed during
       // the gap queue and replay on the next 'connect'. The full detach (real

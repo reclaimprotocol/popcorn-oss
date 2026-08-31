@@ -461,3 +461,99 @@ func TestE2EControlPingRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected pong: %#v", got)
 	}
 }
+
+// A pinch is a sustained move stream, and under e2e one queue carries BOTH acks
+// and field state. Acking every move fills it, and an overflow closes the only
+// channel keyboard and touch have.
+func TestInputAckOnlyOnTerminalEvents(t *testing.T) {
+	for _, ev := range []string{"end", "cancel", "click"} {
+		if !inputAckWanted("sid", 7, ev) {
+			t.Errorf("%q must be acked: one terminal ack proves the gesture path", ev)
+		}
+	}
+	for _, ev := range []string{"start", "move"} {
+		if inputAckWanted("sid", 7, ev) {
+			t.Errorf("%q must be silent: a gesture sends many, and they share the state queue", ev)
+		}
+	}
+	// No diagnostic identity, nothing to correlate an ack with.
+	if inputAckWanted("", 7, "end") || inputAckWanted("sid", 0, "end") {
+		t.Error("acked an event with no session/gesture id")
+	}
+}
+
+func TestDiagnosticEnqueueDropsInsteadOfClosingTheChannel(t *testing.T) {
+	c := &e2eControlClient{out: make(chan []byte, 2), done: make(chan struct{})}
+	for i := 0; i < 20; i++ {
+		c.enqueueE2EDiagnostic("input-ack", mustJSON(map[string]any{"event": "end"}))
+	}
+	select {
+	case <-c.done:
+		t.Fatal("a droppable diagnostic closed the session's only control channel")
+	default:
+	}
+	// State still owns the channel: losing it silently would leave the viewer
+	// believing a stale field is focused, so an overflow must force a resync.
+	c.enqueueE2E("signal", mustJSON(map[string]any{"editable": true}))
+	select {
+	case <-c.done:
+	default:
+		t.Fatal("state overflow no longer closes the channel for resync")
+	}
+}
+
+// A gesture is a sustained stream. Under e2e it shares one queue with keyboard
+// state, so a burst of moves must cost that queue nothing at all.
+func TestTouchFloodQueuesNothing(t *testing.T) {
+	em := &emulator{cmds: make(chan cdpCmd, 256), prio: make(chan cdpCmd, 256)}
+	c := &e2eControlClient{em: em, out: make(chan []byte, 2), done: make(chan struct{})}
+	for i := 0; i < 200; i++ {
+		payload := mustJSON(map[string]any{"t": "move", "sid": "sid", "gesture": 1,
+			"points": []map[string]any{{"x": i, "y": i, "id": 1}}})
+		if err := c.handle(mustJSON(map[string]any{"type": "touch", "payload": json.RawMessage(payload)})); err != nil {
+			t.Fatalf("touch move rejected: %v", err)
+		}
+	}
+	select {
+	case <-c.done:
+		t.Fatal("a touch burst closed the channel that carries the keyboard")
+	default:
+	}
+	if len(c.out) != 0 {
+		t.Fatalf("touch moves queued %d control frames; the viewer reads none of them", len(c.out))
+	}
+}
+
+// A local native control (the mirrored select, the temporal picker) only changes
+// anything if its choice reaches the page. Under e2e this channel is the only
+// route, and the canonicalizing relay is shared with the plaintext /kbd path.
+func TestE2EControlRelaysNativeControlChoices(t *testing.T) {
+	for _, c := range []struct {
+		kind, payload, want string
+	}{
+		{"select-choice", `{"selectChoice":{"key":"abc:7","index":2}}`, `{"selectChoice":{"index":2,"key":"abc:7"}}`},
+		{"picker-choice", `{"pickerChoice":{"key":"abc:7","value":"2001-02-03"}}`, `{"pickerChoice":{"key":"abc:7","value":"2001-02-03"}}`},
+	} {
+		hub := newKbdHub()
+		pub, pubReader, pubConn := newTestClient()
+		pub.publisher = true
+		hub.add(pub)
+		readText(t, pubReader, pubConn) // connect-time mirror state
+
+		client := &e2eControlClient{hub: hub, out: make(chan []byte, 4), done: make(chan struct{})}
+		envelope := mustJSON(map[string]any{"type": c.kind, "payload": json.RawMessage(c.payload)})
+		if err := client.handle(envelope); err != nil {
+			t.Fatalf("%s: %v", c.kind, err)
+		}
+		if got := readText(t, pubReader, pubConn); got != c.want {
+			t.Errorf("%s: publisher got %q, want %q", c.kind, got, c.want)
+		}
+		pubConn.Close()
+
+		// A malformed choice is rejected rather than passed through.
+		bad := mustJSON(map[string]any{"type": c.kind, "payload": json.RawMessage(`{"nope":1}`)})
+		if err := client.handle(bad); err == nil {
+			t.Errorf("%s: a malformed choice was accepted", c.kind)
+		}
+	}
+}

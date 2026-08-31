@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Embedded widget in a web view</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { font: 16px/1.35 system-ui, sans-serif; background: #f8fafc; color: #0f172a;
+      display: flex; flex-direction: column; }
+    /* Phase markers. Every colour is unique so the harness can find one marker
+       without matching another, and each is large enough to clear minPixels. */
+    #phases { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px; background: #0f172a; }
+    #phases div { height: 54px; border-radius: 8px; background: #1e293b; }
+    #ready.on   { background: #00c8ff; }
+    #loaded.on  { background: #ffd400; }
+    #active.on  { background: #ff7a00; }
+    #stepped.on { background: #00ff6a; }
+    #unconfigured { display: none; height: 96px; margin: 8px; border-radius: 10px; background: #ff0033;
+      color: #fff; font-weight: 900; place-items: center; text-align: center; padding: 8px; }
+    body.unconfigured #unconfigured { display: grid; }
+    /* Never reuse the action colour here: the harness resolves a tap from the
+       centroid of every matching pixel, so a second region in the same colour
+       drags the tap off the control. */
+    #widget { flex: 1 1 auto; margin: 8px 8px 96px; border: 4px solid #94a3b8; border-radius: 12px;
+      background: #fff; overflow: auto; -webkit-overflow-scrolling: touch; }
+    /* Height comes from what the widget reports, the way an embedder sizes an
+       auto-height verification iframe. */
+    #widget iframe { width: 100%; height: 260px; border: 0; display: block; }
+    /* The native action target. It stays a fixed size and a unique colour so the
+       harness can resolve it from the framebuffer on either platform. */
+    #action { position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px; width: 62%; height: 68px;
+      border: 0; border-radius: 12px; background: #6a007a; color: #fff; font-size: 19px; font-weight: 800; }
+    body.stepped #action { background: #ff00cb; }
+  </style>
+</head>
+<body>
+  <!-- ready, widget-loaded, widget-active, widget-stepped -->
+  <div id="phases">
+    <div id="ready"></div>
+    <div id="loaded"></div>
+    <div id="active"></div>
+    <div id="stepped"></div>
+  </div>
+  <div id="unconfigured">NO VERIFICATION URL CONFIGURED<br>see docs/WEBVIEW_EMBED.md</div>
+  <div id="widget"></div>
+  <button id="action" type="button">Continue verification</button>
+
+  <!-- Optional, gitignored: sets window.EMBED_VIEW_URL and, if the
+       SDK is wanted, window.EMBED_VIEW_SDK_URL. Absent in stub mode. -->
+  <script src="webview-embed-target.local.js" onerror="void 0"></script>
+  <script>
+    const phases = {
+      ready: document.querySelector('#ready'),
+      loaded: document.querySelector('#loaded'),
+      active: document.querySelector('#active'),
+      stepped: document.querySelector('#stepped'),
+    };
+    const mark = (name) => phases[name].classList.add('on');
+    const parameters = new URLSearchParams(location.search);
+
+    // Query string first so one fixture can be pointed at the local stub or at a
+    // real program without editing the page.
+    const verificationUrl = parameters.get('verificationUrl')
+      || window.EMBED_VIEW_URL
+      || '';
+    const jslibUrl = parameters.get('jslibUrl') || window.EMBED_VIEW_SDK_URL || '';
+
+    const container = document.querySelector('#widget');
+    let widgetOrigin = null;
+
+    function embedPlainIframe() {
+      const frame = document.createElement('iframe');
+      frame.id = 'widget-frame';
+      frame.setAttribute('allow', 'camera; microphone');
+      frame.addEventListener('load', () => mark('loaded'));
+      frame.src = verificationUrl;
+      container.appendChild(frame);
+      return frame;
+    }
+
+    function embedWithSdk() {
+      // The one documented entry point. If the SDK is unavailable or its shape
+      // differs, the plain iframe embed still exercises the same behaviour.
+      return new Promise((resolve) => {
+        const script = document.createElement('script');
+        script.src = jslibUrl;
+        script.onload = () => {
+          try {
+            window.embedSdk.loadInlineIframe(container, verificationUrl);
+            const frame = container.querySelector('iframe');
+            if (!frame) throw new Error('SDK created no iframe');
+            frame.addEventListener('load', () => mark('loaded'));
+            if (frame.complete || frame.contentWindow) mark('loaded');
+            resolve(true);
+          } catch (error) {
+            console.warn('embed SDK failed, falling back to an iframe', error);
+            resolve(false);
+          }
+        };
+        script.onerror = () => resolve(false);
+        document.head.appendChild(script);
+      });
+    }
+
+    // Everything below observes the widget from the parent only: no reaching
+    // into the third-party document, and no assumptions about its internals.
+    let tapped = false;
+    let reportedHeight = 0;
+
+    // An auto-height verification widget posts its height to its embedder, so a
+    // step change is visible here as a different reported height. Shapes differ
+    // between widgets, so read the common ones and ignore anything else.
+    function messageHeight(data) {
+      const candidates = [data?.height, data?.payload?.height, data?.data?.height, data];
+      for (const value of candidates) {
+        const height = Number(value);
+        if (Number.isFinite(height) && height > 40 && height < 20000) return Math.round(height);
+      }
+      return null;
+    }
+
+    function noteHeight(frame, height) {
+      if (!height || Math.abs(height - reportedHeight) < 24) return;
+      const first = reportedHeight === 0;
+      reportedHeight = height;
+      frame.style.height = height + 'px';
+      // Only a change after the native tap is a step; the first report is just
+      // the widget settling into its initial layout.
+      if (!first && tapped) {
+        document.body.classList.add('stepped');
+        mark('stepped');
+      }
+    }
+
+    function observeWidget(frame) {
+      try {
+        widgetOrigin = new URL(frame.src, location.href).origin;
+      } catch { widgetOrigin = null; }
+
+      window.addEventListener('message', (event) => {
+        if (widgetOrigin && event.origin !== widgetOrigin) return;
+        mark('active');
+        noteHeight(frame, messageHeight(event.data));
+      });
+
+      // Fallback for a widget that resizes its own frame instead of reporting a
+      // height, for example through its JS library.
+      let observed = 0;
+      new ResizeObserver((entries) => {
+        for (const entry of entries) {
+          const height = Math.round(entry.contentRect.height);
+          if (!observed) { observed = height; continue; }
+          if (Math.abs(height - observed) >= 24) {
+            observed = height;
+            if (tapped) {
+              document.body.classList.add('stepped');
+              mark('stepped');
+            }
+          }
+        }
+      }).observe(frame);
+    }
+
+    async function start() {
+      if (!verificationUrl) {
+        document.body.classList.add('unconfigured');
+        mark('ready');
+        return;
+      }
+      let frame = null;
+      if (jslibUrl && await embedWithSdk()) {
+        frame = container.querySelector('iframe');
+      }
+      if (!frame) frame = embedPlainIframe();
+      observeWidget(frame);
+      requestAnimationFrame(() => mark('ready'));
+    }
+
+    // The action marker is the case's native tap target. Tapping it asks the
+    // widget to advance; a widget that answers changes its own height, which is
+    // what flips the stepped marker.
+    document.querySelector('#action').addEventListener('click', () => {
+      tapped = true;
+      const frame = container.querySelector('iframe');
+      if (!frame?.contentWindow) return;
+      frame.contentWindow.postMessage({ type: 'popcorn-harness:advance' }, widgetOrigin || '*');
+    });
+
+    start();
+  </script>
+</body>
+</html>

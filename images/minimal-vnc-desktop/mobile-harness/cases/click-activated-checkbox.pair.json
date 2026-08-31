@@ -1,0 +1,7 @@
+{
+  "schemaVersion":1,"name":"click-activated-checkbox","testDescription":"One native tap on a control that activates only from a click handler on a transparent overlay must turn it on exactly once.","testPage":"cases/click-activated-checkbox.html",
+  "baseline":{"fixturePath":"cases/click-activated-checkbox.html"},"candidate":{"setupActions":[]},"candidateActionFailureVerdict":"FAIL",
+  "recordingStart":{"name":"case-ready","color":"#2b005f","timeoutMs":30000},
+  "actions":[{"type":"waitForColor","name":"ready","color":"#2b005f","timeoutMs":30000},{"type":"screenshot","name":"before-tap","syncWith":"ready"},{"type":"tapRelativeToColor","name":"tap-checkbox","color":"#e6007a"},{"type":"wait","ms":800},{"type":"waitForColor","name":"checkbox-on","color":"#00d084","timeoutMs":15000},{"type":"screenshot","name":"after-tap","syncWith":"checkbox-on"}],
+  "compare":{"profile":"relative-transition-diff","from":"before-tap","to":"after-tap","pixelThreshold":0.15,"maxTransitionRatioDelta":0.2}
+}

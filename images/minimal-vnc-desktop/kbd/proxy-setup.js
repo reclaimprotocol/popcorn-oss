@@ -7,6 +7,9 @@
 //            and the prediction bar work through it natively.
 //   input:   iOS / older browsers — hidden <input> with the value-diff logic.
 //
+// The ec path builds a SECOND, secure proxy (<input type=password>) that the
+// core swaps in for password/OTP/card fields — see buildSecureProxy below.
+//
 // Also builds the iOS accessory-bar sentinels (Safari's prev/next arrows focus
 // a sentinel; we translate that to Tab/Shift+Tab on the REMOTE form).
 //
@@ -16,6 +19,46 @@
 
 import { isIOS } from './env.js';
 import { PROXY_STYLE } from './ui.js';
+
+// The value-diff <input> proxy, shared by the iOS/legacy path and by the
+// Android secure surface. `type` is the ONLY difference between them.
+function makeInputProxy(h, type, className) {
+  const el = document.createElement('input');
+  el.type = type;
+  // The secure surface carries an extra class so tooling (and the DOM stub the
+  // unit tests drive) can tell the two Android surfaces apart; the shared class
+  // keeps the same styling on both.
+  el.className = className || 'mobile-proxy-input';
+  el.setAttribute('autocomplete', 'off');
+  el.setAttribute('autocorrect', 'off');
+  el.setAttribute('autocapitalize', 'off');
+  el.setAttribute('spellcheck', 'false');
+  el.setAttribute('inputmode', 'text');
+  el.setAttribute('tabindex', '0');
+  el.style.cssText = PROXY_STYLE;
+  el.addEventListener('beforeinput', h.onProxyBeforeInput);
+  el.addEventListener('input', h.onProxyInput);
+  el.addEventListener('keydown', h.onProxyKeyDown);
+  el.addEventListener('blur', h.onProxyBlur);
+  el.addEventListener('compositionstart', h.onCompositionStart);
+  el.addEventListener('compositionupdate', h.onCompositionUpdate);
+  el.addEventListener('compositionend', h.onCompositionEnd);
+  return el;
+}
+
+// Android secure surface. EditContext has NO way to say "this field is a
+// password" — its text-input type comes from inputmode, which has no password
+// value — so the IME sees a prose box and runs its prose pipeline on the secret,
+// committing characters nobody typed (measured: the `hello` suggestion put
+// "hello " in a password; two space taps put "ab. "). Those land verbatim, since
+// the send-side filters skip secrets on purpose. A real <input type=password> is
+// the only thing that stops it. NOT built on iOS: type=password there summons the
+// Passwords AutoFill accessory, which steals proxy focus and breaks the lift.
+export function buildSecureProxy(h) {
+  const proxy = makeInputProxy(h, 'password', 'mobile-proxy-input mobile-proxy-secure');
+  document.body.appendChild(proxy);
+  return proxy;
+}
 
 export function buildProxy(mode, h, navRemoteField) {
   if (mode === 'desktop') {
@@ -64,23 +107,7 @@ export function buildProxy(mode, h, navRemoteField) {
     proxy.addEventListener('blur', h.onProxyBlur);
   } else {
     // iOS / older browsers: hidden <input> with the value-diff IME logic.
-    proxy = document.createElement('input');
-    proxy.type = 'text';
-    proxy.className = 'mobile-proxy-input';
-    proxy.setAttribute('autocomplete', 'off');
-    proxy.setAttribute('autocorrect', 'off');
-    proxy.setAttribute('autocapitalize', 'off');
-    proxy.setAttribute('spellcheck', 'false');
-    proxy.setAttribute('inputmode', 'text');
-    proxy.setAttribute('tabindex', '0');
-    proxy.style.cssText = PROXY_STYLE;
-    proxy.addEventListener('beforeinput', h.onProxyBeforeInput);
-    proxy.addEventListener('input', h.onProxyInput);
-    proxy.addEventListener('keydown', h.onProxyKeyDown);
-    proxy.addEventListener('blur', h.onProxyBlur);
-    proxy.addEventListener('compositionstart', h.onCompositionStart);
-    proxy.addEventListener('compositionupdate', h.onCompositionUpdate);
-    proxy.addEventListener('compositionend', h.onCompositionEnd);
+    proxy = makeInputProxy(h, 'text');
   }
   // NOTE: the explicit clipboard API is intentionally NOT wired on mobile
   // (Android/iOS). No 'paste' interception here and no remote->local mirror in

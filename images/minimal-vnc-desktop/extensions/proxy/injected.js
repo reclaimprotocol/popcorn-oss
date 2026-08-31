@@ -437,6 +437,12 @@
       return el && el.tagName === 'SELECT' && !el.multiple && !el.disabled && el.size <= 1;
     }
 
+    // A touch that starts on a select may still turn into a scroll, so the sheet
+    // waits for the lift and any real movement cancels it. Mouse and pen open on
+    // press, where their native popup would have.
+    const TAP_SLOP_PX = 12;
+    let pending = null;
+
     // Suppress the native popup on the interactions that open it, then show ours.
     ['pointerdown', 'mousedown', 'touchstart'].forEach(function (type) {
       document.addEventListener(type, function (e) {
@@ -445,9 +451,26 @@
         if (!isPlainSelect(sel)) return;
         e.preventDefault();
         e.stopPropagation();
-        show(sel);
+        if (type !== 'pointerdown') return;   // the others are suppression only
+        if (e.pointerType === 'mouse' || e.pointerType === 'pen') { pending = null; show(sel); return; }
+        pending = { sel: sel, x: e.clientX, y: e.clientY };
       }, true);
     });
+    document.addEventListener('pointermove', function (e) {
+      if (!pending) return;
+      if (Math.abs(e.clientX - pending.x) > TAP_SLOP_PX ||
+          Math.abs(e.clientY - pending.y) > TAP_SLOP_PX) pending = null;
+    }, true);
+    document.addEventListener('pointerup', function (e) {
+      const tap = pending;
+      pending = null;
+      if (!tap) return;
+      e.preventDefault();
+      e.stopPropagation();
+      show(tap.sel);
+    }, true);
+    document.addEventListener('pointercancel', function () { pending = null; }, true);
+
     // Keyboard open (Enter/Space/ArrowDown while focused) → our sheet.
     document.addEventListener('keydown', function (e) {
       if (!isPlainSelect(document.activeElement)) return;

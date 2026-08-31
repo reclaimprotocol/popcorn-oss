@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Partner relay (depth 2)</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body { padding: 12px; font: 16px/1.35 system-ui, sans-serif; background: #f1f5f9; color: #334155;
+      display: flex; flex-direction: column; }
+    h2 { margin: 0 0 10px; font-size: 15px; letter-spacing: .04em; }
+    /* A real relay frame is inset from its parent's origin, and the form frame is
+       inset again from this one. Both insets have to be added to the DOB rect
+       before it means anything in the streamed framebuffer, which is the whole
+       point of this case — keep them non-zero. */
+    iframe { flex: 1 1 auto; width: 100%; border: 4px solid #94a3b8; border-radius: 12px;
+      background: #fff; display: block; }
+  </style>
+</head>
+<body>
+  <h2>DEPTH 2 — PARTNER RELAY</h2>
+  <iframe id="form" title="signup form" src="./nested-webview-dob-form.html"></iframe>
+  <script>
+    // Pass the form frame's notices straight up. A relay that inspected the
+    // message would be testing this fixture instead of the surface.
+    window.addEventListener('message', (e) => {
+      if (!e.data || !e.data.pcnDob) return;
+      try { parent.postMessage(e.data, '*'); } catch (_) {}
+    });
+  </script>
+</body>
+</html>

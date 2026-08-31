@@ -52,6 +52,9 @@ const FIT_TRIGGER = 1.15; // content must overflow the viewport by >15% to fit
 // phone (and the whole page is reachable — its mobile-reflow layout often can't
 // be touch-scrolled). This is browser-standard behavior, not a heuristic.
 const NO_VIEWPORT_W = 980;
+function declaredViewportWidth(state) {
+  return (state && Number.isFinite(state.vpw) && state.vpw > 0) ? state.vpw : NO_VIEWPORT_W;
+}
 // The reload a resize triggers can land up to ~3s later, so the settle window
 // must be longer than that or the reload's pid bump reads as a real nav.
 const FIT_SETTLE_MS = 4500;
@@ -378,6 +381,19 @@ export function createFit({
   // grew. Grow both from the same number (window.__pcnFbTarget, which returns the
   // framebuffer AND the CSS size it corresponds to) and a DSF>1 renders exactly
   // into it. See the supersampling branch below and kbd/fbscale.js.
+  // The last viewport height seen with the keyboard DOWN. A soft keyboard must
+  // never define the remote viewport: on an adjustResize Android WebView it
+  // shrinks the LAYOUT viewport, so emulating that height reflows the remote page
+  // under the field being typed into — which re-creates the field and closes the
+  // keyboard. The window-resize path guards itself, but pushEmulate has other
+  // callers (the connect-time settle retries, the geometry watcher, fbscale), so
+  // the invariant belongs here where the height is chosen.
+  let lastNoKbdH = 0;
+  function stableEmulateHeight(h) {
+    if (!getKeyboardActive()) { lastNoKbdH = h; return h; }
+    return lastNoKbdH > h ? lastNoKbdH : h;
+  }
+
   function computeEmulation() {
     if (fitMode && fitLayoutW > 0) {
       // Render the FULL page width; the wide framebuffer is scaled down for
@@ -387,7 +403,7 @@ export function createFit({
     }
     const screen = getScreenElement();
     let width = Math.max(1, Math.round((screen && screen.offsetWidth) || window.innerWidth));
-    let height = Math.max(1, Math.round((screen && screen.offsetHeight) || window.innerHeight));
+    let height = stableEmulateHeight(Math.max(1, Math.round((screen && screen.offsetHeight) || window.innerHeight)));
     // Emulate at the SAME target rfb._screenSize sizes the framebuffer to (viewer.js
     // __pcnFbTarget): the kiosk-capped size (default), or the window-aspect rect
     // fitted in the cap (?fill=1). Sharing the one function keeps CDP layout ==
@@ -552,9 +568,10 @@ export function createFit({
         // when the replacement document has the same no-viewport signature.
         // Responsive destinations still leave fit immediately, so the previous
         // page's desktop layout cannot persist into a normal mobile page.
-        if (state.novp && state.vw > 0 && window.innerWidth < NO_VIEWPORT_W) {
-          if (fitLayoutW !== NO_VIEWPORT_W) {
-            enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false, true, true);
+        const viewportWidth = declaredViewportWidth(state);
+        if (state.novp && state.vw > 0 && window.innerWidth < viewportWidth) {
+          if (fitLayoutW !== viewportWidth) {
+            enterFit(viewportWidth, state.sw || viewportWidth, false, true, true);
           } else {
             dbg('fit retained across no-viewport navigation');
           }
@@ -562,7 +579,7 @@ export function createFit({
           exitFit();
         }
       }
-    } else if (state.novp && state.vw > 0 && window.innerWidth < NO_VIEWPORT_W) {
+    } else if (state.novp && state.vw > 0 && window.innerWidth < declaredViewportWidth(state)) {
       // No viewport meta → replicate the browser's ~980px desktop-fallback layout
       // scaled to fit (see NO_VIEWPORT_W). Open ZOOMED OUT (whole page) like mobile
       // Safari shows it; the whole page is reachable and the zoom button reads in.
@@ -574,7 +591,8 @@ export function createFit({
       // the view already sits at readable zoom, so tapping a field no longer frames
       // it. Blur is a framebuffer-DENSITY problem, not a zoom-level one; fixing it
       // here just traded one complaint for two.
-      enterFit(NO_VIEWPORT_W, state.sw || NO_VIEWPORT_W, false, true, true);
+      const viewportWidth = declaredViewportWidth(state);
+      enterFit(viewportWidth, state.sw || viewportWidth, false, true, true);
     } else if (FIXEDW > 0 && state.vw > 0 && overflowsViewport(state)) {
       // A "Pinterest-like" page: RESPONSIVE (it declares width=device-width, so the
       // novp branch above passed it over) yet its content still overflows the phone.
@@ -838,7 +856,19 @@ export function createFit({
       try { if (rfb) rfb.resizeSession = false; } catch (_) {}
       if (pushTimer) clearTimeout(pushTimer);
       if (getKeyboardActive()) return;
-      pushTimer = setTimeout(() => { pushTimer = null; settle(); }, 350);
+      pushTimer = setTimeout(() => {
+        pushTimer = null;
+        // Re-check the keyboard HERE, not only at event time. On an adjustResize
+        // Android WebView the soft keyboard shrinks the LAYOUT viewport, so a
+        // keyboard open is the only thing that fires this event — and kbd-detect
+        // latches keyboardActive from its own window 'resize' listener. Both
+        // listeners are on window, so whichever registered first wins the race;
+        // reading the flag at event time meant a keyboard open could still push
+        // a remote resize, whose reflow re-creates the focused field and closes
+        // the keyboard ("it keeps closing when I type the password").
+        if (getKeyboardActive()) return;
+        settle();
+      }, 350);
     };
     // Settle now, with retries in case CDP/SetDesktopSize isn't ready at connect.
     settle();

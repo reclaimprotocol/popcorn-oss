@@ -91,6 +91,28 @@ export function createImeInput({
     }
   }
 
+  // Caret keys, shared by both mobile paths. Previously inert — swallowed and
+  // never forwarded — which silently corrupted the field for any keyboard that
+  // has them (Hacker's Keyboard ships arrows, Home/End and Delete on a phone):
+  // the local caret moved, the remote's did not, and the next edit diffed
+  // against a tail the remote was no longer writing behind.
+  //
+  // Forwarding alone is not enough. The value-diff is anchored to the END of the
+  // field, so once the caret moves, lastSentValue describes text the remote caret
+  // no longer sits behind. Drop the baseline with the caret: the two now agree,
+  // and the characters after it go out as plain inserts at the shared position.
+  // Costs the IME its word context, which a word boundary costs anyway.
+  const CARET_KEYS = new Set([
+    'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'Delete',
+  ]);
+  function handleCaretKey(e) {
+    if (!CARET_KEYS.has(e.key)) return false;
+    e.preventDefault();
+    sendSpecialKey(e.key);
+    clearProxy();
+    return true;
+  }
+
   // Commit-only composition: on a slow link, don't mirror every marked-text step
   // to the remote (that floods the tunnel with backspace/retype per jamo/kana and
   // fires the remote page's per-keystroke JS with half-composed text). Preview
@@ -274,11 +296,21 @@ export function createImeInput({
       // keystrokes and produces the "space re-types the previous word" bug. We
       // mirror each step via the value-diff below (the proven reference behavior).
 
+      // An explicit delete inputType with NOTHING removed locally (the usual case:
+      // an empty buffer) is the keystroke itself reaching us — one remote delete.
+      // When the buffer DID shrink, fall through to the shrink handler below: one
+      // press removes one grapheme, but a selection delete or a cut removes the
+      // whole range in a SINGLE event and Gboard/SwiftKey report both as
+      // deleteContentBackward. Sending a fixed single Backspace there left the rest
+      // of the selection on the remote while lastSentValue claimed it was gone —
+      // desyncing the field permanently, since every later diff built on it.
       if (inputType === 'deleteContentBackward' || inputType === 'deleteByCut' ||
           inputType === 'deleteContent' || inputType === 'deleteContentForward') {
-        sendSpecialKey('Backspace');
-        lastSentValue = currentValue;
-        return;
+        if (currentValue.length >= lastSentValue.length) {
+          sendSpecialKey('Backspace');
+          lastSentValue = currentValue;
+          return;
+        }
       }
 
       // Value shrunk → user deleted. Clean-suffix trim: backspace just the removed
@@ -300,8 +332,15 @@ export function createImeInput({
         return;
       }
 
-      if (inputType === 'insertText' || inputType === 'insertCompositionText' ||
-          currentValue.length > lastSentValue.length) {
+      // No inputType guard here. The two branches below already discriminate on the
+      // only thing that matters — grew, or same length and different — and the
+      // shrink case returned above. Gating on insertText/insertCompositionText
+      // instead meant an EQUAL-LENGTH replacement under any other inputType fell
+      // through to `lastSentValue = currentValue` and sent nothing at all: tapping
+      // a Gboard suggestion or a Grammarly rewrite that swaps 'teh' for 'the'
+      // arrives as insertReplacementText, so the correction never reached the
+      // remote and the field silently kept the typo.
+      {
         if (currentValue.length > lastSentValue.length) {
           if (currentValue.startsWith(lastSentValue)) {
             // Append-only: send just the new tail.
@@ -391,12 +430,13 @@ export function createImeInput({
     // the composition guard, and NOT gated on an empty value. Defer a remote
     // backspace that a following beforeinput/input CANCELS (a real character), so a
     // keydown-only delete (glide) reaches the remote and a character doesn't get a
-    // spurious backspace. Never guess on a secret field.
+    // spurious backspace. Runs on SECRETS too: skipping it there ("never guess on a
+    // secret") left the delete key dead on every password and OTP, so a typo was
+    // uncorrectable and the login failed silently. Barely a guess anyway —
+    // onProxyInput clears this timer before handling any real input event.
     if (e.key === 'Unidentified') {
-      if (!getSensitiveField()) {
-        if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
-        pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
-      }
+      if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
+      pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
       return;
     }
     // During IME composition, Enter/Escape/Space commit or dismiss the candidate
@@ -406,6 +446,11 @@ export function createImeInput({
     if (e.isComposing || e.keyCode === 229) return;
 
     if (isAndroid) {
+      // Android only, deliberately. On iOS clearProxy() tears down the chew
+      // buffer that hold-to-repeat backspace depends on, and no iOS soft keyboard
+      // ships arrows — only a hardware keyboard on iPad would reach this, which
+      // is untested. Keep the blast radius to the paths that were verified.
+      if (handleCaretKey(e)) return;
       switch (e.key) {
         case 'Backspace':
           if (proxy.value === '') { e.preventDefault(); sendSpecialKey('Backspace'); }
@@ -687,16 +732,17 @@ export function createImeInput({
       // that a following textupdate CANCELS (a real character always produces one;
       // onECTextUpdate clears this timer up top even when it suppresses the send).
       // So a keydown-only delete (glide) reaches the remote, and a character does
-      // not get a spurious backspace. Never guess on secret fields.
-      if (!getSensitiveField()) {
-        if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
-        pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
-      }
+      // not get a spurious backspace. Runs on SECRETS too — see onProxyKeyDown.
+      // Gboard glide, Indic, SwiftKey and Samsung all report delete this way, so
+      // the old exemption left it dead on every password and OTP field.
+      if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
+      pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
       return;
     }
     // Composition owns Enter/Escape/Space (commit/dismiss candidate) — don't
     // forward them to the remote. keyCode 229 / e.isComposing mark IME activity.
     if (e.isComposing || e.keyCode === 229) return;
+    if (handleCaretKey(e)) return;
     switch (e.key) {
       case 'Enter': e.preventDefault(); sendActionKey(); resetEC(); return;
       case 'Tab': e.preventDefault(); sendSpecialKey('Tab'); resetEC(); return;
