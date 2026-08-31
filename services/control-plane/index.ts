@@ -484,10 +484,6 @@ async function routeSession(
   const expiresAt = ttlSeconds ? expiresAtFromTtlSeconds(ttlSeconds) : undefined;
   const proxy = readCountryProxy(body);
   if ('error' in proxy) return { status: 400, body: { error: proxy.error } };
-  const browserMode = body?.browserMode === undefined ? 'kiosk' : body.browserMode;
-  if (browserMode !== 'kiosk' && browserMode !== 'normal') {
-    return { status: 400, body: { error: 'browserMode must be kiosk or normal' } };
-  }
   const encryption = readLiveViewEncryption(body?.liveViewEncryption);
   if (encryption.error) return { status: 400, body: { error: encryption.error } };
   if (encryption.enabled && body?.liveViewE2e !== undefined) {
@@ -527,7 +523,6 @@ async function routeSession(
       expiresAt,
       ...(liveViewE2e.value ? { liveViewE2e: liveViewE2e.value } : {}),
       ...(proxy.value ? { proxy: proxy.value } : {}),
-      browserMode,
     }, ControlPlaneConfig.serviceAuthToken);
     attempts.push(result.attempt);
 

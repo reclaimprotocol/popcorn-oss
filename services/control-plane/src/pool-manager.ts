@@ -20,7 +20,6 @@ export interface RoutedSessionRequest {
   tokenExpiresAt?: string;
   accessPolicy?: RoutedSessionAccessPolicy;
   proxy?: { country: string };
-  browserMode?: 'kiosk' | 'normal';
   liveViewE2e?: LiveViewE2eRequest;
 }
 
@@ -270,7 +269,7 @@ export async function reallocateExpiredRegionalSession(
   expiresAt: string,
   serviceAuthToken: string,
   request?: Pick<RoutedSessionRequest,
-    'clientId' | 'clientName' | 'tokenExpiresAt' | 'accessPolicy' | 'proxy' | 'browserMode' | 'liveViewE2e'>,
+    'clientId' | 'clientName' | 'tokenExpiresAt' | 'accessPolicy' | 'proxy' | 'liveViewE2e'>,
 ) {
   const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/reallocate-expired`, {
     method: 'POST',

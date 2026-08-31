@@ -75,10 +75,6 @@ spec:
               value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
             - name: GAME_SERVER_FLEET
               value: {{ .Values.poolManager.gameServerFleet | quote }}
-{{- with .Values.poolManager.normalGameServerFleet }}
-            - name: GAME_SERVER_NORMAL_FLEET
-              value: {{ . | quote }}
-{{- end }}
             - name: HTTPS_PROXY_URL
               valueFrom:
                 secretKeyRef:

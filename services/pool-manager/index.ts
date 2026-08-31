@@ -262,7 +262,6 @@ async function allocateSessionLocally(
     accessPolicy: SessionAccessPolicy = { tokenMode: "expiring", cdpScope: "restricted" },
     proxy: SessionProxy = null,
     liveViewE2e?: LiveViewE2eRequest,
-    browserMode: "kiosk" | "normal" = "kiosk",
 ) {
     const allocationRequestedAt = new Date();
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
@@ -283,9 +282,7 @@ async function allocateSessionLocally(
     console.log(`🚀 Allocation request for session: ${sessionId} (client: ${identity.clientId})`);
 
     try {
-        const fleet = browserMode === "normal" ? RuntimeConfig.normalGameServerFleet : GAME_SERVER_FLEET;
-        if (!fleet) throw new Error("NORMAL_BROWSER_FLEET_NOT_CONFIGURED");
-        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, fleet, sessionId, liveViewE2e);
+        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
         const port = browserRoutePort(allocation.ports);
@@ -466,10 +463,6 @@ async function createControlPlaneSession(c: any): Promise<Response> {
         }
         const proxy = readSessionProxy(body);
         if ("error" in proxy) return c.json({ error: proxy.error }, 400);
-        const browserMode = body?.browserMode === undefined ? "kiosk" : body.browserMode;
-        if (browserMode !== "kiosk" && browserMode !== "normal") {
-            return c.json({ error: "browserMode must be kiosk or normal" }, 400);
-        }
 
         if (expiresAt && access.value.tokenExpiresAt
             && Date.parse(access.value.tokenExpiresAt) < Date.parse(expiresAt)) {
@@ -484,7 +477,6 @@ async function createControlPlaneSession(c: any): Promise<Response> {
             access.value.accessPolicy,
             proxy.value,
             liveViewE2e.value,
-            browserMode,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (e) {
@@ -610,10 +602,6 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
         }
         const proxy = readSessionProxy(body);
         if ("error" in proxy) return c.json({ success: false, error: proxy.error }, 400);
-        const browserMode = body?.browserMode === undefined ? "kiosk" : body.browserMode;
-        if (browserMode !== "kiosk" && browserMode !== "normal") {
-            return c.json({ success: false, error: "browserMode must be kiosk or normal" }, 400);
-        }
 
         const clientId = typeof body?.clientId === "string" && body.clientId.trim()
             ? body.clientId.trim()
@@ -659,7 +647,6 @@ async function reallocateExpiredSession(c: any, sessionId: string): Promise<Resp
             access.value.accessPolicy,
             proxy.value,
             liveViewE2e,
-            browserMode,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (error) {

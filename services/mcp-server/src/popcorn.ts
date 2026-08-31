@@ -60,7 +60,6 @@ export function createSessionRequestBody(input: CreateSessionInput): Record<stri
     sessionId: input.sessionId,
     ttlSeconds: input.ttlSeconds,
     metadata: input.metadata,
-    browserMode: 'normal',
     ...(input.regions ? { regions: input.regions } : {}),
     ...(input.proxyCountry ? { proxy: { country: input.proxyCountry } } : {}),
   };

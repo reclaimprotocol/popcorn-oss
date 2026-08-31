@@ -30,7 +30,6 @@ describe('control-plane wire contract', () => {
       sessionId: 's',
       ttlSeconds: 600,
       metadata: { purpose: 'test' },
-      browserMode: 'normal',
       regions: ['asia-south1', 'us-central1'],
       proxy: { country: 'IN' },
     });
@@ -38,7 +37,7 @@ describe('control-plane wire contract', () => {
 
   test('session placement omits proxy and region fields when not requested', () => {
     expect(createSessionRequestBody({ sessionId: 's', ttlSeconds: 600, metadata: {} }))
-      .toEqual({ sessionId: 's', ttlSeconds: 600, metadata: {}, browserMode: 'normal' });
+      .toEqual({ sessionId: 's', ttlSeconds: 600, metadata: {} });
   });
 });
 
