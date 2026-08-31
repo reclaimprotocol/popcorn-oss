@@ -8,6 +8,16 @@ describe('control-plane wire contract', () => {
     expect(toSessionView({ sessionId: 's', url: 'https://gw/u' }).liveViewUrl).toBe('https://gw/u');
     expect(toSessionView({ sessionId: 's' }).liveViewUrl).toBeNull();
   });
+
+  test('agent CDP comes only from the trusted internal endpoint', () => {
+    const view = toSessionView({
+      sessionId: 's',
+      cdpUrl: 'wss://gw/cdp/s/restricted-token/',
+      cdpInternalUrl: 'wss://gw/cdp-internal/s/internal-token/',
+    });
+    expect(view.agentCdpUrl).toBe('wss://gw/cdp-internal/s/internal-token/');
+    expect(toSessionView({ sessionId: 's', cdpUrl: 'wss://gw/cdp/s/restricted-token/' }).agentCdpUrl).toBeNull();
+  });
 });
 
 describe('resource binding', () => {
