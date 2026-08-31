@@ -186,32 +186,20 @@
         });
       }
 
-      // Retry the asset, not this document: the primary, a query-busted retry,
-      // then a distinct no-cache fallback. Ten seconds avoids restarting slow boots.
-      var BOOT_DEADLINE_MS = 10000;
-      var bootAttempt = 0;
-      var assetPaths = [
-        'viewer.bundle.js',
-        'viewer.bundle.js?__pcna=1',
-        'viewer-fallback.bundle.js'
-      ];
-      var assetScript;
-      var assetSettled = false;
-
-      // Rewritten by the Docker build with hashed paths and SRI.
-      var assetIntegrity = 'sha384-__VIEWER_BUNDLE_SRI__';
-
-      function reportStall(retrying) {
+      // The Docker build inlines the viewer. Allow slow Android module evaluation
+      // to finish before reporting a terminal startup failure.
+      var BOOT_DEADLINE_MS = 25000;
+      function reportStall() {
         try {
           parent.postMessage({
-            type: 'POPCORN_BOOT_STALL', stage: 'asset', attempt: bootAttempt, retrying: retrying,
-            path: assetPaths[bootAttempt]
+            type: 'POPCORN_BOOT_STALL', stage: 'module', attempt: 0, retrying: false,
+            path: 'inline'
           }, '*');
         } catch (e) { /* no parent, or a parent that refuses '*' */ }
       }
 
-      function terminalAssetFailure() {
-        reportStall(false);
+      function terminalModuleFailure() {
+        reportStall();
         window.__viewerOverlay(
           'Live view couldn\u2019t start',
           'The viewer didn\u2019t finish loading. Check your connection and try again.',
@@ -219,56 +207,14 @@
         );
       }
 
-      function loadViewerAsset() {
-        if (window.__viewerBooted || assetSettled) return;
-        if (bootAttempt >= assetPaths.length) {
-          assetSettled = true;
-          terminalAssetFailure();
-          return;
-        }
-        if (assetScript && assetScript.parentNode) assetScript.parentNode.removeChild(assetScript);
-        assetScript = document.createElement('script');
-        assetScript.type = 'module';
-        assetScript.src = assetPaths[bootAttempt];
-        assetScript.integrity = assetIntegrity;
-        assetScript.onerror = function () {
-          if (window.__viewerBooted || assetSettled) return;
-          try {
-            parent.postMessage({
-              type: 'POPCORN_BOOT_ERROR', msg: 'Viewer bundle request failed',
-              src: assetPaths[bootAttempt], line: 0
-            }, '*');
-          } catch (e) { /* see above */ }
-          if (bootAttempt + 1 >= assetPaths.length) {
-            assetSettled = true;
-            terminalAssetFailure();
-            return;
-          }
-          reportStall(true);
-          bootAttempt++;
-          loadViewerAsset();
-        };
-        document.head.appendChild(assetScript);
-      }
-
       if (!window.__viewerUnsupported && window.setTimeout) {
-        loadViewerAsset();
-        setTimeout(function watchdog() {
-          if (window.__viewerBooted || assetSettled) return;
-          if (bootAttempt + 1 >= assetPaths.length) {
-            assetSettled = true;
-            terminalAssetFailure();
-            return;
-          }
-          reportStall(true);
-          bootAttempt++;
-          loadViewerAsset();
-          setTimeout(watchdog, BOOT_DEADLINE_MS);
+        setTimeout(function () {
+          if (!window.__viewerBooted) terminalModuleFailure();
         }, BOOT_DEADLINE_MS);
       }
     })();
   </script>
 
-  <!-- The asset loader above starts the content-addressed viewer module. -->
+  <!-- VIEWER_BUNDLE -->
 </body>
 </html>

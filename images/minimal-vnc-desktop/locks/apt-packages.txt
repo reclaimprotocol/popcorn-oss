@@ -2,6 +2,11 @@
 # Versions were resolved from the Ubuntu 22.04 archive on 2026-06-24 and are
 # installed against the Dockerfile's pinned Ubuntu snapshot sources.
 bash=5.1-6ubuntu1.1
+# Build-time only: precompresses liveview.html to the .br sibling that
+# proxy/main.go already prefers over .gz. The whole viewer is inlined into that
+# one document now, so it is the entire cold-start payload — brotli -11 beats
+# gzip -9 by ~20-25% on minified JS, on exactly the request that fails.
+brotli=1.0.9-2build6
 ca-certificates=20260601~22.04.1
 coreutils=8.32-4.1ubuntu1.3
 curl=7.81.0-1ubuntu1.24

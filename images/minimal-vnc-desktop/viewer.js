@@ -1,13 +1,11 @@
-// viewer.js — the liveview page controller, bundled (with noVNC core + the kbd/
-// IME layer) into a single viewer.bundle.js by esbuild at image-build time.
+// viewer.js — the liveview page controller, bundled with noVNC core and the kbd/
+// IME layer into an inline ES module by esbuild at image-build time.
 //
 // Why a bundle: the viewer's JS is a ~70-module ES graph (noVNC core/* +
 // kbd/*). Shipped raw, the browser discovers modules level-by-level over the
 // tunnel — several serial round-trips before anything runs (~3.7s was measured
-// on 3G). Bundling collapses that to ONE request. Because everything is in one
-// file, PopcornKbd is defined synchronously when this runs, so there is no
-// module-load / handshake overlap to orchestrate (and no attach race): dial and
-// attach happen together once the single bundle has loaded.
+// on 3G). Bundling makes it one inline script. PopcornKbd is therefore defined
+// synchronously when this runs, with no module-load / handshake attach race.
 //
 // Source stays modular (this file + kbd/*.js + core/*.js); esbuild is the only
 // thing that sees the graph. Edit the modules; the build re-bundles.
@@ -527,10 +525,7 @@ window.addEventListener('pagehide', (event) => {
 // viewer that wasn't configured for it and log the misconfiguration loudly rather
 // than silently mis-driving the keyboard.
 // Cancel the ES5 boot watchdog in liveview.html. Reaching this line proves the
-// whole module graph evaluated (noVNC included) — everything that kills us before
-// it (blocked fetch, truncated body, uncaught throw, a renderer that stalls mid
-// evaluation) is externally indistinguishable from silence, so the watchdog treats
-// a still-false flag as "never booted" and reloads once.
+// complete inlined viewer evaluated; a still-false flag is a module-startup failure.
 window.__viewerBooted = true;
 
 sayHello({

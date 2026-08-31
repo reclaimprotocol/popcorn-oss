@@ -462,28 +462,24 @@ func staticHandler(root string, ready readyGate) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
-		// The content-hashed viewer bundle (viewer-<hash>.bundle.js) is safe to cache
-		// forever: a content change yields a new filename, so the browser can never
-		// serve stale logic. Caching it immutably lets a reconnect/reopen skip the
-		// re-download entirely (the win over plain no-store). The .gz sibling served
-		// below inherits this via the same clean path.
+		// liveview.html now carries the whole inlined viewer, which inverts what the
+		// right cache policy is. no-store made sense when the shell was ~8KB and the
+		// content-hashed bundle beside it held the bytes; now no-store means every
+		// remount re-downloads the entire viewer (a 3-mount session paid ~240KB).
 		//
-		// Everything else in the viewer shell (HTML + the raw input/keyboard logic)
-		// changes constantly and is NOT content-hashed. The Dockerfile pins these
-		// files' mtimes to a fixed epoch for reproducible builds, so their
-		// Last-Modified never changes and a browser would 304 to its stale cached
-		// copy forever — even across rebuilds. Force a fresh fetch so a device always
-		// runs the current logic. In particular liveview.html MUST stay no-store: it
-		// carries the current bundle hash, so it has to be re-read every load.
-		base := path.Base(clean)
+		// The URL is session-scoped (/liveview/<sid>/<jwt>/liveview.html), so a cached
+		// entry is reusable only by the session that fetched it, and the shell cannot
+		// change underneath that session — the pod runs one fixed image for its whole
+		// life. `private` keeps the JWT-bearing URL out of shared caches.
+		//
+		// A short max-age (not no-cache) is deliberate: no-cache would still send a
+		// revalidation request on every remount, and a request that can be sent is a
+		// request that can hang — which is the failure this inlining exists to remove.
+		// Serving remounts from cache means they issue no request at all.
 		switch {
-		case strings.HasPrefix(base, "viewer-fallback-") && strings.HasSuffix(base, ".bundle.js"):
-			// The recovery path must not inherit the primary's immutable cache.
-			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
-		case strings.HasPrefix(base, "viewer-") && strings.HasSuffix(base, ".bundle.js"):
-			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-		case strings.HasSuffix(clean, "/liveview.html") || strings.HasSuffix(clean, "/kbd-autofocus.js") ||
-			strings.HasPrefix(clean, "/kbd/"):
+		case strings.HasSuffix(clean, "/liveview.html"):
+			w.Header().Set("Cache-Control", "private, max-age=300")
+		case strings.HasSuffix(clean, "/kbd-autofocus.js") || strings.HasPrefix(clean, "/kbd/"):
 			w.Header().Set("Cache-Control", "no-store, max-age=0, must-revalidate")
 		}
 		// Serve a precompressed sibling (.br/.gz) when the client accepts that

@@ -250,16 +250,23 @@ COPY --from=trusted-liveview bootstrap.js noise.js /usr/share/novnc/e2e/
 COPY locks/esbuild.lock /tmp/esbuild.lock
 COPY locks/noble.lock /tmp/noble.lock
 
-# Bundle the viewer (noVNC core/* + the kbd/* IME layer + viewer.js) into a single
-# viewer.bundle.js so the page loads in ONE request instead of a ~70-module ES
-# graph that the browser discovers level-by-level over the tunnel (measured
-# multi-second cold start on 3G). esbuild is a standalone Go binary — no Node —
-# pinned by sha256 exactly like noVNC. --format=esm keeps module semantics.
-# --minify-whitespace/--minify-syntax strip whitespace + fold dead code (~-22% on
-# the wire after gzip) WITHOUT mangling identifiers, so function names stay in
-# stack traces and the BUILD_TAG string stays greppable — the bundle stays
-# debuggable. (Full --minify would mangle names; deliberately not used.) esbuild's
-# output is deterministic (no embedded timestamps), preserving reproducibility.
+# Bundle the viewer (noVNC core/* + the kbd/* IME layer + viewer.js) and inline it
+# into liveview.html as one <script type="module">. The point is removing the SECOND
+# REQUEST: in ~4% of sessions the document arrives fine and the separate bundle
+# request then hangs indefinitely with no status and no error event, so onerror
+# never fires and only a watchdog notices. Inlined, there is nothing left to hang.
+# Stays --format=esm because noVNC's core/util/browser.js uses top-level await,
+# which the iife format cannot express (it fails the build outright).
+# esbuild is a standalone Go binary — no Node — pinned by sha256 exactly like noVNC.
+# Full --minify (mangles identifiers too). Measured on the real v1.6.0 bundle:
+#   whitespace+syntax  392.9K raw  108.1K gz  91.0K br
+#   --minify           294.8K raw   94.6K gz  79.7K br   ← -12.4% brotli
+# This used to stop at --minify-whitespace/--minify-syntax to keep the BUILD_TAG
+# string greppable, but mangling renames identifiers and leaves string LITERALS
+# alone: 'bundle-80' still appears verbatim in the output and still logs correctly.
+# The real cost is function names in stack traces, which inlining already reduced
+# to liveview.html:<line>. Reverting is one word if a stack trace ever needs them.
+# esbuild's output is deterministic (no embedded timestamps), preserving reproducibility.
 RUN set -eux; \
     mkdir -p /usr/share/novnc/node_modules/@noble; \
     while IFS="$(printf '\t')" read -r noble_name noble_version noble_url noble_sha256; do \
@@ -282,22 +289,19 @@ RUN set -eux; \
     mkdir -p /tmp/esbuild-src; \
     tar -xzf /tmp/esbuild.tgz --strip-components=1 -C /tmp/esbuild-src package/bin/esbuild; \
     /tmp/esbuild-src/bin/esbuild /usr/share/novnc/viewer.js --bundle --format=esm \
-        --minify-whitespace --minify-syntax \
-        --outfile=/usr/share/novnc/viewer.bundle.js; \
+        --minify \
+        --outfile=/tmp/viewer.inline.js; \
     rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock /tmp/noble-*.tgz /tmp/noble.lock; \
-    # Immutable primary bundle plus a no-cache fallback; generate SRI from its bytes.
-    bundle_hash="$(sha256sum /usr/share/novnc/viewer.bundle.js | cut -c1-12)"; \
-    bundle_sri="$(openssl dgst -sha384 -binary /usr/share/novnc/viewer.bundle.js | base64 | tr -d '\n')"; \
-    mv /usr/share/novnc/viewer.bundle.js "/usr/share/novnc/viewer-${bundle_hash}.bundle.js"; \
-    cp "/usr/share/novnc/viewer-${bundle_hash}.bundle.js" "/usr/share/novnc/viewer-fallback-${bundle_hash}.bundle.js"; \
-    sed -i "s#viewer\.bundle\.js#viewer-${bundle_hash}.bundle.js#g; s#viewer-fallback\.bundle\.js#viewer-fallback-${bundle_hash}.bundle.js#g; s#sha384-__VIEWER_BUNDLE_SRI__#sha384-${bundle_sri}#g" \
-        /usr/share/novnc/liveview.html; \
-    # Precompress the (hashed) bundle: it's the cold-start bottleneck over the
-    # tunnel and novnc-proxy serves the .gz via Accept-Encoding negotiation. -n
-    # drops the name/mtime from the gzip header so the output is deterministic;
-    # -k keeps the raw file for clients without gzip.
-    gzip -9 -n -k -f "/usr/share/novnc/viewer-${bundle_hash}.bundle.js" \
-        "/usr/share/novnc/viewer-fallback-${bundle_hash}.bundle.js"
+    # Escape a literal closing script tag before inserting generated JavaScript.
+    sed 's#</[sS][cC][rR][iI][pP][tT]#<\\/script#g' /tmp/viewer.inline.js > /tmp/viewer.inline.safe.js; \
+    awk -v bundle=/tmp/viewer.inline.safe.js '/<!-- VIEWER_BUNDLE -->/ { print "  <script type=\"module\">"; while ((getline line < bundle) > 0) print line; close(bundle); print "  </script>"; next } { print; }' /usr/share/novnc/liveview.html > /tmp/liveview.html; \
+    mv /tmp/liveview.html /usr/share/novnc/liveview.html; \
+    # The no-store document is large after inlining; keep a deterministic gzip
+    # sibling so clients that accept gzip transfer the compressed representation.
+    gzip -9 -n -k -f /usr/share/novnc/liveview.html; \
+    brotli -q 11 -k -f /usr/share/novnc/liveview.html; \
+    ls -l /usr/share/novnc/liveview.html /usr/share/novnc/liveview.html.gz /usr/share/novnc/liveview.html.br; \
+    rm -f /tmp/viewer.inline.js /tmp/viewer.inline.safe.js
 
 COPY third-party/fortress /usr/share/doc/popcorn/third-party/fortress
 COPY --chown=kernel:kernel extensions/proxy /home/kernel/extensions/proxy
@@ -311,10 +315,10 @@ RUN set -eux; \
         /usr/local/bin/minimal-vnc-entrypoint \
         /usr/local/bin/start-chromium \
         /usr/share/novnc/liveview.html \
+        /usr/share/novnc/liveview.html.gz \
+        /usr/share/novnc/liveview.html.br \
         /usr/share/novnc/kbd-autofocus.js \
-        /usr/share/novnc/viewer.js \
-        /usr/share/novnc/viewer-*.bundle.js \
-        /usr/share/novnc/viewer-*.bundle.js.gz; \
+        /usr/share/novnc/viewer.js; \
     find /usr/share/novnc/kbd /home/kernel/extensions /etc/chromium/policies /etc/chromium/policy-variants /usr/share/doc/popcorn -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
 
 USER kernel
