@@ -128,6 +128,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     tar -xzf /tmp/novnc.tar.gz --strip-components=1 -C /tmp/novnc-src; \
     cp -a /tmp/novnc-src/core /tmp/novnc-src/vendor /usr/share/novnc/; \
     cp -a /tmp/novnc-src/LICENSE.txt "/usr/share/novnc/LICENSE.noVNC-${novnc_version}.txt"; \
+    # Backport of noVNC #2053: v1.6.0 probes WebCodecs H.264 at module scope with a top-level await, and on Android VideoDecoder.flush() can hang forever, so the whole inlined viewer never finishes evaluating.
+    # The grep fails the build if a noVNC bump moves that line, so the sed can never silently no-op.
+    sed -i 's#^supportsWebCodecsH264Decode = await _checkWebCodecsH264DecodeSupport();$#_checkWebCodecsH264DecodeSupport().then((result) => { supportsWebCodecsH264Decode = result; });#' /usr/share/novnc/core/util/browser.js; \
+    grep -q '^_checkWebCodecsH264DecodeSupport().then(' /usr/share/novnc/core/util/browser.js; \
     apt-get purge -y --auto-remove xz-utils; \
     rm -rf /tmp/chromium-artifacts /tmp/novnc-src /tmp/novnc.tar.gz /tmp/apt-packages.txt /tmp/chromium-artifacts.tsv /tmp/novnc.lock; \
     useradd -m -s /bin/bash kernel; \
@@ -256,8 +260,8 @@ COPY locks/noble.lock /tmp/noble.lock
 # REQUEST: in ~4% of sessions the document arrives fine and the separate bundle
 # request then hangs indefinitely with no status and no error event, so onerror
 # never fires and only a watchdog notices. Inlined, there is nothing left to hang.
-# Stays --format=esm because noVNC's core/util/browser.js uses top-level await,
-# which the iife format cannot express (it fails the build outright).
+# Stays --format=esm (the inline tag is type="module"), with top-level await declared unsupported so
+# esbuild errors at parse time if any module reintroduces one — a never-settling TLA wedges the bundle.
 # esbuild is a standalone Go binary — no Node — pinned by sha256 exactly like noVNC.
 # Full --minify (mangles identifiers too). Measured on the real v1.6.0 bundle:
 #   whitespace+syntax  392.9K raw  108.1K gz  91.0K br
@@ -290,6 +294,7 @@ RUN set -eux; \
     mkdir -p /tmp/esbuild-src; \
     tar -xzf /tmp/esbuild.tgz --strip-components=1 -C /tmp/esbuild-src package/bin/esbuild; \
     /tmp/esbuild-src/bin/esbuild /usr/share/novnc/viewer.js --bundle --format=esm \
+        --supported:top-level-await=false \
         --minify \
         --outfile=/tmp/viewer.inline.js; \
     rm -rf /tmp/esbuild.tgz /tmp/esbuild-src /tmp/esbuild.lock /tmp/noble-*.tgz /tmp/noble.lock; \
