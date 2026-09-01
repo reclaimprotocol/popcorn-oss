@@ -47,7 +47,12 @@ if (billing.name !== 'none') startCommitReconciler(store, billing);
 
 const app = new Hono();
 
-app.get('/health', (c) => c.json({ status: 'ok', storage: durable ? 'postgres' : 'memory', billing: billing.name }));
+app.get('/health', (c) => c.json({
+  status: 'ok',
+  storage: durable ? 'postgres' : 'memory',
+  billing: billing.name,
+  url_shortener: McpConfig.urlShortenerProvider,
+}));
 app.get('/ready', async (c) => {
   try {
     await store.ping();

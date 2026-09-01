@@ -54,6 +54,10 @@ export const McpConfig = {
   billingProvider: (env('MCP_BILLING_PROVIDER', 'none') as 'none' | 'external'),
   billingBaseUrl: env('MCP_BILLING_BASE_URL').replace(/\/$/, ''),
   billingAuthToken: env('MCP_BILLING_AUTH_TOKEN'),
+  /** Optional, best-effort shortening for human-facing LiveView links only. */
+  urlShortenerProvider: env('MCP_URL_SHORTENER_PROVIDER', 'none').toLowerCase(),
+  urlShortenerEndpoint: env('MCP_URL_SHORTENER_ENDPOINT'),
+  urlShortenerApiKey: env('MCP_URL_SHORTENER_API_KEY'),
   /** Durable storage. Unset means in-memory (dev/demo only). */
   databaseUrl: databaseUrl(),
 } as const;
@@ -72,6 +76,13 @@ export function assertProductionConfig(): void {
     if (!McpConfig.billingBaseUrl) missing.push('MCP_BILLING_BASE_URL');
     if (!McpConfig.billingAuthToken) missing.push('MCP_BILLING_AUTH_TOKEN');
     else if (McpConfig.billingAuthToken.length < 32) missing.push('MCP_BILLING_AUTH_TOKEN (minimum 32 characters)');
+  }
+  if (!['none', 'popc', 'custom'].includes(McpConfig.urlShortenerProvider)) {
+    missing.push('MCP_URL_SHORTENER_PROVIDER (must be none, popc, or custom)');
+  } else if (McpConfig.urlShortenerProvider === 'popc' && !McpConfig.urlShortenerApiKey) {
+    missing.push('MCP_URL_SHORTENER_API_KEY');
+  } else if (McpConfig.urlShortenerProvider === 'custom' && !McpConfig.urlShortenerEndpoint) {
+    missing.push('MCP_URL_SHORTENER_ENDPOINT');
   }
   if (missing.length) throw new Error(`Refusing to start: missing production configuration: ${missing.join(', ')}`);
 }

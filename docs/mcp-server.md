@@ -54,10 +54,37 @@ mcpServer:
   staticIpName: mcp-popcorn-ip
   secretName: mcp-server-secret   # DATABASE_URL, MCP_TOKEN_SIGNING_KEY,
                                   # POPCORN_CLIENT_ID/SECRET, and
-                                  # MCP_BILLING_AUTH_TOKEN for external billing
+                                  # optional provider tokens
 ```
 
 The ingress publishes `/mcp`, `/oauth`, `/.well-known` and `/health`.
+
+Human-facing LiveView shortening is optional and disabled by default. To opt
+into the built-in popc.click provider, add its API key to `mcp-server-secret`
+under `MCP_URL_SHORTENER_API_KEY` and set:
+
+```yaml
+mcpServer:
+  urlShortener:
+    provider: popc
+    apiKeyKey: MCP_URL_SHORTENER_API_KEY
+    timeoutMs: 5000
+```
+
+Self-hosters can bring a compatible service without patching the MCP server:
+
+```yaml
+mcpServer:
+  urlShortener:
+    provider: custom
+    endpoint: https://short.example/api/links
+    apiKeyKey: "" # or a key in mcp-server-secret when Bearer auth is required
+    timeoutMs: 5000
+```
+
+The endpoint accepts `POST {"url":"..."}` and returns
+`{"code":"...","short_url":"...","url":"..."}`. This applies only to
+HTTP(S) LiveView handoff links; CDP WebSocket URLs are never shortened.
 
 ## Client configuration
 

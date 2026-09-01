@@ -64,6 +64,25 @@ spec:
                   name: {{ $mcp.secretName | quote }}
                   key: {{ $mcp.billing.authTokenKey | quote }}
             {{- end }}
+            - name: MCP_URL_SHORTENER_PROVIDER
+              value: {{ $mcp.urlShortener.provider | quote }}
+            {{- if ne $mcp.urlShortener.provider "none" }}
+            - name: MCP_URL_SHORTENER_TIMEOUT_MS
+              value: {{ $mcp.urlShortener.timeoutMs | quote }}
+            {{- if eq $mcp.urlShortener.provider "custom" }}
+            - name: MCP_URL_SHORTENER_ENDPOINT
+              value: {{ required "mcpServer.urlShortener.endpoint is required for a custom provider" $mcp.urlShortener.endpoint | quote }}
+            {{- end }}
+            {{- if $mcp.urlShortener.apiKeyKey }}
+            - name: MCP_URL_SHORTENER_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $mcp.secretName | quote }}
+                  key: {{ $mcp.urlShortener.apiKeyKey | quote }}
+            {{- else if eq $mcp.urlShortener.provider "popc" }}
+            {{- fail "mcpServer.urlShortener.apiKeyKey is required for the popc provider" }}
+            {{- end }}
+            {{- end }}
             {{- with $mcp.allowedOrigins }}
             - name: MCP_ALLOWED_ORIGINS
               value: {{ join "," . | quote }}

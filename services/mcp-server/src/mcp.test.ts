@@ -7,6 +7,17 @@ function ctx(billing: BillingProvider = new NoBillingProvider()) {
   return { store: new InMemoryStore(), subject: 'device:test', billing };
 }
 
+function toolResult(response: unknown): any {
+  return (response as any).result;
+}
+
+function toolPayload(response: unknown): any {
+  const result = toolResult(response);
+  if (result.structuredContent !== undefined) return result.structuredContent;
+  const text = result.content.find((item: any) => item.type === 'text')?.text;
+  return JSON.parse(text);
+}
+
 /** Records what the tool layer asked billing to do, in order. */
 class RecordingBilling implements BillingProvider {
   readonly name = 'recording';
@@ -52,6 +63,16 @@ describe('mcp surface', () => {
       'list_browser_sessions',
     ]);
     expect(JSON.stringify((response as any).result.tools).toLowerCase()).not.toContain('stripe');
+    for (const tool of (response as any).result.tools) {
+      expect(tool.title).toBeString();
+      expect(tool.outputSchema).toBeDefined();
+      expect(tool.annotations).toMatchObject({
+        readOnlyHint: expect.any(Boolean),
+        destructiveHint: expect.any(Boolean),
+        idempotentHint: expect.any(Boolean),
+        openWorldHint: true,
+      });
+    }
   });
 
   test('notifications do not produce a response', async () => {
@@ -72,7 +93,7 @@ describe('billing boundary', () => {
       method: 'tools/call',
       params: { name: 'get_balance', arguments: {} },
     });
-    const payload = (response as any).result.structuredContent;
+    const payload = toolPayload(response);
     expect(payload).toEqual({
       credits: 7,
       metered: true,
@@ -89,7 +110,7 @@ describe('billing boundary', () => {
       method: 'tools/call',
       params: { name: 'get_balance', arguments: {} },
     });
-    expect((response as any).result.structuredContent).toMatchObject({ credits: null, metered: false });
+    expect(toolPayload(response)).toMatchObject({ credits: null, metered: false });
   });
 
   test('a refused reservation surfaces the provider next_action opaquely', async () => {
@@ -104,8 +125,9 @@ describe('billing boundary', () => {
       method: 'tools/call',
       params: { name: 'create_browser_session', arguments: { purpose: 'log in to acme', idempotency_key: 'approval' } },
     });
-    const payload = (response as any).result.structuredContent;
-    expect((response as any).result.isError).toBe(true);
+    const payload = toolPayload(response);
+    expect(toolResult(response).isError).toBe(true);
+    expect(toolResult(response).structuredContent).toBeUndefined();
     expect(payload.error).toBe('insufficient_credit');
     expect(payload.next_action).toEqual({ type: 'external_approval', url: 'https://billing.example/checkout' });
     // Reserved once and refused: nothing was committed or released.
@@ -121,7 +143,7 @@ describe('billing boundary', () => {
       method: 'tools/call',
       params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'outage' } },
     });
-    expect((response as any).result.structuredContent.error).toBe('billing_unavailable');
+    expect(toolPayload(response).error).toBe('billing_unavailable');
   });
 
   test('invalid placement is rejected before reserving credit', async () => {
@@ -135,7 +157,7 @@ describe('billing boundary', () => {
         arguments: { purpose: 'x', idempotency_key: 'bad-placement', regions: [], proxy_country: 'USA' },
       },
     });
-    expect((response as any).result.structuredContent.error).toBe('invalid_request');
+    expect(toolPayload(response).error).toBe('invalid_request');
     expect(billing.calls).toEqual([]);
   });
 
@@ -178,15 +200,33 @@ describe('operation idempotency', () => {
   test('a retried create returns the first terminal outcome, not a second browser', async () => {
     const context = ctx();
     const ref = `session:${context.subject}:key-1`;
+    const payload = {
+      session_id: 'sess-first',
+      live_view_url: 'https://view.example/sess-first',
+      cdp_url: 'wss://cdp.example/sess-first?token=opaque',
+      expires_at: '2030-01-01T00:00:00.000Z',
+      region: 'test',
+      isolation: 'isolated',
+      human_handoff: 'Send this URL to the human.',
+      usage_settled: true,
+    };
     await context.store.claimOperation(ref, context.subject);
-    await context.store.settleOperation(ref, 'succeeded', { session_id: 'sess-first' });
+    await context.store.settleOperation(ref, 'succeeded', payload);
     const response = await handleRpc(context, {
       jsonrpc: '2.0',
       id: 10,
       method: 'tools/call',
       params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'key-1' } },
     });
-    expect((response as any).result.structuredContent).toEqual({ session_id: 'sess-first' });
+    const result = toolResult(response);
+    expect(result.structuredContent).toEqual(payload);
+    expect(result.content[0]).toEqual({ type: 'text', text: JSON.stringify(payload) });
+    expect(result.content[1]).toMatchObject({
+      type: 'resource_link',
+      uri: payload.live_view_url,
+      mimeType: 'text/html',
+    });
+    expect(result._meta['org.reclaimprotocol.popcorn/browser-session']).toEqual(payload);
   });
 
   test('a retry after a released reservation replays the failure, not a free session', async () => {
@@ -214,7 +254,7 @@ describe('operation idempotency', () => {
       method: 'tools/call',
       params: { name: 'create_browser_session', arguments: { purpose: 'x', idempotency_key: 'key-3' } },
     });
-    expect((response as any).result.structuredContent.error).toBe('operation_in_progress');
+    expect(toolPayload(response).error).toBe('operation_in_progress');
   });
 
   test('a stale pending claim can be recovered by exactly one caller', async () => {
@@ -233,6 +273,6 @@ describe('operation idempotency', () => {
       jsonrpc: '2.0', id: 13, method: 'tools/call',
       params: { name: 'create_browser_session', arguments: { purpose: 'x' } },
     });
-    expect((response as any).result.structuredContent.error).toBe('invalid_request');
+    expect(toolPayload(response).error).toBe('invalid_request');
   });
 });

@@ -452,6 +452,37 @@
               "type": "string"
             }
           }
+        },
+        "urlShortener": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "endpoint",
+            "apiKeyKey",
+            "timeoutMs"
+          ],
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "none",
+                "popc",
+                "custom"
+              ]
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "apiKeyKey": {
+              "type": "string"
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 30000
+            }
+          }
         }
       }
     }
