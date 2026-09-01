@@ -56,8 +56,20 @@ mcpServer:
     baseUrl: ""
     # Key in `secretName` holding the service token for that billing API.
     authTokenKey: MCP_BILLING_AUTH_TOKEN
+  # Optional shortening for human-facing LiveView links. CDP WebSocket URLs
+  # are never shortened. Disabled by default so no signed URL is disclosed to
+  # a third party unless the operator explicitly opts in.
+  urlShortener:
+    # none, popc, or custom. popc uses https://popc.click/api/links.
+    provider: none
+    # Required for custom; it must accept POST {url} and return
+    # {code, short_url, url}.
+    endpoint: ""
+    # Optional for custom and required for popc. Key in `secretName`.
+    apiKeyKey: MCP_URL_SHORTENER_API_KEY
+    timeoutMs: 5000
   # Secret holding DATABASE_URL, the token signing key, the control-plane
-  # client credentials, and (for external billing) the billing service token.
+  # client credentials, and optional billing/URL-shortener tokens.
   secretName: mcp-server-secret
   # Existing platform database Secret with host, port, database, username and password.
   databaseSecretName: analytics-db-secret

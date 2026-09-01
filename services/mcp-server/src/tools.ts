@@ -3,9 +3,25 @@ import { BillingCommitError, type BillingProvider, type UsageContext } from './b
 import { McpConfig } from './config';
 import * as popcorn from './popcorn';
 import type { McpStore } from './store';
+import { shortenLiveViewUrl } from './url-shortener';
 
 export type ToolContext = { store: McpStore; subject: string; billing: BillingProvider };
-export type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean; structuredContent?: unknown };
+export type ToolContent =
+  | { type: 'text'; text: string }
+  | {
+      type: 'resource_link';
+      name: string;
+      title?: string;
+      uri: string;
+      description?: string;
+      mimeType?: string;
+    };
+export type ToolResult = {
+  content: ToolContent[];
+  isError?: boolean;
+  structuredContent?: unknown;
+  _meta?: Record<string, unknown>;
+};
 
 const regionItems = {
   type: 'string',
@@ -14,12 +30,73 @@ const regionItems = {
   ...(McpConfig.availableRegions.length ? { enum: McpConfig.availableRegions } : {}),
 };
 
-function ok(data: unknown): ToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], structuredContent: data };
+type ResultOptions = {
+  meta?: Record<string, unknown>;
+  resourceLinks?: Array<Extract<ToolContent, { type: 'resource_link' }>>;
+};
+
+const BROWSER_SESSION_META_KEY = 'org.reclaimprotocol.popcorn/browser-session';
+const BROWSER_CONNECTION_META_KEY = 'org.reclaimprotocol.popcorn/browser-connection';
+const LIVE_VIEW_META_KEY = 'org.reclaimprotocol.popcorn/live-view';
+
+function jsonText(data: unknown): string {
+  // Compact JSON is the backwards-compatible model channel. Avoid pretty
+  // printing because signed browser URLs are already long opaque values.
+  return JSON.stringify(data) ?? 'null';
+}
+
+function ok(data: unknown, options: ResultOptions = {}): ToolResult {
+  return {
+    content: [{ type: 'text', text: jsonText(data) }, ...(options.resourceLinks ?? [])],
+    structuredContent: data,
+    ...(options.meta ? { _meta: options.meta } : {}),
+  };
 }
 
 function fail(data: unknown): ToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], structuredContent: data, isError: true };
+  // With an outputSchema, clients validate structuredContent as the successful
+  // shape. Tool failures therefore use the protocol's isError + text channel.
+  return { content: [{ type: 'text', text: jsonText(data) }], isError: true };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function liveViewResource(data: Record<string, unknown>): ResultOptions['resourceLinks'] {
+  const url = data.live_view_url;
+  if (typeof url !== 'string' || !url) return [];
+  const sessionId = typeof data.session_id === 'string' ? data.session_id : 'browser';
+  return [{
+    type: 'resource_link',
+    name: `popcorn-live-view-${sessionId}`,
+    title: 'Open Popcorn LiveView',
+    uri: url,
+    description: 'Human-facing view of this isolated browser session.',
+    mimeType: 'text/html',
+  }];
+}
+
+function browserSessionResult(data: unknown): ToolResult {
+  const payload = record(data);
+  return ok(data, {
+    meta: { [BROWSER_SESSION_META_KEY]: payload },
+    resourceLinks: liveViewResource(payload),
+  });
+}
+
+function browserConnectionResult(data: unknown): ToolResult {
+  return ok(data, { meta: { [BROWSER_CONNECTION_META_KEY]: record(data) } });
+}
+
+function liveViewResult(data: unknown): ToolResult {
+  const payload = record(data);
+  return ok(data, {
+    meta: { [LIVE_VIEW_META_KEY]: payload },
+    resourceLinks: liveViewResource(payload),
+  });
 }
 
 /**
@@ -46,7 +123,12 @@ async function claim(ctx: ToolContext, ref: string): Promise<{ go: true } | { go
       }),
     };
   }
-  return { go: false, replay: existing.outcome === 'succeeded' ? ok(existing.result) : fail(existing.result) };
+  return {
+    go: false,
+    replay: existing.outcome === 'succeeded'
+      ? browserSessionResult(existing.result)
+      : fail(existing.result),
+  };
 }
 
 /** Stable Control Plane id: a stale operation can safely discover/replay its browser. */
@@ -149,17 +231,66 @@ async function settleUsage(
   }
 }
 
+type JsonSchema = Record<string, unknown>;
+
+const STRING = { type: 'string' } as const;
+const BOOLEAN = { type: 'boolean' } as const;
+const NULLABLE_STRING = {
+  anyOf: [{ type: 'string' }, { type: 'null' }],
+} as const;
+const NULLABLE_NUMBER = {
+  anyOf: [{ type: 'number' }, { type: 'null' }],
+} as const;
+
+function outputSchema(properties: Record<string, JsonSchema>, required: string[]): JsonSchema {
+  return { type: 'object', properties, required, additionalProperties: false };
+}
+
+function annotations(
+  title: string,
+  readOnlyHint: boolean,
+  destructiveHint = false,
+  idempotentHint = true,
+) {
+  return { title, readOnlyHint, destructiveHint, idempotentHint, openWorldHint: true };
+}
+
+const SESSION_ID_INPUT = {
+  type: 'object',
+  properties: { session_id: { type: 'string', description: 'Popcorn session identifier.' } },
+  required: ['session_id'],
+  additionalProperties: false,
+} as const;
+
+const BROWSER_SESSION_OUTPUT = outputSchema({
+  session_id: STRING,
+  purpose: STRING,
+  live_view_url: NULLABLE_STRING,
+  cdp_url: NULLABLE_STRING,
+  expires_at: NULLABLE_STRING,
+  region: NULLABLE_STRING,
+}, ['session_id', 'purpose', 'live_view_url', 'cdp_url', 'expires_at', 'region']);
+
 export const TOOL_DEFINITIONS = [
   {
     name: 'get_balance',
+    title: 'Get usage balance',
     description:
       'Return the caller\'s remaining usage credit, if this deployment meters usage. A null balance means usage is not metered here.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    outputSchema: outputSchema({
+      credits: NULLABLE_NUMBER,
+      metered: BOOLEAN,
+      session_block_seconds: { type: 'number' },
+      credits_per_operation: { type: 'number' },
+    }, ['credits', 'metered', 'session_block_seconds', 'credits_per_operation']),
+    annotations: annotations('Get usage balance', true),
   },
   {
     name: 'create_browser_session',
+    title: 'Create browser session',
     description:
-      `Start one isolated Popcorn browser session. One operation buys one fixed block of ${McpConfig.sessionTtlSeconds} seconds; the duration is not negotiable. Prefer a region close to the human to reduce live-view and automation latency. Returns session id, live-view URL for the human, CDP URL for the agent, selected region, and expiry. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.`,
+      `Start one isolated Popcorn browser session. One operation buys one fixed block of ${McpConfig.sessionTtlSeconds} seconds; the duration is not negotiable. Prefer a region close to the human to reduce live-view and automation latency. Returns the session id, a human LiveView URL, the agent CDP URL, selected region, and expiry. Treat returned URLs as opaque and pass them unchanged. The browser is fresh and isolated: no local Chrome profile, cookies, or saved passwords.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -186,65 +317,120 @@ export const TOOL_DEFINITIONS = [
       required: ['purpose', 'idempotency_key'],
       additionalProperties: false,
     },
+    outputSchema: outputSchema({
+      session_id: STRING,
+      live_view_url: NULLABLE_STRING,
+      cdp_url: NULLABLE_STRING,
+      expires_at: NULLABLE_STRING,
+      region: NULLABLE_STRING,
+      proxy_country: NULLABLE_STRING,
+      isolation: STRING,
+      human_handoff: STRING,
+      usage_settled: BOOLEAN,
+    }, [
+      'session_id',
+      'live_view_url',
+      'cdp_url',
+      'expires_at',
+      'region',
+      'proxy_country',
+      'isolation',
+      'human_handoff',
+      'usage_settled',
+    ]),
+    annotations: annotations('Create browser session', false, false, true),
   },
   {
     name: 'get_browser_session',
-    description: 'State of a browser session the caller owns.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
+    title: 'Get browser session',
+    description:
+      'Return state and connection details for a browser session the caller owns. Treat returned URLs as opaque and pass them unchanged.',
+    inputSchema: SESSION_ID_INPUT,
+    outputSchema: BROWSER_SESSION_OUTPUT,
+    annotations: annotations('Get browser session', true),
   },
   {
     name: 'get_browser_connection',
-    description: 'Agent-facing connection details (CDP URL, region, expiry) for a session the caller owns.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
+    title: 'Get browser connection',
+    description:
+      'Return the exact agent-facing CDP URL, region, and expiry for a session the caller owns. Pass cdp_url unchanged to the browser automation library; do not shorten, decode, re-encode, or reconstruct it.',
+    inputSchema: SESSION_ID_INPUT,
+    outputSchema: outputSchema({
+      session_id: STRING,
+      cdp_url: NULLABLE_STRING,
+      region: NULLABLE_STRING,
+      expires_at: NULLABLE_STRING,
+    }, ['session_id', 'cdp_url', 'region', 'expires_at']),
+    annotations: annotations('Get browser connection', true),
   },
   {
     name: 'get_live_view',
-    description: 'Human-facing live-view URL for a session the caller owns; use it to hand a login to the human.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
+    title: 'Get LiveView link',
+    description:
+      'Return a human-facing LiveView link for a session the caller owns. The link is shortened only when the operator explicitly configures a URL-shortener provider; hand the returned link to the human unchanged.',
+    inputSchema: SESSION_ID_INPUT,
+    outputSchema: outputSchema({
+      session_id: STRING,
+      live_view_url: NULLABLE_STRING,
+      expires_at: NULLABLE_STRING,
+      human_handoff: STRING,
+    }, ['session_id', 'live_view_url', 'expires_at', 'human_handoff']),
+    annotations: annotations('Get LiveView link', true),
   },
   {
     name: 'verify_runtime',
-    description: 'Isolation posture of a session the caller owns, with an attestation document when the runtime provides one.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
+    title: 'Verify browser runtime',
+    description: 'Return the isolation posture of a session the caller owns, with an attestation document when the runtime provides one.',
+    inputSchema: SESSION_ID_INPUT,
+    outputSchema: outputSchema({
+      session_id: STRING,
+      isolation: STRING,
+      attested: BOOLEAN,
+      attestation: { description: 'Runtime-specific attestation document, or null.' },
+      attestation_error: NULLABLE_STRING,
+    }, ['session_id', 'isolation', 'attested', 'attestation', 'attestation_error']),
+    annotations: annotations('Verify browser runtime', true),
   },
   {
     name: 'end_browser_session',
+    title: 'End browser session',
     description: 'End a session early. Does not return credit for the current block.',
-    inputSchema: {
-      type: 'object',
-      properties: { session_id: { type: 'string' } },
-      required: ['session_id'],
-      additionalProperties: false,
-    },
+    inputSchema: SESSION_ID_INPUT,
+    outputSchema: outputSchema({
+      session_id: STRING,
+      status: { type: 'string', enum: ['ended'] },
+    }, ['session_id', 'status']),
+    annotations: annotations('End browser session', false, true, true),
   },
   {
     name: 'list_browser_sessions',
+    title: 'List browser sessions',
     description: 'List recent browser sessions belonging to the caller.',
     inputSchema: {
       type: 'object',
-      properties: { limit: { type: 'integer', description: 'Max sessions to return (default 20).' } },
+      properties: {
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max sessions to return (default 20).' },
+      },
       additionalProperties: false,
     },
+    outputSchema: outputSchema({
+      sessions: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            session_id: STRING,
+            purpose: STRING,
+            created_at: STRING,
+            expires_at: NULLABLE_STRING,
+            ended_at: NULLABLE_STRING,
+          },
+          required: ['session_id', 'purpose', 'created_at', 'expires_at', 'ended_at'],
+          additionalProperties: false,
+        },
+      },
+    }, ['sessions']),
+    annotations: annotations('List browser sessions', true),
   },
 ] as const;
 
@@ -335,6 +521,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const settled = await settleUsage(ctx, reserved.reservationId, ref, 'create_session');
 
       const view = popcorn.toSessionView(result.data);
+      const liveViewUrl = await shortenLiveViewUrl(view.liveViewUrl);
       const expiresAt = view.expiresAt ? Date.parse(view.expiresAt) : NaN;
       await ctx.store.putSession({
         sessionId: view.sessionId,
@@ -346,7 +533,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       });
       const payload = {
         session_id: view.sessionId,
-        live_view_url: view.liveViewUrl,
+        live_view_url: liveViewUrl,
         cdp_url: view.agentCdpUrl,
         expires_at: view.expiresAt,
         region: view.region,
@@ -358,7 +545,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
         usage_settled: settled,
       };
       await settle(ctx, ref, 'succeeded', payload);
-      return ok(payload);
+      return browserSessionResult(payload);
     }
 
     case 'get_browser_session': {
@@ -367,10 +554,11 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const result = await popcorn.getSession(record.sessionId);
       if (!result.ok) return fail({ error: 'session_unavailable', message: result.error });
       const view = popcorn.toSessionView(result.data);
-      return ok({
+      const liveViewUrl = await shortenLiveViewUrl(view.liveViewUrl);
+      return browserSessionResult({
         session_id: view.sessionId,
         purpose: record.purpose,
-        live_view_url: view.liveViewUrl,
+        live_view_url: liveViewUrl,
         cdp_url: view.agentCdpUrl,
         expires_at: view.expiresAt,
         region: view.region,
@@ -383,7 +571,7 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const result = await popcorn.getSession(record.sessionId);
       if (!result.ok) return fail({ error: 'session_unavailable', message: result.error });
       const connection = popcorn.toSessionView(result.data);
-      return ok({
+      return browserConnectionResult({
         session_id: record.sessionId,
         cdp_url: connection.agentCdpUrl,
         region: connection.region,
@@ -397,9 +585,10 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
       const result = await popcorn.getSession(record.sessionId);
       if (!result.ok) return fail({ error: 'session_unavailable', message: result.error });
       const liveView = popcorn.toSessionView(result.data);
-      return ok({
+      const liveViewUrl = await shortenLiveViewUrl(liveView.liveViewUrl);
+      return liveViewResult({
         session_id: record.sessionId,
-        live_view_url: liveView.liveViewUrl,
+        live_view_url: liveViewUrl,
         expires_at: liveView.expiresAt,
         human_handoff: 'Send this URL to the human for any login. Do not ask them for credentials.',
       });

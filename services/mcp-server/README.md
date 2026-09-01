@@ -21,6 +21,11 @@ implementation.
   allocating a second browser.
 - **Spec-aligned transport.** Origin validation, `MCP-Protocol-Version`
   checking, and one JSON-RPC message per POST.
+- **Portable tool results.** Every tool declares an output schema and returns
+  `structuredContent` plus an identical compact JSON text fallback. Browser
+  links also use MCP metadata and LiveView links include a `resource_link`, so
+  capable clients can preserve the opaque value without asking the model to
+  transcribe it.
 - **No payment code.** This service has no concept of money, currency,
   checkout, price ids, cards or pricing.
 
@@ -152,8 +157,54 @@ Bring your own provider by implementing the interface and wiring it in
 | `MCP_BILLING_PROVIDER` | `none` | `none` or `external` |
 | `MCP_BILLING_BASE_URL` | – | Billing service base URL (external only) |
 | `MCP_BILLING_AUTH_TOKEN` | – | Bearer token for that service |
+| `MCP_URL_SHORTENER_PROVIDER` | `none` | LiveView shortener: `none`, `popc`, or `custom` |
+| `MCP_URL_SHORTENER_ENDPOINT` | – | Compatible endpoint when provider is `custom` |
+| `MCP_URL_SHORTENER_API_KEY` | – | Optional custom-provider bearer token; required for `popc` |
+| `MCP_URL_SHORTENER_TIMEOUT_MS` | `5000` | Shortener request timeout; failure falls back to the original URL |
 | `DATABASE_URL` or `POSTGRES_HOST/PORT/DB/USER/PASSWORD` | – | Postgres; unset means in-memory (dev/demo only) |
 | `MCP_ALLOWED_ORIGINS` | – | Extra browser Origins allowed on `/mcp` |
+
+### Optional LiveView URL shortening
+
+Shortening is deliberately opt-in. Signed LiveView URLs are bearer-equivalent,
+so enabling a third-party provider discloses each destination to that provider.
+The default `none` makes no shortener request.
+
+To use popc.click, put the API key in the process secret store and configure:
+
+```sh
+MCP_URL_SHORTENER_PROVIDER=popc
+MCP_URL_SHORTENER_API_KEY=...
+```
+
+To bring your own service, select `custom` and provide an endpoint:
+
+```sh
+MCP_URL_SHORTENER_PROVIDER=custom
+MCP_URL_SHORTENER_ENDPOINT=https://short.example/api/links
+# Optional when that endpoint uses bearer authentication:
+MCP_URL_SHORTENER_API_KEY=...
+```
+
+The custom endpoint implements one intentionally small contract:
+
+```http
+POST /api/links
+Content-Type: application/json
+Authorization: Bearer <key>  # only when configured
+
+{"url":"https://long.example/opaque"}
+```
+
+```json
+{"code":"abc","short_url":"https://short.example/abc","url":"https://long.example/opaque"}
+```
+
+Only human-facing HTTP(S) LiveView links are shortened. Agent-facing CDP URLs
+are WebSocket endpoints and are always returned unchanged. The shortener is
+best-effort: timeout, outage, or an invalid response returns the original
+LiveView URL instead of breaking browser creation. Neither destination URLs nor
+provider response bodies are included in failure logs.
 
 ## Endpoints
 

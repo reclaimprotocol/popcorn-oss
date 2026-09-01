@@ -73,8 +73,10 @@ describe('no payment surface in the OSS server', () => {
     expect(response.status).toBe(404);
   });
 
-  test('health reports which billing provider is configured', async () => {
+  test('health reports the configured extension providers without exposing secrets', async () => {
     const body = (await (await app.request('/health')).json()) as any;
     expect(body.billing).toBe('none');
+    expect(body.url_shortener).toBe('none');
+    expect(JSON.stringify(body)).not.toContain('API_KEY');
   });
 });
