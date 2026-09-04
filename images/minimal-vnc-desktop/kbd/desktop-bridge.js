@@ -28,6 +28,16 @@ function isOptionCompose(e) {
   return isMacHost && (e.altKey || e.key === 'Alt') && !e.ctrlKey && !e.metaKey;
 }
 
+// Windows and Linux use AltGr to enter layout-specific printable characters.
+function isAltGraph(e) {
+  if (e.key === 'AltGraph') return true;
+  try { return !!(e.getModifierState && e.getModifierState('AltGraph')); } catch (_) { return false; }
+}
+
+function isLocalCompositionModifier(e) {
+  return isOptionCompose(e) || isAltGraph(e);
+}
+
 // Unmodified keys that invoke browser UI; modified keys use the allowlist below.
 const BROWSER_UI_KEYS = new Set(['f1', 'f3', 'f5', 'f6', 'f10', 'f11', 'f12']);
 const COMMAND_MODIFIER_KEYS = new Set(['Control', 'Alt', 'Meta', 'OS']);
@@ -63,8 +73,13 @@ function isPrintableKey(e) {
 
 function isIgnoredProxyKey(e) {
   if (e.isComposing || e.keyCode === 229) return true;
+  if (isLocalCompositionModifier(e)) return true;
   if (isCommandModifierKey(e) || e.key === 'Shift') return true;
-  return isOptionCompose(e);
+  return false;
+}
+
+function isShiftInsertPaste(e) {
+  return keyName(e) === 'insert' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
 }
 
 function isBrowserUiKey(e) {
@@ -122,6 +137,7 @@ export function createDesktopBridge({
   function classifyProxyKey(e) {
     if (isIgnoredProxyKey(e)) return KEY_ACTION.IGNORE;
     if (isBrowserUiKey(e)) return KEY_ACTION.BLOCK;
+    if (isShiftInsertPaste(e)) return KEY_ACTION.PASTE;
     if (hasCommandModifier(e)) {
       if (!isAllowedEditingChord(e)) return KEY_ACTION.BLOCK;
       return keyName(e) === 'v' ? KEY_ACTION.PASTE : KEY_ACTION.FORWARD;
@@ -194,8 +210,9 @@ export function createDesktopBridge({
   const EDITING_CHORD_KEYS = new Set([
     'a', 'c', 'x', 'v', 'z', 'y',                    // select/copy/cut/paste/undo/redo
     'arrowleft', 'arrowright', 'home', 'end',         // word/line motion
-    'backspace', 'delete',                            // word deletion
+    'backspace', 'delete', 'insert',                  // word deletion / legacy copy
   ]);
+  const SHIFT_BLOCKED_EDITING_KEYS = new Set(['a', 'c', 'x', 'backspace', 'delete']);
 
   // Shift remains raw for capitalization. Allowed commands synthesize balanced
   // Ctrl/Alt/Meta presses, so bare command modifiers never need forwarding.
@@ -203,16 +220,17 @@ export function createDesktopBridge({
     const k = keyName(e);
     if (!hasPrimaryModifier(e)) return false;
     if (!EDITING_CHORD_KEYS.has(k)) return false;
-    // Reject editing-key combinations that overlap browser commands.
     if (e.altKey) return false;
-    if (e.shiftKey && (k === 'a' || k === 'c' || k === 'x' ||
-        k === 'backspace' || k === 'delete')) return false;
+    if (k === 'insert') return e.ctrlKey && !e.metaKey && !e.shiftKey;
+    // Reject editing-key combinations that overlap browser commands.
+    if (e.shiftKey && SHIFT_BLOCKED_EDITING_KEYS.has(k)) return false;
     return true;
   }
 
   function classifyWindowKey(e) {
-    if (isOptionCompose(e)) return KEY_ACTION.IGNORE;
+    if (isLocalCompositionModifier(e)) return KEY_ACTION.IGNORE;
     if (isBrowserUiKey(e)) return KEY_ACTION.BLOCK;
+    if (isShiftInsertPaste(e)) return KEY_ACTION.PASTE;
     if (!hasCommandModifier(e)) return KEY_ACTION.PASS;
     if (!isAllowedEditingChord(e)) return KEY_ACTION.BLOCK;
     return keyName(e) === 'v' ? KEY_ACTION.PASTE : KEY_ACTION.FORWARD;
@@ -249,12 +267,12 @@ export function createDesktopBridge({
   }
 
   function installDesktopChords() {
-    // Capture Option before noVNC, but preserve its local composition default.
+    // Keep local composition modifiers out of noVNC without cancelling text input.
     for (const type of ['keydown', 'keyup']) {
       window.addEventListener(type, (e) => {
         if (!getRfb()) return;
-        if (!isOptionCompose(e)) return;
-        dbg('swallowed mac option ' + type + ' ' + (e.key || ''));
+        if (!isLocalCompositionModifier(e)) return;
+        dbg('local composition modifier ' + type + ' ' + (e.key || ''));
         e.stopImmediatePropagation();
       }, true);
     }

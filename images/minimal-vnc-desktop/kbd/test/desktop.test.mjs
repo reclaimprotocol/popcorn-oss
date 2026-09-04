@@ -24,6 +24,72 @@ test('Ctrl+A sends a Control chord around the letter; ⌘ maps to Control', asyn
   assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x63, true], [0x63, false], [0xffe3, false]]);
 });
 
+test('Windows/Linux AltGr remains available for layout-specific text', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  const altGraph = () => true;
+  const e = fire(proxy, 'keydown', {
+    key: '@', code: 'KeyQ', keyCode: 81, ctrlKey: true, altKey: true,
+    shiftKey: false, metaKey: false, getModifierState: altGraph,
+  });
+  assert.equal(e.defaultPrevented, false);
+  assert.deepEqual(rfb.keys, []);
+  proxy.value = '@';
+  fire(proxy, 'input', {});
+  assert.deepEqual(rfb.tapped(), keysymsFor('@'));
+
+  rfb.clearKeys();
+  const canvasEvent = fireWindow('keydown', {
+    key: '@', code: 'KeyQ', keyCode: 81, ctrlKey: true, altKey: true,
+    shiftKey: false, metaKey: false, getModifierState: altGraph,
+  });
+  assert.equal(canvasEvent.defaultPrevented, false);
+  assert.equal(canvasEvent.propagationStopped, true,
+    'noVNC must not replay local AltGr while the browser composes text');
+  assert.deepEqual(rfb.keys, []);
+});
+
+test('Windows/Linux Insert clipboard shortcuts remain available', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  fire(proxy, 'keydown', {
+    key: 'Insert', keyCode: 45, ctrlKey: true, shiftKey: false, altKey: false, metaKey: false,
+  });
+  assert.deepEqual(rfb.chords(),
+    [[0xffe3, true], [0xff63, true], [0xff63, false], [0xffe3, false]]);
+
+  rfb.clearKeys();
+  fire(proxy, 'keydown', {
+    key: 'Delete', keyCode: 46, ctrlKey: false, shiftKey: true, altKey: false, metaKey: false,
+  });
+  assert.deepEqual(rfb.chords(),
+    [[0xffe1, true], [0xffff, true], [0xffff, false], [0xffe1, false]]);
+});
+
+test('Shift+Insert uses the local clipboard paste path', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'shift-insert', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: {}, sync: {} });
+  rfb.clearKeys();
+  globalThis.navigator.clipboard.readText = () => Promise.resolve('insert paste');
+  const e = fire(proxy, 'keydown', {
+    key: 'Insert', keyCode: 45, ctrlKey: false, shiftKey: true, altKey: false, metaKey: false,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(e.defaultPrevented, false, 'native Shift+Insert paste remains enabled');
+  assert.deepEqual(rfb.tapped(), keysymsFor('insert paste'));
+});
+
+test('canvas-focused Shift+Insert also uses the local clipboard', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  globalThis.navigator.clipboard.readText = () => Promise.resolve('canvas insert paste');
+  const e = fireWindow('keydown', {
+    key: 'Insert', keyCode: 45, ctrlKey: false, shiftKey: true, altKey: false, metaKey: false,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(e.defaultPrevented, false, 'native Shift+Insert paste remains enabled');
+  assert.equal(e.propagationStopped, true, 'noVNC must not also paste its remote clipboard');
+  assert.deepEqual(rfb.clipboard, ['canvas insert paste']);
+});
+
 test('unmodified printable keydown is ignored (input/composition owns it)', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
   const e = fire(proxy, 'keydown', { key: 'a', keyCode: 65, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false });
@@ -273,6 +339,7 @@ test('the editing allowlist still forwards', async () => {
   for (const [props, keysym] of [
     [{ key: 'z', ctrlKey: true }, 0x7a],
     [{ key: 'ArrowLeft', ctrlKey: true }, 0xff51],
+    [{ key: 'Insert', ctrlKey: true }, 0xff63],
   ]) {
     rfb.clearKeys();
     fireWindow('keydown', { keyCode: 0, metaKey: false, altKey: false, shiftKey: false, ...props });
