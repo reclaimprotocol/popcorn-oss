@@ -16,6 +16,13 @@ export const isIOS =
   // real Mac / desktop Chrome reports maxTouchPoints 0, so this can't match them.
   // Subsumes the deprecated navigator.platform==='MacIntel' read (also touch-gated).
   (/Macintosh|Mac OS X/i.test(ua) && (navigator.maxTouchPoints || 0) > 1);
+// A real Mac driving the viewer — the same UA test as above with the touch gate
+// INVERTED, so iPadOS (which borrows the Mac UA) falls to isIOS instead. Matters
+// only for the keyboard: on macOS ⌥ is a COMPOSITION modifier (⌥e is the acute
+// dead key, ⌥a is å), never a command modifier, so an ⌥ chord must never be
+// replayed on the remote — see the Option guard in kbd/desktop-bridge.js.
+export const isMacHost =
+  /Macintosh|Mac OS X/i.test(ua) && (navigator.maxTouchPoints || 0) <= 1;
 // Touch = a PRIMARY-touch device (phone/tablet). '(pointer: coarse)' is the
 // reliable signal: true on phones/tablets, false on desktop AND touch-laptops
 // (whose primary pointer is the mouse/trackpad). Do NOT use 'ontouchstart' in

@@ -53,6 +53,14 @@ export function createMockRfb() {
   return rfb;
 }
 
+// The modifier sweep insertPastedText fires before it injects anything, so the
+// remote cannot read the injected text as a chord (a held Ctrl turns a pasted
+// capital D into Ctrl+Shift+D — "Bookmark all tabs"). Prefix to a chord assertion
+// on any paste path. Mirrors ALL_MODIFIER_KEYSYMS in kbd/keys.js.
+export const MOD_RELEASES = [
+  0xffe1, 0xffe2, 0xffe3, 0xffe4, 0xffe9, 0xffea, 0xffe7, 0xffe8, 0xffeb, 0xffec,
+].map((keysym) => [keysym, false]);
+
 // Expected keysym list for a string sent via sendText (codepoint iteration).
 export function keysymsFor(text) {
   const out = [];
