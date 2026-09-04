@@ -92,6 +92,7 @@ if [[ "$RUN" == "1" ]]; then
   # display — same ~1080p pixel budget as landscape, but the mobile page fills it
   # so magnify renders crisp with no aspect-mismatch letterboxing.
   docker run --rm -d --name "$CONTAINER" --platform "$PLATFORM" \
+    --security-opt seccomp=unconfined \
     -p "${PORT}:6080" \
     ${cdp_pub[@]+"${cdp_pub[@]}"} \
     ${APP_URL:+-e "APP_URL=${APP_URL}"} \

@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installGlobals, freshViewer, fire, fireWindow, pushSignal } from './stub-dom.mjs';
-import { createMockRfb, keysymsFor, BS } from './mock-rfb.mjs';
+import { createMockRfb, keysymsFor, BS, MOD_RELEASES } from './mock-rfb.mjs';
 
 installGlobals('desktop');
 
@@ -52,6 +52,60 @@ test('Ctrl/⌘+V is NOT forwarded — the paste event owns it', async () => {
   assert.deepEqual(rfb.keys, []);
 });
 
+test('focused paste falls back to clipboard.readText when Chromium omits the paste event', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'paste-fallback', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: {}, sync: {} });
+  rfb.clearKeys();
+  globalThis.navigator.clipboard.readText = () => Promise.resolve('fallback paste');
+  fire(proxy, 'keydown', { key: 'v', keyCode: 86, ctrlKey: true, shiftKey: false, altKey: false, metaKey: false });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(rfb.tapped(), keysymsFor('fallback paste'));
+});
+
+test('native paste cancels the clipboard.readText fallback (no double insertion)', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'paste-native', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: {}, sync: {} });
+  rfb.clearKeys();
+  globalThis.navigator.clipboard.readText = () => Promise.resolve('duplicate');
+  fire(proxy, 'keydown', { key: 'v', keyCode: 86, ctrlKey: true, shiftKey: false, altKey: false, metaKey: false });
+  fire(proxy, 'paste', { clipboardData: { getData: (type) => type === 'text/plain' ? 'native paste' : '' } });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(rfb.tapped(), keysymsFor('native paste'));
+});
+
+test('clipboard fallback never inserts into a field that gained focus later', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'field-a', rect: { x: 0, y: 0, w: 10, h: 10 },
+    hints: {}, sync: {} });
+  rfb.clearKeys();
+  globalThis.navigator.clipboard.readText = () => Promise.resolve('wrong field');
+  fire(proxy, 'keydown', { key: 'v', keyCode: 86, ctrlKey: true, shiftKey: false, altKey: false, metaKey: false });
+  pushSignal({ editable: true, focusKey: 'field-b', rect: { x: 20, y: 0, w: 10, h: 10 },
+    hints: {}, sync: {} });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(rfb.tapped(), []);
+});
+
+test('Chrome UI shortcuts are blocked while a remote field owns focus', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  for (const event of [
+    { key: 't', keyCode: 84, metaKey: true },
+    { key: 'd', keyCode: 68, ctrlKey: true, shiftKey: true },
+    { key: 'F5', keyCode: 116 },
+    { key: 'ArrowLeft', keyCode: 37, altKey: true },
+    { key: 'b', keyCode: 66, metaKey: true },
+    { key: 'a', keyCode: 65, ctrlKey: true, shiftKey: true },
+  ]) {
+    const e = fire(proxy, 'keydown', {
+      ctrlKey: false, metaKey: false, shiftKey: false, altKey: false, ...event,
+    });
+    assert.equal(e.defaultPrevented, true, `${event.key} must not reach remote Chromium`);
+  }
+  assert.deepEqual(rfb.keys, []);
+});
+
 test('short paste into a KNOWN focused field sends per-char keysyms', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
   pushSignal({ editable: true, focusKey: 'p1', rect: { x: 0, y: 0, w: 10, h: 10 },
@@ -69,7 +123,8 @@ test('short paste with NO known focused field stages + Ctrl+V instead of keysyms
   const { rfb, proxy } = await freshViewer(createMockRfb);
   fire(proxy, 'paste', { clipboardData: { getData: () => 'hi there' } });
   assert.deepEqual(rfb.clipboard, ['hi there']);
-  assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x76, true], [0x76, false], [0xffe3, false]]);
+  assert.deepEqual(rfb.chords(),
+    [...MOD_RELEASES, [0xffe3, true], [0x76, true], [0x76, false], [0xffe3, false]]);
   assert.deepEqual(rfb.tapped(), []);
 });
 
@@ -78,8 +133,9 @@ test('long Latin-1 paste stages on the remote clipboard + Ctrl+V (one round-trip
   const text = 'a'.repeat(40);
   fire(proxy, 'paste', { clipboardData: { getData: () => text } });
   assert.deepEqual(rfb.clipboard, [text]);
-  // Ctrl+V chord: Control down, v down, v up, Control up
-  assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x76, true], [0x76, false], [0xffe3, false]]);
+  // Modifier sweep, then the Ctrl+V chord: Control down, v down, v up, Control up
+  assert.deepEqual(rfb.chords(),
+    [...MOD_RELEASES, [0xffe3, true], [0x76, true], [0x76, false], [0xffe3, false]]);
   assert.deepEqual(rfb.tapped(), []); // no per-char fallback
 });
 
@@ -173,4 +229,54 @@ test('remote focus signal moves key focus to the proxy; blur hands it back', asy
   assert.equal(globalThis.document.activeElement, proxy);
   pushSignal({ editable: false });
   assert.notEqual(globalThis.document.activeElement, proxy);
+});
+
+// Default-deny remote browser accelerators; allow only editing chords.
+
+test('browser accelerators never reach the remote from the canvas', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  const blocked = [
+    { key: 'd', ctrlKey: true, shiftKey: true },  // bookmark all tabs
+    { key: 'a', ctrlKey: true, shiftKey: true },  // tab search
+    { key: 't', ctrlKey: true },                  // new tab
+    { key: 'n', ctrlKey: true },                  // new window
+    { key: 'w', ctrlKey: true },                  // close tab
+    { key: 'p', ctrlKey: true },                  // print
+    { key: 'j', ctrlKey: true },                  // downloads
+    { key: 'h', ctrlKey: true },                  // history
+    { key: 'l', ctrlKey: true },                  // omnibox
+    { key: 'b', ctrlKey: true },                  // not an editing key -> denied by default
+    { key: 'F11' },                               // fullscreen
+  ];
+  for (const props of blocked) {
+    rfb.clearKeys();
+    const e = fireWindow('keydown', { keyCode: 0, metaKey: false, altKey: false, shiftKey: false, ...props });
+    assert.equal(e.propagationStopped, true, `noVNC must not forward ${props.key}`);
+    assert.deepEqual(rfb.chords().filter(([, down]) => down === true), [],
+      `nothing may be pressed on the remote for ${props.key}`);
+  }
+});
+
+test('a bare Ctrl press/release is never forwarded (nothing to latch)', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  rfb.clearKeys();
+  const down = fireWindow('keydown', { key: 'Control', keyCode: 17, ctrlKey: true, shiftKey: false, altKey: false, metaKey: false });
+  const up = fireWindow('keyup', { key: 'Control', keyCode: 17, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false });
+  assert.equal(down.propagationStopped, true);
+  assert.equal(up.propagationStopped, true);
+  // Modifier sweeps may release keys, but must never press them.
+  assert.deepEqual(rfb.keys.filter((k) => k.down !== false), []);
+});
+
+test('the editing allowlist still forwards', async () => {
+  const { rfb } = await freshViewer(createMockRfb);
+  for (const [props, keysym] of [
+    [{ key: 'z', ctrlKey: true }, 0x7a],
+    [{ key: 'ArrowLeft', ctrlKey: true }, 0xff51],
+  ]) {
+    rfb.clearKeys();
+    fireWindow('keydown', { keyCode: 0, metaKey: false, altKey: false, shiftKey: false, ...props });
+    assert.deepEqual(rfb.chords(),
+      [[0xffe3, true], [keysym, true], [keysym, false], [0xffe3, false]], props.key);
+  }
 });

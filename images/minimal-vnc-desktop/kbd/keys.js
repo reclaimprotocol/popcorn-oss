@@ -16,6 +16,16 @@ export const DESKTOP_KEYSYMS = {
 };
 export const MOD_SHIFT = 0xffe1, MOD_CONTROL = 0xffe3, MOD_ALT = 0xffe9;
 
+// Release both sides of every modifier before injecting text. Xvnc ignores
+// releases for keys that are already up.
+export const ALL_MODIFIER_KEYSYMS = [
+  0xffe1, 0xffe2, // Shift_L, Shift_R
+  0xffe3, 0xffe4, // Control_L, Control_R
+  0xffe9, 0xffea, // Alt_L, Alt_R
+  0xffe7, 0xffe8, // Meta_L, Meta_R
+  0xffeb, 0xffec, // Super_L, Super_R
+];
+
 // X11 keysym for a Unicode code point (noVNC/keysym convention): Latin-1
 // range maps directly, everything else is 0x01000000 | codepoint. TigerVNC's
 // Xvnc maps such Unicode keysyms onto a spare keycode on the fly.

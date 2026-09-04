@@ -321,6 +321,10 @@ const PROFILES = {
     ua: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120',
     maxTouchPoints: 0, coarse: false, editContext: false,
   },
+  'desktop-mac': { // real Mac (maxTouchPoints 0) — ⌥ composes, so it must not reach the remote
+    ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120',
+    maxTouchPoints: 0, coarse: false, editContext: false,
+  },
 };
 
 export function installGlobals(profileName, opts) {
