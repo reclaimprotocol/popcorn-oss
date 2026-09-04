@@ -20,16 +20,97 @@ import {
   DESKTOP_KEYSYMS, MOD_SHIFT, MOD_CONTROL, MOD_ALT, keysymForCodepoint,
 } from './keys.js';
 import { dbg } from './diag.js';
+import { isMacHost } from './env.js';
+
+// macOS Option composes text; forwarding it as Linux Alt triggers browser UI.
+// e.key covers Option keyup, where altKey may already be false.
+function isOptionCompose(e) {
+  return isMacHost && (e.altKey || e.key === 'Alt') && !e.ctrlKey && !e.metaKey;
+}
+
+// Windows and Linux use AltGr to enter layout-specific printable characters.
+function isAltGraph(e) {
+  if (e.key === 'AltGraph') return true;
+  try { return !!(e.getModifierState && e.getModifierState('AltGraph')); } catch (_) { return false; }
+}
+
+function isLocalCompositionModifier(e) {
+  return isOptionCompose(e) || isAltGraph(e);
+}
+
+// Unmodified keys that invoke browser UI; modified keys use the allowlist below.
+const BROWSER_UI_KEYS = new Set(['f1', 'f3', 'f5', 'f6', 'f10', 'f11', 'f12']);
+const COMMAND_MODIFIER_KEYS = new Set(['Control', 'Alt', 'Meta', 'OS']);
+const KEY_ACTION = Object.freeze({
+  IGNORE: 0,
+  BLOCK: 1,
+  PASTE: 2,
+  TEXT: 3,
+  BACKSPACE: 4,
+  FORWARD: 5,
+  PASS: 6,
+});
+
+function keyName(e) {
+  return (e.key || '').toLowerCase();
+}
+
+function hasCommandModifier(e) {
+  return e.ctrlKey || e.metaKey || e.altKey;
+}
+
+function hasPrimaryModifier(e) {
+  return e.ctrlKey || e.metaKey;
+}
+
+function isCommandModifierKey(e) {
+  return COMMAND_MODIFIER_KEYS.has(e.key);
+}
+
+function isPrintableKey(e) {
+  return !!e.key && Array.from(e.key).length === 1;
+}
+
+function isIgnoredProxyKey(e) {
+  if (e.isComposing || e.keyCode === 229) return true;
+  if (isLocalCompositionModifier(e)) return true;
+  if (isCommandModifierKey(e) || e.key === 'Shift') return true;
+  return false;
+}
+
+function isShiftInsertPaste(e) {
+  return keyName(e) === 'insert' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
+}
+
+function isBrowserUiKey(e) {
+  const k = keyName(e);
+  return !e.ctrlKey && !e.metaKey && !e.altKey &&
+    (BROWSER_UI_KEYS.has(k) || (e.shiftKey && k === 'escape'));
+}
 
 export function createDesktopBridge({
   getRfb, getProxy, sendText, sendSpecialKey, eventComposing, applyProxyImeHints, clearEcho,
-  onProxyPaste, flushLocalClipboard,
+  onProxyPaste, flushLocalClipboard, releaseRemoteModifiers, requestClipboardPasteFallback,
 }) {
   function desktopKeysymFor(e) {
     const k = e.key;
     if (DESKTOP_KEYSYMS[k] != null) return DESKTOP_KEYSYMS[k];
     if (k && Array.from(k).length === 1) return keysymForCodepoint(k.codePointAt(0)); // modified printable
     return 0;
+  }
+
+  function requestPasteFallback(e) {
+    if (!e.repeat && requestClipboardPasteFallback) requestClipboardPasteFallback();
+  }
+
+  function chordLabel(e) {
+    const parts = [];
+    if (e.ctrlKey) parts.push('ctrl');
+    if (e.altKey) parts.push('alt');
+    if (e.metaKey) parts.push('meta');
+    if (e.shiftKey) parts.push('shift');
+    parts.push(e.key || '');
+    return parts.join('+');
   }
 
   function sendKeyChord(e, keysym) {
@@ -40,30 +121,48 @@ export function createDesktopBridge({
     // macOS ⌘ (metaKey) maps to Control on the Windows remote so ⌘A/⌘C/⌘X work.
     if (e.ctrlKey || e.metaKey) mods.push(MOD_CONTROL);
     if (e.altKey) mods.push(MOD_ALT);
+    // Always balance modifier presses, including after a failed send.
     try {
       for (const m of mods) rfb.sendKey(m, null, true);
       rfb.sendKey(keysym, null, true);
       rfb.sendKey(keysym, null, false);
-      for (let i = mods.length - 1; i >= 0; i--) rfb.sendKey(mods[i], null, false);
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      for (let i = mods.length - 1; i >= 0; i--) {
+        try { rfb.sendKey(mods[i], null, false); } catch (_) {}
+      }
+    }
+  }
+
+  function classifyProxyKey(e) {
+    if (isIgnoredProxyKey(e)) return KEY_ACTION.IGNORE;
+    if (isBrowserUiKey(e)) return KEY_ACTION.BLOCK;
+    if (isShiftInsertPaste(e)) return KEY_ACTION.PASTE;
+    if (hasCommandModifier(e)) {
+      if (!isAllowedEditingChord(e)) return KEY_ACTION.BLOCK;
+      return keyName(e) === 'v' ? KEY_ACTION.PASTE : KEY_ACTION.FORWARD;
+    }
+    if (isPrintableKey(e)) return KEY_ACTION.TEXT;
+    return e.key === 'Backspace' ? KEY_ACTION.BACKSPACE : KEY_ACTION.FORWARD;
   }
 
   function onDesktopKeyDown(e) {
     if (!getRfb()) return;
-    if (e.isComposing || e.keyCode === 229) return; // IME owns the key
-    const k = e.key;
-    if (k === 'Shift' || k === 'Control' || k === 'Alt' || k === 'Meta') return; // bare modifier
-    const modified = e.ctrlKey || e.altKey || e.metaKey;
-    // Paste shortcut: let the 'paste' event fire so we inject the PHONE clipboard
-    // (onProxyPaste), not the remote's — don't forward ⌘V/Ctrl+V to the remote.
-    if (modified && (k === 'v' || k === 'V') && (e.ctrlKey || e.metaKey) && !e.altKey) return;
-    // Unmodified printable -> produced by input/composition (IME + dead keys).
-    if (!modified && k && Array.from(k).length === 1) return;
+    const action = classifyProxyKey(e);
+    if (action === KEY_ACTION.IGNORE || action === KEY_ACTION.TEXT) return;
+    if (action === KEY_ACTION.BLOCK) {
+      e.preventDefault();
+      dbg('blocked chord (proxy) ' + chordLabel(e));
+      return;
+    }
+    if (action === KEY_ACTION.PASTE) {
+      requestPasteFallback(e);
+      return;
+    }
     const keysym = desktopKeysymFor(e);
     if (!keysym) return;
     e.preventDefault();
-    // Plain Backspace goes through sendSpecialKey so the local echo stays in sync.
-    if (!modified && k === 'Backspace') { sendSpecialKey('Backspace'); return; }
+    if (action === KEY_ACTION.BACKSPACE) { sendSpecialKey('Backspace'); return; }
     sendKeyChord(e, keysym);
   }
 
@@ -81,6 +180,8 @@ export function createDesktopBridge({
   function focusProxyDesktop() {
     const proxy = getProxy();
     if (!proxy) return;
+    // Clear modifiers left down during the canvas-to-proxy focus handoff.
+    if (releaseRemoteModifiers) releaseRemoteModifiers();
     applyProxyImeHints();
     try { proxy.removeAttribute('readonly'); } catch (_) {}
     if (document.activeElement !== proxy) {
@@ -104,7 +205,56 @@ export function createDesktopBridge({
   // Super_L+a/c/x (ignored by the remote) and ⌘V pastes the REMOTE clipboard.
   // Capture at the window instead, ahead of noVNC's canvas listener, and route
   // through sendKeyChord (which is where ⌘ -> Control lives).
-  const CHORD_KEYS = { a: 1, c: 1, x: 1, v: 1 };
+  // Default-deny modified keys because Chromium's accelerator set changes.
+  // Only text-editing chords reach the remote; page shortcuts such as Ctrl+B do not.
+  const EDITING_CHORD_KEYS = new Set([
+    'a', 'c', 'x', 'v', 'z', 'y',                    // select/copy/cut/paste/undo/redo
+    'arrowleft', 'arrowright', 'home', 'end',         // word/line motion
+    'backspace', 'delete', 'insert',                  // word deletion / legacy copy
+  ]);
+  const SHIFT_BLOCKED_EDITING_KEYS = new Set(['a', 'c', 'x', 'backspace', 'delete']);
+
+  // Shift remains raw for capitalization. Allowed commands synthesize balanced
+  // Ctrl/Alt/Meta presses, so bare command modifiers never need forwarding.
+  function isAllowedEditingChord(e) {
+    const k = keyName(e);
+    if (!hasPrimaryModifier(e)) return false;
+    if (!EDITING_CHORD_KEYS.has(k)) return false;
+    if (e.altKey) return false;
+    if (k === 'insert') return e.ctrlKey && !e.metaKey && !e.shiftKey;
+    // Reject editing-key combinations that overlap browser commands.
+    if (e.shiftKey && SHIFT_BLOCKED_EDITING_KEYS.has(k)) return false;
+    return true;
+  }
+
+  function classifyWindowKey(e) {
+    if (isLocalCompositionModifier(e)) return KEY_ACTION.IGNORE;
+    if (isBrowserUiKey(e)) return KEY_ACTION.BLOCK;
+    if (isShiftInsertPaste(e)) return KEY_ACTION.PASTE;
+    if (!hasCommandModifier(e)) return KEY_ACTION.PASS;
+    if (!isAllowedEditingChord(e)) return KEY_ACTION.BLOCK;
+    return keyName(e) === 'v' ? KEY_ACTION.PASTE : KEY_ACTION.FORWARD;
+  }
+
+  function blockWindowKey(e) {
+    if (releaseRemoteModifiers) releaseRemoteModifiers();
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    dbg('blocked chord ' + chordLabel(e));
+  }
+
+  function onWindowKeyDown(e) {
+    if (!getRfb()) return;
+    if (localFieldFocused()) return;
+    const action = classifyWindowKey(e);
+    if (action === KEY_ACTION.IGNORE || action === KEY_ACTION.PASS) return;
+    if (action === KEY_ACTION.BLOCK) { blockWindowKey(e); return; }
+    e.stopImmediatePropagation();
+    if (action === KEY_ACTION.PASTE) { requestPasteFallback(e); return; }
+    e.preventDefault();
+    dbg('desktop chord ' + chordLabel(e));
+    sendKeyChord(e, desktopKeysymFor(e));
+  }
 
   // Any focused field in OUR document: the proxy (whose own handlers own the
   // chord) or the JS-dialog sheet's prompt input, which is a real local field the
@@ -117,20 +267,27 @@ export function createDesktopBridge({
   }
 
   function installDesktopChords() {
-    window.addEventListener('keydown', (e) => {
-      if (!getRfb()) return;
-      if (localFieldFocused()) return;
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
-      const k = (e.key || '').toLowerCase();
-      if (!CHORD_KEYS[k]) return;
-      e.stopImmediatePropagation(); // keep the raw chord off the wire
-      // No preventDefault for V: that would cancel the 'paste' event, which is
-      // the only permission-free read of the local clipboard.
-      if (k === 'v') return;
-      e.preventDefault();
-      dbg('desktop chord ' + (e.metaKey ? 'meta' : 'ctrl') + '+' + k);
-      sendKeyChord(e, keysymForCodepoint(k.codePointAt(0)));
-    }, true);
+    // Keep local composition modifiers out of noVNC without cancelling text input.
+    for (const type of ['keydown', 'keyup']) {
+      window.addEventListener(type, (e) => {
+        if (!getRfb()) return;
+        if (!isLocalCompositionModifier(e)) return;
+        dbg('local composition modifier ' + type + ' ' + (e.key || ''));
+        e.stopImmediatePropagation();
+      }, true);
+    }
+
+    // Swallow both edges of bare command modifiers to prevent remote latching.
+    for (const type of ['keydown', 'keyup']) {
+      window.addEventListener(type, (e) => {
+        if (!getRfb()) return;
+        if (localFieldFocused()) return;
+        if (!isCommandModifierKey(e)) return;
+        e.stopImmediatePropagation();
+      }, true);
+    }
+
+    window.addEventListener('keydown', onWindowKeyDown, true);
 
     // Canvas-focused ⌘V still fires a paste event; it just had no listener.
     window.addEventListener('paste', (e) => {

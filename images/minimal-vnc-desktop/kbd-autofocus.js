@@ -196,6 +196,8 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   const onProxyPaste = clip.onProxyPaste;
   const flushLocalClipboard = clip.flushLocalClipboard;
   const onRemoteClipboard = clip.onRemoteClipboard;
+  const releaseRemoteModifiers = clip.releaseRemoteModifiers;
+  const requestClipboardPasteFallback = clip.requestClipboardPasteFallback;
 
   // ---- Local echo (optimistic typing) --------------------------------------
   // The optimistic "unconfirmed typing" pill lives in ./kbd/echo.js; instantiate
@@ -232,6 +234,8 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     clearEcho,
     onProxyPaste,
     flushLocalClipboard,
+    releaseRemoteModifiers,
+    requestClipboardPasteFallback,
   });
   const onDesktopKeyDown = desktopBridge.onDesktopKeyDown;
   const onDesktopInput = desktopBridge.onDesktopInput;
