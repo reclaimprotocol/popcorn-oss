@@ -1,3 +1,5 @@
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -212,4 +214,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.error(error.stack || error);
     process.exit(1);
   }
-}
+};

@@ -1,3 +1,5 @@
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 import { spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';

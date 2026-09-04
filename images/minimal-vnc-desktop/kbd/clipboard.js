@@ -18,6 +18,7 @@
 
 import { dbg } from './diag.js';
 import { nowMs } from './env.js';
+import { ALL_MODIFIER_KEYSYMS } from './keys.js';
 
 export function createClipboard({
   getRfb, getProxy, getHints, getFocusKey, sendText, sendSpecialKey,
@@ -26,6 +27,16 @@ export function createClipboard({
   let remoteClipboardText = null; // latest text the remote copied
   let pendingLocalWrite = false;  // remote text awaiting a user-gesture write
   let pendingSince = 0;
+  let pasteGeneration = 0;       // cancels stale/made-redundant fallback reads
+
+  // Prevent stale modifiers from turning injected text into shortcuts.
+  function releaseRemoteModifiers() {
+    const rfb = getRfb();
+    if (!rfb) return;
+    for (const keysym of ALL_MODIFIER_KEYSYMS) {
+      try { rfb.sendKey(keysym, null, false); } catch (_) {}
+    }
+  }
 
   // Ctrl+V on the remote — used to paste a long insert we staged on the remote
   // clipboard in one shot instead of N per-char keysym round-trips.
@@ -38,12 +49,15 @@ export function createClipboard({
     // 'v' and the paste chord silently does the wrong thing. Sending the bare
     // keysym lets Xvnc pick a keycode that actually yields 'v' — deterministic,
     // layout-independent, and consistent with the rest of the text-injection path.
+    // Always release Control, even if a send fails mid-chord.
     try {
       rfb.sendKey(0xffe3, null, true);  // Control down
       rfb.sendKey(0x0076, null, true);  // v down
       rfb.sendKey(0x0076, null, false); // v up
-      rfb.sendKey(0xffe3, null, false); // Control up
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      try { rfb.sendKey(0xffe3, null, false); } catch (_) {} // Control up
+    }
   }
 
   // Shift+Tab on the remote — moves to the PREVIOUS focusable field (plain Tab
@@ -104,15 +118,30 @@ export function createClipboard({
     } catch (_) { return false; }
   }
 
+  function normalizePastedText(text) {
+    if (!text) return '';
+    const hints = getHints();
+    if (hints && hints.tag === 'INPUT') return text.replace(/[\r\n]+/g, '');
+    return text;
+  }
+
+  function canStageRemoteClipboard(text, rfb) {
+    if (typeof rfb.clipboardPasteFrom !== 'function') return false;
+    const encodingSupported = /^[\x00-\xff]*$/.test(text) || serverExtendedClipboard();
+    if (!encodingSupported) return false;
+    return text.length > 32 || !getFocusKey();
+  }
+
   function insertPastedText(text) {
     const rfb = getRfb();
-    if (!text || !rfb) return;
+    if (!rfb) return;
     // Single-line field: strip newlines so a pasted trailing \n doesn't fire
     // Enter and instantly submit/navigate. INPUT is the positive test — TEXTAREA
     // and contenteditable report other tags and legitimately keep their newlines.
-    const hints = getHints();
-    if (hints && hints.tag === 'INPUT') text = text.replace(/[\r\n]+/g, '');
+    text = normalizePastedText(text);
     if (!text) return;
+    // Ensure the active paste modifier cannot affect injected text.
+    releaseRemoteModifiers();
     // Stage on the remote clipboard + Ctrl+V (one round-trip) instead of per-char
     // keysyms when either:
     //   long text  — a big win over N keysyms on a 3G link;
@@ -125,22 +154,47 @@ export function createClipboard({
     // lossless UTF-8 path instead of the '?'-corrupting ISO-8859-1 fallback.
     // Otherwise fall back to per-char sendText — that text is non-Latin-1, so it
     // cannot trigger an ASCII shortcut either.
-    if ((text.length > 32 || !getFocusKey()) && typeof rfb.clipboardPasteFrom === 'function' &&
-        (/^[\x00-\xff]*$/.test(text) || serverExtendedClipboard())) {
+    if (canStageRemoteClipboard(text, rfb)) {
       try { rfb.clipboardPasteFrom(text); remoteCtrlV(); return; } catch (_) {}
     }
     sendText(text);
   }
 
   function onProxyPaste(e) {
+    // Any native paste event supersedes the keydown fallback.
+    pasteGeneration++;
     if (!getRfb()) return;
     let text = '';
-    try { text = (e.clipboardData || window.clipboardData).getData('text/plain') || ''; } catch (_) {}
+    try {
+      const data = e.clipboardData || window.clipboardData;
+      text = data.getData('text/plain') || data.getData('text') || '';
+    } catch (_) {}
     if (!text) return;
     e.preventDefault();
     dbg('paste len=' + text.length);
     insertPastedText(text);
     clearProxy();
+  }
+
+  // Recover when Chromium omits paste during a proxy/canvas focus handoff.
+  // Deferring gives the native event priority and prevents duplicate insertion.
+  function requestClipboardPasteFallback() {
+    const generation = ++pasteGeneration;
+    const focusAtRequest = getFocusKey();
+    setTimeout(async () => {
+      if (generation !== pasteGeneration) return;
+      let text = '';
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.readText) return;
+        text = await navigator.clipboard.readText();
+      } catch (_) { return; }
+      if (generation !== pasteGeneration || !text) return;
+      // A known field must still own focus after the asynchronous read.
+      if (focusAtRequest && getFocusKey() !== focusAtRequest) return;
+      dbg('paste fallback len=' + text.length);
+      insertPastedText(text);
+      clearProxy();
+    }, 0);
   }
 
   // writeText needs transient activation on iOS Safari, so a write triggered by
@@ -174,5 +228,6 @@ export function createClipboard({
     tryWriteLocalClipboard(text); // best-effort now; retried on next gesture
   }
 
-  return { sendActionKey, insertPastedText, navRemoteField, onProxyPaste, flushLocalClipboard, onRemoteClipboard };
+  return { sendActionKey, insertPastedText, navRemoteField, onProxyPaste, flushLocalClipboard,
+    onRemoteClipboard, releaseRemoteModifiers, requestClipboardPasteFallback };
 }

@@ -1,3 +1,5 @@
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
@@ -3007,4 +3009,4 @@ else if (command === 'pair') {
   });
 } else {
   die('Usage: node src/cli.mjs doctor|pair|sequence|parallel|run|judge|compare|report');
-}
+};

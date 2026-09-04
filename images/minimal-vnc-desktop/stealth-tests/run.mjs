@@ -20,6 +20,8 @@
 // chromium keeps running — connectOverCDP only closes the playwright
 // wrapper). So probes run sequentially without restarting the browser.
 
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
 import { summary } from './utils.mjs';
 
 const PROBES = {
