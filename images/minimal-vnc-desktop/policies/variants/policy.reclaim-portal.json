@@ -6,8 +6,19 @@
   "AutofillCreditCardEnabled": false,
   "TranslateEnabled": false,
   "CommandLineFlagSecurityWarningsEnabled": false,
+  "ComponentUpdatesEnabled": false,
   "DefaultNotificationsSetting": 2,
   "DefaultGeolocationSetting": 2,
+  "URLBlocklist": ["*"],
+  "URLAllowlist": [
+    "http://*",
+    "https://*",
+    "about:*",
+    "blob:*",
+    "data:*",
+    "chrome://*",
+    "chrome-extension://*"
+  ],
   "DefaultSearchProviderEnabled": true,
   "DefaultSearchProviderName": "Reclaim",
   "DefaultSearchProviderSearchURL": "https://reclaim-portal-loading-page.s3.ap-south-1.amazonaws.com/index.html",
@@ -15,7 +26,11 @@
   "MaxConnectionsPerProxy": 16,
   "NewTabPageLocation": "https://reclaim-portal-loading-page.s3.ap-south-1.amazonaws.com/index.html",
   "BlockThirdPartyCookies": false,
-  "CookiesAllowedForUrls": ["[*.]google.com", "[*.]gstatic.com", "[*.]recaptcha.net"],
+  "CookiesAllowedForUrls": [
+    "[*.]google.com",
+    "[*.]gstatic.com",
+    "[*.]recaptcha.net"
+  ],
   "_comment_cookies": "reCAPTCHA v3/Enterprise reputation rides on Google cross-site cookies that ungoogled-chromium blocks by default (see CloakBrowser issue #388). Allow them for Google/reCAPTCHA origins so reputation can be stored/sent. May be a no-op if the base blocks 3p cookies below the policy layer.",
   "ExtensionSettings": {
     "*": {
