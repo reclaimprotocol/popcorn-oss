@@ -6,8 +6,19 @@
   "AutofillCreditCardEnabled": false,
   "TranslateEnabled": false,
   "CommandLineFlagSecurityWarningsEnabled": false,
+  "ComponentUpdatesEnabled": false,
   "DefaultNotificationsSetting": 2,
   "DefaultGeolocationSetting": 2,
+  "URLBlocklist": ["*"],
+  "URLAllowlist": [
+    "http://*",
+    "https://*",
+    "about:*",
+    "blob:*",
+    "data:*",
+    "chrome://*",
+    "chrome-extension://*"
+  ],
   "DefaultSearchProviderEnabled": true,
   "DefaultSearchProviderName": "DuckDuckGo",
   "DefaultSearchProviderSearchURL": "https://duckduckgo.com/?q={searchTerms}",
@@ -15,7 +26,11 @@
   "MaxConnectionsPerProxy": 16,
   "NewTabPageLocation": "https://start.duckduckgo.com/",
   "BlockThirdPartyCookies": false,
-  "CookiesAllowedForUrls": ["[*.]google.com", "[*.]gstatic.com", "[*.]recaptcha.net"],
+  "CookiesAllowedForUrls": [
+    "[*.]google.com",
+    "[*.]gstatic.com",
+    "[*.]recaptcha.net"
+  ],
   "ExtensionSettings": {
     "*": {
       "allowed_types": ["extension"],
