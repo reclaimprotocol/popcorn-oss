@@ -1,5 +1,3 @@
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generateClientStaticKeyPair, NoiseIKInitiator, NoiseIKResponder, MAX_PLAINTEXT_FRAME, openNoiseWebSocket } from './noise.js';

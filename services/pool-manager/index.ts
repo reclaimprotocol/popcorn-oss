@@ -1,5 +1,3 @@
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
 import { Hono } from "hono";
 import { timingSafeEqual } from "crypto";
 import { DB } from "./src/services/db";
