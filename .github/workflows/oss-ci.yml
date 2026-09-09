@@ -190,6 +190,9 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Test independent attestation verifier
+        run: node --test scripts/attestation/verify.test.mjs
+
       - name: Verify authenticated LiveView gateway routes
         shell: bash
         run: |

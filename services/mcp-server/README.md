@@ -42,14 +42,19 @@ implementation.
 | `end_browser_session` | – | End early |
 | `list_browser_sessions` | – | Recent sessions for this identity |
 
-`verify_runtime` resolves the owned session through the control plane, then
-requests `/proof/<session_id>` from that session's regional gateway with a fresh
-nonce. The gateway must expose the attestor sidecar on the allocated browser.
-`attested: true` means a v3 document with a matching nonce and a nonempty token
-was retrieved; MCP does not independently verify the token signature or apply
-an image/platform trust policy. Use a deployment-aware verifier for that check.
-Unavailable sessions, gateway failures, and invalid evidence return
-`attested: false` with `attestation_error`.
+`verify_runtime` now requires `session_id` and `nonce`. This is a breaking tool
+contract change: refresh the client's tool schema and generate a fresh 32-byte
+challenge locally (64 lowercase hex characters). MCP never generates a fallback
+nonce. Retain the original challenge outside the returned evidence.
+
+The result uses `evidence_available` and `verification.status: "not_performed"`
+instead of the old `attested` boolean. It includes Google key discovery, the
+image-binding algorithm, policy requirements, and the claims established by a successful check. Failed retrieval returns `evidence_available: false`, null
+evidence/instructions, and `attestation_error`.
+
+See [Independent verification](../../scripts/attestation/README.md) for the
+local verifier, trusted policy format, and the platform and image-identity
+claims established by successful verification.
 
 `create_browser_session` accepts optional `regions` in nearest-first fallback
 order and an optional two-letter `proxy_country`. Proxy URLs and credentials are

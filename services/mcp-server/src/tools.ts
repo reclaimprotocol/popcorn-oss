@@ -1,3 +1,4 @@
+import { NONCE_PATTERN, validAttestationNonce } from './attestation';
 import crypto from 'crypto';
 import { BillingCommitError, type BillingProvider, type UsageContext } from './billing';
 import { McpConfig } from './config';
@@ -380,15 +381,26 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'verify_runtime',
     title: 'Verify browser runtime',
-    description: 'Return the isolation posture of a session the caller owns, with an attestation document when the runtime provides one.',
-    inputSchema: SESSION_ID_INPUT,
+    description: 'Retrieve attestation evidence for an owned session using a caller-generated challenge. Generate 32 random bytes locally and retain the lowercase hex nonce. Follow the returned steps to independently verify Google-signed platform claims and the reported image identities against your approved policy.',
+    inputSchema: {
+      ...SESSION_ID_INPUT,
+      properties: {
+        ...SESSION_ID_INPUT.properties,
+        nonce: {
+          type: 'string', pattern: NONCE_PATTERN,
+          description: 'Required fresh 32-byte challenge, generated and retained by the caller, encoded as 64 lowercase hex characters.',
+        },
+      },
+      required: ['session_id', 'nonce'],
+    },
     outputSchema: outputSchema({
       session_id: STRING,
       isolation: STRING,
-      attested: BOOLEAN,
+      evidence_available: BOOLEAN,
+      verification: { type: ['object', 'null'], description: 'Independent verification steps and claims established by a successful check; status is not_performed.' },
       attestation: { description: 'Runtime-specific attestation document, or null.' },
       attestation_error: NULLABLE_STRING,
-    }, ['session_id', 'isolation', 'attested', 'attestation', 'attestation_error']),
+    }, ['session_id', 'isolation', 'evidence_available', 'verification', 'attestation', 'attestation_error']),
     annotations: annotations('Verify browser runtime', true),
   },
   {
@@ -595,14 +607,16 @@ export async function callTool(ctx: ToolContext, name: string, args: Record<stri
     }
 
     case 'verify_runtime': {
+      if (!validAttestationNonce(args.nonce)) return fail({ error: 'invalid_nonce', message: 'Generate and retain a fresh 32-byte nonce locally; supply 64 lowercase hex characters.' });
       const record = await ownedSession(ctx, args.session_id);
       if (!record) return fail({ error: 'not_found', message: 'no such session for this identity' });
-      const attestation = await popcorn.getSessionAttestation(record.sessionId);
+      const attestation = await popcorn.getSessionAttestation(record.sessionId, args.nonce);
       return ok({
         session_id: record.sessionId,
         isolation: 'Dedicated ephemeral browser pod. No local Chrome profile, cookies, or saved passwords; storage is destroyed when the session ends.',
-        attested: attestation.ok,
-        attestation: attestation.ok ? attestation.data : null,
+        evidence_available: attestation.ok,
+        verification: attestation.ok ? attestation.data.verification : null,
+        attestation: attestation.ok ? attestation.data.proof : null,
         attestation_error: attestation.ok ? null : attestation.error,
       });
     }
