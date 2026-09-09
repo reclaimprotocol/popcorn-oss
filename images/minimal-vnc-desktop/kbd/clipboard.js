@@ -17,7 +17,7 @@
 // Own state (remoteClipboardText / pendingLocalWrite) lives here.
 
 import { dbg } from './diag.js';
-import { nowMs } from './env.js';
+import { isSafari, nowMs } from './env.js';
 import { ALL_MODIFIER_KEYSYMS } from './keys.js';
 
 export function createClipboard({
@@ -179,6 +179,9 @@ export function createClipboard({
   // Recover when Chromium omits paste during a proxy/canvas focus handoff.
   // Deferring gives the native event priority and prevents duplicate insertion.
   function requestClipboardPasteFallback() {
+    // Safari may delay its native event for paste confirmation. Reading the
+    // clipboard here would insert once before confirmation and once after it.
+    if (isSafari) return;
     const generation = ++pasteGeneration;
     const focusAtRequest = getFocusKey();
     setTimeout(async () => {

@@ -10,6 +10,8 @@ export const isAndroid = /android/i.test(ua);
 // see the Firefox branch in kbd/kbd-detect.js for what it does and why the
 // viewport cannot be trusted to say the keyboard went away there.
 export const isFirefox = /Firefox\/|FxiOS/i.test(ua);
+export const isSafari = /Safari\//i.test(ua) &&
+  !/(?:Chrome|Chromium|CriOS|Edg|EdgiOS|OPR|Firefox|FxiOS)\//i.test(ua);
 export const isIOS =
   /iPad|iPhone|iPod/.test(ua) ||
   // iPadOS reports a desktop Mac UA; detect it by a Mac UA WITH touch points. A
