@@ -325,6 +325,10 @@ const PROFILES = {
     ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120',
     maxTouchPoints: 0, coarse: false, editContext: false,
   },
+  'desktop-safari': {
+    ua: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Version/18.6 Safari/605.1.15',
+    maxTouchPoints: 0, coarse: false, editContext: false,
+  },
 };
 
 export function installGlobals(profileName, opts) {

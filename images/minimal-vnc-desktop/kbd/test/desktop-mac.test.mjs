@@ -8,7 +8,7 @@
 // the container: `xdotool key alt+e` adds a menu window, bare Alt does not.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { installGlobals, freshViewer, fire, fireWindow } from './stub-dom.mjs';
+import { installGlobals, freshViewer, fire, fireWindow, pushSignal } from './stub-dom.mjs';
 import { createMockRfb, keysymsFor } from './mock-rfb.mjs';
 
 installGlobals('desktop-mac');
@@ -47,6 +47,19 @@ test('⌃ and ⌘ chords are untouched by the ⌥ guard', async () => {
   const { rfb } = await freshViewer(createMockRfb);
   fireWindow('keydown', { key: 'a', keyCode: 65, metaKey: true, ctrlKey: false, altKey: false, shiftKey: false });
   assert.deepEqual(rfb.chords(), [[0xffe3, true], [0x61, true], [0x61, false], [0xffe3, false]]);
+});
+
+test('Chrome on Mac keeps the clipboard fallback', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'chrome-mac-paste',
+    rect: { x: 0, y: 0, w: 10, h: 10 }, hints: {}, sync: {} });
+  rfb.clearKeys();
+  globalThis.navigator.clipboard.readText = () => Promise.resolve('fallback');
+
+  fire(proxy, 'keydown', { key: 'v', keyCode: 86, metaKey: true,
+    ctrlKey: false, altKey: false, shiftKey: false });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(rfb.tapped(), keysymsFor('fallback'));
 });
 
 test('⌃⌥ and ⌘⌥ are denied with other non-editing command chords', async () => {
