@@ -42,6 +42,15 @@ implementation.
 | `end_browser_session` | – | End early |
 | `list_browser_sessions` | – | Recent sessions for this identity |
 
+`verify_runtime` resolves the owned session through the control plane, then
+requests `/proof/<session_id>` from that session's regional gateway with a fresh
+nonce. The gateway must expose the attestor sidecar on the allocated browser.
+`attested: true` means a v3 document with a matching nonce and a nonempty token
+was retrieved; MCP does not independently verify the token signature or apply
+an image/platform trust policy. Use a deployment-aware verifier for that check.
+Unavailable sessions, gateway failures, and invalid evidence return
+`attested: false` with `attestation_error`.
+
 `create_browser_session` accepts optional `regions` in nearest-first fallback
 order and an optional two-letter `proxy_country`. Proxy URLs and credentials are
 never accepted from MCP callers; the selected country uses the deployment-owned
