@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { McpConfig } from './config';
 
 /**
@@ -110,8 +111,41 @@ export function extendSession(sessionId: string, extendBySeconds: number): Promi
   });
 }
 
-export function getSessionAttestation(sessionId: string): Promise<PopcornResult<Record<string, unknown>>> {
-  return call<Record<string, unknown>>(`/v1/session/${encodeURIComponent(sessionId)}/attestation`, { method: 'GET' });
+/** Retrieve nonce-bound evidence; cryptographic appraisal requires a separate verifier. */
+export async function getSessionAttestation(sessionId: string): Promise<PopcornResult<Record<string, unknown>>> {
+  try {
+    const session = await getSession(sessionId);
+    if (!session.ok) return session;
+    if (!session.data.cdpInternalUrl) {
+      return { ok: false, status: 502, error: 'Session has no runtime gateway URL' };
+    }
+    const url = new URL(session.data.cdpInternalUrl);
+    if (url.protocol !== 'wss:' && url.protocol !== 'ws:') {
+      return { ok: false, status: 502, error: 'Invalid runtime gateway protocol' };
+    }
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.username = '';
+    url.password = '';
+    url.pathname = `/proof/${encodeURIComponent(sessionId)}`;
+    const nonce = randomBytes(32).toString('hex');
+    url.search = new URLSearchParams({ nonce }).toString();
+    url.hash = '';
+    // The proof route needs neither operator credentials nor the CDP token.
+    const response = await fetch(url, {
+      method: 'GET', redirect: 'error', signal: AbortSignal.timeout(65_000),
+    });
+    if (!response.ok) {
+      return { ok: false, status: response.status, error: `Runtime proof request failed (HTTP ${response.status})` };
+    }
+    const proof = await response.json() as Record<string, any>;
+    if (proof?.error || proof?.proof_version !== 'v3' || proof?.nonce !== nonce ||
+        typeof proof?.attestation?.token !== 'string' || !proof.attestation.token) {
+      return { ok: false, status: 502, error: 'Runtime returned invalid or incomplete attestation evidence' };
+    }
+    return { ok: true, data: proof };
+  } catch {
+    return { ok: false, status: 502, error: 'Runtime attestation request failed or timed out' };
+  }
 }
 
 export function endSession(sessionId: string): Promise<PopcornResult<Record<string, unknown>>> {
