@@ -28,6 +28,7 @@ export function createClipboard({
   let pendingLocalWrite = false;  // remote text awaiting a user-gesture write
   let pendingSince = 0;
   let pasteGeneration = 0;       // cancels stale/made-redundant fallback reads
+  let pendingPasteEcho = null;   // fallback awaiting WebKit's late paste event
 
   // Prevent stale modifiers from turning injected text into shortcuts.
   function releaseRemoteModifiers() {
@@ -132,7 +133,7 @@ export function createClipboard({
     return text.length > 32 || !getFocusKey();
   }
 
-  function insertPastedText(text) {
+  function insertPastedText(text, opts) {
     const rfb = getRfb();
     if (!rfb) return;
     // Single-line field: strip newlines so a pasted trailing \n doesn't fire
@@ -140,6 +141,10 @@ export function createClipboard({
     // and contenteditable report other tags and legitimately keep their newlines.
     text = normalizePastedText(text);
     if (!text) return;
+    // Only a keydown fallback can race a late native paste event.
+    pendingPasteEcho = opts && opts.expectNativeEcho
+      ? { text, at: nowMs(), focusKey: getFocusKey() }
+      : null;
     // Ensure the active paste modifier cannot affect injected text.
     releaseRemoteModifiers();
     // Stage on the remote clipboard + Ctrl+V (one round-trip) instead of per-char
@@ -160,6 +165,16 @@ export function createClipboard({
     sendText(text);
   }
 
+  // WebKit can dispatch paste after the readText fallback has inserted the text.
+  // Match the fallback gesture and focus target, not only its text and age.
+  const PASTE_ECHO_WINDOW_MS = 2000;
+  function isPasteEcho(text) {
+    if (!pendingPasteEcho) return false;
+    if (nowMs() - pendingPasteEcho.at > PASTE_ECHO_WINDOW_MS) return false;
+    if (getFocusKey() !== pendingPasteEcho.focusKey) return false;
+    return normalizePastedText(text) === pendingPasteEcho.text;
+  }
+
   function onProxyPaste(e) {
     // Any native paste event supersedes the keydown fallback.
     pasteGeneration++;
@@ -171,6 +186,12 @@ export function createClipboard({
     } catch (_) {}
     if (!text) return;
     e.preventDefault();
+    if (isPasteEcho(text)) {
+      dbg('paste echo suppressed len=' + text.length);
+      pendingPasteEcho = null;
+      clearProxy();
+      return;
+    }
     dbg('paste len=' + text.length);
     insertPastedText(text);
     clearProxy();
@@ -179,6 +200,8 @@ export function createClipboard({
   // Recover when Chromium omits paste during a proxy/canvas focus handoff.
   // Deferring gives the native event priority and prevents duplicate insertion.
   function requestClipboardPasteFallback() {
+    // Do not mistake a repeated paste for the previous gesture's echo.
+    pendingPasteEcho = null;
     const generation = ++pasteGeneration;
     const focusAtRequest = getFocusKey();
     setTimeout(async () => {
@@ -192,7 +215,7 @@ export function createClipboard({
       // A known field must still own focus after the asynchronous read.
       if (focusAtRequest && getFocusKey() !== focusAtRequest) return;
       dbg('paste fallback len=' + text.length);
-      insertPastedText(text);
+      insertPastedText(text, { expectNativeEcho: true });
       clearProxy();
     }, 0);
   }
