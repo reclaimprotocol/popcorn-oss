@@ -1,5 +1,11 @@
 # Independent v3 proof verification
 
+The same verifier now also accepts explicitly selected `cs-v1` trusted policy
+for [Confidential Space run-key binding](../../docs/confidential-space-run-key.md).
+That opt-in path checks measured workload identity and a browser-owned Ed25519
+key. It has unit-test coverage only; no real Confidential Space evidence has
+been obtained in this milestone. A `cs-v1` policy rejects v3 evidence.
+
 Run this verifier on the agent's own trusted machine using Node.js 20 or later.
 Obtain the verifier code and deployment policy through a separately trusted
 channel and pin the version you reviewed. Use that approved policy for the
@@ -89,4 +95,5 @@ Successful verification establishes:
   identities, and both image digests appear in the approved allowlists.
 - Any configured service-account constraint matches a signed claim.
 
-Tests: `node --test scripts/attestation/verify.test.mjs`.
+Verifier tests: `node --test scripts/attestation/*.test.mjs`.
+All attestation-related unit suites: `bash scripts/attestation/test.sh`.
