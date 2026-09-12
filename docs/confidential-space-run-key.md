@@ -39,9 +39,8 @@ workload code, approved launch configuration, and Confidential Space isolation.
 
 Google's [current claim reference](https://docs.cloud.google.com/confidential-computing/confidential-space/docs/reference/token-claims)
 documents `swname`, `dbgstat`, `secboot`, hardware, time claims, and
-`submods.container`. The [signed-image codelab](https://codelabs.developers.google.com/signed-container-image-codelab)
-explains the split between Google's image-signature validation and the relying
-party's trusted public-key policy. No undocumented GCP claim is introduced.
+`submods.container`. This implementation chooses exact measured-digest pinning. Signer-only policies
+are not supported. No undocumented GCP claim is introduced.
 
 ## Canonical tuple and proof format
 
@@ -127,15 +126,11 @@ requires exact `container.args` and `container.env` equality. Explicit
 nonempty `cmd_override` is rejected. This prevents an approved image from
 silently authorizing an unapproved command or key-injection environment.
 
-Alternatively, replace `workload_image_digests` with
-`image_signing_key_ids: ["<trusted public-key SHA-256 fingerprint>"]`.
-The modes are mutually exclusive: a digest failure never falls back to a
-signer. The fingerprint is the lowercase SHA-256 of the public key's DER SPKI,
-as documented by Google. Signer mode trusts images authorized by that signer;
-it does not pin a particular release. The matching signature assertion must
-carry a documented signature algorithm. No unsigned proof field can introduce
-a trusted image or signer. Unknown policy fields are rejected instead of
-silently ignoring a security constraint.
+Only the measured-digest trust mode is implemented. A policy containing
+`image_signing_key_ids` is rejected, and image-signature claims cannot rescue
+an unapproved digest. Unknown policy fields are also rejected instead of
+silently ignoring a security constraint. Review and pin each accepted browser
+image release; there is no fallback to a signature label or claimed signer.
 
 Verification performs these checks in order:
 
@@ -147,7 +142,7 @@ Verification performs these checks in order:
   and Intel TDX as represented by Google's documented claim values.
 - Compare the retained challenge and configured audience; recompute the tuple
   hash and require it as the only `eat_nonce` value (string or singleton array).
-- Enforce the measured image digest or trusted image-signature assertion,
+- Enforce the measured image digest allowlist,
   exact launch configuration, and the Ed25519 possession signature.
 
 Success returns `confidential_space_run_key_verified: true`, the bound public
@@ -161,7 +156,7 @@ can accept the same still-valid proof again.
 | --- | --- |
 | Challenge | Included in the canonical tuple hash in signed `eat_nonce`; compared with the independently retained challenge |
 | Run public key | Included in the same hash; Ed25519 signature demonstrates possession; approved measured code generates and retains it |
-| Image digest | Direct signed `submods.container.image_digest` allowlist, or Google's validated `submods.container.image_signatures` matched to a trusted key ID |
+| Image digest | Direct signed `submods.container.image_digest` checked against exact approved digests |
 | Audience | Direct signed `aud` equality plus inclusion in the tuple hash; workload configuration selects it |
 
 ## Compatibility and future deployment notes
@@ -192,7 +187,7 @@ attestor beside this endpoint; both use port 8085. The browser-fleet chart is
 not a Confidential Space deployment mechanism and was not changed.
 
 Before any separately authorized deployment: build/review the resulting amd64
-browser image, approve its digest or signing key and launch configuration,
+browser image, approve its digest and launch configuration,
 select a production Confidential Space image with secure boot and approved
 hardware, and validate launcher socket access for the image's existing `kernel`
 user, Chromium sandbox/startup, memory/filesystem requirements, and routing to
@@ -226,13 +221,13 @@ All launcher fixtures use a temporary Unix socket **only inside Go unit tests**.
 All new verifier tokens use ephemeral **TEST-JWKS** signing keys generated in
 the test process. MCP retrieval uses explicitly labeled test responses. No
 fixture key is committed and no fixture is accepted by the production CLI.
-The signer-policy test uses a synthetic signature *claim*; it tests policy
-enforcement, not Google's actual image-signature validation.
+Synthetic image-signature claims are used only to test that they cannot bypass
+mandatory digest pinning; image-signature verification is not implemented.
 
 Negative cases cover supplied/substituted keys, malformed or mismatched
 challenges/audiences, altered Google or run signatures, wrong issuer or key,
 expiry/not-before, debug mode, wrong workload type/hardware/secure boot, wrong
-digest, untrusted signer, unapproved launch configuration, version downgrade,
+digest, untrusted signer attempts, signer-only policy, unapproved launch configuration, version downgrade,
 malformed serialization, and launcher failures. Existing v3 positive tests
 remain intact. These tests establish code behavior, not a successful external
 Confidential Space integration.

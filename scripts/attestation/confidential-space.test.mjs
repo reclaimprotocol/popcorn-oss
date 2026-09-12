@@ -57,8 +57,8 @@ test('TEST-JWKS: accepts measured digest and bound ephemeral key', () => {
   assert.equal(result.run_public_key, proof.run_public_key);
   assert.equal(result.workload_image_digest, imageDigest);
 });
-test('TEST-JWKS: accepts an explicitly trusted image-signing key policy', () => {
-  assert.equal(check(fixture(), signerPolicy).confidential_space_run_key_verified, true);
+test('TEST-JWKS: rejects signer-only policy; measured digest pinning is mandatory', () => {
+  assert.throws(() => check(fixture(), signerPolicy), /unsupported.*policy field/);
 });
 test('shared public Go/JavaScript canonical vector matches byte-for-byte', () => {
   const vector = JSON.parse(readFileSync(new URL('../../images/minimal-vnc-desktop/proxy/testdata/run-binding.json', import.meta.url)));
@@ -119,18 +119,16 @@ test('TEST-JWKS: rejects missing or invalid run-key possession signature', () =>
 });
 test('TEST-JWKS: rejects wrong measured image digest', () => {
   assert.throws(() => check(fixture({ container: { image_digest: 'sha256:' + '3'.repeat(64) } })), /image digest/);
-  // Even signer mode requires the documented string-valued measured digest.
-  assert.throws(() => check(fixture({ container: { image_digest: [imageDigest] } }), signerPolicy), /image digest/);
+  assert.throws(() => check(fixture({ container: { image_digest: [imageDigest] } })), /image digest/);
 });
-test('TEST-JWKS: rejects untrusted or missing image signer', () => {
+test('TEST-JWKS: untrusted image signer cannot authorize an unapproved digest', () => {
   for (const image_signatures of [[], undefined, [{ key_id: '3'.repeat(64), signature_algorithm: 'ECDSA_P256_SHA256', signature: 'TEST_ONLY' }]]) {
-    assert.throws(() => check(fixture({ container: { image_signatures } }), signerPolicy), /untrusted image signer/);
+    assert.throws(() => check(fixture({ container: { image_digest: 'sha256:' + '3'.repeat(64), image_signatures } })), /image digest/);
   }
 });
-test('TEST-JWKS: rejects image signer claims with missing signature or wrong algorithm', () => {
-  for (const signature of [{ key_id: signerID }, { key_id: signerID, signature: 'TEST_ONLY', signature_algorithm: 'unknown' }]) {
-    assert.throws(() => check(fixture({ container: { image_signatures: [signature] } }), signerPolicy), /untrusted image signer/);
-  }
+test('TEST-JWKS: even a claimed trusted signer cannot bypass digest pinning', () => {
+  assert.throws(() => check(fixture({ container: { image_digest: 'sha256:' + '3'.repeat(64) } })), /image digest/);
+  assert.throws(() => check(fixture(), { ...policy, image_signing_key_ids: [signerID] }), /unsupported.*policy field/);
 });
 for (const [name, container] of [
   ['arguments', { args: ['/bin/sh', '-c', 'unapproved command'] }],
@@ -142,7 +140,7 @@ for (const [name, container] of [
 test('TEST-JWKS: rejects proof-version downgrade and ambiguous trust policy', () => {
   assert.throws(() => check(fixture({ proof: { proof_version: 'v3' } })), /version/);
   assert.throws(() => check(fixture(), { ...policy, proof_version: undefined }), /policy/);
-  assert.throws(() => check(fixture(), { ...policy, image_signing_key_ids: [signerID] }), /exactly one/);
+  assert.throws(() => check(fixture(), { ...policy, image_signing_key_ids: [signerID] }), /unsupported.*policy field/);
   assert.throws(() => check(fixture(), { ...policy, workload_image_digests: [] }), /allowlist/);
   assert.throws(() => check(fixture(), { ...policy, container_env: undefined }), /container_env/);
   assert.throws(() => check(fixture(), { ...policy, project_id: 'must-not-be-silently-ignored' }), /unsupported.*policy field/);

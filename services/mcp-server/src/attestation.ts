@@ -18,7 +18,7 @@ export function verificationInstructions(sessionId: string, nonce: string, gatew
       'Fetch Google keys independently and verify RS256, issuer, audience, exp, iat, nbf, maximum age and allowed clock skew.',
       'Require swname=CONFIDENTIAL_SPACE, dbgstat=disabled-since-boot, secboot=true and an explicitly approved confidential hardware model.',
       'Recompute SHA-256 of the canonical challenge, raw Ed25519 run public key and audience tuple; require this single eat_nonce.',
-      'Check the measured container image digest or trusted image-signing key ID, and exact approved container arguments and environment.',
+      'Check the measured container image digest against an explicit allowlist, and exact approved container arguments and environment. Signer-only policies are not supported.',
       'Verify the Ed25519 run_signature over the canonical tuple. Retain and consume the challenge locally; this verifier does not store replay state.',
     ],
     digest_binding: {
@@ -30,7 +30,7 @@ export function verificationInstructions(sessionId: string, nonce: string, gatew
       claim: 'eat_nonce is the tuple hash, as a string or a single-element array',
     },
     trusted_policy_required: ['proof_version', 'audience', 'hardware_models', 'container_args', 'container_env',
-      'exactly one of workload_image_digests or image_signing_key_ids', 'max_age_seconds', 'clock_skew_seconds'],
+      'workload_image_digests', 'max_age_seconds', 'clock_skew_seconds'],
     policy_source: 'Obtain the approved workload code, image identity, launch configuration and verifier through a separately trusted channel.',
     verification_scope: 'Google-attested Confidential Space workload identity and the bound run key satisfy policy. Key custody relies on the approved code and Confidential Space isolation; this does not attest browser data or bind a transport channel.',
     proves_after_verification: [

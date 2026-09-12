@@ -5,7 +5,6 @@ import { isDeepStrictEqual } from 'node:util';
 export const RUN_PROOF_VERSION = 'cs-v1';
 const DOMAIN = 'popcorn/confidential-space/run-key/v1\0';
 const HARDWARE = ['GCP_AMD_SEV', 'GCP_AMD_SEV_ES', 'GCP_INTEL_TDX'];
-const SIGNATURE_ALGORITHMS = ['RSASSA_PSS_SHA256', 'RSASSA_PKCS1V15_SHA256', 'ECDSA_P256_SHA256'];
 const audienceValid = value => typeof value === 'string' && /^[\x21-\x7e]{1,512}$/.test(value) &&
   !['https://sts.google.com', 'https://sts.googleapis.com'].includes(value);
 const stringMap = value => value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -35,18 +34,14 @@ export function runBindingHash(challenge, runPublicKey, audience) {
 
 export function validateConfidentialSpacePolicy(policy) {
   assert(policy?.proof_version === RUN_PROOF_VERSION, 'trusted policy must require cs-v1');
-  const policyFields = ['proof_version', 'audience', 'hardware_models', 'workload_image_digests', 'image_signing_key_ids',
+  const policyFields = ['proof_version', 'audience', 'hardware_models', 'workload_image_digests',
     'container_args', 'container_env', 'max_age_seconds', 'clock_skew_seconds'];
   assert(Object.keys(policy).every(key => policyFields.includes(key)), 'unsupported Confidential Space policy field');
   assert(audienceValid(policy.audience), 'trusted policy requires a custom audience');
   assert(Array.isArray(policy.hardware_models) && policy.hardware_models.length > 0 &&
     policy.hardware_models.every(model => HARDWARE.includes(model)), 'trusted policy requires approved confidential hardware models');
-  const digestMode = policy.workload_image_digests !== undefined;
-  const signerMode = policy.image_signing_key_ids !== undefined;
-  assert(digestMode !== signerMode, 'choose exactly one image trust mode: measured digests or signing key IDs');
-  const values = digestMode ? policy.workload_image_digests : policy.image_signing_key_ids;
-  const pattern = digestMode ? /^sha256:[0-9a-f]{64}$/ : /^[0-9a-f]{64}$/;
-  assert(Array.isArray(values) && values.length > 0 && values.every(value => typeof value === 'string' && pattern.test(value)), 'invalid image trust allowlist');
+  assert(Array.isArray(policy.workload_image_digests) && policy.workload_image_digests.length > 0 &&
+    policy.workload_image_digests.every(value => typeof value === 'string' && /^sha256:[0-9a-f]{64}$/.test(value)), 'invalid measured image digest allowlist');
   assert(Array.isArray(policy.container_args) && policy.container_args.length > 0 &&
     policy.container_args.every(value => typeof value === 'string'), 'trusted policy requires exact container_args');
   assert(stringMap(policy.container_env), 'trusted policy requires exact container_env');
@@ -76,17 +71,7 @@ export function verifyConfidentialSpaceClaims(proof, challenge, policy, claims, 
 
   const container = claims.submods?.container;
   assert(container && typeof container.image_digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(container.image_digest), 'missing measured container image digest');
-  if (policy.workload_image_digests) {
-    assert(policy.workload_image_digests.includes(container.image_digest), 'unapproved measured image digest');
-  } else {
-    // These are Google's authenticated image-signature assertions, not an
-    // unsigned signer ID supplied alongside the proof. Google validates the
-    // image signature; the relying party pins the public-key fingerprint.
-    assert(Array.isArray(container.image_signatures) && container.image_signatures.some(signature =>
-      policy.image_signing_key_ids.includes(signature?.key_id) &&
-      SIGNATURE_ALGORITHMS.includes(signature.signature_algorithm) &&
-      typeof signature.signature === 'string' && signature.signature.length > 0), 'untrusted image signer');
-  }
+  assert(policy.workload_image_digests.includes(container.image_digest), 'unapproved measured image digest');
   assert(isDeepStrictEqual(container.args, policy.container_args), 'unapproved container arguments');
   assert(isDeepStrictEqual(container.env, policy.container_env), 'unapproved container environment');
   if (container.cmd_override !== undefined) assert(isDeepStrictEqual(container.cmd_override, []), 'container command overrides are forbidden');
