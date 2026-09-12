@@ -64,7 +64,7 @@ A shared public encoding vector lives at
 `images/minimal-vnc-desktop/proxy/testdata/run-binding.json`; both Go and
 JavaScript tests assert its exact bytes and hash. It contains no private key.
 
-`GET :8085/proof?nonce=<64 lowercase hex characters>` returns:
+`GET http://127.0.0.1:8085/proof?nonce=<64 lowercase hex characters>` returns:
 
 ```json
 {
@@ -83,6 +83,12 @@ Unknown/duplicate query parameters, supplied key fields, and request bodies are
 rejected before launcher IPC. Missing launcher, redirects, non-200 responses,
 and empty/oversized responses fail closed with a clean HTTP error. Successful
 retrieval does not claim verification. Responses use `Cache-Control: no-store`.
+The listener is fixed to loopback; no environment variable enables public token
+minting. Future remote retrieval requires an authenticated local gateway or
+protected channel in the reviewed deployment. Use a dedicated attestation
+audience: never configure a resource that grants access merely for presenting
+this token. This proof does not authorize an arbitrary caller to act as the
+workload.
 
 ## Independent verification
 
@@ -190,8 +196,8 @@ Before any separately authorized deployment: build/review the resulting amd64
 browser image, approve its digest and launch configuration,
 select a production Confidential Space image with secure boot and approved
 hardware, and validate launcher socket access for the image's existing `kernel`
-user, Chromium sandbox/startup, memory/filesystem requirements, and routing to
-port 8085. Publishing images, creating a VM/service account/IAM policy, wiring
+user, Chromium sandbox/startup, memory/filesystem requirements, and authorized
+retrieval through a local gateway to loopback port 8085. Publishing images, creating a VM/service account/IAM policy, wiring
 allocation or gateway routing, and obtaining a live token remain deployment
 work. No resource-creation command or provisioning workflow is included here.
 

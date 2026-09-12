@@ -100,7 +100,9 @@ func confidentialSpaceServer() (*http.Server, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/proof", a.handleProof)
-	return &http.Server{Addr: ":8085", Handler: mux, ReadHeaderTimeout: 5 * time.Second}, nil
+	// Proof tokens must not become a public bearer-token mint. Future deployment
+	// wiring must authorize retrieval through a local gateway/protected channel.
+	return &http.Server{Addr: "127.0.0.1:8085", Handler: mux, ReadHeaderTimeout: 5 * time.Second}, nil
 }
 
 // Canonical bytes: ASCII domain including NUL, followed by each tuple field

@@ -203,7 +203,7 @@ func TestConfidentialSpaceStartupIsExplicit(t *testing.T) {
 	}
 	t.Setenv("ATTESTATION_TOKEN_AUDIENCE", "https://verifier.example")
 	server, err := confidentialSpaceServer()
-	if err != nil || server == nil || server.Addr != ":8085" {
+	if err != nil || server == nil || server.Addr != "127.0.0.1:8085" {
 		t.Fatal("CS proof server missing")
 	}
 }
