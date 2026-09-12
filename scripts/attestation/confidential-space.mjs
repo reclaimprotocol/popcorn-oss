@@ -75,7 +75,7 @@ export function verifyConfidentialSpaceClaims(proof, challenge, policy, claims, 
   assert(Array.isArray(nonces) && nonces.length === 1 && nonces[0] === expectedHash, 'signed run-key binding mismatch');
 
   const container = claims.submods?.container;
-  assert(container && /^sha256:[0-9a-f]{64}$/.test(container.image_digest), 'missing measured container image digest');
+  assert(container && typeof container.image_digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(container.image_digest), 'missing measured container image digest');
   if (policy.workload_image_digests) {
     assert(policy.workload_image_digests.includes(container.image_digest), 'unapproved measured image digest');
   } else {

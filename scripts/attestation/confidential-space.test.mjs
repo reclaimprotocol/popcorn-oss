@@ -119,6 +119,8 @@ test('TEST-JWKS: rejects missing or invalid run-key possession signature', () =>
 });
 test('TEST-JWKS: rejects wrong measured image digest', () => {
   assert.throws(() => check(fixture({ container: { image_digest: 'sha256:' + '3'.repeat(64) } })), /image digest/);
+  // Even signer mode requires the documented string-valued measured digest.
+  assert.throws(() => check(fixture({ container: { image_digest: [imageDigest] } }), signerPolicy), /image digest/);
 });
 test('TEST-JWKS: rejects untrusted or missing image signer', () => {
   for (const image_signatures of [[], undefined, [{ key_id: '3'.repeat(64), signature_algorithm: 'ECDSA_P256_SHA256', signature: 'TEST_ONLY' }]]) {
