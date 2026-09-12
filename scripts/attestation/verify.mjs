@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
+import { RUN_PROOF_VERSION, validateConfidentialSpacePolicy, verifyConfidentialSpaceClaims } from './confidential-space.mjs';
 
 export const ISSUER = 'https://confidentialcomputing.googleapis.com';
 export const DISCOVERY_URL = `${ISSUER}/.well-known/openid-configuration`;
@@ -19,6 +20,8 @@ export function digestBinding(proof) {
 }
 
 function validatePolicy(policy) {
+  if (policy?.proof_version === RUN_PROOF_VERSION) return validateConfidentialSpacePolicy(policy);
+  assert(policy?.proof_version === undefined || policy.proof_version === 'v3', 'unsupported policy proof version');
   for (const name of ['audience', 'project_id', 'zone', 'instance_name']) {
     assert(typeof policy?.[name] === 'string' && policy[name].length > 0, `trusted policy requires ${name}`);
   }
@@ -36,6 +39,11 @@ function validatePolicy(policy) {
 export function verifyProof(proof, nonce, policy, jwks, now = Math.floor(Date.now() / 1000)) {
   validatePolicy(policy);
   assert(typeof nonce === 'string' && /^[0-9a-f]{64}$/.test(nonce), 'supply the locally retained 32-byte nonce');
+  if (policy.proof_version === RUN_PROOF_VERSION) {
+    assert(proof?.proof_version === RUN_PROOF_VERSION && !proof.error, 'Confidential Space proof version mismatch');
+    const claims = verifyGoogleToken(proof.attestation?.token, policy, jwks, now);
+    return verifyConfidentialSpaceClaims(proof, nonce, policy, claims, now);
+  }
   assert(proof && !proof.error && proof.proof_version === 'v3', 'invalid proof version or error');
   assert(proof.tee_provider === 'gcp' && proof.tee_technology === 'amd-sev', 'unexpected proof platform');
   assert(proof.nonce === nonce, 'proof nonce mismatch');
@@ -43,7 +51,24 @@ export function verifyProof(proof, nonce, policy, jwks, now = Math.floor(Date.no
   assert(proof.verifier?.container_name === 'browser-runtime-attestor', 'unexpected verifier container');
   assert(policy.workload_image_digests.includes(proof.workload.image_digest), 'workload digest is not allowed');
   assert(policy.verifier_image_digests.includes(proof.verifier.image_digest), 'verifier digest is not allowed');
-  const token = proof.attestation?.token;
+  const claims = verifyGoogleToken(proof.attestation?.token, policy, jwks, now);
+  const nonces = typeof claims.eat_nonce === 'string' ? [claims.eat_nonce] : claims.eat_nonce;
+  assert(Array.isArray(nonces) && nonces.includes(nonce), 'signed nonce mismatch');
+  assert(nonces.includes(digestBinding(proof)), 'signed image binding mismatch');
+  assert(claims.hwmodel === 'GCP_AMD_SEV' && claims.secboot === true, 'platform policy failed');
+  const gce = claims.submods?.gce;
+  assert(gce?.project_id === policy.project_id && gce?.zone === policy.zone, 'cloud identity mismatch');
+  assert(gce.instance_name === policy.instance_name, 'instance identity mismatch');
+  const accounts = [...(Array.isArray(claims.google_service_accounts) ? claims.google_service_accounts : []), gce.service_account, gce.service_account_id];
+  if (policy.service_account !== undefined) assert(accounts.includes(policy.service_account), 'service account mismatch');
+  return {
+    platform_and_image_assertion_verified: true,
+    scope: 'Google-signed platform claims and nonce-bound orchestrator-reported image identities satisfy the supplied policy.',
+  };
+}
+
+// Shared signature/issuer/time checks for v3 and Confidential Space.
+function verifyGoogleToken(token, policy, jwks, now) {
   assert(typeof token === 'string' && token.length < 262144, 'invalid token');
   const parts = token.split('.');
   assert(parts.length === 3 && parts.every(part => /^[A-Za-z0-9_-]+$/.test(part)), 'invalid JWT encoding');
@@ -62,19 +87,7 @@ export function verifyProof(proof, nonce, policy, jwks, now = Math.floor(Date.no
   assert(claims.exp > now - skew && claims.exp > claims.iat, 'token expired or invalid lifetime');
   assert(claims.iat <= now + skew && now - claims.iat <= policy.max_age_seconds + skew, 'token is future-dated or stale');
   if (claims.nbf !== undefined) assert(Number.isSafeInteger(claims.nbf) && claims.nbf <= now + skew, 'token not yet valid');
-  const nonces = typeof claims.eat_nonce === 'string' ? [claims.eat_nonce] : claims.eat_nonce;
-  assert(Array.isArray(nonces) && nonces.includes(nonce), 'signed nonce mismatch');
-  assert(nonces.includes(digestBinding(proof)), 'signed image binding mismatch');
-  assert(claims.hwmodel === 'GCP_AMD_SEV' && claims.secboot === true, 'platform policy failed');
-  const gce = claims.submods?.gce;
-  assert(gce?.project_id === policy.project_id && gce?.zone === policy.zone, 'cloud identity mismatch');
-  assert(gce.instance_name === policy.instance_name, 'instance identity mismatch');
-  const accounts = [...(Array.isArray(claims.google_service_accounts) ? claims.google_service_accounts : []), gce.service_account, gce.service_account_id];
-  if (policy.service_account !== undefined) assert(accounts.includes(policy.service_account), 'service account mismatch');
-  return {
-    platform_and_image_assertion_verified: true,
-    scope: 'Google-signed platform claims and nonce-bound orchestrator-reported image identities satisfy the supplied policy.',
-  };
+  return claims;
 }
 
 async function fetchJson(url) {
