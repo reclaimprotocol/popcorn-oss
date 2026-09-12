@@ -84,8 +84,13 @@ rejected before launcher IPC. Missing launcher, redirects, non-200 responses,
 and empty/oversized responses fail closed with a clean HTTP error. Successful
 retrieval does not claim verification. Responses use `Cache-Control: no-store`.
 The listener is fixed to loopback; no environment variable enables public token
-minting. Future remote retrieval requires an authenticated local gateway or
-protected channel in the reviewed deployment. Use a dedicated attestation
+minting. Before launcher IPC or signing, `/proof` requires the exact request
+`Host` to be `127.0.0.1:8085` or `localhost:8085` to prevent DNS rebinding.
+The handler rejects missing hosts, other names/addresses/ports, and malformed or
+alternate spellings with HTTP 403; forwarded headers cannot override this check.
+Future remote retrieval must preserve an approved Host and requires an
+authenticated local gateway or protected channel in the reviewed deployment.
+Use a dedicated attestation
 audience: never configure a resource that grants access merely for presenting
 this token. This proof does not authorize an arbitrary caller to act as the
 workload.

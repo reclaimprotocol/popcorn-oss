@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -98,7 +99,7 @@ func TestRunKeyMOCKLauncherAndProcessLifetime(t *testing.T) {
 	})
 	for _, challenge := range []string{strings.Repeat("ab", 32), strings.Repeat("cd", 32)} {
 		rec := httptest.NewRecorder()
-		a.handleProof(rec, httptest.NewRequest("GET", "/proof?nonce="+challenge+"&audience=https://verifier.example", nil))
+		a.handleProof(rec, httptest.NewRequest("GET", "http://127.0.0.1:8085/proof?nonce="+challenge+"&audience=https://verifier.example", nil))
 		if rec.Code != 200 {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 		}
@@ -133,6 +134,88 @@ func TestRunKeyMOCKLauncherAndProcessLifetime(t *testing.T) {
 	}
 }
 
+func TestRunProofHostGuardMOCKLauncher(t *testing.T) {
+	a, err := newRunAttestor("https://verifier.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var minted atomic.Int32
+	a.client = mockLauncher(t, func(w http.ResponseWriter, r *http.Request) {
+		minted.Add(1)
+		w.Write([]byte("MOCK.LAUNCHER.TOKEN"))
+	})
+	challenge := strings.Repeat("ab", 32)
+	for _, tc := range []struct{ name, host string }{
+		{"missing", ""},
+		{"attacker_domain", "attacker.example:8085"},
+		{"loopback_subdomain", "127.0.0.1.attacker.example:8085"},
+		{"localhost_subdomain", "localhost.attacker.example:8085"},
+		{"alternate_loopback", "127.0.0.2:8085"},
+		{"wildcard", "0.0.0.0:8085"},
+		{"ipv6_loopback", "[::1]:8085"},
+		{"ipv4_mapped_ipv6", "[::ffff:127.0.0.1]:8085"},
+		{"short_ipv4", "127.1:8085"},
+		{"decimal_ipv4", "2130706433:8085"},
+		{"wrong_port", "127.0.0.1:8086"},
+		{"localhost_wrong_port", "localhost:8086"},
+		{"missing_port", "127.0.0.1"},
+		{"localhost_missing_port", "localhost"},
+		{"empty_port", "localhost:"},
+		{"port_leading_zero", "localhost:08085"},
+		{"uppercase", "LOCALHOST:8085"},
+		{"trailing_dot", "localhost.:8085"},
+		{"leading_space", " localhost:8085"},
+		{"trailing_space", "localhost:8085 "},
+		{"url", "http://localhost:8085"},
+		{"userinfo", "attacker.example@localhost:8085"},
+		{"comma_separated", "localhost:8085,attacker.example:8085"},
+		{"path", "localhost:8085/proof"},
+		{"multiple_ports", "localhost:8085:8085"},
+		{"newline", "localhost:8085\r\nHost: attacker.example:8085"},
+		{"nul", "localhost:8085\x00"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "http://127.0.0.1:8085/proof?nonce="+challenge, nil)
+			// Set Host directly to exercise the handler even for malformed values
+			// net/http would reject on the wire. URL/header hints must not bypass it.
+			req.Host = tc.host
+			req.Header.Set("Host", "127.0.0.1:8085")
+			req.Header.Set("X-Forwarded-Host", "localhost:8085")
+			req.Header.Set("Forwarded", "host=localhost:8085")
+			rec := httptest.NewRecorder()
+			a.handleProof(rec, req)
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "unapproved proof request Host") {
+				t.Errorf("expected Host rejection: %d %s", rec.Code, rec.Body.String())
+			}
+			if minted.Load() != 0 {
+				t.Fatal("unapproved Host reached MOCK launcher token minting")
+			}
+			if strings.Contains(rec.Body.String(), "run_signature") || strings.Contains(rec.Body.String(), "MOCK.LAUNCHER.TOKEN") {
+				t.Fatal("Host rejection returned a signature or MOCK token")
+			}
+		})
+	}
+	for _, host := range []string{"127.0.0.1:8085", "localhost:8085"} {
+		t.Run(host, func(t *testing.T) {
+			before := minted.Load()
+			rec := httptest.NewRecorder()
+			a.handleProof(rec, httptest.NewRequest("GET", "http://"+host+"/proof?nonce="+challenge, nil))
+			var proof runProof
+			if err := json.Unmarshal(rec.Body.Bytes(), &proof); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusOK || minted.Load() != before+1 || proof.Attestation.Token != "MOCK.LAUNCHER.TOKEN" {
+				t.Fatalf("approved Host did not mint exactly one MOCK token: %d %s", rec.Code, rec.Body.String())
+			}
+			canonical, _ := canonicalRunBinding(challenge, a.publicKey, a.audience)
+			signature, _ := base64.RawURLEncoding.DecodeString(proof.RunSignature)
+			if !ed25519.Verify(a.privateKey.Public().(ed25519.PublicKey), canonical, signature) {
+				t.Fatal("approved Host did not produce a valid run signature")
+			}
+		})
+	}
+}
+
 func TestRunProofRejectsSuppliedKeysAndInvalidRequests(t *testing.T) {
 	a, _ := newRunAttestor("https://verifier.example")
 	// No launcher is available. Invalid requests must fail before any IPC.
@@ -146,7 +229,7 @@ func TestRunProofRejectsSuppliedKeysAndInvalidRequests(t *testing.T) {
 	} {
 		t.Run(query, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			a.handleProof(rec, httptest.NewRequest("GET", query, nil))
+			a.handleProof(rec, httptest.NewRequest("GET", "http://127.0.0.1:8085"+query, nil))
 			if rec.Code != 400 {
 				t.Fatalf("accepted bad query: %d %s", rec.Code, rec.Body.String())
 			}
@@ -154,7 +237,7 @@ func TestRunProofRejectsSuppliedKeysAndInvalidRequests(t *testing.T) {
 	}
 	for _, method := range []string{"GET", "POST"} {
 		rec := httptest.NewRecorder()
-		a.handleProof(rec, httptest.NewRequest(method, base, strings.NewReader(`{"run_private_key":"supplied"}`)))
+		a.handleProof(rec, httptest.NewRequest(method, "http://127.0.0.1:8085"+base, strings.NewReader(`{"run_private_key":"supplied"}`)))
 		if rec.Code != 400 && rec.Code != 405 {
 			t.Fatal("accepted a request body")
 		}
@@ -181,7 +264,7 @@ func TestRunProofMOCKLauncherFailuresAreClosed(t *testing.T) {
 				})
 			}
 			rec := httptest.NewRecorder()
-			a.handleProof(rec, httptest.NewRequest("GET", "/proof?nonce="+strings.Repeat("ab", 32), nil))
+			a.handleProof(rec, httptest.NewRequest("GET", "http://127.0.0.1:8085/proof?nonce="+strings.Repeat("ab", 32), nil))
 			if rec.Code != 502 || strings.Contains(rec.Body.String(), "run_signature") {
 				t.Fatalf("expected closed failure: %d %s", rec.Code, rec.Body.String())
 			}

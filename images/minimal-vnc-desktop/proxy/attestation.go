@@ -26,6 +26,8 @@ import (
 const (
 	runProofVersion       = "cs-v1"
 	runBindingDomain      = "popcorn/confidential-space/run-key/v1\x00"
+	runProofPort          = "8085"
+	runProofListenAddr    = "127.0.0.1:" + runProofPort
 	launcherSocket        = "/run/container_launcher/teeserver.sock"
 	launcherTokenURL      = "http://localhost/v1/token"
 	maxLauncherTokenBytes = 262144
@@ -102,7 +104,7 @@ func confidentialSpaceServer() (*http.Server, error) {
 	mux.HandleFunc("/proof", a.handleProof)
 	// Proof tokens must not become a public bearer-token mint. Future deployment
 	// wiring must authorize retrieval through a local gateway/protected channel.
-	return &http.Server{Addr: "127.0.0.1:8085", Handler: mux, ReadHeaderTimeout: 5 * time.Second}, nil
+	return &http.Server{Addr: runProofListenAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}, nil
 }
 
 // Canonical bytes: ASCII domain including NUL, followed by each tuple field
@@ -134,6 +136,13 @@ func (a *runAttestor) handleProof(w http.ResponseWriter, r *http.Request) {
 	reject := func(status int, reason string) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(map[string]any{"proof_version": runProofVersion, "error": map[string]string{"message": reason}})
+	}
+	// A loopback listener alone does not prevent DNS rebinding. Go exposes the
+	// request Host in r.Host; require an exact authority for this listener before
+	// launcher IPC or signing. Never resolve hosts or trust forwarded headers.
+	if r.Host != runProofListenAddr && r.Host != "localhost:"+runProofPort {
+		reject(http.StatusForbidden, "unapproved proof request Host")
+		return
 	}
 	if r.Method != http.MethodGet {
 		reject(http.StatusMethodNotAllowed, "only GET is supported")
