@@ -71,6 +71,13 @@ func main() {
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
+	attestationServer, err := confidentialSpaceServer()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if attestationServer != nil {
+		servers = append(servers, attestationServer)
+	}
 
 	if strings.TrimSpace(*cdpRestrictedListen) != "" {
 		servers = append(servers, &http.Server{

@@ -100,3 +100,27 @@ test('requires a caller challenge and never silently generates or normalizes it'
   }
   expect(calls).toBe(0);
 });
+
+test('TEST ONLY: retrieves CS evidence with version-specific instructions, without claiming verification', async () => {
+  // MOCK response, not real launcher evidence or a valid Google token.
+  mockProof(() => Response.json({ proof_version: 'cs-v1', nonce: challenge, audience: 'https://verifier.example',
+    run_public_key: 'A'.repeat(43), run_signature: 'A'.repeat(86), attestation: { token: 'TEST_ONLY_UNVERIFIED' } }));
+  const result = await getSessionAttestation('mcp_test', challenge);
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.data.verification.status).toBe('not_performed');
+    expect(result.data.verification.required_claims).toContain('swname');
+    expect(result.data.verification.required_claims).toContain('nbf');
+    expect(result.data.verification.trusted_policy_required).toContain('proof_version');
+    expect(result.data.verification.audience_hint).toBeNull();
+    expect(result.data.verification.checks[0]).toContain('Reject legacy v3');
+  }
+});
+
+test('TEST ONLY: rejects CS evidence without a run key or possession signature', async () => {
+  for (const extra of [{}, { run_public_key: 'A'.repeat(43) }, { run_public_key: 'bad', run_signature: 'A'.repeat(86) }]) {
+    mockProof(() => Response.json({ proof_version: 'cs-v1', nonce: challenge, audience: 'https://verifier.example',
+      attestation: { token: 'TEST_ONLY_UNVERIFIED' }, ...extra }));
+    expect((await getSessionAttestation('mcp_test', challenge)).ok).toBe(false);
+  }
+});

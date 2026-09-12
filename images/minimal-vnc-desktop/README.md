@@ -4,6 +4,10 @@ This is the maintained, standalone desktop image for visual browser/app sessions
 It intentionally does not use WebRTC, neko, supervisor, Chromedriver,
 Playwright, the kernel-images API, or audio streaming.
 
+The proxy also includes an opt-in [Confidential Space run-key proof endpoint](../../docs/confidential-space-run-key.md)
+on loopback port 8085. It is disabled by default and requires the real Confidential Space
+launcher for token retrieval. Only unit tests have been run for that integration.
+
 ## Build
 
 ```bash
