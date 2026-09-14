@@ -148,9 +148,11 @@ Verification performs these checks in order:
 - Verify RS256 against independently fetched Google discovery/JWKS at fixed
   HTTPS URLs; check `iss`, `aud`, `iat`, `exp`, and `nbf`.
 - Require `swname=CONFIDENTIAL_SPACE`, `dbgstat=disabled-since-boot`,
-  `secboot=true`, and a configured confidential hardware model. Shielded VM
-  alone is not accepted. Supported allowlist choices are AMD SEV, AMD SEV ES,
-  and Intel TDX as represented by Google's documented claim values.
+  the `STABLE` Confidential Space image support attribute, `secboot=true`, and
+  a configured confidential hardware model. Shielded VM alone and
+  out-of-support `USABLE`-only images are not accepted. Supported allowlist
+  choices are AMD SEV, AMD SEV ES, and Intel TDX as represented by Google's
+  documented claim values.
 - Compare the retained challenge and configured audience; recompute the tuple
   hash and require it as the only `eat_nonce` value (string or singleton array).
 - Enforce the measured image digest allowlist,

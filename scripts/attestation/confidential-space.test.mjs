@@ -23,21 +23,25 @@ const policy = {
 };
 const { workload_image_digests, ...withoutDigests } = policy;
 const signerPolicy = { ...withoutDigests, image_signing_key_ids: [signerID] };
-function fixture({ claims: claimChanges = {}, proof: proofChanges = {}, container: containerChanges = {}, header = {} } = {}) {
+function fixture({ claims: claimChanges = {}, proof: proofChanges = {}, container: containerChanges = {},
+  confidentialSpace: confidentialSpaceChanges = {}, header = {} } = {}) {
   const publicKey = run.publicKey.export({ format: 'jwk' }).x;
   const canonical = canonicalRunBinding(challenge, publicKey, policy.audience);
   const claims = {
     iss: ISSUER, aud: policy.audience, iat: now - 10, nbf: now - 10, exp: now + 300,
     swname: 'CONFIDENTIAL_SPACE', dbgstat: 'disabled-since-boot', secboot: true,
     hwmodel: 'GCP_AMD_SEV', eat_nonce: [runBindingHash(challenge, publicKey, policy.audience)],
-    submods: { container: {
-      image_digest: imageDigest,
-      // TEST ONLY placeholder signature claim: Google image-signature
-      // validation is not implemented or simulated by this unit test.
-      image_signatures: [{ key_id: signerID, signature: 'TEST_ONLY_SIGNATURE_CLAIM', signature_algorithm: 'ECDSA_P256_SHA256' }],
-      args: policy.container_args, env: policy.container_env,
-      ...containerChanges,
-    } }, ...claimChanges,
+    submods: {
+      confidential_space: { support_attributes: ['STABLE', 'USABLE'], ...confidentialSpaceChanges },
+      container: {
+        image_digest: imageDigest,
+        // TEST ONLY placeholder signature claim: Google image-signature
+        // validation is not implemented or simulated by this unit test.
+        image_signatures: [{ key_id: signerID, signature: 'TEST_ONLY_SIGNATURE_CLAIM', signature_algorithm: 'ECDSA_P256_SHA256' }],
+        args: policy.container_args, env: policy.container_env,
+        ...containerChanges,
+      },
+    }, ...claimChanges,
   };
   const input = [{ alg: 'RS256', kid: 'TEST_ONLY_CS_RSA', ...header }, claims]
     .map(value => Buffer.from(JSON.stringify(value)).toString('base64url')).join('.');
@@ -59,6 +63,12 @@ test('TEST-JWKS: accepts measured digest and bound ephemeral key', () => {
 });
 test('TEST-JWKS: rejects signer-only policy; measured digest pinning is mandatory', () => {
   assert.throws(() => check(fixture(), signerPolicy), /unsupported.*policy field/);
+});
+test('TEST-JWKS: rejects missing Confidential Space support attributes', () => {
+  assert.throws(() => check(fixture({ confidentialSpace: { support_attributes: undefined } })), /STABLE support attribute/);
+});
+test('TEST-JWKS: rejects an out-of-support USABLE-only Confidential Space image', () => {
+  assert.throws(() => check(fixture({ confidentialSpace: { support_attributes: ['USABLE'] } })), /STABLE support attribute/);
 });
 test('shared public Go/JavaScript canonical vector matches byte-for-byte', () => {
   const vector = JSON.parse(readFileSync(new URL('../../images/minimal-vnc-desktop/proxy/testdata/run-binding.json', import.meta.url)));

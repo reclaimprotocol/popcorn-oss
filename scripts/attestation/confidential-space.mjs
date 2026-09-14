@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 export const RUN_PROOF_VERSION = 'cs-v1';
 const DOMAIN = 'popcorn/confidential-space/run-key/v1\0';
 const HARDWARE = ['GCP_AMD_SEV', 'GCP_AMD_SEV_ES', 'GCP_INTEL_TDX'];
+const REQUIRED_SUPPORT_ATTRIBUTE = 'STABLE';
 const audienceValid = value => typeof value === 'string' && /^[\x21-\x7e]{1,512}$/.test(value) &&
   !['https://sts.google.com', 'https://sts.googleapis.com'].includes(value);
 const stringMap = value => value !== null && typeof value === 'object' && !Array.isArray(value) &&
@@ -61,6 +62,9 @@ export function verifyConfidentialSpaceClaims(proof, challenge, policy, claims, 
   assert(proof.audience === policy.audience, 'proof audience mismatch');
   assert(claims.swname === 'CONFIDENTIAL_SPACE', 'wrong workload type: expected CONFIDENTIAL_SPACE');
   assert(claims.dbgstat === 'disabled-since-boot', 'debug Confidential Space is forbidden');
+  const supportAttributes = claims.submods?.confidential_space?.support_attributes;
+  assert(Array.isArray(supportAttributes) && supportAttributes.includes(REQUIRED_SUPPORT_ATTRIBUTE),
+    'Confidential Space image must have the STABLE support attribute');
   assert(claims.secboot === true, 'secure boot required');
   assert(policy.hardware_models.includes(claims.hwmodel), 'unapproved hardware model');
   assert(Number.isSafeInteger(claims.nbf) && claims.nbf <= now + policy.clock_skew_seconds && claims.exp > claims.nbf, 'missing or invalid not-before');
