@@ -381,7 +381,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'verify_runtime',
     title: 'Verify browser runtime',
-    description: 'Retrieve attestation evidence for an owned session using a caller-generated challenge. Generate 32 random bytes locally and retain the lowercase hex nonce. Follow the returned steps to independently verify Google-signed platform claims and the reported image identities against your approved policy.',
+    description: 'Retrieve attestation evidence for an owned session using a caller-generated challenge. Generate 32 random bytes locally and retain the lowercase hex nonce. Follow the returned steps to independently verify Google-signed platform and workload claims against your approved policy. Confidential Space run-key verification requires an explicit cs-v1 policy.',
     inputSchema: {
       ...SESSION_ID_INPUT,
       properties: {

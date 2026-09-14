@@ -138,11 +138,15 @@ export async function getSessionAttestation(sessionId: string, nonce: string): P
       return { ok: false, status: response.status, error: `Runtime proof request failed (HTTP ${response.status})` };
     }
     const proof = await response.json() as Record<string, any>;
-    if (proof?.error || proof?.proof_version !== 'v3' || proof?.nonce !== nonce ||
+    const confidentialSpace = proof?.proof_version === 'cs-v1';
+    const validRunFields = !confidentialSpace || (typeof proof.run_public_key === 'string' &&
+      /^[A-Za-z0-9_-]{43}$/.test(proof.run_public_key) && typeof proof.run_signature === 'string' &&
+      /^[A-Za-z0-9_-]{86}$/.test(proof.run_signature) && typeof proof.audience === 'string' && proof.audience.length > 0);
+    if (proof?.error || (!confidentialSpace && proof?.proof_version !== 'v3') || !validRunFields || proof?.nonce !== nonce ||
         typeof proof?.attestation?.token !== 'string' || !proof.attestation.token) {
       return { ok: false, status: 502, error: 'Runtime returned invalid or incomplete attestation evidence' };
     }
-    return { ok: true, data: { proof, verification: verificationInstructions(sessionId, nonce, url.origin) } };
+    return { ok: true, data: { proof, verification: verificationInstructions(sessionId, nonce, url.origin, proof.proof_version) } };
   } catch {
     return { ok: false, status: 502, error: 'Runtime attestation request failed or timed out' };
   }
