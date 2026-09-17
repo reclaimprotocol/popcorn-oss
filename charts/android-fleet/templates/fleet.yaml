@@ -43,6 +43,14 @@ spec:
 {{- end }}
 {{- end }}
       template:
+        # Agones does NOT copy GameServer labels onto the pod it creates, so a
+        # label set only on the GameServer template selects nothing. The
+        # NetworkPolicy matches pods, and this runtime has no authentication of
+        # its own, so a policy that silently selects zero pods would leave the
+        # live view and automation API open to anything in the cluster.
+        metadata:
+          labels:
+            app: android-runtime
         spec:
 {{- if .Values.serviceAccount.create }}
           serviceAccountName: android-sa

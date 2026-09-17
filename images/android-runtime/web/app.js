@@ -8,6 +8,33 @@ const els = {
   ime: $("ime"),
 };
 
+// The device's own status and navigation bars are chrome, not content: a
+// session view wants the app. They are cropped out of the frame rather than
+// hidden on the device, because `policy_control` is a no-op on Android 14 and
+// touching device settings for a cosmetic reason is the wrong trade. `?bars=1`
+// keeps them.
+const showBars = new URLSearchParams(location.search).get("bars") === "1";
+
+/** Region of the encoded frame actually drawn, in frame pixels. Recomputed
+ *  whenever geometry arrives, because insets move with rotation. */
+let crop = null;
+
+function updateCrop() {
+  if (showBars || !geometry?.insets) {
+    crop = null;
+    return;
+  }
+  const { width, height, encodedWidth, encodedHeight, insets } = geometry;
+  // Insets are display pixels; the encoded frame is the display scaled down.
+  const sx = encodedWidth / width;
+  const sy = encodedHeight / height;
+  const x = Math.round(insets.left * sx);
+  const y = Math.round(insets.top * sy);
+  const w = Math.round(encodedWidth - (insets.left + insets.right) * sx);
+  const h = Math.round(encodedHeight - (insets.top + insets.bottom) * sy);
+  crop = w > 0 && h > 0 ? { x, y, w, h } : null;
+}
+
 const ctx = els.canvas.getContext("2d", { alpha: false, desynchronized: true });
 let decoder = null;
 let decoderCodec = null;
@@ -53,11 +80,12 @@ function ensureDecoder(codec) {
   }
   decoder = new VideoDecoder({
     output: (frame) => {
-      if (els.canvas.width !== frame.displayWidth || els.canvas.height !== frame.displayHeight) {
-        els.canvas.width = frame.displayWidth;
-        els.canvas.height = frame.displayHeight;
+      const region = crop ?? { x: 0, y: 0, w: frame.displayWidth, h: frame.displayHeight };
+      if (els.canvas.width !== region.w || els.canvas.height !== region.h) {
+        els.canvas.width = region.w;
+        els.canvas.height = region.h;
       }
-      ctx.drawImage(frame, 0, 0);
+      ctx.drawImage(frame, region.x, region.y, region.w, region.h, 0, 0, region.w, region.h);
       frame.close();
       if (!sawFirstFrame) {
         sawFirstFrame = true;
@@ -102,9 +130,21 @@ function onVideo(buffer) {
 
 let socket = null;
 
-function connect() {
+/** Where to reach the session socket.
+ *
+ *  Served directly, that is `/ws`. Through Popcorn's gateway the page lives at
+ *  `/liveview/<session>/<token>/liveview.html` and the socket at
+ *  `/liveview-ws/<session>/<token>`, so the path the page was served from is
+ *  what says which. */
+function socketUrl() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  socket = new WebSocket(`${scheme}://${location.host}/ws`);
+  const viaGateway = location.pathname.match(/^\/liveview\/([^/]+)\/([^/]+)/);
+  const path = viaGateway ? `/liveview-ws/${viaGateway[1]}/${viaGateway[2]}` : "/ws";
+  return `${scheme}://${location.host}${path}`;
+}
+
+function connect() {
+  socket = new WebSocket(socketUrl());
   socket.binaryType = "arraybuffer";
 
   socket.addEventListener("message", (event) => {
@@ -113,9 +153,13 @@ function connect() {
     if (message.type === "hello") {
       readOnly = !!message.readOnly;
       geometry = message.geometry ?? geometry;
+      updateCrop();
       els.canvas.classList.toggle("readonly", readOnly);
     }
-    if (message.type === "geometry") geometry = message.geometry;
+    if (message.type === "geometry") {
+      geometry = message.geometry;
+      updateCrop();
+    }
   });
 
   socket.addEventListener("close", () => {
@@ -134,9 +178,14 @@ function send(message) {
 
 function normalise(event) {
   const rect = els.canvas.getBoundingClientRect();
+  const fx = (event.clientX - rect.left) / rect.width;
+  const fy = (event.clientY - rect.top) / rect.height;
+  if (!crop || !geometry) return { x: fx, y: fy };
+  // The canvas is only the cropped window onto the frame, while the server
+  // addresses the whole display, so the point goes back into full-frame space.
   return {
-    x: (event.clientX - rect.left) / rect.width,
-    y: (event.clientY - rect.top) / rect.height,
+    x: (crop.x + fx * crop.w) / geometry.encodedWidth,
+    y: (crop.y + fy * crop.h) / geometry.encodedHeight,
   };
 }
 

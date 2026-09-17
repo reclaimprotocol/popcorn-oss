@@ -34,7 +34,7 @@ export interface Device {
 /** `adb devices -l`, parsed. Offline and unauthorized devices are included so the
  *  UI can say why a device it can see is not usable. */
 export async function listDevices(): Promise<Device[]> {
-  const { stdout } = await execFileAsync(ADB, ["devices", "-l"], { timeout: 10_000 });
+  const { stdout } = await execFileAsync(ADB, [...serverArgs(), "devices", "-l"], { timeout: 10_000 });
   const devices: Device[] = [];
   for (const line of stdout.split("\n").slice(1)) {
     const trimmed = line.trim();
@@ -296,4 +296,15 @@ export async function deviceName(serial: string): Promise<string> {
   } catch {
     return serial;
   }
+}
+
+/** Serials adb currently reports in the `device` state. */
+export async function readySerials(): Promise<string[]> {
+  const { stdout } = await execFileAsync(ADB, [...serverArgs(), "devices"], { timeout: 10_000 });
+  return stdout
+    .split("\n")
+    .slice(1)
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([serial, state]) => serial && state === "device")
+    .map(([serial]) => serial!);
 }

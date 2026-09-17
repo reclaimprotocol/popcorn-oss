@@ -47,7 +47,9 @@ export class LiveView {
     const http = createServer((req, res) => void this.handleHttp(req, res));
     http.on("upgrade", (req, socket, head) => {
       const url = new URL(req.url ?? "/", "http://localhost");
-      if (url.pathname !== "/ws") {
+      // `/websockify` is where Popcorn's gateway forwards `/liveview-ws/...`,
+      // a name inherited from noVNC. `/ws` is what a direct connection uses.
+      if (url.pathname !== "/ws" && url.pathname !== "/websockify") {
         socket.destroy();
         return;
       }
@@ -146,7 +148,11 @@ export class LiveView {
 
   private async handleHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const path = new URL(req.url ?? "/", "http://localhost").pathname;
-    const file = path === "/" ? join(WEB_ROOT, "index.html") : normalize(join(WEB_ROOT, path));
+    // Popcorn's pool manager mints live-view URLs ending in `/liveview.html`,
+    // so that name is part of the contract a runtime has to meet, not a detail
+    // of the browser runtime that happens to use it.
+    const isIndex = path === "/" || path === "/liveview.html";
+    const file = isIndex ? join(WEB_ROOT, "index.html") : normalize(join(WEB_ROOT, path));
     if (!file.startsWith(WEB_ROOT)) {
       res.writeHead(403).end("forbidden");
       return;

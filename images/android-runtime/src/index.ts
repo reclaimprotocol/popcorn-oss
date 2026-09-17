@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Agones } from "./agones.js";
-import { ADB, serverArgs } from "./adb.js";
+import { ADB, serverArgs, readySerials } from "./adb.js";
 import { Emulator, sleep } from "./emulator.js";
 import { VideoStream } from "./video.js";
 import { Controller } from "./control.js";
@@ -11,7 +11,7 @@ import { automationServer } from "./automation.js";
 
 const execFileAsync = promisify(execFile);
 
-const env = {
+const env: { [k: string]: any } = {
   avd: process.env.ANDROID_AVD_NAME ?? "popcorn",
   serial: process.env.ANDROID_SERIAL ?? "emulator-5554",
   gpu: process.env.ANDROID_GPU_MODE ?? "swiftshader_indirect",
@@ -31,6 +31,22 @@ const env = {
 
 function log(message: string): void {
   console.log(`[android-runtime] ${message}`);
+}
+
+/**
+ * The serial to attach to.
+ *
+ * A pinned serial is honoured when that device is present. When it is not -
+ * an emulator restarting on a different console port is routine - and exactly
+ * one device is online, that device is used instead, because waiting forever
+ * for a name is worse than attaching to the only thing there. With several
+ * devices online the pin is kept, since guessing would be arbitrary.
+ */
+async function resolveSerial(preferred: string): Promise<string> {
+  const online = await readySerials().catch(() => [] as string[]);
+  if (online.includes(preferred)) return preferred;
+  if (online.length === 1) return online[0]!;
+  return preferred;
 }
 
 async function main(): Promise<void> {
@@ -67,7 +83,13 @@ async function main(): Promise<void> {
   });
 
   if (env.mode === "attach") {
-    log(`attaching to ${env.serial}`);
+    const resolved = await resolveSerial(env.serial);
+    if (resolved !== env.serial) {
+      log(`${env.serial} is not present; attaching to ${resolved} instead`);
+      env.serial = resolved;
+    } else {
+      log(`attaching to ${env.serial}`);
+    }
   } else {
     log(`booting ${env.avd}${env.wipeData ? " (wiping userdata)" : ""}`);
   }
