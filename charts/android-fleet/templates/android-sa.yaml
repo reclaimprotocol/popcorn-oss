@@ -1,0 +1,71 @@
+{{- if .Values.serviceAccount.create }}
+{{- $nodeReaderName := printf "%s-android-sa-node-reader" .Release.Name | trunc 63 | trimSuffix "-" }}
+# Agones' SDK sidecar runs under this account and talks to the Kubernetes API
+# on the GameServer's behalf - marking it Ready, sending health pings, reading
+# its own pod. Agones binds its `agones-sdk` ClusterRole only in the namespaces
+# named at install time (`default` out of the box), so a fleet in its own
+# namespace has to grant this itself or the sidecar loops on
+# "Connection to Kubernetes service failed" and the pod never starts.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: android-sa
+  namespace: {{ .Release.Namespace }}
+{{- with .Values.serviceAccount.gcpServiceAccount }}
+  annotations:
+    iam.gke.io/gcp-service-account: {{ . | quote }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: android-sa-role
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["agones.dev"]
+    resources: ["gameservers"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: android-sa-rolebinding
+  namespace: {{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: android-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: android-sa-role
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $nodeReaderName | quote }}
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $nodeReaderName | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: android-sa
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: ClusterRole
+  name: {{ $nodeReaderName | quote }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}

@@ -1,0 +1,22 @@
+{
+  "name": "popcorn-android-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Android emulator session runtime for Popcorn: live view, automation API and Agones lifecycle.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  },
+  "engines": { "node": ">=20" }
+}

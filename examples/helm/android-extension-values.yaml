@@ -1,0 +1,20 @@
+# Publishes the Android automation API through the gateway.
+#
+# Load this into the PLATFORM chart. android-fleet already declares the
+# automation port itself - it is core to the runtime, not an add-on - so this
+# document carries routing only. Re-declaring the port here would put two
+# entries named `automation` on the GameServer and Agones rejects that.
+
+sessionExtensions:
+  android:
+    enabled: true
+    routing:
+      portName: automation
+      port: 3000
+      routeKey: android
+      sessionUrls:
+        androidUrl: "https://{{ .gatewayDomain }}/android/{{ .sessionToken }}"
+      gatewayRoutes:
+        - pathPrefix: /android
+          routeKey: android
+          tokenScope: android

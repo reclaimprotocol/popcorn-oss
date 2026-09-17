@@ -1,0 +1,84 @@
+# Android session fleet.
+#
+# The same shape as browser-fleet, with the differences an emulator forces:
+# a KVM device, nodes that can provide one, and pods sized for a guest OS.
+
+androidRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/android-runtime:latest
+androidRuntimeImagePullPolicy: IfNotPresent
+
+fleet:
+  replicas: 2
+  scheduling: Packed
+  health:
+    # An emulator takes minutes to boot. Agones must not reap a pod that is
+    # still starting, so this delay is far longer than a browser's.
+    initialDelaySeconds: 300
+    periodSeconds: 10
+    failureThreshold: 6
+  # A guest OS needs real memory; these are floors, not suggestions.
+  memoryRequest: 4Gi
+  memoryLimit: 6Gi
+  cpuRequest: "2"
+  cpuLimit: "4"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+autoscaler:
+  enabled: true
+  bufferSize: 1
+  minReplicas: 1
+  maxReplicas: 10
+
+# How the pod gets /dev/kvm. `devicePlugin` is the right answer: it keeps pods
+# unprivileged and lets the scheduler count KVM as a resource. `hostPath`
+# exists for clusters without the plugin and needs a privileged container,
+# which is a real escalation - do not reach for it by default.
+kvm:
+  mode: devicePlugin        # devicePlugin | hostPath | none
+  resourceName: devices.kubevirt.io/kvm
+  # Set to the label your nested-virtualization node pool carries.
+  nodeSelector: {}
+
+runtime:
+  # `spawn` runs an emulator inside the pod and needs kvm. `attach` uses a
+  # device that already exists, reached through an adb server elsewhere - a
+  # phone farm, or a developer's Mac. Attach needs no kvm and no x86 node,
+  # which is the only way this chart runs on an Arm cluster at all.
+  mode: spawn                 # spawn | attach
+  adbServerHost: ""
+  adbServerPort: "5037"
+  serial: emulator-5554
+  gpuMode: swiftshader_indirect
+  streamMaxSize: 1080
+  streamBitrate: 6000000
+  bootTimeoutSeconds: 420
+  # Live view without input, for spectators.
+  readOnly: false
+  # Raw `adb shell` over the automation API. Off; see the runtime README.
+  allowShell: false
+  wipeData: true
+
+serviceAccount:
+  create: true
+  gcpServiceAccount: ""
+  # Agones injects its SDK sidecar into every GameServer pod, and that sidecar
+  # reads the projected service-account token to build its in-cluster config.
+  # Setting this false looks like a hardening win and instead kills the pod
+  # before the runtime container starts:
+  #   open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file
+  #   Could not create in cluster config  [fatal]
+  automountServiceAccountToken: true
+
+# Only the gateway may reach a session pod.
+networkPolicy:
+  enabled: true
+  gatewayNamespace: ""
+  gatewayPodLabels:
+    app: gateway
+
+imagePullSecrets: []
+
+# Same extension model as browser-fleet: keyed, so independent values documents
+# compose instead of overwriting each other.
+sessionExtensions: {}

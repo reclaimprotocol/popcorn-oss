@@ -1,0 +1,37 @@
+# Android session fleet on a nested-virtualization node pool.
+#
+# Pair with a pool manager pointed at this fleet:
+#   poolManager.gameServerFleet: android-fleet
+#   poolManager.sessionExtensionRoutePorts: '{"automation":"android"}'
+
+androidRuntimeImage: ghcr.io/reclaimprotocol/popcorn-oss/android-runtime:latest
+
+fleet:
+  replicas: 2
+  memoryRequest: 4Gi
+  memoryLimit: 6Gi
+  cpuRequest: "2"
+  cpuLimit: "4"
+
+kvm:
+  mode: devicePlugin
+  resourceName: devices.kubevirt.io/kvm
+  nodeSelector:
+    cloud.google.com/gke-nodepool: android-nested-virt
+
+autoscaler:
+  enabled: true
+  # Emulators boot in minutes, so keep spare devices warm.
+  bufferSize: 2
+  minReplicas: 2
+  maxReplicas: 20
+
+runtime:
+  streamMaxSize: 1080
+  streamBitrate: 6000000
+  bootTimeoutSeconds: 420
+  wipeData: true
+
+networkPolicy:
+  enabled: true
+  gatewayNamespace: popcorn

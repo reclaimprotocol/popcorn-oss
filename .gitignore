@@ -24,3 +24,5 @@ docker-compose.override.yml
 services/gateway/keys/
 services/pool-manager/keys/
 cosign.pub
+images/android-runtime/node_modules/
+images/android-runtime/dist/

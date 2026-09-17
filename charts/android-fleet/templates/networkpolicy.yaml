@@ -1,0 +1,40 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: android-runtime-ingress
+  namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: android-runtime
+  policyTypes: [Ingress]
+  ingress:
+    # The live view and the automation API carry no authentication of their
+    # own: the gateway validates the signed path token before proxying. That
+    # only holds while nothing else can reach these ports.
+    - from:
+        - namespaceSelector:
+{{- if .Values.networkPolicy.gatewayNamespace }}
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.gatewayNamespace | quote }}
+{{- else }}
+            {}
+{{- end }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.networkPolicy.gatewayPodLabels | indent 14 }}
+      ports:
+        - protocol: TCP
+          port: 6080
+        - protocol: TCP
+          port: 3000
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- range dig "android" "ports" (list) $extension }}
+        - protocol: {{ default "TCP" .protocol }}
+          port: {{ .containerPort }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

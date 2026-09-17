@@ -1,0 +1,47 @@
+# Android session runtime WITHOUT an emulator inside it.
+#
+# The device lives somewhere else and is reached over an adb server: a macOS
+# host running the emulator natively, or a farm of physical devices on adb TCP.
+# This image therefore carries no Android SDK and is architecture-neutral - it
+# builds and runs on arm64, which the emulator image cannot.
+#
+# On Apple Silicon this is the only way to containerise the runtime at all:
+# Google publishes no linux/aarch64 emulator, so the device cannot be in the
+# container no matter what the host supports.
+#
+#   docker run --rm -p 6080:6080 -p 3000:3000 \
+#     -e EMULATOR_MODE=attach \
+#     -e ADB_SERVER_HOST=host.docker.internal \
+#     -e ANDROID_SERIAL=emulator-5554 \
+#     popcorn/android-runtime:attach
+
+FROM node:24-bookworm-slim AS build
+WORKDIR /build
+COPY package.json package-lock.json* tsconfig.json ./
+RUN npm ci --no-audit --no-fund
+COPY src ./src
+COPY web ./web
+RUN npm run build && npm prune --omit=dev
+
+FROM node:24-bookworm-slim
+# Debian builds adb for every architecture it supports, unlike Google's
+# platform-tools, which ships linux/x86_64 only. The `adb` package puts the
+# binary on PATH; the android-sdk-platform-tools metapackage does not.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends adb \
+  && rm -rf /var/lib/apt/lists/* \
+  && adb version
+
+WORKDIR /app
+COPY --from=build /build/node_modules ./node_modules
+COPY --from=build /build/dist ./dist
+COPY --from=build /build/web ./web
+COPY --from=build /build/package.json ./package.json
+
+ENV EMULATOR_MODE=attach \
+    ANDROID_SERIAL=emulator-5554 \
+    LIVEVIEW_PORT=6080 \
+    AUTOMATION_PORT=3000
+
+EXPOSE 6080 3000
+ENTRYPOINT ["node", "/app/dist/index.js"]
