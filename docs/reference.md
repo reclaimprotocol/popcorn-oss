@@ -117,6 +117,7 @@ cleanup.
 | `vncUrl` | compatibility name for the canonical LiveView page |
 | `vncWsUrl` | compatibility name for the RFB WebSocket endpoint |
 | `browserPodId` | allocated Agones GameServer/pod identity |
+| `podUid` | Kubernetes pod UID for binding a runtime to its allocation |
 | `expiresAt` | session deadline when one is set |
 | `region` | selected control-plane region name |
 | `clusterName` | selected cluster access identity |

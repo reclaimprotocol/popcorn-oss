@@ -59,7 +59,7 @@ local function check_route_bound_deadline(jwt_obj, expected_session_id)
         ngx.log(ngx.WARN, "Auth: Missing route-bound deadline")
         return false
     end
-    return _M.is_route_bound_deadline_active(deadline, ngx.now() * 1000)
+    return _M.is_route_bound_deadline_active(deadline, ngx.now() * 1000), tonumber(deadline)
 end
 
 function _M.is_route_bound_deadline_active(deadline, now_ms)
@@ -68,7 +68,7 @@ end
 
 _M.is_supported_algorithm = is_supported_algorithm
 
-function _M.check(bypass_assets, token_arg, required_scope, expected_session_id)
+function _M.check(bypass_assets, token_arg, required_scope, expected_session_id, require_deadline)
     -- bypass_assets: boolean
     -- token_arg: string (optional, from path)
     -- required_scope: string (optional, "internal" for restricted endpoints)
@@ -122,7 +122,7 @@ function _M.check(bypass_assets, token_arg, required_scope, expected_session_id)
         end
     end
 
-    local route_bound_active = check_route_bound_deadline(jwt_obj, expected_session_id)
+    local route_bound_active, route_bound_deadline = check_route_bound_deadline(jwt_obj, expected_session_id)
     if route_bound_active == nil then
         return ngx.exit(503)
     end
@@ -131,19 +131,22 @@ function _M.check(bypass_assets, token_arg, required_scope, expected_session_id)
         return ngx.exit(403)
     end
 
-    if bypass_assets then
-        local rest_uri = ngx.var.rest_uri
-        local is_root = (rest_uri == "" or rest_uri == "/")
-
-        local upgrade = ngx.req.get_headers()["Upgrade"]
-        local is_ws = (upgrade and string.lower(upgrade) == "websocket")
-
-        if not (is_root or is_ws) then
-            return -- Bypass additional browser root/WebSocket auth checks for assets after token/session validation
-        end
+    local expires_at = tonumber(jwt_obj.payload.exp)
+    if expires_at then expires_at = expires_at * 1000 end
+    if route_bound_deadline then expires_at = math.min(expires_at or route_bound_deadline, route_bound_deadline) end
+    if require_deadline and (not expires_at or expires_at ~= expires_at or expires_at == math.huge or expires_at <= ngx.now() * 1000) then
+        ngx.log(ngx.WARN, "Auth: Missing or expired upstream identity deadline")
+        return ngx.exit(403)
     end
 
-    -- Valid
+    return { sessionId = jwt_obj.payload.sub, scope = jwt_obj.payload.scope, expiresAt = expires_at }
+end
+
+function _M.forward_identity(identity)
+    ngx.req.set_header("X-Popcorn-Session-Id", identity.sessionId)
+    ngx.req.set_header("X-Popcorn-Scope", identity.scope)
+    ngx.req.set_header("X-Popcorn-Expires-At", string.format("%.0f", math.floor(identity.expiresAt)))
+
 end
 
 return _M

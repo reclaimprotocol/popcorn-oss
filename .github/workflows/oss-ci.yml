@@ -193,7 +193,13 @@ jobs:
       - name: Test independent attestation verifier
         run: node --test scripts/attestation/verify.test.mjs
 
-      - name: Verify authenticated LiveView gateway routes
+      - name: Set up Helm
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+
+      - name: Test session extension charts
+        run: bun test charts/tests
+
+      - name: Verify authenticated LiveView and extension gateway routes
         shell: bash
         run: |
           set -euo pipefail

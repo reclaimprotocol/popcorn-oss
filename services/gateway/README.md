@@ -7,7 +7,9 @@ each session URL.
 
 The implementation runs on OpenResty. `nginx.conf` defines routing and redacted
 logging, while `auth.lua` enforces token algorithm, scope, session identity,
-expiry, and route-bound access deadlines.
+expiry, and route-bound access deadlines. Session extensions use the same
+`/<prefix>/<sessionId>/<token>/<path>` routing; configure `tokenScope` to
+separate restricted client routes from internal routes.
 
 ## Configuration
 
@@ -29,6 +31,8 @@ documented in [Architecture](../../docs/architecture.md) and
 
 ```bash
 bash tests/auth-algorithm.sh
+# Requires Helm, Bun, OpenSSL and Docker.
 bash tests/route-bound-access.sh
+bun test ../../charts/tests
 docker build -t popcorn/gateway:local .
 ```
