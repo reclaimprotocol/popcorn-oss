@@ -4,9 +4,12 @@ Viewer handoff removes interactive access to an allocated browser without closin
 The trusted CDP connection remains available for server-side work.
 Handoff is irreversible for that allocation.
 
-This feature does not start an agent, change a provider, or publish a repair.
-The caller must finish the student-facing flow and stop normal automation before handoff.
+This feature only controls viewer access. The caller controls subsequent server-side work.
+The caller must finish the interactive flow and stop existing automation before handoff.
 Handoff does not extend the session deadline.
+
+Handoff is a server-side viewer disconnection. It does not create or move a browser session.
+Unlike a normal viewer disconnection, handoff also blocks reconnect attempts and preserves the current viewport and mobile emulation.
 
 ## Client contract
 
@@ -90,12 +93,12 @@ An unavailable allocation store cannot establish fresh viewer access.
 A runtime restart changes `runtimeInstanceId` and closes CDP connections owned by that process.
 The browser can retain authentication while mobile emulation changes after those connections close.
 A caller cannot reuse a receipt or a browser-state baseline from the previous runtime process.
-The caller needs a fresh acknowledgement and a fresh baseline before candidate execution.
+The caller needs a fresh acknowledgement and a fresh baseline before server-side work continues.
 
 ## Caller failure rules
 
 1. Wait for an acknowledgement with the expected session ID and pod UID.
-2. If handoff is unconfirmed, do not start the repair candidate.
+2. If handoff is unconfirmed, do not start server-side work that requires exclusive viewer control.
 3. Retry only within a bounded deadline and with the same expected pod UID.
 4. If handoff remains unconfirmed, use the allocation-fenced termination endpoint described next.
 5. Keep the existing session deadline unless a separate authorized operation extends it.
@@ -158,7 +161,7 @@ Caller rules:
 2. If the response is missing, stale, or unconfirmed, record cleanup as unconfirmed.
 3. Close the caller-owned CDP connection within its cleanup deadline.
 4. Never retry through the legacy `DELETE /v1/session/:id` endpoint.
-5. Never replace the expected pod UID with a later allocation UID to finish an earlier repair.
+5. Never replace the expected pod UID with a later allocation UID to finish an earlier operation.
 
 The control-plane deadline is nine seconds. The pool-manager deadline is seven seconds.
 Retries can return a conflict or not-found response after a previous deletion succeeds.
@@ -192,7 +195,7 @@ Deployment order:
 
 Missing status support, an invalid acknowledgement, or a different allocation must prevent a successful handoff response.
 The caller must not replace that response with a UI-only hide operation.
-This change does not enable automatic repairs in Portal.
+The API caller controls when to request handoff.
 
 ## Local tests
 
@@ -209,7 +212,7 @@ POPCORN_HANDOFF_TEST_CHROME=/absolute/path/to/chrome \
 
 The test builds the proxy with external Go dependency access disabled.
 It starts the actual proxy and Chromium processes on loopback addresses.
-It uses a synthetic portal, synthetic authentication, a fake Agones SDK, and a fake RFB upstream.
+It uses a synthetic website, synthetic authentication, a fake Agones SDK, and a fake RFB upstream.
 
 The process test covers:
 
@@ -247,4 +250,4 @@ The recorded local run used Redis 7.0.15 and passed all three allocation-cleanup
 
 These local tests do not run a Kubernetes cluster, the public gateway, Xvnc, or the browser extension.
 They do not establish that previously delivered input has no later effect.
-A deployed acceptance test must cover those integration boundaries before production repair uses the acknowledgement.
+A deployed acceptance test must cover those integration boundaries before production callers rely on the acknowledgement.
