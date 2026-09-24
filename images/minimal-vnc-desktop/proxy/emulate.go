@@ -32,6 +32,11 @@ type emulateRequest struct {
 
 // emulator maintains device emulation and sends native touch events over CDP.
 type emulator struct {
+	handoff     *viewerHandoff
+	freeze      chan struct{}
+	frozen      chan struct{}
+	freezeOnce  sync.Once
+	freezeAck   sync.Once
 	cdpUpstream string
 	mu          sync.Mutex
 	params      *emulateRequest
@@ -548,19 +553,51 @@ func geometryHTTPHandler(viewers func() int) http.HandlerFunc {
 	}
 }
 
-func newEmulator(cdpUpstream string) *emulator {
+func newEmulator(cdpUpstream string, handoff ...*viewerHandoff) *emulator {
 	e := &emulator{
+		freeze: make(chan struct{}), frozen: make(chan struct{}),
 		cdpUpstream: cdpUpstream,
 		dirty:       make(chan struct{}, 1),
 		cmds:        make(chan cdpCmd, 512),
 		prio:        make(chan cdpCmd, 64),
 	}
+	if len(handoff) > 0 {
+		e.handoff = handoff[0]
+	}
+	e.handoff.onStop(e.stopForHandoff)
+	e.handoff.onDrained(e.discardCommands)
 	if os.Getenv("MVD_EMULATOR_OFF") == "1" {
+		e.acknowledgeFreeze()
 		return e // diagnostic: no CDP auto-attach / emulation at all
 	}
 	e.params = defaultEmulation()
 	go e.run()
 	return e
+}
+
+func (e *emulator) stopForHandoff() {
+	e.freezeOnce.Do(func() { close(e.freeze) })
+	<-e.frozen
+}
+
+func (e *emulator) acknowledgeFreeze() {
+	e.freezeAck.Do(func() { close(e.frozen) })
+}
+
+func (e *emulator) discardCommands() {
+	for _, queue := range []chan cdpCmd{e.prio, e.cmds} {
+		for {
+			select {
+			case cmd := <-queue:
+				if cmd.done != nil {
+					cmd.done(false)
+				}
+			default:
+				goto nextQueue
+			}
+		}
+	nextQueue:
+	}
 }
 
 func (e *emulator) setActive(sid string) {
@@ -619,6 +656,10 @@ func (e *emulator) queue(method string, params map[string]any) {
 }
 
 func (e *emulator) queueWithDone(method string, params map[string]any, done func(bool)) bool {
+	if !e.handoff.begin() {
+		return false
+	}
+	defer e.handoff.end()
 	sid := e.activeSession()
 	if sid == "" {
 		return false
@@ -668,6 +709,10 @@ const (
 // wait as enqueueCmd, but the queue it competes for carries only never-drop
 // commands, so the bound is reached only when the CDP consumer itself is wedged.
 func (e *emulator) enqueuePriority(cmd cdpCmd, wait time.Duration) bool {
+	if !e.handoff.begin() {
+		return false
+	}
+	defer e.handoff.end()
 	select {
 	case e.prio <- cmd:
 		return true
@@ -679,6 +724,8 @@ func (e *emulator) enqueuePriority(cmd cdpCmd, wait time.Duration) bool {
 	case e.prio <- cmd:
 		return true
 	case <-timer.C:
+		return false
+	case <-e.freeze:
 		return false
 	}
 }
@@ -696,6 +743,10 @@ func (e *emulator) enqueueCmd(cmd cdpCmd) bool {
 // command was queued, so a caller whose state depends on it (a dialog answer)
 // can keep that state instead of assuming the command went out.
 func (e *emulator) enqueueCmdWait(cmd cdpCmd, wait time.Duration) bool {
+	if !e.handoff.begin() {
+		return false
+	}
+	defer e.handoff.end()
 	select {
 	case e.cmds <- cmd:
 		return true
@@ -707,6 +758,8 @@ func (e *emulator) enqueueCmdWait(cmd cdpCmd, wait time.Duration) bool {
 	case e.cmds <- cmd:
 		return true
 	case <-timer.C:
+		return false
+	case <-e.freeze:
 		return false
 	}
 }
@@ -791,6 +844,10 @@ func (e *emulator) dispatchCompatClickWithDone(p touchPoint, done func(bool)) bo
 }
 
 func (e *emulator) set(req emulateRequest) {
+	if !e.handoff.begin() {
+		return
+	}
+	defer e.handoff.end()
 	e.mu.Lock()
 	e.params = &req
 	e.mu.Unlock()
@@ -913,8 +970,14 @@ func inputWSHandler(em *emulator, ready readyGate) http.HandlerFunc {
 			_ = writeFrameToConn(conn, &writeMu, 0x1, b, false, true)
 		}
 		closed := make(chan struct{})
-		defer close(closed)
+		pingDone := make(chan struct{})
+		defer func() {
+			close(closed)
+			_ = conn.Close()
+			<-pingDone
+		}()
 		go func() {
+			defer close(pingDone)
 			ticker := time.NewTicker(inputPingInterval)
 			defer ticker.Stop()
 			for {
@@ -1036,10 +1099,29 @@ func clampInt(v, lo, hi int) int {
 
 // run maintains the persistent CDP connection, reconnecting with backoff.
 func (e *emulator) run() {
+	if e.handoff != nil {
+		select {
+		case <-e.handoff.activated:
+		case <-e.freeze:
+			e.acknowledgeFreeze()
+			return
+		}
+	}
 	backoff := 500 * time.Millisecond
 	for {
+		select {
+		case <-e.freeze:
+			e.acknowledgeFreeze()
+			return
+		default:
+		}
 		if err := e.session(); err != nil {
-			time.Sleep(backoff)
+			select {
+			case <-e.freeze:
+				e.acknowledgeFreeze()
+				return
+			case <-time.After(backoff):
+			}
 			if backoff < 10*time.Second {
 				backoff *= 2
 			}
@@ -1060,7 +1142,15 @@ func (e *emulator) session() error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	sessionDone := make(chan struct{})
+	var readerDone chan struct{}
+	defer func() {
+		close(sessionDone)
+		_ = conn.Close()
+		if readerDone != nil {
+			<-readerDone
+		}
+	}()
 
 	var writeMu sync.Mutex
 	var idCounter int64
@@ -1071,7 +1161,10 @@ func (e *emulator) session() error {
 			msg["sessionId"] = sessionID
 		}
 		b, _ := json.Marshal(msg)
-		return id, writeFrameToConn(conn, &writeMu, 0x1, b, true, true) == nil
+		err := e.handoff.forward(func() error {
+			return writeFrameToConn(conn, &writeMu, 0x1, b, true, true)
+		})
+		return id, err == nil
 	}
 
 	applyTo := func(sessionID string) {
@@ -1189,7 +1282,9 @@ func (e *emulator) session() error {
 
 	msgs := make(chan map[string]any, 128)
 	errc := make(chan error, 1)
+	readerDone = make(chan struct{})
 	go func() {
+		defer close(readerDone)
 		for {
 			fin, opcode, payload, err := readFrame(reader)
 			if err != nil {
@@ -1205,7 +1300,11 @@ func (e *emulator) session() error {
 			}
 			var m map[string]any
 			if json.Unmarshal(payload, &m) == nil {
-				msgs <- m
+				select {
+				case msgs <- m:
+				case <-sessionDone:
+					return
+				}
 			}
 		}
 	}()
@@ -1228,20 +1327,34 @@ func (e *emulator) session() error {
 	// The mode file is written by start-chromium and defaults to kiosk when absent.
 	watchdog := time.NewTicker(2 * time.Second)
 	defer watchdog.Stop()
+	freezeRequested := e.freeze
+	cmds, priority, dirty := e.cmds, e.prio, e.dirty
+	paused := false
 
 	for {
 		select {
+		case <-freezeRequested:
+			// Detaching this CDP owner resets DPR/touch overrides in Chromium.
+			// Keep it attached, drain replies, and perform no further commands.
+			// The shared gate already closed at the cutoff; this barrier stops
+			// every queue consumer before the final discard/acknowledgment.
+			paused = true
+			freezeRequested, cmds, priority, dirty = nil, nil, nil, nil
+			e.acknowledgeFreeze()
 		case err := <-errc:
 			return err
 		case <-watchdog.C:
+			if paused {
+				continue
+			}
 			for _, tid := range e.pageTargets() {
 				send("Browser.getWindowForTarget", map[string]any{"targetId": tid}, "")
 			}
-		case <-e.dirty:
+		case <-dirty:
 			for sid := range sessions {
 				applyTo(sid)
 			}
-		case c := <-e.prio:
+		case c := <-priority:
 			// The reserved queue is selected alongside cmds, so a never-drop command
 			// never waits behind a backlog of moves.
 			ok := false
@@ -1253,7 +1366,7 @@ func (e *emulator) session() error {
 			if c.done != nil {
 				c.done(ok)
 			}
-		case c := <-e.cmds:
+		case c := <-cmds:
 			// A browser-level command (empty session) addresses a target by id —
 			// closing an unattached OAuth popup is the case that needs it, since
 			// those never get a session at all.
@@ -1274,6 +1387,9 @@ func (e *emulator) session() error {
 				c.done(false)
 			}
 		case m := <-msgs:
+			if paused {
+				continue
+			}
 			method, _ := m["method"].(string)
 			switch method {
 			case "Target.targetCreated":
@@ -1599,7 +1715,7 @@ func (e *emulator) session() error {
 						// that often costs fd budget under Rosetta (see window.go).
 						if b, _ := result["bounds"].(map[string]any); b != nil {
 							if state, _ := b["windowState"].(string); state != desiredState {
-								requestWindowFit(log.Printf)
+								requestWindowFit(log.Printf, e.handoff)
 							}
 						}
 					}

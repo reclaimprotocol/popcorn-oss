@@ -21,6 +21,7 @@ package main
 // client resizing the screen itself).
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -182,7 +183,21 @@ func windowFitSettled(id string) {
 // phase knows the browser is up. alreadyFit dedupes the log line per
 // window+size so a window that refuses a size cannot spam it; one-shot callers
 // pass nil and always log.
-func checkAndFitWindows(logf func(string, ...any), alreadyFit map[string]string) (int, error) {
+func checkAndFitWindows(logf func(string, ...any), alreadyFit map[string]string, handoff ...*viewerHandoff) (int, error) {
+	var gate *viewerHandoff
+	if len(handoff) > 0 {
+		gate = handoff[0]
+	}
+	windows := 0
+	err := gate.forward(func() error {
+		var err error
+		windows, err = checkAndFitWindowsUnblocked(logf, alreadyFit)
+		return err
+	})
+	return windows, err
+}
+
+func checkAndFitWindowsUnblocked(logf func(string, ...any), alreadyFit map[string]string) (int, error) {
 	out, err := xdo("getdisplaygeometry", "search", "--onlyvisible", "--class", "chromium", "getwindowgeometry", "--shell", "%@")
 	// When search matches nothing (browser still starting) the chain exits
 	// nonzero AFTER printing the display line — parse what arrived and only
@@ -243,7 +258,10 @@ var (
 	windowFitTimers [2]*time.Timer
 )
 
-func requestWindowFit(logf func(string, ...any)) {
+func requestWindowFit(logf func(string, ...any), handoff ...*viewerHandoff) {
+	if len(handoff) > 0 && !handoff[0].allowed() {
+		return
+	}
 	delays := [2]time.Duration{250 * time.Millisecond, 1200 * time.Millisecond}
 	windowFitMu.Lock()
 	defer windowFitMu.Unlock()
@@ -255,7 +273,7 @@ func requestWindowFit(logf func(string, ...any)) {
 		// logf is captured by the first caller for the timer's lifetime; every
 		// caller passes log.Printf, so nothing is lost.
 		windowFitTimers[i] = time.AfterFunc(d, func() {
-			if _, err := checkAndFitWindows(logf, nil); err != nil {
+			if _, err := checkAndFitWindows(logf, nil, handoff...); err != nil && !errors.Is(err, errViewerRevoked) {
 				logf("window fit: %v", err)
 			}
 		})
@@ -267,7 +285,7 @@ func requestWindowFit(logf func(string, ...any)) {
 // open when xdotool is absent: one log line and the goroutine exits, leaving
 // geometry as it was before this file existed. Transient errors (X still
 // booting) are logged only when they change.
-func windowWatcher(logf func(string, ...any)) {
+func windowWatcher(logf func(string, ...any), handoff ...*viewerHandoff) {
 	if _, err := exec.LookPath("xdotool"); err != nil {
 		logf("window watcher disabled: xdotool not found (window-follows-screen unavailable)")
 		return
@@ -289,7 +307,7 @@ func windowWatcher(logf func(string, ...any)) {
 	booted := false
 	bootTicks := 60
 	for {
-		windows, err := checkAndFitWindows(logf, fit)
+		windows, err := checkAndFitWindows(logf, fit, handoff...)
 		msg := ""
 		if err != nil {
 			msg = err.Error()

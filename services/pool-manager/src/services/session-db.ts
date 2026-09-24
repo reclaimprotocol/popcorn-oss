@@ -130,6 +130,24 @@ export function createSessionDatabase(
     const extraRoutePorts = readExtraRoutePorts(extraRoutePortsRaw);
 
     const database = {
+        async deleteSessionIfCurrent(id: string, expected: Pod): Promise<boolean> {
+            const keys = ["sessions", ...sessionRouteKeys(id, extraRoutePorts)];
+            const script = `
+                if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
+                redis.call('HDEL', KEYS[1], ARGV[1])
+                for i = 2, #KEYS do redis.call('DEL', KEYS[i]) end
+                return 1
+            `;
+            const args = [id, JSON.stringify(expected)];
+            const removed = await primary.eval(script, keys.length, ...keys, ...args);
+            if (removed !== 1) return false;
+            // The secondary must use the same fence. Never clear replacement routes.
+            if (secondary && await secondary.eval(script, keys.length, ...keys, ...args) !== 1) {
+                throw new Error("Secondary allocation cleanup is unconfirmed");
+            }
+            return true;
+        },
+
         async sessionExists(id: string): Promise<boolean> {
             return (await primary.hexists("sessions", id)) === 1;
         },
