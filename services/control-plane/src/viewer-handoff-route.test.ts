@@ -6,7 +6,7 @@ test('public handoff route authenticates, resolves the owner region, and rejects
     const {SessionService}=await import('./src/sessions.ts');
     ClientService.validateCredentials=async(id,secret)=>id==='owner'&&secret==='test-secret';
     ClientService.getClient=async()=>({id:'owner',name:'Test',active:true,allowedClusters:null});
-    SessionService.getSession=async(id)=>[{sessionId:id,clientId:id==='other-session'?'other':'owner',status:'active',region:'test-region'}];
+    SessionService.getSession=async(id)=>[{sessionId:id,clientId:id==='other-session'?'other':'owner',status:'active',region:'test-region',metadata:{sessionBoundAt:'2026-09-24T10:00:00.000Z'}}];
     const calls=[];
     globalThis.fetch=async(url,options)=>{
       calls.push({url:String(url),headers:options.headers,body:JSON.parse(options.body)});

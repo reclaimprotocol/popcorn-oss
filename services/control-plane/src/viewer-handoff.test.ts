@@ -6,7 +6,10 @@ import type { RegionConfig } from './config';
 const region: RegionConfig = { name: 'test-region', clusterName: 'cluster', poolManagerUrl: 'http://pool.test', publicGatewayUrl: 'https://gateway.test', enabled: true };
 const ack = { success: true, sessionId: 'session-1', podUid: 'pod-1', viewerAccess: 'revoked', runtimeInstanceId: 'a'.repeat(32) };
 function fixture() {
-  let current: { clientId: string; status: string; region: string } | null = { clientId: 'owner', status: 'active', region: region.name };
+  let current: { clientId: string; status: string; region: string; metadata: unknown } | null = {
+    clientId: 'owner', status: 'active', region: region.name,
+    metadata: { sessionBoundAt: '2026-09-24T10:00:00.000Z' },
+  };
   const calls: unknown[][] = [];
   const dependencies = {
     getSession: async (_id: string) => current ? { ...current } : null,
@@ -51,6 +54,21 @@ describe('credentialed viewer handoff', () => {
     const f = fixture();
     f.dependencies.handoff = async () => {
       f.current!.status = 'deleted';
+      return { response: Response.json(ack), body: ack };
+    };
+    expect((await run(f)).status).toBe(409);
+  });
+  test.each([null, undefined, [], {}, { sessionBoundAt: '' }, { sessionBoundAt: 123 }, { sessionBoundAt: 'invalid' }])('rejects an unavailable allocation binding (%j)', async metadata => {
+    const f = fixture();
+    f.current!.metadata = metadata;
+    expect((await run(f)).status).toBe(409);
+    expect(f.calls).toEqual([]);
+  });
+  test.each(['replaced', 'mutated', 'missing'])('rejects a %s binding after handoff in the same region', async change => {
+    const f = fixture();
+    f.dependencies.handoff = async () => {
+      if (change === 'mutated') (f.current!.metadata as any).sessionBoundAt = '2026-09-24T10:01:00.000Z';
+      else f.current!.metadata = change === 'missing' ? {} : { sessionBoundAt: '2026-09-24T10:01:00.000Z' };
       return { response: Response.json(ack), body: ack };
     };
     expect((await run(f)).status).toBe(409);

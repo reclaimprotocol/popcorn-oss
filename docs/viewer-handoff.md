@@ -27,6 +27,8 @@ The expected pod UID identifies the allocation, not only the public session ID.
 The current create or fetch response provides that value in `podUid`.
 A stale pod UID cannot revoke a replacement allocation under the same session ID.
 Another client cannot hand off a session that it does not own.
+The control plane also checks the stored `sessionBoundAt` before and after the runtime acknowledgement.
+A missing or changed binding returns `409`, including reallocation within the same region and cluster.
 
 A successful response includes `viewerAccess: "revoked"` and `runtimeInstanceId`.
 The runtime instance identifies the process that acknowledged handoff.

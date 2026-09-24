@@ -1,7 +1,7 @@
 import type { RegionConfig } from './config';
 
 interface RoutedHandoffDependencies {
-  getSession(id: string): Promise<{ clientId: string; status: string; region?: string | null; clusterName?: string | null } | null>;
+  getSession(id: string): Promise<{ clientId: string; status: string; region?: string | null; clusterName?: string | null; metadata: unknown } | null>;
   resolveRegion(session: { region?: string | null; clusterName?: string | null }): RegionConfig | null;
   handoff(region: RegionConfig, sessionId: string, clientId: string, podUid: string, signal: AbortSignal): Promise<{ response: Response; body: unknown }>;
 }
@@ -41,6 +41,11 @@ export async function handoffRoutedSession(
       return { status: 404, body: { success: false, error: 'Session not found' } };
     }
     if (session.status !== 'active') return { status: 409, body: { success: false, error: 'Session is not active' } };
+    const boundAt = session.metadata && typeof session.metadata === 'object' && !Array.isArray(session.metadata)
+      ? (session.metadata as Record<string, unknown>).sessionBoundAt : undefined;
+    if (typeof boundAt !== 'string' || !Number.isFinite(Date.parse(boundAt))) {
+      return { status: 409, body: { success: false, error: 'Session allocation is not current' } };
+    }
     const region = dependencies.resolveRegion(session);
     if (!region) return { status: 409, body: { success: false, error: 'Session region is not configured' } };
     const remote = await bounded(() => dependencies.handoff(region, sessionId, clientId, expectedPodUid, signal));
@@ -57,8 +62,10 @@ export async function handoffRoutedSession(
       return { status: 502, body: { success: false, error: 'Viewer handoff is unconfirmed' } };
     }
     const current = await bounded(() => dependencies.getSession(sessionId));
+    const currentBoundAt = current?.metadata && typeof current.metadata === 'object' && !Array.isArray(current.metadata)
+      ? (current.metadata as Record<string, unknown>).sessionBoundAt : undefined;
     if (!current || current.clientId !== clientId || current.status !== 'active'
-      || current.region !== session.region || current.clusterName !== session.clusterName) {
+      || current.region !== session.region || current.clusterName !== session.clusterName || currentBoundAt !== boundAt) {
       return { status: 409, body: { success: false, error: 'Session changed during handoff' } };
     }
     if (signal.aborted || Date.now() >= deadline
