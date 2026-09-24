@@ -145,6 +145,8 @@ It does not mean that the physical Pod, Chromium process, or all previously star
 `allocationReleased` also requires deletion of matching Redis session and route records.
 Redis performs each deletion atomically against the complete expected session record.
 A configured secondary Redis requires the same check and acknowledgement.
+Secondary cleanup precedes primary deletion, so a secondary failure or binding conflict preserves the authoritative primary record.
+The final primary deletion checks the binding again. Cleanup across both stores is not one atomic operation.
 The control plane ends its session record only when the owner and allocation timestamp still match.
 These checks never delete a replacement record.
 They do not add a global lock to existing session writers.

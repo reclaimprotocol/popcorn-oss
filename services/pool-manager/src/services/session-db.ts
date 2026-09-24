@@ -139,13 +139,14 @@ export function createSessionDatabase(
                 return 1
             `;
             const args = [id, JSON.stringify(expected)];
-            const removed = await primary.eval(script, keys.length, ...keys, ...args);
-            if (removed !== 1) return false;
-            // The secondary must use the same fence. Never clear replacement routes.
-            if (secondary && await secondary.eval(script, keys.length, ...keys, ...args) !== 1) {
-                throw new Error("Secondary allocation cleanup is unconfirmed");
+            if (secondary) {
+                // Keep authoritative evidence if the mirror fails or conflicts.
+                // This preflight avoids touching a stale mirror when primary has
+                // already changed. The primary Lua fence still checks it again.
+                if (await primary.hget("sessions", id) !== args[1]) return false;
+                if (await secondary.eval(script, keys.length, ...keys, ...args) !== 1) return false;
             }
-            return true;
+            return await primary.eval(script, keys.length, ...keys, ...args) === 1;
         },
 
         async sessionExists(id: string): Promise<boolean> {
