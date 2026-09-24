@@ -24,7 +24,10 @@ export async function controlViewerHandoff(
   const annotations = gameServer.metadata?.annotations;
   const ip = pod.status?.podIP;
   const prior = annotations?.[VIEWER_HANDOFF_ANNOTATION];
-  if (pod.metadata?.uid !== allocation.podUid || pod.metadata?.deletionTimestamp
+  const ownsPod = Array.isArray(pod.metadata?.ownerReferences) && pod.metadata.ownerReferences.some((owner: any) =>
+    owner.controller === true && owner.kind === 'GameServer' && owner.apiVersion === 'agones.dev/v1'
+      && owner.name === allocation.name && owner.uid === gameServer.metadata?.uid);
+  if (pod.metadata?.uid !== allocation.podUid || pod.metadata?.deletionTimestamp || !ownsPod
     || gameServer.metadata?.deletionTimestamp || !gameServer.metadata?.uid || !gameServer.metadata?.resourceVersion
     || gameServer.status?.state !== 'Allocated'
     || annotations?.[SESSION_ID_ANNOTATION] !== allocation.sessionId

@@ -10,3 +10,10 @@ regexes = [
   '''claimKey: x402OperationClaims\.claimKey''',
   '''Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==''',
 ]
+
+[[allowlists]]
+description = "Synthetic WebSocket handshake nonce in the viewer handoff test"
+condition = "AND"
+paths = ['''^images/minimal-vnc-desktop/proxy/viewer_handoff_test\.go$''']
+regexTarget = "match"
+regexes = ['''Sec-WebSocket-Key: dGVzdC13cy1rZXk=''']

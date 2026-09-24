@@ -5,7 +5,9 @@ import { VIEWER_HANDOFF_ANNOTATION, ViewerHandoffConflict, type HandoffAllocatio
 const allocation: HandoffAllocation = { name: 'browser-1', namespace: 'browsers', sessionId: 'session-1', podUid: 'pod-1', boundAt: '2026-09-24T00:00:00.000Z' };
 function fixture() {
   const annotations = { 'popcorn.dev/session-id': allocation.sessionId, 'popcorn.dev/session-bound-at': allocation.boundAt } as Record<string, string>;
-  const pod = { metadata: { uid: allocation.podUid, annotations: { ...annotations } } as any, status: { podIP: '10.0.0.1' } };
+  const pod = { metadata: { uid: allocation.podUid, annotations: { ...annotations },
+    ownerReferences: [{ controller: true, kind: 'GameServer', apiVersion: 'agones.dev/v1', name: allocation.name, uid: 'gs-uid' }],
+  } as any, status: { podIP: '10.0.0.1' } };
   const gs = { metadata: { uid: 'gs-uid', resourceVersion: '42', annotations } as any, status: { state: 'Allocated' } };
   const requests: { path: string; options: RequestInit }[] = [];
   const request = async (path: string, options: RequestInit) => {
@@ -60,6 +62,17 @@ describe('Kubernetes handoff control', () => {
   });
   test('confirmation requires the persisted handoff annotation', async () => {
     await expect(run(fixture(), 'confirm')).rejects.toBeInstanceOf(ViewerHandoffConflict);
+  });
+  test.each(['request', 'inspect', 'confirm'] as const)('requires a current controller owner during %s', async mode => {
+    for (const change of ['missing', 'notArray', 'uid', 'name', 'kind', 'apiVersion', 'controller']) {
+      const f = fixture();
+      f.gs.metadata.annotations[VIEWER_HANDOFF_ANNOTATION] = allocation.podUid;
+      if (change === 'missing') delete f.pod.metadata.ownerReferences;
+      else if (change === 'notArray') f.pod.metadata.ownerReferences = {};
+      else f.pod.metadata.ownerReferences[0][change] = change === 'controller' ? false : 'unrelated';
+      await expect(run(f, mode)).rejects.toBeInstanceOf(ViewerHandoffConflict);
+      expect(f.requests).toHaveLength(2);
+    }
   });
   test.each([404, 409, 422])('does not treat rejected patch %d as acknowledgement', async status => {
     const f = fixture();
