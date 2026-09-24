@@ -211,6 +211,7 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
         sessionId,
         ...urls,
         browserPodId: session.name,
+        podUid: session.podUid,
         allocationRequestedAt: session.allocationRequestedAt,
         gameServerAllocatedAt: session.gameServerAllocatedAt,
         gameServerAllocationLatencyMs: session.gameServerAllocationLatencyMs,

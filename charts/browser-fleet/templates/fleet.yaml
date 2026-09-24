@@ -47,6 +47,9 @@ spec:
 {{- end }}
 {{- end }}
       template:
+        metadata:
+          labels:
+            app: browser-runtime
         spec:
 {{- if .Values.serviceAccount.create }}
           serviceAccountName: browser-sa

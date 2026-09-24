@@ -5,8 +5,11 @@
 {{- $sessionExtensionRoutes := list }}
 {{- range $extensionName, $extension := .Values.sessionExtensions }}
 {{- if dig "enabled" true $extension }}
+{{- $gatewayIdentity := dig "routing" "gatewayIdentity" false $extension }}
 {{- range $route := dig "routing" "gatewayRoutes" (list) $extension }}
-{{- $sessionExtensionRoutes = append $sessionExtensionRoutes $route }}
+{{- $gatewayRoute := deepCopy $route }}
+{{- $_ := set $gatewayRoute "gatewayIdentity" $gatewayIdentity }}
+{{- $sessionExtensionRoutes = append $sessionExtensionRoutes $gatewayRoute }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -21,6 +24,16 @@ data:
     {{- $pathPrefix := required "sessionExtensions.*.routing.gatewayRoutes[].pathPrefix is required" .pathPrefix }}
     {{- $routeKey := required "sessionExtensions.*.routing.gatewayRoutes[].routeKey is required" .routeKey }}
     {{- $tokenScope := .tokenScope }}
+    {{- $gatewayIdentity := .gatewayIdentity }}
+    {{- if and $gatewayIdentity (not (has $tokenScope (list "restricted" "internal"))) }}
+    {{- fail "gatewayIdentity routes must require restricted or internal tokenScope" }}
+    {{- end }}
+    {{- if not (regexMatch "^[a-z][a-z0-9-]*$" $pathPrefix) }}
+    {{- fail "extension gateway pathPrefix must start with a lowercase letter and contain only lowercase letters, digits and hyphens" }}
+    {{- end }}
+    {{- if regexMatch "^browser" $pathPrefix }}
+    {{- fail "extension pathPrefix conflicts with the legacy browser pod route" }}
+    {{- end }}
         location ~ ^/{{ $pathPrefix }}/([^/]+)/([^/]+)(.*) {
             set $session_id $1;
             set $token $2;
@@ -29,7 +42,10 @@ data:
 
             access_by_lua_block {
                 local auth = require "auth"
-                auth.check(false, ngx.var.token, {{ if $tokenScope }}{{ $tokenScope | quote }}{{ else }}nil{{ end }}, ngx.var.session_id)
+                local identity = auth.check(false, ngx.var.token, {{ if $tokenScope }}{{ $tokenScope | quote }}{{ else }}nil{{ end }}, ngx.var.session_id, {{ if $gatewayIdentity }}true{{ else }}false{{ end }})
+{{- if $gatewayIdentity }}
+                auth.forward_identity(identity)
+{{- end }}
                 local redis = require "resty.redis"
                 local red = redis:new()
                 red:set_timeout(1000)
