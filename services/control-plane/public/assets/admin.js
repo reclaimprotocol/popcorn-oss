@@ -72,7 +72,7 @@ document.body.addEventListener('htmx:afterSettle', () => {
   document.querySelectorAll('[data-pod-inventory]').forEach(syncPodInventory);
 });
 document.body.addEventListener('htmx:afterRequest', (event) => {
-  if (event.detail.failed) return;
+  if (!event.detail.successful) return;
   const source = event.detail.elt;
   if (source && source.matches('[data-clear-on-success]')) {
     source.reset();
