@@ -38,9 +38,10 @@ import time
 port = int(sys.argv[1])
 
 
-def check(path, expected_status, host=None, gateway_error=False, method="GET"):
+def check(path, expected_status, host=None, gateway_error=False, method="GET", extra_headers=None):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     headers = {"Host": host} if host is not None else {}
+    headers.update(extra_headers or {})
     connection.request(method, path, headers=headers)
     response = connection.getresponse()
     body = response.read().decode(errors="replace")
@@ -73,6 +74,7 @@ check("/liveview/demo/invalid/", 403, gateway_error=True)
 check("/liveview/demo/invalid-secret/?query-secret=hidden", 403, gateway_error=True, method="POST")
 check("/health?query-secret=hidden", 200)
 check("/health", 400, host="", gateway_error=True)
+check("/health", 400, gateway_error=True, extra_headers={"X-Oversized": "x" * 16384})
 check("/upstream-close", 502, gateway_error=True)
 logs = subprocess.run(["docker", "logs", sys.argv[2]], check=True, capture_output=True, text=True).stdout
 assert '"POST /liveview/demo/[REDACTED]/ HTTP/1.1" 403' in logs, logs
