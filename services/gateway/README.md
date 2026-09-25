@@ -30,5 +30,6 @@ documented in [Architecture](../../docs/architecture.md) and
 ```bash
 bash tests/auth-algorithm.sh
 bash tests/route-bound-access.sh
+bash tests/response-identity.sh
 docker build -t popcorn/gateway:local .
 ```
