@@ -138,11 +138,12 @@ function setAdminResponseHeaders(c: any) {
   c.header('Cache-Control', 'no-store');
   c.header('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://unpkg.com",
-    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self' data:",
     "connect-src 'self'",
+    "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'none'",
     "form-action 'self'",
@@ -1138,6 +1139,9 @@ app.get('/admin/assets/admin.css', async (c) => {
 });
 
 const ADMIN_ASSETS = {
+  'admin-login.js': { path: './public/assets/admin-login.js', contentType: 'text/javascript; charset=utf-8' },
+  'admin.js': { path: './public/assets/admin.js', contentType: 'text/javascript; charset=utf-8' },
+  'htmx.min.js': { path: './public/assets/htmx.min.js', contentType: 'text/javascript; charset=utf-8' },
   'site-icon.svg': { path: './public/assets/site-icon.svg', contentType: 'image/svg+xml' },
   'favicon-32.png': { path: './public/assets/favicon-32.png', contentType: 'image/png' },
   'apple-touch-icon.png': { path: './public/assets/apple-touch-icon.png', contentType: 'image/png' },
@@ -1151,7 +1155,7 @@ app.get('/admin/assets/:filename', async (c) => {
   const asset = ADMIN_ASSETS[filename];
   if (!asset) return c.notFound();
   c.header('Content-Type', asset.contentType);
-  c.header('Cache-Control', 'public, max-age=86400');
+  c.header('Cache-Control', asset.contentType.startsWith('text/javascript') ? 'no-store' : 'public, max-age=86400');
   return c.body(await Bun.file(asset.path).arrayBuffer());
 });
 
