@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
@@ -53,6 +54,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	var handoff *viewerHandoff
+	if noiseEndpoint.kubernetes {
+		handoff, err = newViewerHandoff(noiseEndpoint.uid)
+		if err != nil {
+			log.Fatal(err)
+		}
+		noiseEndpoint.handoff = handoff
+	}
 	if strings.TrimSpace(os.Getenv("KUBERNETES_SERVICE_HOST")) != "" && strings.TrimSpace(os.Getenv("POD_NAME")) != "" {
 		go noiseEndpoint.watchAllocationBinding()
 		log.Printf("liveview e2ee pod key generated (%s), public key %s", noiseProtocolName, noiseEndpoint.publicKeyString())
@@ -75,7 +84,7 @@ func main() {
 	if strings.TrimSpace(*cdpRestrictedListen) != "" {
 		servers = append(servers, &http.Server{
 			Addr:              *cdpRestrictedListen,
-			Handler:           cdpMux(*cdpUpstream, true, ready),
+			Handler:           handoff.guard(cdpMux(*cdpUpstream, true, ready, handoff), true),
 			ReadHeaderTimeout: 5 * time.Second,
 		})
 	}
@@ -85,6 +94,9 @@ func main() {
 			Handler:           cdpMux(*cdpUpstream, false, ready),
 			ReadHeaderTimeout: 5 * time.Second,
 		})
+	}
+	if handoff != nil {
+		go handoff.watch(noiseEndpoint)
 	}
 
 	errs := make(chan error, len(servers))
@@ -110,6 +122,10 @@ func main() {
 
 func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoint) http.Handler {
 	mux := http.NewServeMux()
+	var handoff *viewerHandoff
+	if len(e2e) > 0 && e2e[0] != nil {
+		handoff = e2e[0].handoff
+	}
 	kbd := newKbdHub()
 	mux.HandleFunc("/kbd", func(w http.ResponseWriter, r *http.Request) {
 		kbd.serve(w, r, ready)
@@ -154,7 +170,7 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 	// reflows to a real mobile layout (see emulate.go). One persistent CDP
 	// manager applies it to every page target (incl. popups/new tabs). Safe
 	// subset of CDP only.
-	em := newEmulator(cdpUpstream)
+	em := newEmulator(cdpUpstream, handoff)
 	// JS dialogs (alert/confirm/prompt) are intercepted in emulate.go and drawn by
 	// the viewer instead of by Chromium, which lays them out against the real
 	// window and clips them off a narrow emulated viewport. The hub is the
@@ -256,7 +272,7 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 		// A viewer pushes /emulate exactly when it resizes the X screen (fit
 		// enter/exit, settle), so this is the event the kiosk window follows
 		// instead of a poll. See window.go.
-		requestWindowFit(log.Printf)
+		requestWindowFit(log.Printf, handoff)
 	})
 	// Boot framebuffer geometry (WIDTH x FB_HEIGHT) = the advertised desktop size
 	// (the kiosk window starts there; window.go re-fits it as the screen moves).
@@ -292,6 +308,8 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 	// the restored screen at the X level (window.go), in both directions.
 	bootW, bootH := envInt("WIDTH", 1920), envInt("FB_HEIGHT", envInt("HEIGHT", 1080))
 	keeper = newScreenKeeper(screenRestoreDelay, restoreScreenFunc(bootW, bootH, em, log.Printf))
+	keeper.handoff = handoff
+	handoff.onStop(keeper.stopForHandoff)
 	keeper.logf = log.Printf
 	// The FIRST viewer of a session must start from boot geometry, not from
 	// whatever the previous session left: connecting inside the restore delay
@@ -301,7 +319,7 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 	keeper.resetOnFirst = resetScreenOnFirstConnect(bootW, bootH, em, log.Printf)
 	// Keep the kiosk window covering the screen whatever size viewers make it —
 	// rows the window does not cover stream as the black X root. See window.go.
-	go windowWatcher(log.Printf)
+	go windowWatcher(log.Printf, handoff)
 	mux.HandleFunc("/websockify", func(w http.ResponseWriter, r *http.Request) {
 		serveWebsocket(w, r, vnc, ready, keeper)
 	})
@@ -324,9 +342,9 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 	})
 	mux.HandleFunc("/", staticHandler(web, ready))
 	if len(e2e) > 0 && e2e[0] != nil {
-		return liveViewTransportGuard(e2e[0], mux)
+		return handoff.guard(liveViewTransportGuard(e2e[0], mux), false)
 	}
-	return mux
+	return handoff.guard(mux, false)
 }
 
 // liveViewTransportGuard is the pod-boundary enforcement for encrypted
@@ -596,7 +614,7 @@ func servePrecompressed(w http.ResponseWriter, r *http.Request, root, clean, suf
 	http.ServeContent(w, r, filepath.Base(clean), fi.ModTime(), f)
 }
 
-func cdpMux(upstream string, restricted bool, ready readyGate) http.Handler {
+func cdpMux(upstream string, restricted bool, ready readyGate, handoff ...*viewerHandoff) http.Handler {
 	handler := &cdpHandler{
 		upstream:   upstream,
 		restricted: restricted,
@@ -606,6 +624,9 @@ func cdpMux(upstream string, restricted bool, ready readyGate) http.Handler {
 			Timeout: 5 * time.Second,
 		},
 	}
+	if restricted && len(handoff) > 0 {
+		handler.handoff = handoff[0]
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handler.serve)
@@ -613,6 +634,7 @@ func cdpMux(upstream string, restricted bool, ready readyGate) http.Handler {
 }
 
 type cdpHandler struct {
+	handoff    *viewerHandoff
 	upstream   string
 	restricted bool
 	ready      readyGate
@@ -704,6 +726,10 @@ func (h *cdpHandler) proxyWebsocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to connect to CDP upstream: %v", err), http.StatusBadGateway)
 		return
 	}
+	if h.handoff == nil {
+		stopUpstream := context.AfterFunc(r.Context(), func() { _ = upstreamConn.Close() })
+		defer stopUpstream()
+	}
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -726,6 +752,7 @@ func (h *cdpHandler) proxyWebsocket(w http.ResponseWriter, r *http.Request) {
 	_ = rw.Flush()
 
 	bridge := &cdpBridge{
+		handoff:        h.handoff,
 		client:         clientConn,
 		clientReader:   rw.Reader,
 		upstream:       upstreamConn,
@@ -919,6 +946,11 @@ func joinURLPrefix(prefix, rawPath string) string {
 }
 
 type cdpBridge struct {
+	handoff        *viewerHandoff
+	retained       atomic.Bool
+	inputFailed    atomic.Bool
+	decision       chan struct{}
+	outputFailure  chan struct{}
 	client         net.Conn
 	clientReader   *bufio.Reader
 	upstream       net.Conn
@@ -930,20 +962,96 @@ type cdpBridge struct {
 }
 
 func (b *cdpBridge) run() {
-	done := make(chan struct{}, 2)
-
+	inputDone, outputDone := make(chan struct{}), make(chan struct{})
+	b.decision, b.outputFailure = make(chan struct{}), make(chan struct{}, 1)
 	go func() {
+		defer close(inputDone)
 		b.copyClientToUpstream()
-		done <- struct{}{}
 	}()
 	go func() {
+		defer close(outputDone)
+		defer b.upstream.Close()
 		b.copyUpstreamToClient()
-		done <- struct{}{}
 	}()
-
-	<-done
+	var cutoff <-chan struct{}
+	if b.handoff != nil {
+		cutoff = b.handoff.stop
+	}
+	select {
+	case <-inputDone:
+	case <-outputDone:
+	case <-b.outputFailure:
+	case <-cutoff:
+	}
 	_ = b.client.Close()
-	_ = b.upstream.Close()
+	// Choose normal teardown versus retained ownership under the same lock as
+	// the cutoff. A normal disconnect must not leave an orphan CDP owner; a
+	// handoff must not detach the owner of viewer-set emulation overrides.
+	if b.handoff != nil {
+		b.handoff.mu.Lock()
+		if b.handoff.stopped {
+			b.retained.Store(true)
+		} else {
+			_ = b.upstream.Close()
+		}
+		b.handoff.mu.Unlock()
+	} else {
+		_ = b.upstream.Close()
+	}
+	close(b.decision)
+	<-inputDone
+	if b.retained.Load() {
+		select {
+		case <-outputDone:
+			b.handoff.failPreservation()
+		default:
+		}
+		if b.inputFailed.Load() {
+			// A failed frame write can leave an incomplete websocket frame. It
+			// is not safe to reuse that stream, or to claim state preservation.
+			b.handoff.failPreservation()
+			_ = b.upstream.Close()
+			<-outputDone
+		}
+		// The existing reader now owns this inert connection until browser EOF
+		// or process teardown. It only discards replies and answers WS pings;
+		// it never attaches targets, retries or emits browser commands.
+		return
+	}
+	<-outputDone
+}
+
+func (b *cdpBridge) forwardClientFrame(opcode byte, payload []byte, fin bool) error {
+	return b.handoff.forward(func() error {
+		if b.handoff != nil {
+			_ = b.upstream.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		}
+		err := writeFrameToConn(b.upstream, &b.upstreamMu, opcode, payload, true, fin)
+		if err != nil {
+			b.inputFailed.Store(true)
+		} else if b.handoff != nil {
+			_ = b.upstream.SetWriteDeadline(time.Time{})
+		}
+		return err
+	})
+}
+
+func (b *cdpBridge) forwardResponse(opcode byte, payload []byte, fin bool) bool {
+	if b.retained.Load() {
+		return true
+	}
+	if err := writeFrameToConn(b.client, &b.clientMu, opcode, payload, false, fin); err == nil {
+		return true
+	}
+	if b.decision == nil {
+		return false // direct bridge unit tests do not run the owner lifecycle
+	}
+	select {
+	case b.outputFailure <- struct{}{}:
+	default:
+	}
+	<-b.decision
+	return b.retained.Load()
 }
 
 func (b *cdpBridge) copyClientToUpstream() {
@@ -974,11 +1082,11 @@ func (b *cdpBridge) copyClientToUpstream() {
 					continue
 				}
 			}
-			if err := writeFrameToConn(b.upstream, &b.upstreamMu, opcode, payload, true, fin); err != nil {
+			if err := b.forwardClientFrame(opcode, payload, fin); err != nil {
 				return
 			}
 		case 0x8:
-			_ = writeFrameToConn(b.upstream, &b.upstreamMu, 0x8, payload, true, true)
+			_ = b.forwardClientFrame(0x8, payload, true)
 			return
 		case 0x9:
 			_ = writeFrameToConn(b.client, &b.clientMu, 0xA, payload, false, true)
@@ -1000,11 +1108,11 @@ func (b *cdpBridge) copyUpstreamToClient() {
 
 		switch opcode {
 		case 0x0, 0x1, 0x2:
-			if err := writeFrameToConn(b.client, &b.clientMu, opcode, payload, false, fin); err != nil {
+			if !b.forwardResponse(opcode, payload, fin) {
 				return
 			}
 		case 0x8:
-			_ = writeFrameToConn(b.client, &b.clientMu, 0x8, payload, false, true)
+			_ = b.forwardResponse(0x8, payload, true)
 			return
 		case 0x9:
 			_ = writeFrameToConn(b.upstream, &b.upstreamMu, 0xA, payload, true, true)
@@ -1153,6 +1261,8 @@ func proxyWebsocket(w http.ResponseWriter, r *http.Request, upstream string) {
 		http.Error(w, fmt.Sprintf("failed to connect to VNC upstream: %v", err), http.StatusBadGateway)
 		return
 	}
+	stopUpstream := context.AfterFunc(r.Context(), func() { _ = vncConn.Close() })
+	defer stopUpstream()
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
@@ -1275,12 +1385,18 @@ func (b *wsBridge) run() wsBridgeResult {
 		done <- b.copyVNCToWebsocket()
 	}()
 
-	go b.pingLoop(stopPing)
+	pingDone := make(chan struct{})
+	go func() {
+		defer close(pingDone)
+		b.pingLoop(stopPing)
+	}()
 
 	result := <-done
 	close(stopPing)
 	_ = b.client.Close()
 	_ = b.vnc.Close()
+	<-done
+	<-pingDone
 	return result
 }
 

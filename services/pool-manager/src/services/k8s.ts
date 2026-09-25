@@ -3,6 +3,9 @@ import { Pod } from '../types';
 import { RuntimeConfig } from '../config';
 import { buildK8sFetchRequest, getK8sClusterServer } from './k8s-fetch';
 import { retry } from './retry';
+import { controlViewerHandoff } from './viewer-handoff-k8s';
+import { shutdownCurrentAllocation } from './session-termination-k8s';
+import type { HandoffAllocation } from '../viewer-handoff';
 import {
     E2E_POD_PUBLIC_KEY_ANNOTATION,
     E2E_POD_VERSION_ANNOTATION,
@@ -37,6 +40,20 @@ export function buildMetadataAnnotationsPatch(annotations: Record<string, string
 }
 
 export const K8s = {
+    shutdownCurrentAllocation(allocation: HandoffAllocation, signal: AbortSignal) {
+        return shutdownCurrentAllocation(allocation, signal, k8sJson);
+    },
+    inspectViewerHandoff(allocation: HandoffAllocation, signal: AbortSignal) {
+        return controlViewerHandoff(allocation, signal, k8sJson, 'inspect');
+    },
+    requestViewerHandoff(allocation: HandoffAllocation, signal: AbortSignal) {
+        return controlViewerHandoff(allocation, signal, k8sJson);
+    },
+
+    confirmViewerHandoff(allocation: HandoffAllocation, signal: AbortSignal) {
+        return controlViewerHandoff(allocation, signal, k8sJson, 'confirm');
+    },
+
     async listBrowserPods(namespace: string = RuntimeConfig.gameServerNamespace) {
         try {
             const res = await k8sJson(`/api/v1/namespaces/${namespace}/pods`, {

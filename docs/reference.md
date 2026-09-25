@@ -66,6 +66,15 @@ GET /v1/session/:id
 
 The caller must own the session.
 
+### Hand off a session
+
+```http
+POST /v1/session/:id/handoff
+```
+
+The session owner supplies `expectedPodUid` to revoke viewer access for the current allocation.
+Trusted CDP access remains available. See [Viewer handoff](viewer-handoff.md) for the acknowledgement and failure rules.
+
 ### Extend a session
 
 ```http
@@ -88,6 +97,12 @@ DELETE /v1/session/:id
 Deletion ends the allocated GameServer and removes active route state. Clients
 should delete sessions as soon as work is complete rather than waiting for TTL
 cleanup.
+
+Maintenance callers can use `DELETE /v1/session/:id/allocation` with an `expectedPodUid` body.
+This separate endpoint checks allocation ownership before shutdown and metadata deletion.
+It does not confirm physical Pod termination.
+See [allocation-fenced termination](viewer-handoff.md#allocation-fenced-termination) for its exact response and failure rules.
+Maintenance callers must not fall back to the legacy delete endpoint.
 
 ## Session response
 

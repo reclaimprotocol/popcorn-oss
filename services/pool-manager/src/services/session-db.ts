@@ -130,6 +130,25 @@ export function createSessionDatabase(
     const extraRoutePorts = readExtraRoutePorts(extraRoutePortsRaw);
 
     const database = {
+        async deleteSessionIfCurrent(id: string, expected: Pod): Promise<boolean> {
+            const keys = ["sessions", ...sessionRouteKeys(id, extraRoutePorts)];
+            const script = `
+                if redis.call('HGET', KEYS[1], ARGV[1]) ~= ARGV[2] then return 0 end
+                redis.call('HDEL', KEYS[1], ARGV[1])
+                for i = 2, #KEYS do redis.call('DEL', KEYS[i]) end
+                return 1
+            `;
+            const args = [id, JSON.stringify(expected)];
+            if (secondary) {
+                // Keep authoritative evidence if the mirror fails or conflicts.
+                // This preflight avoids touching a stale mirror when primary has
+                // already changed. The primary Lua fence still checks it again.
+                if (await primary.hget("sessions", id) !== args[1]) return false;
+                if (await secondary.eval(script, keys.length, ...keys, ...args) !== 1) return false;
+            }
+            return await primary.eval(script, keys.length, ...keys, ...args) === 1;
+        },
+
         async sessionExists(id: string): Promise<boolean> {
             return (await primary.hexists("sessions", id)) === 1;
         },

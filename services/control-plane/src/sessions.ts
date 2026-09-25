@@ -17,6 +17,19 @@ const publicSessionColumns = {
 };
 
 export const SessionService = {
+  async endSessionIfCurrentAllocation(sessionId: string, clientId: string, boundAt: string): Promise<boolean> {
+    const endedAt = new Date();
+    return db.transaction(async (tx) => {
+      const updated = await tx.update(sessions).set({ endedAt, status: 'deleted' }).where(and(
+        eq(sessions.sessionId, sessionId), eq(sessions.clientId, clientId), eq(sessions.status, 'active'),
+        isNull(sessions.endedAt), sql`${sessions.metadata}->>'sessionBoundAt' = ${boundAt}`,
+      )).returning({ sessionId: sessions.sessionId });
+      if (!updated.length) return false;
+      await tx.insert(sessionEvents).values({ sessionId, eventType: 'deleted', timestamp: endedAt });
+      return true;
+    });
+  },
+
   // Create a new session
   async createSession(sessionId: string, clientId: string, clientName: string, clusterName: string, region?: string, metadata?: Record<string, unknown>): Promise<void> {
     try {

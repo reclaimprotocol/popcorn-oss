@@ -23,7 +23,9 @@ import {
 } from './src/admin-auth';
 import { ClientService } from './src/clients';
 import { ControlPlaneConfig } from './src/config';
-import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession } from './src/pool-manager';
+import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession, handoffRegionalSession, terminateRegionalSession } from './src/pool-manager';
+import { handoffRoutedSession } from './src/viewer-handoff';
+import { terminateRoutedSession } from './src/session-termination';
 import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
 import { buildSessionAllocationEvent, buildSessionAnalyticsMetadata, normalizeViewerRttSummary } from './src/session-analytics';
@@ -1109,6 +1111,24 @@ app.get('/v1/session/:id', async (c) => {
   return c.json(result.body, result.status as any);
 });
 
+app.delete('/v1/session/:id/allocation', async (c) => {
+  const auth = await authenticateClient(c);
+  if (auth.response) {
+    return auth.response;
+  }
+
+  const parsed = await readBoundedJsonBody(c.req.raw, 1024);
+  if (parsed.error) return c.json({ success: false, error: 'Invalid termination request' }, parsed.error === 'too_large' ? 413 : 400);
+  const result = await terminateRoutedSession(c.req.param('id'), auth.identity!.clientId, parsed.body, {
+    getSession: async id => (await SessionService.getSession(id))[0] || null,
+    resolveRegion: resolveSessionRegion,
+    terminate: (region, id, owner, uid, boundAt, signal) => terminateRegionalSession(region, id, owner, uid, boundAt, ControlPlaneConfig.serviceAuthToken, signal),
+    endIfCurrent: SessionService.endSessionIfCurrentAllocation,
+  });
+  c.header('Cache-Control', 'no-store');
+  return c.json(result.body, result.status as any);
+});
+
 app.delete('/v1/session/:id', async (c) => {
   const auth = await authenticateClient(c);
   if (auth.response) {
@@ -1127,6 +1147,20 @@ app.patch('/v1/session/:id/ttl', async (c) => {
 
   const body = await c.req.json().catch(() => ({}));
   const result = await extendRoutedSessionTtl(c.req.param('id'), body, auth.identity!.clientId);
+  return c.json(result.body, result.status as any);
+});
+
+app.post('/v1/session/:id/handoff', async (c) => {
+  const auth = await authenticateClient(c);
+  if (auth.response) return auth.response;
+  const parsed = await readBoundedJsonBody(c.req.raw, 1024);
+  if (parsed.error) return c.json({ success: false, error: 'Invalid handoff request' }, parsed.error === 'too_large' ? 413 : 400);
+  const result = await handoffRoutedSession(c.req.param('id'), auth.identity!.clientId, parsed.body, {
+    getSession: async id => (await SessionService.getSession(id))[0] || null,
+    resolveRegion: resolveSessionRegion,
+    handoff: (region, id, clientId, podUid, signal) => handoffRegionalSession(region, id, clientId, podUid, ControlPlaneConfig.serviceAuthToken, signal),
+  });
+  c.header('Cache-Control', 'no-store');
   return c.json(result.body, result.status as any);
 });
 
