@@ -29,18 +29,19 @@ docker run -d --name "$gateway" --network "$network" \
   -p "127.0.0.1::80" "$image" >/dev/null
 
 host_port=$(docker port "$gateway" 80/tcp | sed 's/.*://')
-python3 - "$host_port" <<'PY'
+python3 - "$host_port" "$gateway" <<'PY'
 import http.client
+import subprocess
 import sys
 import time
 
 port = int(sys.argv[1])
 
 
-def check(path, expected_status, host=None, gateway_error=False):
+def check(path, expected_status, host=None, gateway_error=False, method="GET"):
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     headers = {"Host": host} if host is not None else {}
-    connection.request("GET", path, headers=headers)
+    connection.request(method, path, headers=headers)
     response = connection.getresponse()
     body = response.read().decode(errors="replace")
     assert response.status == expected_status, (path, response.status, body)
@@ -69,7 +70,13 @@ for attempt in range(10):
             raise
         time.sleep(1)
 check("/liveview/demo/invalid/", 403, gateway_error=True)
+check("/liveview/demo/invalid-secret/?query-secret=hidden", 403, gateway_error=True, method="POST")
+check("/health?query-secret=hidden", 200)
 check("/health", 400, host="", gateway_error=True)
 check("/upstream-close", 502, gateway_error=True)
+logs = subprocess.run(["docker", "logs", sys.argv[2]], check=True, capture_output=True, text=True).stdout
+assert '"POST /liveview/demo/[REDACTED]/ HTTP/1.1" 403' in logs, logs
+assert '"GET /health HTTP/1.1" 200' in logs, logs
+assert "invalid-secret" not in logs and "query-secret" not in logs, logs
 print("gateway responses hide OpenResty on success and error paths")
 PY
