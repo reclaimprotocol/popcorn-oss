@@ -242,6 +242,14 @@ spec:
               value: {{ $controlPlane.adminAuth.googleAllowedEmails | quote }}
             - name: ADMIN_GOOGLE_ALLOWED_DOMAINS
               value: {{ $controlPlane.adminAuth.googleAllowedDomains | quote }}
+            - name: ADMIN_OIDC_ISSUER
+              value: {{ $controlPlane.adminAuth.oidcIssuer | quote }}
+            - name: ADMIN_OIDC_CLIENT_ID
+              value: {{ $controlPlane.adminAuth.oidcClientId | quote }}
+            - name: ADMIN_OIDC_REDIRECT_URI
+              value: {{ $controlPlane.adminAuth.oidcRedirectUri | quote }}
+            - name: ADMIN_OIDC_REQUIRED_ROLE
+              value: {{ $controlPlane.adminAuth.oidcRequiredRole | quote }}
             - name: CONTROL_PLANE_SERVICE_AUTH_TOKEN
               valueFrom:
                 secretKeyRef:

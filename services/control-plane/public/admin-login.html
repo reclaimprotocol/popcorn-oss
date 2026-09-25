@@ -44,6 +44,10 @@
           <button type="submit">Sign in</button>
         </form>
 
+        <div id="oidc-auth" class="google-auth" hidden>
+          <a class="google-login" href="/admin/auth/oidc"><span class="google-login-content"><span>Sign in with Reclaim Work</span></span></a>
+        </div>
+
         <div id="google-auth" class="google-auth" hidden>
           <div class="login-method-divider" role="separator"><span>or</span></div>
           <a id="google-link" class="google-login" href="/admin/auth/google" aria-label="Sign in with Google">
@@ -78,7 +82,8 @@
       .then((config) => {
         document.getElementById('password-form').hidden = !config.password;
         document.getElementById('google-auth').hidden = !config.google;
-        document.getElementById('empty').hidden = config.password || config.google;
+        document.getElementById('oidc-auth').hidden = !config.oidc;
+        document.getElementById('empty').hidden = config.password || config.google || config.oidc;
       })
       .catch(() => {
         const errorEl = document.getElementById('error');

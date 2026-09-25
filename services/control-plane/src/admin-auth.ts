@@ -11,7 +11,7 @@ export const ADMIN_OAUTH_STATE_COOKIE = 'control_plane_admin_oauth_state';
 export interface AdminIdentity {
   id: string;
   displayName: string;
-  strategy: 'password' | 'google' | 'token';
+  strategy: 'password' | 'google' | 'oidc' | 'token';
 }
 
 export interface AdminAuthConfig {
@@ -27,6 +27,10 @@ export interface AdminAuthConfig {
   googleRedirectUri?: string;
   googleAllowedEmails: Set<string>;
   googleAllowedDomains: Set<string>;
+  oidcIssuer?: string;
+  oidcClientId?: string;
+  oidcRedirectUri?: string;
+  oidcRequiredRole?: string;
 }
 
 interface AdminSessionPayload extends AdminIdentity {
@@ -68,6 +72,10 @@ export function readAdminAuthConfig(env: Record<string, string | undefined> = pr
     googleRedirectUri: env.ADMIN_GOOGLE_REDIRECT_URI?.trim() || env.CONTROL_PLANE_ADMIN_GOOGLE_REDIRECT_URI?.trim() || undefined,
     googleAllowedEmails: readCsvSet(env.ADMIN_GOOGLE_ALLOWED_EMAILS || env.CONTROL_PLANE_ADMIN_GOOGLE_ALLOWED_EMAILS, (value) => value.toLowerCase()),
     googleAllowedDomains: readCsvSet(env.ADMIN_GOOGLE_ALLOWED_DOMAINS || env.CONTROL_PLANE_ADMIN_GOOGLE_ALLOWED_DOMAINS, normalizeDomain),
+    oidcIssuer: env.ADMIN_OIDC_ISSUER?.trim() || undefined,
+    oidcClientId: env.ADMIN_OIDC_CLIENT_ID?.trim() || undefined,
+    oidcRedirectUri: env.ADMIN_OIDC_REDIRECT_URI?.trim() || undefined,
+    oidcRequiredRole: env.ADMIN_OIDC_REQUIRED_ROLE?.trim() || undefined,
   };
 }
 
@@ -77,6 +85,7 @@ export function isAdminAuthPath(path: string): boolean {
     || path === '/admin/auth/config'
     || path === '/admin/auth/password'
     || path === '/admin/auth/google'
+    || path === '/admin/auth/oidc'
     || path === '/admin/auth/google/callback'
     || path === '/admin/logout';
 }

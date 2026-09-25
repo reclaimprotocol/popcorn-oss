@@ -178,6 +178,36 @@ Admin authentication supports these keys:
 | `controlPlane.adminAuth.googleRedirectUri` | `""` |
 | `controlPlane.adminAuth.googleAllowedEmails` | `""` |
 | `controlPlane.adminAuth.googleAllowedDomains` | `""` |
+| `controlPlane.adminAuth.oidcIssuer` | `https://keycloak.reclaimprotocol.org/realms/employees` |
+| `controlPlane.adminAuth.oidcClientId` | `""` |
+| `controlPlane.adminAuth.oidcRedirectUri` | `""` |
+| `controlPlane.adminAuth.oidcRequiredRole` | `""` |
+
+To enable Reclaim Work login, add `oidc` to `strategies` and set the client ID,
+callback, and role to match the Keycloak registration. Production uses client
+`popcorn`, role `app:popcorn:access`, and callback
+`https://popcorn-internal-control-plane-gcp.reclaimprotocol.org/auth/callback`.
+Staging uses client `popcorn-staging`, role `app:popcorn-staging:access`, and
+callback `https://popcorn-cp-gcp-asia-south1-stg.reclaimprotocol.org/auth/callback`.
+For production, set:
+
+```yaml
+controlPlane:
+  adminAuth:
+    strategies: oidc
+    oidcClientId: popcorn
+    oidcRedirectUri: https://popcorn-internal-control-plane-gcp.reclaimprotocol.org/auth/callback
+    oidcRequiredRole: app:popcorn:access
+```
+
+For staging, use `popcorn-staging`,
+`https://popcorn-cp-gcp-asia-south1-stg.reclaimprotocol.org/auth/callback`,
+and `app:popcorn-staging:access` for those three fields.
+The callback path must reach the control plane through the ingress. Both clients
+are public OIDC clients with authorization code and PKCE; no client secret is
+needed. `ADMIN_SESSION_SECRET` must be set. The OIDC login checks the signed ID
+token's issuer, audience, nonce, and required realm role before issuing an admin
+session.
 
 The optional paid API supports these keys. See [Optional x402 API](x402.md)
 before enabling it.

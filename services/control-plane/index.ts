@@ -21,6 +21,7 @@ import {
   verifyOauthState,
   wantsHtml,
 } from './src/admin-auth';
+import { ADMIN_OIDC_FLOW_COOKIE, createOidcFlow, exchangeOidcCode, isOidcConfigured, readOidcFlow } from './src/admin-oidc';
 import { ClientService } from './src/clients';
 import { ControlPlaneConfig } from './src/config';
 import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession } from './src/pool-manager';
@@ -170,6 +171,7 @@ function setAdminSessionCookie(c: any, session: string) {
 function clearAdminCookies(c: any) {
   deleteCookie(c, ADMIN_SESSION_COOKIE, { path: '/admin' });
   deleteCookie(c, ADMIN_OAUTH_STATE_COOKIE, { path: '/admin/auth/google' });
+  deleteCookie(c, ADMIN_OIDC_FLOW_COOKIE, { path: '/auth/callback' });
 }
 
 function sendX402Result(c: any, result: X402HttpResult): Response {
@@ -1159,7 +1161,44 @@ app.get('/admin/auth/config', (c) => {
   return c.json({
     password: isPasswordLoginConfigured(ADMIN_AUTH_CONFIG),
     google: isGoogleOAuthConfigured(ADMIN_AUTH_CONFIG),
+    oidc: isOidcConfigured(ADMIN_AUTH_CONFIG),
   });
+});
+
+app.get('/admin/auth/oidc', (c) => {
+  if (!isOidcConfigured(ADMIN_AUTH_CONFIG)) {
+    return c.redirect('/admin/login?error=Keycloak%20login%20is%20not%20configured', 302);
+  }
+  const flow = createOidcFlow(ADMIN_AUTH_CONFIG);
+  setCookie(c, ADMIN_OIDC_FLOW_COOKIE, flow.cookie, {
+    httpOnly: true,
+    sameSite: 'Lax',
+    secure: isSecureRequest(c),
+    path: '/auth/callback',
+    maxAge: 300,
+  });
+  c.header('Cache-Control', 'no-store');
+  return c.redirect(flow.authorizationUrl, 302);
+});
+
+app.get('/auth/callback', async (c) => {
+  setAdminResponseHeaders(c);
+  const flow = readOidcFlow(getCookie(c, ADMIN_OIDC_FLOW_COOKIE), c.req.query('state'), ADMIN_AUTH_CONFIG);
+  deleteCookie(c, ADMIN_OIDC_FLOW_COOKIE, { path: '/auth/callback' });
+  if (!flow || !isOidcConfigured(ADMIN_AUTH_CONFIG)) {
+    return c.redirect('/admin/login?error=Invalid%20Keycloak%20login%20state', 302);
+  }
+  const code = c.req.query('code');
+  if (!code) return c.redirect('/admin/login?error=Missing%20Keycloak%20login%20code', 302);
+  try {
+    const identity = await exchangeOidcCode(code, flow, ADMIN_AUTH_CONFIG);
+    if (!identity) return c.redirect('/admin/login?error=Keycloak%20access%20denied', 302);
+    setAdminSessionCookie(c, createAdminSession(identity, ADMIN_AUTH_CONFIG));
+    return c.redirect('/admin', 302);
+  } catch (error) {
+    console.error('Keycloak admin login failed:', error);
+    return c.redirect('/admin/login?error=Keycloak%20login%20failed', 302);
+  }
 });
 
 app.post('/admin/auth/password', async (c) => {

@@ -267,6 +267,10 @@ controlPlane:
     googleRedirectUri: ""
     googleAllowedEmails: ""
     googleAllowedDomains: ""
+    oidcIssuer: "https://keycloak.reclaimprotocol.org/realms/employees"
+    oidcClientId: ""
+    oidcRedirectUri: ""
+    oidcRequiredRole: ""
   regions: []
   x402:
     enabled: false

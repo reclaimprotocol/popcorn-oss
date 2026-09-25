@@ -69,10 +69,13 @@ The default control-plane Secret may contain:
 
 | Key | Needed when |
 | --- | --- |
-| `ADMIN_SESSION_SECRET` | browser login sessions or Google OAuth are used |
+| `ADMIN_SESSION_SECRET` | browser login sessions, Google OAuth, or Keycloak OIDC are used |
 | `ADMIN_USER`, `ADMIN_PASS` | static password strategy is enabled |
 | `ADMIN_TOKEN` | bearer-token administration is enabled |
 | `ADMIN_GOOGLE_CLIENT_ID`, `ADMIN_GOOGLE_CLIENT_SECRET` | Google OAuth is enabled |
+
+Keycloak OIDC uses a public client, so it needs no client secret. Configure its
+issuer, client ID, callback, and required role through `controlPlane.adminAuth`.
 
 For password-file authentication, create a separate Secret and configure
 `controlPlane.adminAuth.passwordFileSecretName` and
