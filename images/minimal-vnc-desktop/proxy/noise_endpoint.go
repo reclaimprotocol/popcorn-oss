@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -50,6 +51,7 @@ type noiseBinding struct {
 // noiseEndpoint owns one pod static key for its entire process lifetime.  It
 // is never serialized and is not included in GameServer metadata.
 type noiseEndpoint struct {
+	handoff        *viewerHandoff
 	static         noise.DHKey
 	public         []byte
 	mu             sync.RWMutex
@@ -438,9 +440,15 @@ func (e *noiseEndpoint) serve(w http.ResponseWriter, r *http.Request, channel st
 	}
 	_ = conn.SetReadDeadline(time.Now().Add(wsClientReadDeadline))
 	stopPings := make(chan struct{})
-	go sendNoiseWebSocketPings(conn, &writeMu, stopPings)
+	pingDone := make(chan struct{})
+	go func() {
+		defer close(pingDone)
+		sendNoiseWebSocketPings(conn, &writeMu, stopPings)
+	}()
 	handler(conn, rw.Reader, &writeMu, r1, r0)
 	close(stopPings)
+	_ = conn.Close()
+	<-pingDone
 }
 
 func sendNoiseWebSocketPings(conn net.Conn, writeMu *sync.Mutex, stop <-chan struct{}) {
@@ -560,23 +568,28 @@ func serveNoiseRFB(e *noiseEndpoint, w http.ResponseWriter, r *http.Request, ups
 			return
 		}
 		defer vnc.Close()
+		stopUpstream := context.AfterFunc(r.Context(), func() { _ = vnc.Close() })
+		defer stopUpstream()
 		secure := &noiseCipherConn{conn: conn, reader: reader, sharedMu: writeMu, send: send, recv: recv}
 		done := make(chan struct{}, 2)
 		go func() { _, _ = io.Copy(vnc, secure); done <- struct{}{} }()
 		go func() { _, _ = io.Copy(secure, vnc); done <- struct{}{} }()
 		<-done
 		_ = conn.Close()
+		_ = vnc.Close()
+		<-done
 	})
 }
 
 type e2eControlClient struct {
-	secure   *noiseCipherConn
-	hub      *kbdHub
-	em       *emulator
-	rtstats  *rtstatsStore
-	onViewer func([]byte)
-	out      chan []byte
-	done     chan struct{}
+	closeOnce sync.Once
+	secure    *noiseCipherConn
+	hub       *kbdHub
+	em        *emulator
+	rtstats   *rtstatsStore
+	onViewer  func([]byte)
+	out       chan []byte
+	done      chan struct{}
 }
 
 func (c *e2eControlClient) enqueueE2E(kind string, payload []byte) {
@@ -618,11 +631,9 @@ func (c *e2eControlClient) enqueue(kind string, payload []byte, droppable bool) 
 }
 
 func (c *e2eControlClient) close() {
-	select {
-	case <-c.done:
-	default:
+	c.closeOnce.Do(func() {
 		close(c.done)
-	}
+	})
 	if c.secure != nil {
 		_ = c.secure.Close()
 	}
@@ -633,8 +644,13 @@ func (c *e2eControlClient) run() {
 		return
 	}
 	defer c.hub.removeE2E(c)
-	defer c.close()
+	writerDone := make(chan struct{})
+	defer func() {
+		c.close()
+		<-writerDone
+	}()
 	go func() {
+		defer close(writerDone)
 		for {
 			select {
 			case <-c.done:
@@ -753,7 +769,7 @@ func (c *e2eControlClient) handle(raw []byte) error {
 			return errors.New("invalid emulate request")
 		}
 		c.em.set(p)
-		requestWindowFit(log.Printf)
+		requestWindowFit(log.Printf, c.em.handoff)
 	case "hello":
 		var p struct {
 			Mirror bool `json:"mirror"`
