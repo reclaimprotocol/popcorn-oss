@@ -52,14 +52,9 @@ document.body.addEventListener('htmx:beforeSwap', () => {
     preservedScroll.set(node.getAttribute('data-preserve-scroll'), node.scrollTop);
   });
 });
-document.body.addEventListener('htmx:afterSwap', () => {
-  if (resetContentScroll) resetAdminContentScroll();
-});
 document.body.addEventListener('htmx:afterSettle', () => {
   if (resetContentScroll) {
     resetAdminContentScroll();
-    requestAnimationFrame(resetAdminContentScroll);
-    setTimeout(resetAdminContentScroll, 100);
     resetContentScroll = false;
   }
   document.querySelectorAll('[data-preserve-scroll]').forEach((node) => {

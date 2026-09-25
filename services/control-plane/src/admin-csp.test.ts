@@ -8,7 +8,7 @@ test('admin responses enforce a same-origin, external-script CSP', async () => {
      const paths = ['/admin/login', '/admin/sessions', '/admin/assets/admin-login.js', '/admin/assets/admin.js', '/admin/assets/htmx.min.js'];
      const responses = await Promise.all(paths.map(async (path) => {
        const response = await app.fetch(new Request('http://localhost' + path));
-       return { path, status: response.status, csp: response.headers.get('Content-Security-Policy'), contentType: response.headers.get('Content-Type'), body: await response.text() };
+       return { status: response.status, csp: response.headers.get('Content-Security-Policy'), contentType: response.headers.get('Content-Type'), body: await response.text() };
      }));
      console.log('CSP_TEST_RESULT:' + JSON.stringify(responses));`,
   ], {
@@ -32,7 +32,6 @@ test('admin responses enforce a same-origin, external-script CSP', async () => {
   const resultLine = stdout.split('\n').find((line) => line.startsWith('CSP_TEST_RESULT:'));
   expect(resultLine).toBeDefined();
   const responses = JSON.parse(resultLine!.slice('CSP_TEST_RESULT:'.length)) as Array<{
-    path: string;
     status: number;
     csp: string;
     contentType: string;
