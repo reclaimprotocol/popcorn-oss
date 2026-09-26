@@ -27,6 +27,7 @@ import (
 const screenRestoreDelay = 3 * time.Second
 
 type screenKeeper struct {
+	handoff *viewerHandoff
 	mu      sync.Mutex
 	clients int
 	// gen counts connects. The restore timer samples it when it decides the
@@ -120,6 +121,9 @@ func (k *screenKeeper) disconnect() {
 	}
 	n := k.clients
 	k.note("vnc client gone (now %d)", n)
+	if !k.handoff.allowed() {
+		return
+	}
 	if k.clients > 0 {
 		return // others still watching; their geometry stands
 	}
@@ -142,6 +146,20 @@ func (k *screenKeeper) disconnect() {
 	})
 }
 
+func (k *screenKeeper) stopForHandoff() {
+	k.mu.Lock()
+	if k.timer != nil {
+		k.timer.Stop()
+		k.timer = nil
+	}
+	k.gen++
+	k.mu.Unlock()
+	// An already-fired restore must finish before acknowledgment. Its actual
+	// mutation also uses the gate, so waiting does not reopen admission.
+	k.geoMu.Lock()
+	k.geoMu.Unlock()
+}
+
 // finishRestore completes a restore the timer decided on at generation gen. A
 // viewer whose connect slips in between that decision and the xrandr must win:
 // its session is live, and snapping the screen and emulation under it is sticky
@@ -153,7 +171,7 @@ func (k *screenKeeper) finishRestore(gen uint64) {
 	k.mu.Lock()
 	idle := k.clients == 0 && k.gen == gen
 	k.mu.Unlock()
-	if idle {
+	if idle && k.handoff.allowed() {
 		k.restore()
 	}
 }
@@ -170,6 +188,14 @@ func (k *screenKeeper) clientCount() int {
 // a watcher tick — the window must cover the new screen before the next
 // handshake paints it.
 func setScreenSize(w, h int, em *emulator, logf func(string, ...any)) error {
+	var handoff *viewerHandoff
+	if em != nil {
+		handoff = em.handoff
+	}
+	return handoff.forward(func() error { return setScreenSizeUnblocked(w, h, em, logf) })
+}
+
+func setScreenSizeUnblocked(w, h int, em *emulator, logf func(string, ...any)) error {
 	size := fmt.Sprintf("%dx%d", w, h)
 	cmd := exec.Command("xrandr", "-s", size)
 	// The proxy inherits DISPLAY from entrypoint.sh, but set it explicitly so a
@@ -181,10 +207,14 @@ func setScreenSize(w, h int, em *emulator, logf func(string, ...any)) error {
 	if em != nil {
 		em.set(*defaultEmulation())
 	}
-	if _, err := checkAndFitWindows(logf, nil); err != nil {
+	var handoff *viewerHandoff
+	if em != nil {
+		handoff = em.handoff
+	}
+	if _, err := checkAndFitWindows(logf, nil, handoff); err != nil {
 		logf("window re-fit after screen resize: %v", err)
 	}
-	requestWindowFit(logf) // again shortly: Chromium may still be re-laying out
+	requestWindowFit(logf, handoff) // again shortly: Chromium may still be re-laying out
 	return nil
 }
 

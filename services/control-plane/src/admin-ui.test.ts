@@ -61,6 +61,15 @@ describe('admin shell navigation', () => {
     expect(html).toContain('name="theme-color" content="#0b0c0f"');
     expect(html).toContain('class="brand-mark"');
   });
+
+  test('loads only same-origin external scripts', async () => {
+    const html = await renderShellHtml();
+
+    expect(html).toContain('<script src="/admin/assets/htmx.min.js" defer=""></script>');
+    expect(html).toContain('<script src="/admin/assets/admin.js" defer=""></script>');
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('unpkg.com');
+  });
 });
 
 const clientViewBase = {
@@ -155,6 +164,8 @@ describe('cluster workspace layout', () => {
     expect(html).toContain('class="clusters-layout-flat"');
     expect(html).toContain('class="cluster-command-bar"');
     expect(html).toContain('id="region-scope-select"');
+    expect(html).toContain('data-region-scope-select');
+    expect(html).not.toContain('onchange=');
     expect(html).toContain('data-pod-inventory');
     expect(html).toContain('name="liveViewEncryption"');
     expect(html).toContain('<option value="" selected="">Default transport</option>');
@@ -367,12 +378,14 @@ describe('analytics viewer RTT', () => {
 describe('Google sign-in branding', () => {
   test('uses the approved label, multicolor mark, and accessible button name', async () => {
     const html = await Bun.file(new URL('../public/admin-login.html', import.meta.url)).text();
+    const script = await Bun.file(new URL('../public/assets/admin-login.js', import.meta.url)).text();
     const css = await Bun.file(new URL('../public/admin.css', import.meta.url)).text();
 
     expect(html).toContain('aria-label="Sign in with Google"');
     expect(html).toContain('class="google-login-label">Sign in with Google</span>');
     expect(html).toContain('class="login-method-divider" role="separator"><span>or</span>');
-    expect(html).toContain("document.getElementById('google-auth').hidden = !config.google;");
+    expect(html).toContain('<script src="/admin/assets/admin-login.js" defer></script>');
+    expect(script).toContain("document.getElementById('google-auth').hidden = !config.google;");
     expect(html).not.toContain('Continue with Google');
     for (const color of ['#4285F4', '#34A853', '#FBBC05', '#EA4335']) {
       expect(html).toContain(color);

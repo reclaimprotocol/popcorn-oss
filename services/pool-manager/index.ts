@@ -11,6 +11,8 @@ import { OtelEvents } from "./src/services/otel";
 import { retry } from "./src/services/retry";
 import { buildSessionMetadata } from "./src/session-metadata";
 import { browserRoutePort } from "./src/allocation-port";
+import { handoffSession, readViewerHandoffRequest, readViewerHandoffStatus } from "./src/viewer-handoff";
+import { terminateCurrentSession } from "./src/session-termination";
 import {
     readSessionAccessRequest,
     sessionAccessFields,
@@ -212,6 +214,7 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
         ...urls,
         browserPodId: session.name,
         allocationRequestedAt: session.allocationRequestedAt,
+        ...(session.podUid ? { podUid: session.podUid } : {}),
         gameServerAllocatedAt: session.gameServerAllocatedAt,
         gameServerAllocationLatencyMs: session.gameServerAllocationLatencyMs,
         boundAt: session.boundAt,
@@ -247,7 +250,7 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
         // LiveView is part of the core session contract. Deployment-specific
         // URL templates may add fields or override legacy aliases, but cannot
         // remove or replace these canonical endpoints.
-        if (key === "vncUrl" || key === "vncWsUrl") continue;
+        if (key === "vncUrl" || key === "vncWsUrl" || key === "podUid") continue;
         details[key] = expandSessionUrlTemplate(template, templateValues);
     }
 
@@ -317,7 +320,10 @@ async function allocateSessionLocally(
         const e2eBinding = liveViewE2e ? await (async () => {
             await K8s.patchGameServer(GAME_SERVER_NAMESPACE, allocation.gameServerName, {
                 metadata: { annotations: {
-                    ...buildSessionMetadata(sessionId, new Date(), liveViewE2e.clientPublicKey).annotations,
+                    ...bound.annotations,
+                    ...(liveViewE2e.clientPublicKey ? {
+                        "popcorn.dev/e2e-client-public-key": liveViewE2e.clientPublicKey,
+                    } : {}),
                     ...(liveViewE2e.bindingSecretHash ? {
                         "popcorn.dev/e2e-binding-secret-hash": liveViewE2e.bindingSecretHash,
                     } : {}),
@@ -370,18 +376,13 @@ async function allocateSessionLocally(
             ...(expiresAt ? { [ANNOTATION_SESSION_EXPIRES_AT]: expiresAt } : {}),
         };
 
-        try {
-            await K8s.patchGameServer(GAME_SERVER_NAMESPACE, allocation.gameServerName, {
-                metadata: {
-                    annotations: sessionAnnotations,
-                }
-            });
-        } catch (e) {
-            console.error(`❌ Failed to annotate GameServer with session metadata:`, e);
-            if (expiresAt) {
-                throw e;
+        // The runtime opens viewer access only after it observes this binding.
+        // Do not publish routes for an allocation that cannot establish it.
+        await K8s.patchGameServer(GAME_SERVER_NAMESPACE, allocation.gameServerName, {
+            metadata: {
+                annotations: sessionAnnotations,
             }
-        }
+        });
 
         const created = await DB.createSession(sessionId, podData);
         if (!created) {
@@ -800,6 +801,23 @@ app.patch("/internal/session/:id/ttl", async (c) => {
     return extendLocalSessionTtl(c, c.req.param("id"));
 });
 
+app.post("/internal/session/:id/handoff", async (c) => {
+    const unauthorized = requireControlPlane(c);
+    if (unauthorized) return unauthorized;
+    const parsed = await readViewerHandoffRequest(c.req.raw);
+    if (parsed.status) return c.json({ success: false, error: "Invalid handoff request" }, parsed.status);
+    const result = await handoffSession(c.req.param("id"), parsed.body, {
+        namespace: GAME_SERVER_NAMESPACE,
+        getSession: DB.getSession,
+        inspectHandoff: K8s.inspectViewerHandoff,
+        requestHandoff: K8s.requestViewerHandoff,
+        confirmHandoff: K8s.confirmViewerHandoff,
+        readStatus: readViewerHandoffStatus,
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json(result.body, result.status as any);
+});
+
 app.patch("/internal/session/:id/access-ttl", async (c) => {
     const unauthorized = requireControlPlane(c);
     if (unauthorized) return unauthorized;
@@ -810,6 +828,19 @@ app.post("/internal/session/:id/reallocate-expired", async (c) => {
     const unauthorized = requireControlPlane(c);
     if (unauthorized) return unauthorized;
     return reallocateExpiredSession(c, c.req.param("id"));
+});
+
+app.delete("/internal/session/:id/allocation", async (c) => {
+    const unauthorized = requireControlPlane(c);
+    if (unauthorized) return unauthorized;
+    const parsed = await readViewerHandoffRequest(c.req.raw);
+    if (parsed.status) return c.json({ success: false, error: "Invalid termination request" }, parsed.status);
+    const result = await terminateCurrentSession(c.req.param("id"), parsed.body, {
+        namespace: GAME_SERVER_NAMESPACE, getSession: DB.getSession,
+        shutdown: K8s.shutdownCurrentAllocation, deleteIfCurrent: DB.deleteSessionIfCurrent,
+    });
+    c.header("Cache-Control", "no-store");
+    return c.json(result.body, result.status as any);
 });
 
 app.delete("/internal/session/:id", async (c) => {

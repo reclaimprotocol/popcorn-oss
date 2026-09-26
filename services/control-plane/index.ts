@@ -24,7 +24,9 @@ import {
 import { ADMIN_OIDC_FLOW_COOKIE, createOidcFlow, exchangeOidcCode, isOidcConfigured, readOidcFlow } from './src/admin-oidc';
 import { ClientService } from './src/clients';
 import { ControlPlaneConfig } from './src/config';
-import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession } from './src/pool-manager';
+import { allocateInRegion, deleteRegionalSession, extendRegionalSessionTtl, getRegionalServers, getRegionalSession, handoffRegionalSession, terminateRegionalSession } from './src/pool-manager';
+import { handoffRoutedSession } from './src/viewer-handoff';
+import { terminateRoutedSession } from './src/session-termination';
 import { selectRegions } from './src/regions';
 import { SessionService } from './src/sessions';
 import { buildSessionAllocationEvent, buildSessionAnalyticsMetadata, normalizeViewerRttSummary } from './src/session-analytics';
@@ -139,11 +141,12 @@ function setAdminResponseHeaders(c: any) {
   c.header('Cache-Control', 'no-store');
   c.header('Content-Security-Policy', [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline' https://unpkg.com",
-    "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
     "font-src 'self' data:",
     "connect-src 'self'",
+    "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'none'",
     "form-action 'self'",
@@ -1111,6 +1114,24 @@ app.get('/v1/session/:id', async (c) => {
   return c.json(result.body, result.status as any);
 });
 
+app.delete('/v1/session/:id/allocation', async (c) => {
+  const auth = await authenticateClient(c);
+  if (auth.response) {
+    return auth.response;
+  }
+
+  const parsed = await readBoundedJsonBody(c.req.raw, 1024);
+  if (parsed.error) return c.json({ success: false, error: 'Invalid termination request' }, parsed.error === 'too_large' ? 413 : 400);
+  const result = await terminateRoutedSession(c.req.param('id'), auth.identity!.clientId, parsed.body, {
+    getSession: async id => (await SessionService.getSession(id))[0] || null,
+    resolveRegion: resolveSessionRegion,
+    terminate: (region, id, owner, uid, boundAt, signal) => terminateRegionalSession(region, id, owner, uid, boundAt, ControlPlaneConfig.serviceAuthToken, signal),
+    endIfCurrent: SessionService.endSessionIfCurrentAllocation,
+  });
+  c.header('Cache-Control', 'no-store');
+  return c.json(result.body, result.status as any);
+});
+
 app.delete('/v1/session/:id', async (c) => {
   const auth = await authenticateClient(c);
   if (auth.response) {
@@ -1132,6 +1153,20 @@ app.patch('/v1/session/:id/ttl', async (c) => {
   return c.json(result.body, result.status as any);
 });
 
+app.post('/v1/session/:id/handoff', async (c) => {
+  const auth = await authenticateClient(c);
+  if (auth.response) return auth.response;
+  const parsed = await readBoundedJsonBody(c.req.raw, 1024);
+  if (parsed.error) return c.json({ success: false, error: 'Invalid handoff request' }, parsed.error === 'too_large' ? 413 : 400);
+  const result = await handoffRoutedSession(c.req.param('id'), auth.identity!.clientId, parsed.body, {
+    getSession: async id => (await SessionService.getSession(id))[0] || null,
+    resolveRegion: resolveSessionRegion,
+    handoff: (region, id, clientId, podUid, signal) => handoffRegionalSession(region, id, clientId, podUid, ControlPlaneConfig.serviceAuthToken, signal),
+  });
+  c.header('Cache-Control', 'no-store');
+  return c.json(result.body, result.status as any);
+});
+
 app.get('/admin/login', async (c) => c.html(await Bun.file('./public/admin-login.html').text()));
 
 app.get('/admin/assets/admin.css', async (c) => {
@@ -1140,6 +1175,9 @@ app.get('/admin/assets/admin.css', async (c) => {
 });
 
 const ADMIN_ASSETS = {
+  'admin-login.js': { path: './public/assets/admin-login.js', contentType: 'text/javascript; charset=utf-8' },
+  'admin.js': { path: './public/assets/admin.js', contentType: 'text/javascript; charset=utf-8' },
+  'htmx.min.js': { path: './public/assets/htmx.min.js', contentType: 'text/javascript; charset=utf-8' },
   'site-icon.svg': { path: './public/assets/site-icon.svg', contentType: 'image/svg+xml' },
   'favicon-32.png': { path: './public/assets/favicon-32.png', contentType: 'image/png' },
   'apple-touch-icon.png': { path: './public/assets/apple-touch-icon.png', contentType: 'image/png' },
@@ -1153,7 +1191,7 @@ app.get('/admin/assets/:filename', async (c) => {
   const asset = ADMIN_ASSETS[filename];
   if (!asset) return c.notFound();
   c.header('Content-Type', asset.contentType);
-  c.header('Cache-Control', 'public, max-age=86400');
+  c.header('Cache-Control', asset.contentType.startsWith('text/javascript') ? 'no-store' : 'public, max-age=86400');
   return c.body(await Bun.file(asset.path).arrayBuffer());
 });
 
