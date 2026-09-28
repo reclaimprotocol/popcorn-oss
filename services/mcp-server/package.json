@@ -9,7 +9,7 @@
     "db:migrate": "bun run scripts/migrate.ts"
   },
   "dependencies": {
-    "hono": "4.12.34",
+    "hono": "4.13.5",
     "postgres": "^3.4.0"
   },
   "devDependencies": {
