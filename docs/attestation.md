@@ -1,5 +1,10 @@
 # Attestation
 
+For the opt-in browser-owned run-signing key and measured workload identity
+path, see [Confidential Space run-key binding](confidential-space-run-key.md).
+That code is unit-tested only and has not been deployed. The existing GKE v3
+sidecar path described below does not bind a browser run key.
+
 Attestation is an optional GKE feature for deployments that need a
 nonce-bound statement about the browser and attestor images running on
 confidential-computing nodes. It is disabled by default and unavailable in the

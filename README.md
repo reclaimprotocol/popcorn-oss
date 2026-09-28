@@ -11,6 +11,10 @@ Website: [popcorn.reclaimprotocol.org](https://popcorn.reclaimprotocol.org/)
 The repository includes the runtime, control services, Helm charts, local Kind
 workflow, GKE deployment guidance, and optional x402 and GCP attestation paths.
 
+The opt-in [Confidential Space run-key binding](docs/confidential-space-run-key.md)
+adds browser-owned ephemeral signing keys and independent verification. It is
+code and unit tests only; no Confidential Space deployment is included.
+
 Clients can use either of two independent public API paths:
 
 - the standard client API, authenticated with an operator-issued client ID and

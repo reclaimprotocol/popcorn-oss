@@ -1,0 +1,8 @@
+{
+  "description": "PUBLIC canonical encoding vector; no private key or attestation token",
+  "challenge": "abababababababababababababababababababababababababababababababab",
+  "run_public_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "audience": "https://verifier.example",
+  "canonical_hex": "706f70636f726e2f636f6e666964656e7469616c2d73706163652f72756e2d6b65792f76310000000020abababababababababababababababababababababababababababababababab00000020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0000001868747470733a2f2f76657269666965722e6578616d706c65",
+  "sha256": "5c5269b696d9caf76ebc11734c001023ca99008a6ccc5dece97038d9a88f30dc"
+}
