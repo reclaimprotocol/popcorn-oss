@@ -23,7 +23,7 @@
     "compare": "node src/cli.mjs compare"
   },
   "devDependencies": {
-    "appium": "3.6.0",
+    "appium": "3.7.0",
     "pixelmatch": "^7.1.0",
     "pngjs": "^7.0.0",
     "webdriverio": "9.29.1"
