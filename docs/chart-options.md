@@ -311,7 +311,7 @@ Each `sessionExtensions.<name>` supports:
 | --- | --- | --- |
 | `enabled` | both charts | Enables the named extension; defaults to `true` when omitted. |
 | `browser.ports` | browser-fleet | Agones GameServer port entries. Use `portPolicy: None`. |
-| `browser.containers` | browser-fleet | Sidecar container specs. |
+| `browser.containers` | browser-fleet | Sidecar container specs. Each needs an HTTP readiness probe with a numeric port before Agones marks the browser ready. |
 | `browser.prepullInitContainers` | browser-fleet | Optional pre-puller init containers. |
 | `browser.prepullContainers` | browser-fleet | Optional long-running pre-puller containers. |
 | `routing.portName` | platform | Name matching the GameServer port. |
