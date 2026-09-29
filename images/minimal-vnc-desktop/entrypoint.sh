@@ -31,6 +31,8 @@ ENABLE_AGONES="${ENABLE_AGONES:-auto}"
 AGONES_SDK_HOST="${AGONES_SDK_HOST:-127.0.0.1}"
 AGONES_SDK_HTTP_PORT="${AGONES_SDK_HTTP_PORT:-${AGONES_SDK_PORT:-9358}}"
 AGONES_HEALTH_INTERVAL="${AGONES_HEALTH_INTERVAL:-2}"
+AGONES_READY_ENDPOINTS="${AGONES_READY_ENDPOINTS:-}"
+AGONES_READY_TIMEOUT="${AGONES_READY_TIMEOUT:-90}"
 
 export DISPLAY=":${DISPLAY_NUM}"
 export HOME="${HOME:-/home/kernel}"
@@ -180,6 +182,35 @@ wait_for_tcp() {
   return 1
 }
 
+wait_for_agones_dependencies() {
+  if [[ "$AGONES_ENABLED" != "true" || -z "$AGONES_READY_ENDPOINTS" ]]; then
+    return 0
+  fi
+
+  local deadline=$((SECONDS + AGONES_READY_TIMEOUT))
+  local check name url
+  local -a pending=()
+
+  while (( SECONDS < deadline )); do
+    pending=()
+    for check in $AGONES_READY_ENDPOINTS; do
+      name="${check%%|*}"
+      url="${check#*|}"
+      if ! curl --silent --fail --max-time 1 "$url" >/dev/null 2>&1; then
+        pending+=("$name")
+      fi
+    done
+    if (( ${#pending[@]} == 0 )); then
+      echo "[entrypoint] Agones dependencies are healthy"
+      return 0
+    fi
+    sleep 0.2
+  done
+
+  echo "[entrypoint] Agones dependencies not healthy after ${AGONES_READY_TIMEOUT}s: ${pending[*]}" >&2
+  return 1
+}
+
 default_ready_window_pattern() {
   local command_bin
   read -r command_bin _ <<<"$APP_COMMAND"
@@ -317,6 +348,7 @@ wait_for_window "$READY_WINDOW_PATTERN" "$READY_TIMEOUT" "$app_pid"
 # drive it from there, with the window following (proxy/window.go).
 touch "$READY_FILE"
 echo "[entrypoint] noVNC is ready"
+wait_for_agones_dependencies
 agones_ready
 
 wait -n "${pids[@]}"
