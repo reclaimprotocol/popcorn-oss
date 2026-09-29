@@ -201,6 +201,10 @@ sessionExtensions:
           ports:
             - name: tool-http
               containerPort: 3000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
     routing:
       portName: tool-http
       port: 3000
@@ -216,6 +220,8 @@ sessionExtensions:
 The keyed map is intentional: Helm merges extension names while it replaces
 lists. Do not create separate container, port, pool-manager, and gateway lists.
 VNC and CDP are core routes and must not be restated as extensions.
+Each enabled extension container needs an HTTP readiness probe with a numeric
+port. The browser runtime checks those endpoints before signaling Agones Ready.
 
 ## Optional components
 
