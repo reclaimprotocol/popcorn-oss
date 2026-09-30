@@ -67,7 +67,7 @@ func main() {
 	servers := []*http.Server{
 		{
 			Addr:              *listen,
-			Handler:           noVNCMux(*web, *vnc, *cdpUpstream, ready, noiseEndpoint),
+			Handler:           newViewerLease(noVNCMux(*web, *vnc, *cdpUpstream, ready, noiseEndpoint), os.Getenv("BROWSER_EVENTS_BOOTSTRAP_SECRET"), os.Getenv("POD_UID")),
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
