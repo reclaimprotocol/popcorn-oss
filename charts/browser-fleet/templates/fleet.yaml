@@ -130,6 +130,15 @@ spec:
                   value: {{ eq .Values.browserPolicy.variant "reclaim-portal" | quote }}
                 - name: POPCORN_BROWSER_STREAMING_MODE
                   value: "vnc"
+{{- if dig "browser-events" "enabled" false .Values.sessionExtensions }}
+                - name: POST_PROOF_LOGIN_REPAIR_ENABLED
+                  value: {{ dig "enabled" false (.Values.browserEventsPostProofLoginRepair | default dict) | quote }}
+                - name: BROWSER_EVENTS_BOOTSTRAP_SECRET
+                  valueFrom:
+                    secretKeyRef:
+                      name: browser-events-bootstrap
+                      key: secret
+{{- end }}
 {{- with .Values.extraBrowserRuntimeEnv }}
 {{ tpl (toYaml .) $ | nindent 16 }}
 {{- end }}

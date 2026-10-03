@@ -54,15 +54,24 @@ export function proxyPreset(country: string, sessionId: string, raw = process.en
     try { url = new URL(expanded); } catch { return { error: "HTTPS_PROXY_URL is invalid" }; }
     if (url.protocol !== "http:" && url.protocol !== "https:") return { error: "HTTPS_PROXY_URL must use http or https" };
     if (!url.hostname) return { error: "HTTPS_PROXY_URL must include a host" };
-    const username = decodeURIComponent(url.username);
-    const password = decodeURIComponent(url.password);
+    if (url.pathname !== "/" || url.search || url.hash) return { error: "HTTPS_PROXY_URL must not include a path, query or fragment" };
+    let username: string;
+    let password: string;
+    try {
+        username = decodeURIComponent(url.username);
+        password = decodeURIComponent(url.password);
+    } catch {
+        return { error: "HTTPS_PROXY_URL credentials contain invalid percent encoding" };
+    }
     if ((username && !password) || (!username && password)) return { error: "HTTPS_PROXY_URL must include both username and password" };
     // Keep the selected upstream exit sticky for this browser session.
     const stickyId = createHash("sha256").update(sessionId).digest("hex").slice(0, 32);
+    const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: "HTTPS_PROXY_URL has an invalid port" };
     return {
         value: {
             host: url.hostname,
-            port: url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80,
+            port,
             scheme: url.protocol === "https:" ? "https" : "http",
             ...(username ? { username: `${username}-session-${stickyId}`, password } : {}),
             bypassList: ["localhost", "127.0.0.1", "[::1]"],

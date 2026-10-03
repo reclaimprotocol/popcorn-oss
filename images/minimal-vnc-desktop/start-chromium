@@ -18,6 +18,11 @@ if [[ "$REPLACE_DEFAULT_PAGE" == "true" ]]; then
 else
   DEFAULT_PAGE="$FALLBACK_PAGE"
 fi
+# Optional script maintenance must observe the provider from a clean checkpoint.
+# It also excludes Chromium's Gemini background agent from retained replay.
+if [[ "${POST_PROOF_LOGIN_REPAIR_ENABLED:-false}" == "true" ]]; then
+  APP_URL="${APP_URL:-about:blank}"
+fi
 APP_URL="${APP_URL:-${POPCORN_BROWSER_STARTUP_URL:-${CHROMIUM_STARTUP_URL:-$DEFAULT_PAGE}}}"
 CDP_INTERNAL_PORT="${CDP_INTERNAL_PORT:-${CHROME_REMOTE_DEBUGGING_PORT:-9223}}"
 CHROME_REMOTE_DEBUGGING_ADDRESS="${CHROME_REMOTE_DEBUGGING_ADDRESS:-127.0.0.1}"
@@ -35,6 +40,10 @@ rm -f "$BROWSER_PROFILE_DIR/SingletonLock" "$BROWSER_PROFILE_DIR/SingletonSocket
 # The noVNC/CDP proxy starts before allocation, so publish the selected mode in
 # a tiny shared file it can re-read while the managed launcher switches this pod.
 # Missing/invalid files fail closed to kiosk in the proxy.
+if [[ "${POST_PROOF_LOGIN_REPAIR_ENABLED:-false}" == "true" ]]; then
+  flags+=("--disable-component-extensions-with-background-pages")
+fi
+
 if [[ "$BROWSER_KIOSK" == "true" ]]; then
   BROWSER_MODE=kiosk
   BROWSER_KIOSK_JS=true
@@ -450,6 +459,10 @@ flags=(
   "--disable-popup-blocking"
   "${cloak_flags[@]}"
 )
+
+if [[ "${POST_PROOF_LOGIN_REPAIR_ENABLED:-false}" == "true" ]]; then
+  flags+=("--disable-component-extensions-with-background-pages")
+fi
 
 if [[ "$BROWSER_KIOSK" == "true" ]]; then
   flags+=("--kiosk")
