@@ -3,6 +3,25 @@
 {{- if not (has $securityProfile (list "legacy" "hardened")) }}
 {{- fail "browserRuntimeSecurityProfile must be one of 'legacy' or 'hardened'" }}
 {{- end }}
+{{- $agonesReadyEndpoints := list }}
+{{- if .Values.browserRuntimeAttestor.enabled }}
+{{- $agonesReadyEndpoints = append $agonesReadyEndpoints "browser-runtime-attestor|http://127.0.0.1:8085/health" }}
+{{- end }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if dig "enabled" true $extension }}
+{{- range $container := dig "browser" "containers" (list) $extension }}
+{{- $probe := get $container "readinessProbe" | default dict }}
+{{- $httpGet := get $probe "httpGet" | default dict }}
+{{- $port := get $httpGet "port" }}
+{{- if not (regexMatch "^[0-9]+$" (toString $port)) }}
+{{- fail (printf "sessionExtensions.%s browser container %s requires an HTTP readinessProbe with a numeric port before Agones can mark it ready" $extensionName $container.name) }}
+{{- end }}
+{{- $scheme := lower (default "HTTP" (get $httpGet "scheme")) }}
+{{- $path := default "/" (get $httpGet "path") }}
+{{- $agonesReadyEndpoints = append $agonesReadyEndpoints (printf "%s|%s://127.0.0.1:%v%s" $container.name $scheme $port $path) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: agones.dev/v1
 kind: Fleet
 metadata:
@@ -120,6 +139,8 @@ spec:
                       fieldPath: spec.nodeName
                 - name: REDIS_HOST
                   value: redis
+                - name: AGONES_READY_ENDPOINTS
+                  value: {{ join " " $agonesReadyEndpoints | quote }}
                 - name: HTTPS_PROXY_URL
                   valueFrom:
                     secretKeyRef:
@@ -164,6 +185,11 @@ spec:
                 - name: proof-http
                   containerPort: 8085
                   protocol: TCP
+              readinessProbe:
+                httpGet:
+                  path: /health
+                  port: proof-http
+                periodSeconds: 1
               env:
                 - name: HOSTNAME
                   valueFrom:

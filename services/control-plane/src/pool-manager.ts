@@ -34,6 +34,7 @@ export interface PoolManagerSessionResponse {
   vncUrl: string;
   vncWsUrl: string;
   browserPodId?: string;
+  podUid?: string;
   liveViewE2e?: LiveViewE2eResponse;
   [key: string]: unknown;
 }
@@ -54,6 +55,24 @@ async function readJsonSafe(response: Response): Promise<any> {
   } catch {
     return null;
   }
+}
+
+async function readMaintenanceAcknowledgement(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > 4096) throw new Error('Maintenance acknowledgement is too large');
+      chunks.push(chunk.value);
+    }
+    try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+    catch { return null; }
+  } finally { await reader.cancel().catch(() => undefined); }
 }
 
 function regionalDeadline(): AbortSignal {
@@ -233,6 +252,25 @@ export async function getRegionalSession(region: RegionConfig, sessionId: string
   return { response, body: withDefaultLiveViewUrls(body, region.publicGatewayUrl, sessionId) };
 }
 
+export async function handoffRegionalSession(
+  region: RegionConfig,
+  sessionId: string,
+  clientId: string,
+  expectedPodUid: string,
+  serviceAuthToken: string,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/handoff`, {
+    method: 'POST',
+    redirect: 'error',
+    headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    body: JSON.stringify({ clientId, expectedPodUid }),
+    signal: signal ? AbortSignal.any([signal, regionalDeadline()]) : regionalDeadline(),
+  });
+  const body = await readMaintenanceAcknowledgement(response);
+  return { response, body };
+}
+
 export async function deleteRegionalSession(region: RegionConfig, sessionId: string, serviceAuthToken: string) {
   const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
@@ -240,6 +278,19 @@ export async function deleteRegionalSession(region: RegionConfig, sessionId: str
     signal: regionalDeadline(),
   });
   return { response, body: await readJsonSafe(response) };
+}
+
+export async function terminateRegionalSession(
+  region: RegionConfig, sessionId: string, clientId: string, expectedPodUid: string, expectedBoundAt: string,
+  serviceAuthToken: string, signal: AbortSignal,
+) {
+  const response = await fetch(`${region.poolManagerUrl}/internal/session/${encodeURIComponent(sessionId)}/allocation`, {
+    method: 'DELETE', headers: serviceHeaders(regionServiceAuthToken(region, serviceAuthToken)),
+    redirect: 'error',
+    body: JSON.stringify({ clientId, expectedPodUid, expectedBoundAt }),
+    signal: AbortSignal.any([signal, regionalDeadline()]),
+  });
+  return { response, body: await readMaintenanceAcknowledgement(response) };
 }
 
 export async function extendRegionalSessionTtl(region: RegionConfig, sessionId: string, expiresAt: string, serviceAuthToken: string) {

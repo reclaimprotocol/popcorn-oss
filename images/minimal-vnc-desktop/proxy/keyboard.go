@@ -323,6 +323,12 @@ func (h *kbdHub) remove(c *kbdClient) {
 		close(c.closed)
 	}
 	_ = c.conn.Close()
+	c.mailMu.Lock()
+	c.pendingCtl = nil
+	c.pending = nil
+	c.pendingDialog = nil
+	c.pendingPopup = nil
+	c.mailMu.Unlock()
 }
 
 func mirrorPayload(on bool) []byte {
@@ -659,6 +665,12 @@ func (c *kbdClient) takePopup() []byte {
 // somehow full, so the newest state (which is the authoritative one) survives.
 func (c *kbdClient) enqueueCtl(payload []byte) {
 	c.mailMu.Lock()
+	select {
+	case <-c.closed:
+		c.mailMu.Unlock()
+		return
+	default:
+	}
 	if len(c.pendingCtl) >= kbdMaxCtlQueue {
 		c.pendingCtl = c.pendingCtl[1:]
 	}
@@ -783,7 +795,16 @@ func (h *kbdHub) serve(w http.ResponseWriter, r *http.Request, ready readyGate) 
 	h.add(client)
 	defer h.remove(client)
 
-	go client.writeLoop()
+	writerDone := make(chan struct{})
+	go func() {
+		defer close(writerDone)
+		client.writeLoop()
+	}()
+	defer func() {
+		_ = conn.Close()
+		close(client.closed)
+		<-writerDone
+	}()
 	// Hand the extension its dialog-bridge token. Publishers only — a viewer that
 	// learned it could forge dialogs on behalf of the page, which is the very thing
 	// the token exists to prevent.

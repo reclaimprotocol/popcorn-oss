@@ -34,5 +34,6 @@ bash tests/auth-algorithm.sh
 # Requires Helm, Bun, OpenSSL and Docker.
 bash tests/route-bound-access.sh
 bun test ../../charts/tests
+bash tests/response-identity.sh
 docker build -t popcorn/gateway:local .
 ```
