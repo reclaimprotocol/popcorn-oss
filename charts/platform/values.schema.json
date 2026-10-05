@@ -89,6 +89,9 @@
                     }
                   }
                 }
+              },
+              "gatewayIdentity": {
+                "type": "boolean"
               }
             }
           }

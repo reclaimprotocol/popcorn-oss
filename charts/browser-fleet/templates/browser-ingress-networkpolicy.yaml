@@ -1,3 +1,17 @@
+{{- $gatewayOnlyPorts := dict }}
+{{- range $extensionName, $extension := .Values.sessionExtensions }}
+{{- if and (dig "enabled" true $extension) (dig "routing" "gatewayIdentity" false $extension) }}
+{{- if not $.Values.networkPolicy.ingressEnabled }}
+{{- fail "gatewayIdentity requires networkPolicy.ingressEnabled and a network-policy-enforcing CNI" }}
+{{- end }}
+{{- range $port := dig "browser" "ports" (list) $extension }}
+{{- if or (ne (default "Dynamic" $port.portPolicy) "None") (has (int $port.containerPort) (list 6080 9222 9226 8085)) }}
+{{- fail "gatewayIdentity extension ports must use portPolicy None and must not overlap built-in browser ports" }}
+{{- end }}
+{{- $_ := set $gatewayOnlyPorts (toString $port.containerPort) (default "TCP" $port.protocol) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- if .Values.networkPolicy.ingressEnabled }}
 {{- $gatewayNamespace := default .Release.Namespace .Values.networkPolicy.gatewayNamespace }}
 {{- $poolManagerNamespace := default .Release.Namespace .Values.networkPolicy.poolManagerNamespace }}
@@ -40,9 +54,25 @@ spec:
 {{- range $extensionName, $extension := .Values.sessionExtensions }}
 {{- if dig "enabled" true $extension }}
 {{- range $port := dig "browser" "ports" (list) $extension }}
+{{- if not (hasKey $gatewayOnlyPorts (toString $port.containerPort)) }}
         - protocol: {{ default "TCP" $port.protocol }}
           port: {{ $port.containerPort }}
 {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if $gatewayOnlyPorts }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $gatewayNamespace | quote }}
+          podSelector:
+            matchLabels:
+              app: gateway
+      ports:
+{{- range $port, $protocol := $gatewayOnlyPorts }}
+        - protocol: {{ $protocol }}
+          port: {{ $port }}
 {{- end }}
 {{- end }}
 {{- end }}

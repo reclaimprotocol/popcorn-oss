@@ -223,6 +223,10 @@ VNC and CDP are core routes and must not be restated as extensions.
 Each enabled extension container needs an HTTP readiness probe with a numeric
 port. The browser runtime checks those endpoints before signaling Agones Ready.
 
+For gateway-authenticated extensions, see [`routing.gatewayIdentity`](chart-options.md#session-extensions)
+for the forwarded identity headers and required network isolation. Load the same
+extension values into both charts.
+
 ## Optional components
 
 Enable one optional area at a time after the core acceptance test passes:

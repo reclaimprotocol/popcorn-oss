@@ -319,11 +319,24 @@ Each `sessionExtensions.<name>` supports:
 | `routing.routeKey` | platform | Redis/gateway route identity. |
 | `routing.sessionUrls` | platform | Map of response field to URL template. |
 | `routing.gatewayRoutes` | platform | List of `pathPrefix`, `routeKey`, and optional `tokenScope`. |
+| `routing.gatewayIdentity` | both charts | Forward verified session identity headers; restrict extension ports to gateway ingress. Defaults to `false`. |
 
 If `routing` is present, `portName`, `port`, and `routeKey` are required. Keep
 one extension in one values document and load that document into both charts.
 Because the top level is a keyed map, enabling one extension cannot replace
 another extension's lists.
+
+With `gatewayIdentity: true`, every extension route must require `restricted` or
+`internal` scope. Gateway overwrites `X-Popcorn-Session-Id`, `X-Popcorn-Scope`
+and `X-Popcorn-Expires-At` (epoch milliseconds) after verifying the JWT. The
+deadline is bounded by JWT expiry and, for route-bound tokens, the Redis access
+deadline. Authorization remains unchanged for internal service authentication.
+
+This mode requires `networkPolicy.ingressEnabled: true`, a CNI that enforces
+NetworkPolicy, and extension ports with `portPolicy: None`. Extension ports
+cannot overlap built-in browser ports. Base browser ports remain accessible to
+the gateway and pool manager; identity-enabled extension ports allow only the
+gateway. The sidecar trusts this private ingress boundary and its own pod.
 
 ## Values design notes
 

@@ -49,6 +49,10 @@ describe("session proxy request", () => {
         });
     });
 
+    test("rejects a proxy URL that the sidecar cannot reproduce", () => {
+        expect(proxyPreset("IN", "browser", "http://user-{{country}}:pass@proxy.example/path")).toHaveProperty("error");
+    });
+
     test("hashes the complete session ID for collision-resistant stickiness", () => {
         const proxyUrl = "https://user-{{country}}:secret@proxy.example/";
         const punctuated = proxyPreset("IN", "browser-42", proxyUrl);
@@ -61,4 +65,10 @@ describe("session proxy request", () => {
         expect("value" in longAlpha && longAlpha.value.username).toBe("user-in-session-5517d212fa3555e05508661fa18f6709");
         expect("value" in longBeta && longBeta.value.username).toBe("user-in-session-0132d37a8686d1cf85ae5f8425d36a25");
     });
+});
+
+
+test("malformed deployment proxy credentials return a configuration error", () => {
+    expect(proxyPreset("IN", "browser", "https://user-{{country}}%GG:secret@proxy.example/")).toHaveProperty("error");
+    expect(proxyPreset("IN", "browser", "https://user-{{country}}:secret%GG@proxy.example/")).toHaveProperty("error");
 });

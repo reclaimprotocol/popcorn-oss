@@ -1,0 +1,23 @@
+gateway:
+  enabled: true
+sessionExtensions:
+  test:
+    enabled: true
+    browser:
+      ports:
+        - name: events
+          containerPort: 4310
+          portPolicy: None
+          protocol: TCP
+    routing:
+      portName: events
+      port: 4310
+      routeKey: events
+      gatewayIdentity: true
+      gatewayRoutes:
+        - pathPrefix: session-events
+          routeKey: events
+          tokenScope: restricted
+        - pathPrefix: session-events-internal
+          routeKey: events
+          tokenScope: internal
