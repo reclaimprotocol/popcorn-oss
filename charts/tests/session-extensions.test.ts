@@ -38,13 +38,13 @@ describe("extension gateway routes", () => {
     }
   }
 
-  for (const prefix of ["browser", "browser-events", "events.*"]) {
+  for (const prefix of ["browser", "browser-events", "api", "cdp", "cdp-agent", "cdp-internal", "liveview", "liveview-ws", "vnc-ws", "liveview-e2e-rfb", "liveview-e2e-control", "proof", "health", "healthcheck", "events.*"]) {
     test(`rejects unsafe URL prefix ${prefix}`, () => {
       const values = structuredClone(fixture);
       values.sessionExtensions.test.routing.gatewayRoutes[0].pathPrefix = prefix;
       const result = render("platform", values);
       expect(result.code).not.toBe(0);
-      expect(result.error).toContain(prefix.startsWith("browser") ? "extension pathPrefix conflicts" : "extension gateway pathPrefix must");
+      expect(result.error).toContain(prefix !== "events.*" ? "extension pathPrefix conflicts" : "extension gateway pathPrefix must");
     });
   }
 

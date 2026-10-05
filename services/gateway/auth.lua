@@ -68,8 +68,7 @@ end
 
 _M.is_supported_algorithm = is_supported_algorithm
 
-function _M.check(bypass_assets, token_arg, required_scope, expected_session_id, require_deadline)
-    -- bypass_assets: boolean
+function _M.check(token_arg, required_scope, expected_session_id, require_deadline)
     -- token_arg: string (optional, from path)
     -- required_scope: string (optional, "internal" for restricted endpoints)
 

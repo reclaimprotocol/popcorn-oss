@@ -40,9 +40,6 @@ rm -f "$BROWSER_PROFILE_DIR/SingletonLock" "$BROWSER_PROFILE_DIR/SingletonSocket
 # The noVNC/CDP proxy starts before allocation, so publish the selected mode in
 # a tiny shared file it can re-read while the managed launcher switches this pod.
 # Missing/invalid files fail closed to kiosk in the proxy.
-if [[ "${POST_PROOF_LOGIN_REPAIR_ENABLED:-false}" == "true" ]]; then
-  flags+=("--disable-component-extensions-with-background-pages")
-fi
 
 if [[ "$BROWSER_KIOSK" == "true" ]]; then
   BROWSER_MODE=kiosk

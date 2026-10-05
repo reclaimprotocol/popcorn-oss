@@ -213,7 +213,6 @@ function buildSessionDetails(c: any, sessionId: string, session: any, publicBase
         sessionId,
         ...urls,
         browserPodId: session.name,
-        podUid: session.podUid,
         ...(session.proxyCountry ? { proxyCountry: session.proxyCountry } : {}),
         allocationRequestedAt: session.allocationRequestedAt,
         ...(session.podUid ? { podUid: session.podUid } : {}),

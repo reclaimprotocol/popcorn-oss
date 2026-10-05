@@ -81,8 +81,6 @@ func (v *viewerLease) handoff(w http.ResponseWriter, r *http.Request) {
 	for conn := range connections {
 		_ = conn.Close()
 	}
-	v.mu.Lock()
-	v.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "sessionId": input.SessionID, "podUid": v.podUID, "viewerAccess": "revoked", "runtimeInstanceId": v.instanceID})

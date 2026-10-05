@@ -31,8 +31,8 @@ data:
     {{- if not (regexMatch "^[a-z][a-z0-9-]*$" $pathPrefix) }}
     {{- fail "extension gateway pathPrefix must start with a lowercase letter and contain only lowercase letters, digits and hyphens" }}
     {{- end }}
-    {{- if regexMatch "^browser" $pathPrefix }}
-    {{- fail "extension pathPrefix conflicts with the legacy browser pod route" }}
+    {{- if regexMatch "^(browser|health)|^(api|cdp|cdp-agent|cdp-internal|liveview|liveview-ws|vnc-ws|liveview-e2e-rfb|liveview-e2e-control|proof)$" $pathPrefix }}
+    {{- fail "extension pathPrefix conflicts with a core gateway route" }}
     {{- end }}
         location ~ ^/{{ $pathPrefix }}/([^/]+)/([^/]+)(.*) {
             set $session_id $1;
@@ -42,7 +42,7 @@ data:
 
             access_by_lua_block {
                 local auth = require "auth"
-                local identity = auth.check(false, ngx.var.token, {{ if $tokenScope }}{{ $tokenScope | quote }}{{ else }}nil{{ end }}, ngx.var.session_id, {{ if $gatewayIdentity }}true{{ else }}false{{ end }})
+                local identity = auth.check(ngx.var.token, {{ if $tokenScope }}{{ $tokenScope | quote }}{{ else }}nil{{ end }}, ngx.var.session_id, {{ if $gatewayIdentity }}true{{ else }}false{{ end }})
 {{- if $gatewayIdentity }}
                 auth.forward_identity(identity)
 {{- end }}
