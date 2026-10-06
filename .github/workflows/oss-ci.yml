@@ -197,7 +197,9 @@ jobs:
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
       - name: Test session extension charts
-        run: bun test charts/tests
+        run: |
+          docker pull otel/opentelemetry-collector-contrib:0.149.0
+          OTEL_COLLECTOR_TEST_IMAGE=otel/opentelemetry-collector-contrib:0.149.0 bun test charts/tests
 
       - name: Verify authenticated LiveView and extension gateway routes
         shell: bash

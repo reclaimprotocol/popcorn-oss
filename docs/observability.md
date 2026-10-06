@@ -58,6 +58,14 @@ environment-variable-safe names in the rendered workloads.
 
 ## Browser log collection
 
+Browser pod logs carry the container name as `service.name`, including
+`browser-events`, `browser-runtime`, `ai-agent` and `reclaim-api`. The filelog
+receiver copies the parsed file-path identity into resource attributes before
+Kubernetes enrichment. Parsed log attributes remain available for existing
+queries. An idle sidecar's startup log precedes allocation and therefore has no
+session ID; use its pod identity to find it. Logs emitted after session binding
+receive `session.id` under the existing timestamp guard.
+
 The OTEL agent runs as a DaemonSet, mounts node container log directories
 read-only, and reads logs for `browser-fleet-*` GameServer pods in the release
 namespace. File-storage state under `/var/lib/popcorn/otel-agent/file-storage`
