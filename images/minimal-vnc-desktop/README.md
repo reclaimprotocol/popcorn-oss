@@ -31,6 +31,11 @@ supplied by the Chromium runtime-lib block in `locks/apt-packages.txt`. See
 [`STEALTH.md`](STEALTH.md) for its persona, limitations, and verification
 workflow.
 
+The default browser persona is Windows, matching Fortress's native launcher
+defaults and the bundled font set. Set `PERSONA=linux` at container startup to
+use the Linux persona instead. This changes the browser's reported platform;
+the container image still runs on `linux/amd64`.
+
 Fortress permits source and binary redistribution under BSD-3-Clause. Its
 license, upstream notice, Chromium license, and bundled-font license are kept in
 [`third-party/fortress`](third-party/fortress) and copied into every built image

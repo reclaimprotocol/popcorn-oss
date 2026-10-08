@@ -5,7 +5,8 @@ import { join } from 'node:path';
 
 for (const compositing of [undefined, 'software', 'swiftshader', 'invalid']) {
 for (const repair of ['true', 'false']) {
-  test(`launcher reaches Chromium with repair ${repair}, compositing ${compositing ?? 'default'}`, () => {
+for (const persona of [undefined, 'windows', 'linux']) {
+  test(`launcher reaches Chromium with repair ${repair}, compositing ${compositing ?? 'default'}, persona ${persona ?? 'default'}`, () => {
     const dir = mkdtempSync(join(tmpdir(), 'popcorn-launcher-'));
     try {
       const binary = join(dir, 'chromium');
@@ -20,7 +21,7 @@ for (const repair of ['true', 'false']) {
           REPLACE_DEFAULT_PAGE: 'false', ENABLE_PROXY_EXTENSION: 'false', CLOAK_GEOIP: 'false',
           CLOAK_TIMEZONE: 'Etc/UTC', CLOAK_LOCALE: 'en-US', CLOAK_FINGERPRINT_SEED: '1234567',
           APP_URL: '', POPCORN_BROWSER_STARTUP_URL: '', CHROMIUM_STARTUP_URL: '', CHROMIUM_FLAGS: '',
-          FORTRESS_COMPOSITING: compositing },
+          FORTRESS_COMPOSITING: compositing, PERSONA: persona },
         stdout: 'pipe', stderr: 'pipe',
       });
       if (compositing === 'invalid') {
@@ -31,6 +32,11 @@ for (const repair of ['true', 'false']) {
       }
       expect(result.exitCode, result.stderr.toString()).toBe(0);
       const lines = result.stdout.toString().trim().split('\n');
+      expect(result.stdout.toString()).toContain(`persona=${persona ?? 'windows'}`);
+      for (const flag of ['--uxr-platform=Linux x86_64', '--uxr-ua-platform=Linux',
+        '--uxr-ua-os=X11; Linux x86_64']) {
+        expect(lines.filter(line => line === flag)).toHaveLength(persona === 'linux' ? 1 : 0);
+      }
       for (const flag of ['--use-angle=swiftshader-webgl', '--disable-gpu-compositing',
         '--disable-gpu-rasterization', '--enable-unsafe-swiftshader']) {
         expect(lines.filter(line => line === flag)).toHaveLength(compositing === 'swiftshader' ? 0 : 1);
@@ -39,5 +45,6 @@ for (const repair of ['true', 'false']) {
       expect(lines.at(-1)).toBe(repair === 'true' ? 'about:blank' : 'https://start.duckduckgo.com/');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+}
 }
 }
