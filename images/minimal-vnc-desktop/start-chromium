@@ -70,9 +70,8 @@ fi
 # (fingerprint-chromium, which consumes CLOAK_SEED). The goal is to present as a
 # regular, COHERENT desktop Chrome session to bot classifiers (Akamai BMP, Cloudflare
 # Bot Management, reCAPTCHA Enterprise, Kasada) rather than headless-Chrome-on-Linux.
-# The default persona is LINUX (PERSONA below): this box's real substrate — TLS/JA4
-# shape, DejaVu-only fonts, SwiftShader/Vulkan renderer — is Linux, so a Linux persona
-# has nothing to contradict; a Windows persona over it is the tell classifiers catch.
+# The default persona is Windows, matching Fortress's bundled Windows fonts and
+# native launcher defaults. Set PERSONA=linux to opt into the Linux persona.
 #
 # --fingerprint-platform=windows spoofs navigator.platform, userAgentData,
 # the User-Agent string, and Sec-CH-UA-Platform to Windows. That alone is a
@@ -289,7 +288,8 @@ elif [[ "$BROWSER" == "fortress" ]]; then
   # clears Sannysoft without lowering the current CreepJS score. Override persona
   # with CHROMIUM_FLAGS='--uxr-... ' if needed, or TILION_NO_DEFAULTS=1 for a bare
   # launch.
-  # Persona platform. PERSONA=windows restores the wrapper's own Windows default.
+  # Persona platform. Windows uses the wrapper's defaults; PERSONA=linux opts in
+  # to the explicit Linux overrides below.
   #
   # Linux is expressible only since the 150 image: before it, explicit --uxr-ua-os /
   # --uxr-ua-platform were OVERWRITTEN by the generated persona, so the UA stayed
@@ -347,7 +347,7 @@ elif [[ "$BROWSER" == "fortress" ]]; then
     "--uxr-audio-seed=$(( (CLOAK_SEED * 6271) % 8999999 + 1000000 ))"
   )
 
-  persona="${PERSONA:-linux}"
+  persona="${PERSONA:-windows}"
   if [[ "$persona" == "linux" ]]; then
     cloak_flags+=(
       "--uxr-platform=Linux x86_64"
