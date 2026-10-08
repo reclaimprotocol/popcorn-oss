@@ -310,6 +310,24 @@ elif [[ "$BROWSER" == "fortress" ]]; then
   # Upstream also notes a Linux desktop persona is RARER than Windows, and rarity is
   # itself a signal — so this is a deliberate trade, not a strict improvement.
   cloak_flags=()
+  # SwiftShader as the whole-page compositor makes large CSS filters expensive
+  # on CPU-limited pods. Use native software compositing and retain SwiftShader
+  # only for WebGL. Keep the previous path available for compatibility checks.
+  case "${FORTRESS_COMPOSITING:-software}" in
+    software)
+      cloak_flags+=(
+        "--use-angle=swiftshader-webgl"
+        "--disable-gpu-compositing"
+        "--disable-gpu-rasterization"
+        "--enable-unsafe-swiftshader"
+      )
+      ;;
+    swiftshader) ;;
+    *)
+      echo "[start-chromium] invalid FORTRESS_COMPOSITING (valid: software, swiftshader)" >&2
+      exit 1
+      ;;
+  esac
   # Per-profile canvas/audio noise seeds.
   #
   # Fortress's defaults are CONSTANTS — verified from /proc/<pid>/cmdline on a running
