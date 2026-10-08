@@ -54,6 +54,25 @@ attribution details are documented in
   stock-chromium image. Check with
   `docker image inspect --format '{{.Size}}' popcorn/minimal-vnc-desktop:local`.
 
+### Software compositing
+
+Fortress uses native CPU compositing and rasterization for ordinary page content,
+with SwiftShader retained as the WebGL fallback. This avoids routing large CSS
+filters through the software GPU. Page effects remain enabled; WebGL and WebGL2
+were verified in the test browser.
+
+In a controlled staging comparison at a 1655 × 963 viewport with a large 6px blur
+preserved, animation-frame callbacks rose from about 19 to 58–59 per second and
+graphics-process CPU fell from about 114% of one core to 1–3%. These are rendering
+callback measurements, not delivered VNC FPS or input-to-paint latency. The page's
+busy JavaScript main thread remained, and deployed interaction still needs testing.
+Graphics capability reporting and rasterized pixels can differ; this is not a
+guarantee of equivalent fingerprinting or anti-bot behavior.
+
+Set `FORTRESS_COMPOSITING=swiftshader` before starting the browser to restore the
+previous full SwiftShader path. `CHROMIUM_FLAGS` still appends explicit overrides.
+This setting applies to Fortress only.
+
 ### Repeating gradient traffic
 
 The proxy extension pauses infinite CSS animations on gradient `::before` and
@@ -423,6 +442,7 @@ commands the probes need):
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
+| `FORTRESS_COMPOSITING` | `software` | Fortress graphics path: `software` uses CPU compositing with SwiftShader WebGL fallback; `swiftshader` restores the previous path. Requires a new browser process. |
 | `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log` (including proxy/TEE events), `xvnc.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |
 | `PROXY_EXTENSION_DIR` | `/home/kernel/extensions/proxy` | Directory passed to Chromium via `--disable-extensions-except` and `--load-extension`. |

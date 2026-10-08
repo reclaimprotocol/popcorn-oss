@@ -196,6 +196,9 @@ jobs:
       - name: Test streamed browser gradient policy
         run: node --test images/minimal-vnc-desktop/scripts/loading-motion-test.mjs
 
+      - name: Test browser startup
+        run: bun test images/minimal-vnc-desktop/start-chromium.test.ts
+
       - name: Set up Helm
         uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
 
