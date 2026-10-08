@@ -54,6 +54,34 @@ attribution details are documented in
   stock-chromium image. Check with
   `docker image inspect --format '{{.Size}}' popcorn/minimal-vnc-desktop:local`.
 
+### Repeating gradient traffic
+
+The proxy extension pauses infinite CSS animations on gradient `::before` and
+`::after` decorations when their keyframes only translate or move background
+positions. Matching uses computed styles and keyframes, with no site, selector,
+or animation-name rules. Finite animations, rotations, scaling, opacity changes,
+ordinary element animations, transitions, and JavaScript animations are left alone.
+The policy runs in each document/frame's isolated extension world. It does not
+traverse shadow roots or suppress video, canvas, or JavaScript rendering loops.
+
+In a controlled local loading test, holding API requests kept 19 translated
+gradient placeholders visible. Pausing those animations reduced three seconds of
+VNC traffic from about 2.42 MB to 13 KB. This measurement establishes the benefit
+of stopping that decoration, not every cause of browser or network latency.
+
+Pausing is observable through the native animation API. Isolated-world execution
+avoids page globals and API overrides, but does not guarantee unchanged browser
+fingerprinting or anti-bot behavior. The visual heuristic can also match meaningful
+gradient motion; review affected sites before deployment.
+
+Run the policy checks with:
+
+```bash
+node --test images/minimal-vnc-desktop/scripts/loading-motion-test.mjs
+```
+
+To roll back, remove `loading-motion.js` from the extension manifest and rebuild.
+
 ## Run
 
 ```bash
