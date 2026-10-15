@@ -1,5 +1,9 @@
 # Browser Runtime Attestor
 
+This service retains the legacy v3 GKE/Confidential VM path. Browser-owned
+Confidential Space run-key attestation is implemented inside the browser proxy,
+not this sidecar; see [the separate contract and deployment notes](../../docs/confidential-space-run-key.md).
+
 The attestor is an optional same-pod service for confidential browser
 workloads. It verifies the deployed browser-runtime and attestor image digests,
 collects GCP confidential-computing evidence, and returns a nonce-bound proof.

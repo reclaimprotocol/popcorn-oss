@@ -191,7 +191,7 @@ jobs:
           done
 
       - name: Test independent attestation verifier
-        run: node --test scripts/attestation/verify.test.mjs
+        run: node --test scripts/attestation/*.test.mjs
 
       - name: Test streamed browser gradient policy
         run: node --test images/minimal-vnc-desktop/scripts/loading-motion-test.mjs
