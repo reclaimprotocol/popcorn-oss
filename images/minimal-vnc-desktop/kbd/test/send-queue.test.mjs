@@ -1,10 +1,7 @@
 // send-queue.test.mjs — characterization: the reconnect keystroke queue.
 //
-// Semantics (learned from the code, not assumed): the input handlers guard on
-// `rfb` being non-null, so keystrokes only QUEUE in the window where the new RFB
-// is attached but its 'connect' hasn't fired yet — exactly liveview's reconnect
-// flow (detach(soft) → new RFB attach → ~600ms → connect). Entries older than 5s
-// are dropped at replay time.
+// Active, known-field input queues through a soft detach and a replacement
+// RFB's pending connect. Entries older than 5s are dropped at replay time.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { installGlobals, freshViewer, fire, advanceClock, pushSignal } from './stub-dom.mjs';
@@ -12,8 +9,16 @@ import { createMockRfb, keysymsFor, BS } from './mock-rfb.mjs';
 
 installGlobals('ios');
 
+const FR = { x: 0, y: 0, w: 10, h: 10 };
+async function activeFieldViewer() {
+  const v = await freshViewer(createMockRfb);
+  pushSignal({ editable: true, focusKey: 'A', rect: FR, hints: { tag: 'INPUT' }, sync: { len: 0 } });
+  v.proxy.focus();
+  return v;
+}
+
 test('keystrokes between attach and connect queue and replay in order', async () => {
-  const { kbd, proxy } = await freshViewer(createMockRfb);
+  const { kbd, proxy } = await activeFieldViewer();
   kbd.detach({ soft: true }); // 3G blip: keyboard stays up
 
   const rfb2 = createMockRfb();
@@ -29,7 +34,7 @@ test('keystrokes between attach and connect queue and replay in order', async ()
 });
 
 test('entries staler than 5s are dropped on replay', async () => {
-  const { kbd, proxy } = await freshViewer(createMockRfb);
+  const { kbd, proxy } = await activeFieldViewer();
   kbd.detach({ soft: true });
   const rfb2 = createMockRfb();
   kbd.attach(rfb2);
@@ -42,21 +47,19 @@ test('entries staler than 5s are dropped on replay', async () => {
   assert.deepEqual(rfb2.tapped(), keysymsFor('new')); // 'old' never replays
 });
 
-test('while rfb is fully detached (null), handlers are inert — nothing queues', async () => {
-  const { kbd, proxy } = await freshViewer(createMockRfb);
-  kbd.detach({ soft: true });
+test('after full detach, handlers are inert — nothing queues', async () => {
+  const { kbd, proxy } = await activeFieldViewer();
+  kbd.detach();
   fire(proxy, 'beforeinput', { inputType: 'insertText', data: 'ghost' });
 
   const rfb2 = createMockRfb();
   kbd.attach(rfb2);
   rfb2.fireConnect();
-  assert.deepEqual(rfb2.tapped(), []); // typed into the void — documented behavior
+  assert.deepEqual(rfb2.tapped(), []);
 });
 
-const FR = { x: 0, y: 0, w: 10, h: 10 };
-
 test('reconnect DROPS keys queued for a field the user has since left (no cross-field leak)', async () => {
-  const { kbd, proxy } = await freshViewer(createMockRfb);
+  const { kbd, proxy } = await activeFieldViewer();
   pushSignal({ editable: true, focusKey: 'A', rect: FR, hints: { tag: 'INPUT' }, sync: { len: 0 } });
   kbd.detach({ soft: true }); // 3G blip; keyboard stays up
   const rfb2 = createMockRfb();
@@ -69,7 +72,7 @@ test('reconnect DROPS keys queued for a field the user has since left (no cross-
 });
 
 test('reconnect DOES replay keys queued for the same field still focused', async () => {
-  const { kbd, proxy } = await freshViewer(createMockRfb);
+  const { kbd, proxy } = await activeFieldViewer();
   pushSignal({ editable: true, focusKey: 'A', rect: FR, hints: { tag: 'INPUT' }, sync: { len: 0 } });
   kbd.detach({ soft: true });
   const rfb2 = createMockRfb();

@@ -28,7 +28,7 @@ import { stripCtl } from './echo.js';
 import { e2e } from './e2e.js';
 
 export function createImeInput({
-  getRfb, sendText, sendSpecialKey, sendActionKey, echo, filterAutoSpace, toggleKeyboard,
+  canProcessInput, getFocusKey, sendText, sendSpecialKey, sendActionKey, echo, filterAutoSpace, toggleKeyboard,
   getSensitiveField, getRemoteValue, onMirrorSeedConsumed, onInput, onSystemBlur,
 }) {
   let proxy = null;              // hidden <input>/<div> the OS IME composes into (set by setup)
@@ -184,7 +184,7 @@ export function createImeInput({
   }
 
   function onProxyBeforeInput(e) {
-    if (!getRfb() || !proxy) return;
+    if (!canProcessInput() || !proxy) return;
     // Stamp the DOM input boundary, before IME/value-diff processing.  The
     // transport later records its send time, so an e2e text trace includes the
     // local processing a user experiences rather than starting at sendKey.
@@ -263,7 +263,7 @@ export function createImeInput({
   }
 
   function onProxyInput(e) {
-    if (!getRfb() || !proxy) return;
+    if (!canProcessInput() || !proxy) return;
     e2e.noteInput();
     noteProxyInput();
     const currentValue = proxy.value;
@@ -407,7 +407,7 @@ export function createImeInput({
   }
 
   function onProxyKeyDown(e) {
-    if (!getRfb() || !proxy) return;
+    if (!canProcessInput() || !proxy) return;
     dbgv('keydown key=' + safeKeyName(e.key) + ' code=' + e.keyCode + ' comp=' + (e.isComposing ? 1 : 0));
     // Backspace with an EMPTY local buffer must always delete on the REMOTE, even
     // mid-"composition". Gboard keeps a glide-typed (swiped) word flagged as
@@ -436,7 +436,7 @@ export function createImeInput({
     // onProxyInput clears this timer before handling any real input event.
     if (e.key === 'Unidentified') {
       if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
-      pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
+      deferBackspace();
       return;
     }
     // During IME composition, Enter/Escape/Space commit or dismiss the candidate
@@ -504,6 +504,7 @@ export function createImeInput({
   }
 
   function onCompositionStart() {
+    if (!canProcessInput()) return;
     isComposing = true;
     composedForwarded = false; // fresh composition — nothing forwarded yet
     ecComposeReconciled = false; // re-arm the EC re-grab check for this word
@@ -515,6 +516,7 @@ export function createImeInput({
   }
 
   function onCompositionEnd(e) {
+    if (!canProcessInput()) return;
     e2e.noteInput();
     isComposing = false;
     dbg('composition end len=' + (e && e.data ? e.data.length : 0));
@@ -603,7 +605,7 @@ export function createImeInput({
   }
 
   function onECTextUpdate(e) {
-    if (!editCtx) return; // rfb-null is fine: sendText/sendSpecialKey queue it
+    if (!editCtx || !canProcessInput()) return;
     e2e.noteInput();
     noteProxyInput();
     noteImeEvent('editcontext:textupdate');
@@ -696,6 +698,7 @@ export function createImeInput({
   }
 
   function onECCompositionEnd() {
+    if (!canProcessInput()) return;
     e2e.noteInput();
     // Commit-only mode withheld every step; send the accumulated committed text
     // once (read the buffer BEFORE resetEC clears it).
@@ -713,7 +716,7 @@ export function createImeInput({
   }
 
   function onECKeyDown(e) {
-    if (!getRfb()) return;
+    if (!canProcessInput()) return;
     e2e.noteInput();
     dbgv('EC keydown key=' + safeKeyName(e.key) + ' code=' + e.keyCode + ' comp=' + (e.isComposing ? 1 : 0));
     const empty = !editCtx || editCtx.text === '';
@@ -736,7 +739,7 @@ export function createImeInput({
       // Gboard glide, Indic, SwiftKey and Samsung all report delete this way, so
       // the old exemption left it dead on every password and OTP field.
       if (pendingBackspaceTimer !== null) clearTimeout(pendingBackspaceTimer);
-      pendingBackspaceTimer = setTimeout(() => { pendingBackspaceTimer = null; sendSpecialKey('Backspace'); }, 90);
+      deferBackspace();
       return;
     }
     // Composition owns Enter/Escape/Space (commit/dismiss candidate) — don't
@@ -750,6 +753,16 @@ export function createImeInput({
     }
   }
 
+  function deferBackspace() {
+    const field = getFocusKey();
+    pendingBackspaceTimer = setTimeout(() => {
+      pendingBackspaceTimer = null;
+      // The key belongs to the field that received keydown, even if the remote
+      // moves focus before the ambiguous IME event's delay has elapsed.
+      if (canProcessInput() && getFocusKey() === field) sendSpecialKey('Backspace');
+    }, 90);
+  }
+
 
   return {
     // handlers (attached by setup / EC wiring)
@@ -760,6 +773,15 @@ export function createImeInput({
 
     // state verbs
     clearProxy, seedProxyMirror, mirrorOn,
+    // Full teardown discards deferred work as well as queued transport sends.
+    // Otherwise a pending delete can run after a new field/session attaches.
+    reset() {
+      if (pendingBackspaceTimer !== null) { clearTimeout(pendingBackspaceTimer); pendingBackspaceTimer = null; }
+      isComposing = false; composedSuppressed = false; ecSuppressed = false; composedForwarded = false;
+      iosWord = '';
+      echo.setComposing('');
+      clearProxy();
+    },
     // A raise/dismiss is a fresh field — clear any composition flags a prior
     // field's abandoned composition left latched (just the flags, not the EC
     // buffer). Replaces the repeated 4-flag reset lines in the core.
