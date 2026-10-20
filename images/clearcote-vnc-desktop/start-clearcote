@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export CC_SCREEN="${WIDTH:-1920}x${HEIGHT:-1080}x24"
+geometry="--window-size=${WIDTH:-1920},${HEIGHT:-1080} --window-position=0,0"
+geometry+=" --fingerprint-screen-width=${WIDTH:-1920} --fingerprint-screen-height=${HEIGHT:-1080}"
+geometry+=" --fingerprint-avail-width=${WIDTH:-1920} --fingerprint-avail-height=${HEIGHT:-1080}"
+# Context-level proxies do not run the SDK's proxy launch defaults. Apply their
+# transport protections at browser startup; the session script supplies HTTP auth.
+export CC_EXTRA_ARGS="--disable-quic --force-webrtc-ip-handling-policy=disable_non_proxied_udp --kiosk --no-first-run --no-default-browser-check ${geometry} ${CC_EXTRA_ARGS:-} about:blank"
+printf '%s\n' kiosk > /tmp/popcorn-browser-mode
+exec python /serve.py
