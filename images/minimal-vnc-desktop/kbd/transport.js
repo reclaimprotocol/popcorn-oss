@@ -26,7 +26,7 @@ import { reportInteraction } from './host-bridge.js';
 const SEND_QUEUE_MAX = 128;
 const SEND_QUEUE_MAX_AGE_MS = 5000;
 
-export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace, onSent, getFocusKey, getSensitiveField }) {
+export function createTransport({ getRfb, getRfbReady, canQueueInput, echoAppend, echoBackspace, onSent, getFocusKey, getSensitiveField }) {
   // Authoritative secrecy (sync.sensitive), to keep the address-space filter off
   // secrets ime-hints cannot recognise — one the page ships as type=text that the
   // extension matched by name or shape. Defaults false for an older caller.
@@ -48,6 +48,7 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
     if (!getRfb() || !getRfbReady() || !sendQueue.length) return;
     const items = sendQueue;
     sendQueue = [];
+    if (!canQueueInput()) return; // the known field/proxy must still own input
     const now = nowMs();
     // These items were already echoed optimistically when queued (during the
     // outage), so suppress the real path's re-echo — the sync.len reconcile
@@ -61,7 +62,7 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
         // focused now — the user moved on during the outage; replaying would
         // corrupt/leak into the wrong field. A null current fk (no field focused
         // after reconnect) also drops, since there's nowhere safe to replay.
-        if (getFocusKey && it.fk !== curFk) continue;
+        if (getFocusKey && (!it.fk || !curFk || it.fk !== curFk)) continue;
         // rfb is set now, so these take the real send path (no re-queue).
         if (it.kind === 'text') sendText(it.payload);
         else sendSpecialKey(it.payload.name, it.payload.count);
@@ -178,7 +179,13 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
   function sendText(text) {
     if (!text) return;
     const rfb = getRfb();
-    if (!rfb || !getRfbReady()) { dbg('sendText queued (rfb down) len=' + text.length); echoAppend(text); enqueueSend({ kind: 'text', payload: text }); return; }
+    if (!rfb || !getRfbReady()) {
+      if (!canQueueInput()) return;
+      dbg('sendText queued (rfb down) len=' + text.length);
+      echoAppend(text);
+      enqueueSend({ kind: 'text', payload: text });
+      return;
+    }
     // A focus move is a fresh field even when the page reuses the same focusKey.
     const fk = getFocusKey ? getFocusKey() : null;
     if (fk !== lastSendFk) { lastSendFk = fk; noteFieldReset(); }
@@ -246,7 +253,13 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
     const keysym = SPECIAL_KEYSYMS[name] || DESKTOP_KEYSYMS[name];
     if (!keysym) return;
     const rfb = getRfb();
-    if (!rfb || !getRfbReady()) { dbg('sendKey queued (rfb down)'); if (name === 'Backspace') echoBackspace(count); enqueueSend({ kind: 'special', payload: { name, count } }); return; }
+    if (!rfb || !getRfbReady()) {
+      if (!canQueueInput()) return;
+      dbg('sendKey queued (rfb down)');
+      if (name === 'Backspace') echoBackspace(count);
+      enqueueSend({ kind: 'special', payload: { name, count } });
+      return;
+    }
     dbgv('sendKey ' + name + 'x' + count);
     if (count > 1) {
       sendBatched(() => { for (let i = 0; i < count; i++) { try { rfb.sendKey(keysym, name); } catch (_) {} } });
@@ -272,5 +285,6 @@ export function createTransport({ getRfb, getRfbReady, echoAppend, echoBackspace
   }
 
   return { sendText, sendSpecialKey, flushSendQueue, noteFieldReset,
+           clearSendQueue: () => { sendQueue = []; },
            queueLength: () => sendQueue.length };
 }

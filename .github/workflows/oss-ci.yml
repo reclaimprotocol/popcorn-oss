@@ -196,6 +196,9 @@ jobs:
       - name: Test streamed browser gradient policy
         run: node --test images/minimal-vnc-desktop/scripts/loading-motion-test.mjs
 
+      - name: Test keyboard and reconnect input
+        run: node --test --test-concurrency=4 images/minimal-vnc-desktop/kbd/test/*.test.mjs
+
       - name: Test browser startup
         run: bun test images/minimal-vnc-desktop/start-chromium.test.ts
 

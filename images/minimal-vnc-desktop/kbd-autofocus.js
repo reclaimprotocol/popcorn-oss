@@ -91,7 +91,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // Deploy stamp, logged in the "setup env" klog line. Bump on every deploy so a
   // stale-cache session is provable from the log alone (many "still broken"
   // reports were pages running old JS).
-  const BUILD_TAG = 'bundle-83-native-temporal-pickers';
+  const BUILD_TAG = 'bundle-84-reconnect-input-queue';
 
   // ---- RFB transport (replaces CDP Input.*) --------------------------------
   // Lives in ./kbd/transport.js: sendText/sendSpecialKey, per-burst WebSocket
@@ -102,10 +102,20 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
   let rfb = null;
   let rfbReady = false; // true only between RFB 'connect' and disconnect/detach
+  let softDetached = false;
+
+  // A reconnect preserves the focused proxy and its remote field. Only that
+  // active, known field may accept input while the transport is unavailable.
+  // A null RFB alone cannot distinguish this gap from initial/full teardown.
+  function canQueueInput() {
+    return !!(rfb || softDetached) && !!proxy && document.activeElement === proxy &&
+      session.focusKey() !== null;
+  }
 
   const transport = createTransport({
     getRfb: () => rfb,
     getRfbReady: () => rfbReady,
+    canQueueInput,
     echoAppend: (t) => echoAppend(t),
     echoBackspace: (n) => echoBackspace(n),
     onSent: (delta) => session.noteSent(delta), // drift-recon feed (field-session)
@@ -247,7 +257,8 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // Instantiated here so the echo/clipboard aliases above are initialized
   // (direct deps, no arrows needed). toggleKeyboard is hoisted.
   const input = createImeInput({
-    getRfb: () => rfb,
+    canProcessInput: () => (!!rfb && rfbReady) || canQueueInput(),
+    getFocusKey: () => session.focusKey(),
     sendText,
     sendSpecialKey,
     sendActionKey,
@@ -1211,8 +1222,10 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
       // is actually connected (sendKey before 'connect' would be dropped).
       try {
         rfb.addEventListener('connect', () => {
+          if (rfb !== instance) return; // a retired connection cannot ready its replacement
           dbg('rfb connect -> ready, flush queue=' + transport.queueLength());
           rfbReady = true;
+          softDetached = false;
           // Cold-start cheap, sharpen on settle (see ./kbd/quality.js). Must run
           // BEFORE the typing re-lower below, which stashes the current value.
           quality.beginRefine();
@@ -1255,6 +1268,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
       if (alreadyConnected) {
         dbg('attach: pre-connected -> mark ready now');
         rfbReady = true;
+        softDetached = false;
         quality.beginRefine(); // same cold-then-sharpen cycle as the listener above
         flushSendQueue();
         kickReconnects();
@@ -1266,6 +1280,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     detach(opts) {
       dbg('detach (' + (opts && opts.soft ? 'soft/reconnect' : 'full') + ', kbd=' + (keyboardActive ? 1 : 0) + ')');
       rfbReady = false;
+      softDetached = !!(opts && opts.soft) && !!(rfb || softDetached);
       // Drop the stashed quality ref without touching the dead rfb; the next
       // RFB reconnects at its configured quality and re-lowers on 'connect' if
       // the keyboard is still up (soft detach keeps it up).
@@ -1304,7 +1319,8 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
       session.clearFalseDismiss();
       if (keyboardActive) dismissKeyboard();
       session.resetField();
-      clearProxy(); // drops lastSentValue too
+      transport.clearSendQueue();
+      input.reset(); // drops pending deletes/composition and the proxy baseline
       stopWatchdog();
       stopConvergenceWatch();
       fit.stopGeometryWatch();
