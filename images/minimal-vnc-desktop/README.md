@@ -361,6 +361,19 @@ why desktop-fallback pages look sharp while responsive ones look soft).
 
 ### Diagnostics
 
+Desktop mouse presses report `POPCORN_INTERACTION` with `kind: 'click'` through
+the existing host bridge. Mouse movement, wheel pulses, releases, and touch
+compatibility clicks do not add desktop click reports. Input forwarding and
+coordinate correction remain unchanged.
+
+With diagnostics enabled, `pointer click forwarded` records up to 32 desktop
+presses per connection. `fields` records up to 32 structural changes per viewer
+setup, including idle signals. Its fields are editable/focus flags, capped
+rectangle count, viewport availability, blind coverage, and truncation.
+Identical heartbeats add no lines. These receipts contain no field identities,
+values, or rectangle coordinates. They describe viewer forwarding and extension
+signals, rather than confirmation that a remote control accepted a click.
+
 All opt-in, all structural — no typed text, no field values, no coordinates, no
 URLs. Append to the viewer URL (they survive every embedding hop; see
 `PopcornHost.VIEWER_PARAMS`):

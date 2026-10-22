@@ -14,7 +14,8 @@ import RFB from './core/rfb.js';
 import { createEmbeddedLiveViewE2EClient } from './e2e/bootstrap.js';
 import './kbd-autofocus.js';          // side-effect: defines window.PopcornKbd
 import { dbg, KBD_LOG, KBD_SID } from './kbd/diag.js';  // boot marks — same (bundled) diag instance as kbd, one /klog sid
-import { onLifecycleAck, postToHost, sayHello } from './kbd/host-bridge.js';
+import { DESKTOP } from './kbd/env.js';
+import { onLifecycleAck, postToHost, reportInteraction, sayHello } from './kbd/host-bridge.js';
 import { fbTarget, FB_MAX } from './kbd/fbtarget.js';
 import { configureEncryptedControl, encryptedTransportRequested, viewerFetch } from './kbd/liveview-transport.js';
 
@@ -98,6 +99,7 @@ const screen = document.getElementById('screen');
 // while Display.absX/absY expects layout pixels. Correct at that boundary rather
 // than relying on DOM propagation, which differs across desktop browsers.
 function installPointerTransformFix(instance) {
+  let clickLogs = 0;
   const map = (x, y) => {
     if (instance.__pcnPointerCoordsAreLayout) return [x, y];
     const canvas = screen && screen.querySelector('canvas');
@@ -112,8 +114,19 @@ function installPointerTransformFix(instance) {
     const original = instance[name];
     if (typeof original !== 'function') continue;
     instance[name] = function (x, y, ...rest) {
+      // noVNC v1.6 takes the current button mask, not a down/up flag. Bits
+      // 0..2 are physical buttons; wheel pulses occupy bits 3..6. Touch's
+      // compatibility click already reports through the tap path.
+      const pressed = DESKTOP && name === '_handleMouseButton' && !this.__pcnPointerCoordsAreLayout &&
+        this._rfbConnectionState === 'connected' && !this._viewOnly &&
+        ((rest[0] & 7) & ~(this._mouseButtonMask || 0));
       [x, y] = map(x, y);
-      return original.call(this, x, y, ...rest);
+      const result = original.call(this, x, y, ...rest);
+      if (pressed) {
+        reportInteraction('click');
+        if (clickLogs < 32) { clickLogs++; dbg('pointer click forwarded', true); }
+      }
+      return result;
     };
   }
 }

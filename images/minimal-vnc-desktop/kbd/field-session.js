@@ -82,6 +82,9 @@ export function createFieldSession({
   let lastSigTapTag = '';
   let lastSigLogAt = 0;
   const SIG_HEARTBEAT_LOG_MS = 3000;
+  let lastAvailability = '';
+  let availabilityLogs = 0;
+  const AVAILABILITY_LOG_MAX = 32;
 
   // The focusKey (stable per-element identity, from content.js) of the remote's
   // currently-focused editable — null when none. The authoritative recovery
@@ -261,6 +264,18 @@ export function createFieldSession({
 
   function applySignal(state) {
     if (!state || typeof state.editable !== 'boolean') return;
+    // Include idle signals so an absent focus receipt can be distinguished
+    // from absent field geometry. Only bounded flags/counts leave this scope.
+    const availability = 'editable=' + (state.editable ? 1 : 0) +
+      ' focus=' + (state.focusKey ? 1 : 0) +
+      ' rects=' + (Array.isArray(state.rects) ? Math.min(120, state.rects.length) : 'unknown') +
+      ' viewport=' + (state.vw > 0 && state.vh > 0 ? 1 : 0) +
+      ' blind=' + (state.blind === true ? 1 : 0) + ' truncated=' + (state.rtrunc ? 1 : 0);
+    if (availability !== lastAvailability && availabilityLogs < AVAILABILITY_LOG_MAX) {
+      availabilityLogs++;
+      dbg('fields ' + availability + (availabilityLogs === AVAILABILITY_LOG_MAX ? ' limit=1' : ''), true);
+      lastAvailability = availability;
+    }
     // Skip idle editable=false heartbeats. For active fields, log a state change,
     // the first signal after a tap, or a low-rate heartbeat only.
     const sigTapTag = tap.diagnosticTag();
