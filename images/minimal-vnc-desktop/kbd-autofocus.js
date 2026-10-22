@@ -91,7 +91,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
   // Deploy stamp, logged in the "setup env" klog line. Bump on every deploy so a
   // stale-cache session is provable from the log alone (many "still broken"
   // reports were pages running old JS).
-  const BUILD_TAG = 'bundle-84-reconnect-input-queue';
+  const BUILD_TAG = 'bundle-85-desktop-input-evidence';
 
   // ---- RFB transport (replaces CDP Input.*) --------------------------------
   // Lives in ./kbd/transport.js: sendText/sendSpecialKey, per-burst WebSocket
