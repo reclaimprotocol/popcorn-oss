@@ -1,7 +1,5 @@
 **
 !images/
-!images/clearcote-vnc-desktop/
-!images/clearcote-vnc-desktop/build-viewer.py
 !images/shard-vnc-desktop/
 !images/shard-vnc-desktop/**
 !images/minimal-vnc-desktop/
@@ -10,6 +8,9 @@
 !images/minimal-vnc-desktop/proxy/go.mod
 !images/minimal-vnc-desktop/proxy/go.sum
 !images/minimal-vnc-desktop/entrypoint.sh
+!images/minimal-vnc-desktop/run-chromium-managed
+!images/minimal-vnc-desktop/policies/
+!images/minimal-vnc-desktop/policies/**
 !images/minimal-vnc-desktop/extensions/
 !images/minimal-vnc-desktop/extensions/proxy/
 !images/minimal-vnc-desktop/extensions/proxy/**

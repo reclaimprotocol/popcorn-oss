@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { writeFile } from 'node:fs/promises';
-import { connect, evaluate } from '../../scripts/clearcote/cdp.mjs';
+import { connect, evaluate } from './lib/cdp.mjs';
 
 const base = process.env.SHARD_CDP_URL || 'http://127.0.0.1:19235';
 const viewer = process.env.SHARD_VIEWER_URL || 'http://127.0.0.1:16085';
@@ -54,7 +54,8 @@ try {
   assert.equal(await evaluate(page, 'document.querySelector("#state").textContent'), 'Input works.');
   const persona = await evaluate(page, '({ua:navigator.userAgent,platform:navigator.platform,language:navigator.language,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,screen:[screen.width,screen.height],window:[innerWidth,innerHeight],dpr:devicePixelRatio})');
   assert.equal(persona.language, process.env.SHARD_LANGUAGE || 'en-US');
-  assert.equal(persona.timezone, process.env.SHARD_TIMEZONE || 'UTC');
+  if (process.env.SHARD_TIMEZONE) assert.equal(persona.timezone, process.env.SHARD_TIMEZONE);
+  assert.equal(persona.platform, 'Win32');
   const { targetInfos } = await browser.send('Target.getTargets');
   assert.ok(targetInfos.some(target => target.type === 'service_worker' && target.url.startsWith('chrome-extension://')), 'Popcorn extension worker is loaded');
   const screenshot = await page.send('Page.captureScreenshot', { format: 'png' });

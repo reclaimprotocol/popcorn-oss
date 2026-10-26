@@ -14,7 +14,7 @@ COPY images/minimal-vnc-desktop/liveview.html images/minimal-vnc-desktop/viewer.
 COPY images/minimal-vnc-desktop/kbd /usr/share/novnc/kbd
 COPY packages/trusted-liveview/bootstrap.js packages/trusted-liveview/noise.js /usr/share/novnc/e2e/
 COPY images/minimal-vnc-desktop/locks/novnc.lock images/minimal-vnc-desktop/locks/esbuild.lock images/minimal-vnc-desktop/locks/noble.lock /tmp/viewer-locks/
-COPY images/clearcote-vnc-desktop/build-viewer.py /tmp/build-viewer.py
+COPY images/shard-vnc-desktop/build-viewer.py /tmp/build-viewer.py
 RUN python3 /tmp/build-viewer.py && rm -rf /tmp/build-viewer.py /tmp/viewer-locks
 
 FROM ${NODE_IMAGE}
@@ -23,7 +23,7 @@ RUN test "$TARGETARCH" = amd64
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 unzip ca-certificates curl brotli tigervnc-standalone-server tigervnc-common \
     openbox xdotool x11-utils x11-xserver-utils unclutter procps dbus-x11 \
-    fonts-liberation libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea python3-fonttools libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
     libpango-1.0-0 libcairo2 libasound2 libxshmfence1 libgl1-mesa-dri libegl-mesa0 libglx-mesa0 \
     && rm -rf /var/lib/apt/lists/*
@@ -40,12 +40,22 @@ COPY images/shard-vnc-desktop/install-runtime.py ./
 RUN python3 install-runtime.py
 COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
 COPY --chmod=0755 images/minimal-vnc-desktop/entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
-COPY images/shard-vnc-desktop/start-shard.mjs /opt/shard/start-shard.mjs
+# Windows-named, metric-compatible faces are the only fonts the browser sees.
+COPY images/shard-vnc-desktop/fonts.conf images/shard-vnc-desktop/rename-fonts.py ./
+RUN python3 rename-fonts.py /usr/local/share/fonts-windows \
+      /usr/share/fonts/truetype/liberation/*.ttf /usr/share/fonts/truetype/crosextra/*.ttf \
+    && rm rename-fonts.py && FONTCONFIG_FILE=/opt/shard/fonts.conf fc-cache -f
+# Same managed policies and kiosk/normal launcher as the main browser image.
+COPY --chown=kernel:kernel images/minimal-vnc-desktop/policies/managed/policy.json /etc/chromium/policies/managed/policy.json
+COPY --chown=kernel:kernel images/minimal-vnc-desktop/policies/variants/policy.reclaim-portal.json /etc/chromium/policy-variants/policy.reclaim-portal.json
+COPY --chmod=0755 images/minimal-vnc-desktop/run-chromium-managed /usr/local/bin/run-chromium-managed
+COPY --chmod=0755 images/shard-vnc-desktop/start-shard.mjs /opt/shard/start-shard.mjs
 COPY --chown=kernel:kernel images/minimal-vnc-desktop/extensions/proxy /home/kernel/extensions/proxy
 COPY --from=viewer-builder /usr/share/novnc /usr/share/novnc
 ENV HOME=/home/kernel XDG_CONFIG_HOME=/home/kernel/.config XDG_CACHE_HOME=/home/kernel/.cache \
     WIDTH=1920 HEIGHT=1080 DISPLAY_NUM=1 MVD_EMULATOR_OFF=1 ENABLE_AGONES=auto \
-    APP_COMMAND="node /opt/shard/start-shard.mjs" READY_WINDOW_PATTERN="chromium|chrome|shard" READY_TIMEOUT=60
+    FONTCONFIG_FILE=/opt/shard/fonts.conf \
+    APP_COMMAND=/usr/local/bin/run-chromium-managed CHROMIUM_LAUNCHER=/opt/shard/start-shard.mjs READY_WINDOW_PATTERN="chromium|chrome|shard" READY_TIMEOUT=60
 USER kernel
 EXPOSE 6080 9226
 ENTRYPOINT ["/usr/local/bin/minimal-vnc-entrypoint"]

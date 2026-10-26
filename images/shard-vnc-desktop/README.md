@@ -18,15 +18,27 @@ The runtime is Linux/amd64 only. Apple silicon requires Docker emulation; native
 
 ## Configuration
 
-- `WIDTH=1920`, `HEIGHT=1080`: initial X display and kiosk window geometry.
-- `SHARD_TEMPLATE=win-rtx4060`: bundled profile template, used only when the data volume has no saved profile. A new random profile id is saved on first start; later starts retain its identity and browser state.
-- `SHARD_TIMEZONE=Etc/UTC`, `SHARD_LANGUAGE=en-US`: explicit locale settings. Set these to match your intended egress. Startup does not perform automatic IP geolocation.
-- `SHARD_PROFILE_DIR=/home/kernel/user-data/shard`: persistent profile root.
+- `WIDTH=1920`, `HEIGHT=1080`: X display, window and reported screen size.
+- `SHARD_TEMPLATE_PATTERN=^win-(hd|uhd|iris|intel)`: bundled templates eligible for a new profile. `SHARD_TEMPLATE` pins one template instead; `SHARD_PLATFORM=Windows` filters the pool by platform.
+- `SHARD_TIMEZONE=auto`, `SHARD_LANGUAGE=en-US`: locale for a new profile. `auto` resolves the timezone from the pod's direct egress at first launch.
+- `SHARD_PROFILE_DIR`: persistent profile root. Defaults to `shard` under `BROWSER_PROFILE_DIR`, or under `/home/kernel/user-data`.
+- `REPLACE_DEFAULT_PAGE=false`: `true` installs the reclaim-portal policy variant and start page, as in the main image. `APP_URL` overrides the start page.
 - `ENABLE_PROXY_EXTENSION=true`: load the existing Popcorn extension. Set `false` to disable it.
 - `MVD_EMULATOR_OFF=1`: retain the engine's native profile values. Set `0` to enable the shared CDP emulator and extension compatibility shims together; restart with a fresh browser process.
 - `ENABLE_AGONES=auto`: shared entrypoint lifecycle reporting when running in Kubernetes.
 
-Startup opens `about:blank`. Direct networking is the initial default. Configure session routing through Popcorn's existing proxy-extension flow before navigating to a target. This image does not introduce a new proxy credential interface. QUIC and WebRTC are disabled, including for extension-configured proxies. Proxy authentication and egress need verification in the intended deployment. The helper below verifies a local session before navigating to Delta.
+The image runs the main image's `run-chromium-managed`. Pods start in kiosk mode and honour the GameServer's `popcorn.dev/browser-mode` annotation; normal mode uses a separate profile under `/home/kernel/user-data-normal`. The managed Chromium policies are the main image's.
+
+Direct networking is the initial default. Configure session routing through Popcorn's existing proxy-extension flow before navigating to a target. This image does not introduce a new proxy credential interface. QUIC and WebRTC are disabled, including for extension-configured proxies. Proxy authentication and egress need verification in the intended deployment. The helper below verifies a local session before navigating to Delta.
+
+## Persona
+
+A profile is created once per profile directory and reused on later starts. Existing data volumes keep the profile they already have; use a new volume to pick up persona changes.
+
+- **Device:** a random Windows template with Intel integrated graphics. WebGL renders through SwiftShader, and a software renderer is most plausible behind an iGPU. Cores, memory and OS version stay as sampled from the real device; the SDK's re-roll brackets the host's CPU count instead.
+- **Screen:** the X display size at DPR 1, with a 40 px taskbar excluded from the available area.
+- **Fonts:** Liberation, Carlito and Caladea are renamed to Arial, Times New Roman, Courier New, Calibri and Cambria at build time, and a private fontconfig exposes only those. No Linux family name is measurable. The template font declaration is not used: with it, the engine hid the faces that were installed.
+- **Locale:** fixed for the profile. The engine cannot follow a proxy assigned after launch; SDK `"auto"` fields resolve only from a proxy passed at launch.
 
 ## Compare with MVD emulation enabled
 
@@ -40,7 +52,7 @@ SHARD_CDP_URL=http://127.0.0.1:19237 SHARD_VIEWER_URL=http://127.0.0.1:16086 \
   node images/shard-vnc-desktop/smoke.mjs
 ```
 
-`0` matches the default in the main browser image, where the extension's `emulation-mode.js` keeps the compatibility shims enabled. This launcher rewrites that file at startup from `MVD_EMULATOR_OFF`. Both local modes passed the smoke test. The fixture measured DPR 1 with emulation enabled and 1.25 with the native profile.
+`0` matches the default in the main browser image, where the extension's `emulation-mode.js` keeps the compatibility shims enabled. This launcher rewrites that file at startup from `MVD_EMULATOR_OFF`. Both local modes passed the smoke test.
 
 ## Test an authenticated proxy in the regular profile
 

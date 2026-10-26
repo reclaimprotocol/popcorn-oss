@@ -1,8 +1,8 @@
 // Run on the host; proxy credentials stay in this process and CDP auth replies.
 import { parseArgs } from 'node:util';
 import { readFile } from 'node:fs/promises';
-import { connect, diagnosticJSON, evaluate } from '../../scripts/clearcote/cdp.mjs';
-import { proxyAuthResponse, tlsSummary, verifyEgress } from '../../scripts/clearcote/egress.mjs';
+import { connect, diagnosticJSON, evaluate } from './lib/cdp.mjs';
+import { proxyAuthResponse, tlsSummary, verifyEgress } from './lib/egress.mjs';
 
 const { values } = parseArgs({ options: {
   cdp: { type: 'string', default: 'http://127.0.0.1:19237' },
