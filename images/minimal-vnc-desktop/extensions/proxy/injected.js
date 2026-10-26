@@ -4,6 +4,9 @@
 (function() {
   'use strict';
 
+  const emulationEnabled = globalThis.POPCORN_EMULATION_ENABLED === true;
+  delete globalThis.POPCORN_EMULATION_ENABLED;
+
   // ---- Passkey suppression on Google sign-in (SCOPED) ----------------------
   // Accounts that have a passkey make Google auto-launch a modal passkey
   // ceremony ("Complete sign-in using your passkey"), which fails in this
@@ -17,6 +20,7 @@
   // so this adds ZERO detection surface where stealth actually matters. Toggle
   // with window.__PCN_KEEP_PASSKEY = true before this runs to disable.
   (function suppressGooglePasskey() {
+    if (!emulationEnabled) return;
     try {
       if (window.__PCN_KEEP_PASSKEY) return;
       var h = location.hostname || '';
@@ -97,6 +101,13 @@
     configurable: false,
     enumerable: false
   });
+
+  // Native desktop sessions retain the engine's own API implementations in
+  // every frame. Proxy control is available independently of viewport shims.
+  if (!emulationEnabled) {
+    window.dispatchEvent(new CustomEvent('__pcnReady'));
+    return;
+  }
 
   // --- Fullscreen shim -------------------------------------------------------
   // Native requestFullscreen fills the emulated SCREEN (1920x1080 per the CDP

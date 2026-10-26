@@ -1,0 +1,6 @@
+{
+  "name": "popcorn-shard-runtime",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@proxyshard/shardx": "2.1.2" }
+}
