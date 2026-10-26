@@ -39,6 +39,18 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} \
     go build -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o /out/novnc-proxy .
 
+FROM ${UBUNTU_IMAGE} AS xvnc-builder
+ARG SOURCE_DATE_EPOCH=0
+ARG UBUNTU_SNAPSHOT
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build
+COPY --from=proxy-builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY locks/apt-packages.txt locks/ubuntu-snapshot.lock /build/
+COPY native-input/install-build-deps.sh /build/install-build-deps.sh
+RUN bash /build/install-build-deps.sh
+COPY native-input/tigervnc-device-types.patch native-input/build-xvnc.sh /build/
+RUN bash /build/build-xvnc.sh
+
 FROM ${UBUNTU_IMAGE} AS ubuntu-snapshot
 ARG UBUNTU_SNAPSHOT=20260624T000000Z
 ARG SOURCE_DATE_EPOCH=0
@@ -99,6 +111,7 @@ COPY locks/novnc.lock /tmp/novnc.lock
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-apt-cache \
     --mount=type=cache,target=/var/lib/apt,sharing=locked,id=$CACHEIDPREFIX-apt-lib \
     --mount=from=minimal-vnc-artifacts,source=/artifacts,target=/mnt/artifacts,ro \
+    --mount=from=xvnc-builder,source=/out,target=/mnt/xvnc,ro \
     set -eux; \
     touch_start="$(date -u +'%Y-%m-%d %H:%M:%S')"; \
     rm -f /etc/apt/apt.conf.d/docker-clean; \
@@ -106,6 +119,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     package_args="$(grep -vE '^[[:space:]]*(#|$)' /tmp/apt-packages.txt | tr '\n' ' ')"; \
     apt-get update; \
     apt-get --no-install-recommends -y install ${package_args}; \
+    dpkg -i /mnt/xvnc/tigervnc-common_*.deb /mnt/xvnc/tigervnc-standalone-server_*.deb; \
+    mkdir -p /usr/share/doc/popcorn/native-input; \
+    cp /mnt/xvnc/tigervnc-device-types.patch /mnt/xvnc/version /usr/share/doc/popcorn/native-input/; \
     arch="${TARGETARCH:-amd64}"; \
     case "$arch" in amd64|arm64) ;; *) echo "unsupported target arch: $arch" >&2; exit 1 ;; esac; \
     mkdir -p /tmp/chromium-artifacts; \
