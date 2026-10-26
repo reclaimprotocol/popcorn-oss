@@ -78,6 +78,41 @@ Set `FORTRESS_COMPOSITING=swiftshader` before starting the browser to restore th
 previous full SwiftShader path. `CHROMIUM_FLAGS` still appends explicit overrides.
 This setting applies to Fortress only.
 
+### Native X11 pointer capabilities
+
+TigerVNC 1.12 creates its input devices without XI1 type atoms. Chromium can
+receive mouse events while reporting `pointer: none` and `hover: none` because
+it does not classify that untyped device as a mouse. The image registers the
+existing VNC pointer as `MOUSE` and the keyboard as `KEYBOARD` before activation.
+
+The standard build rebuilds the pinned Ubuntu TigerVNC source package in a
+separate builder stage and installs the modified packages in the runtime image.
+It uses the configured Ubuntu snapshot, keeps compilation serial to avoid
+packaging/jobserver races, and adds a `+popcorn1` version suffix. Build tools stay
+in the builder stage. The patch and installed version are retained under
+`/usr/share/doc/popcorn/native-input`.
+
+To apply the same fix to an existing compatible image without rebuilding its
+browser and viewer layers, use the optional overlay:
+
+```bash
+docker build --platform linux/amd64 -f native-input/Dockerfile \
+  --build-arg BASE_IMAGE=popcorn/minimal-vnc-desktop:local \
+  -t popcorn/minimal-vnc-desktop:native-input .
+```
+
+Check a running patched container with Python 3 and Node 22+:
+
+```bash
+docker exec -i -e DISPLAY=:1 CONTAINER python3 - < native-input/check-xinput-types.py
+node native-input/check-browser-capabilities.mjs --cdp http://127.0.0.1:19258
+```
+
+The first check reads the native XInput device types. The browser check uses a
+temporary local page to verify desktop fine-pointer/hover support in the main
+frame and an iframe, touch emulation, and restoration to desktop capabilities.
+It closes its temporary tab afterward.
+
 ### Repeating gradient traffic
 
 The proxy extension pauses infinite CSS animations on gradient `::before` and
