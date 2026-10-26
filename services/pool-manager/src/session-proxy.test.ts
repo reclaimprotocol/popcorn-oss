@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { proxyPreset, readSessionProxy } from "./session-proxy";
+import { proxyExitTimezone, proxyPreset, readSessionProxy } from "./session-proxy";
 
 describe("session proxy request", () => {
     test("treats an omitted, null, or false proxy as direct egress", () => {
@@ -71,4 +71,34 @@ describe("session proxy request", () => {
 test("malformed deployment proxy credentials return a configuration error", () => {
     expect(proxyPreset("IN", "browser", "https://user-{{country}}%GG:secret@proxy.example/")).toHaveProperty("error");
     expect(proxyPreset("IN", "browser", "https://user-{{country}}:secret%GG@proxy.example/")).toHaveProperty("error");
+});
+
+describe("proxy exit timezone", () => {
+    const config = { host: "proxy.example", port: 22225, scheme: "http" as const, username: "user-session-abc", password: "p@ss", bypassList: [] };
+
+    test("asks a geo service through the session's proxy", async () => {
+        const calls: Array<{ url: string; proxy?: string }> = [];
+        const fetchImpl = (async (url: string, init: any) => {
+            calls.push({ url, proxy: init.proxy });
+            return Response.json({ timezone: { id: "America/Los_Angeles" } });
+        }) as unknown as typeof fetch;
+        expect(await proxyExitTimezone("US", config, fetchImpl)).toBe("America/Los_Angeles");
+        expect(calls).toEqual([{ url: "https://ipwho.is/", proxy: "http://user-session-abc:p%40ss@proxy.example:22225" }]);
+    });
+
+    test("falls back to the next service, then the country's zone", async () => {
+        const second = (async (url: string) => url.startsWith("https://ipwho.is")
+            ? new Response("busy", { status: 429 })
+            : Response.json({ timezone: "America/Chicago" })) as unknown as typeof fetch;
+        expect(await proxyExitTimezone("US", config, second)).toBe("America/Chicago");
+
+        const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
+        expect(await proxyExitTimezone("DE", config, failing)).toBe("Europe/Berlin");
+        expect(await proxyExitTimezone("KE", config, failing)).toBe("UTC");
+    });
+
+    test("ignores a malformed answer", async () => {
+        const fetchImpl = (async () => Response.json({ timezone: { id: "\"};rm -rf" } })) as unknown as typeof fetch;
+        expect(await proxyExitTimezone("JP", config, fetchImpl)).toBe("Asia/Tokyo");
+    });
 });

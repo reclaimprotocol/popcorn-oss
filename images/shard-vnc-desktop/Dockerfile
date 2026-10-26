@@ -17,13 +17,26 @@ COPY images/minimal-vnc-desktop/locks/novnc.lock images/minimal-vnc-desktop/lock
 COPY images/shard-vnc-desktop/build-viewer.py /tmp/build-viewer.py
 RUN python3 /tmp/build-viewer.py && rm -rf /tmp/build-viewer.py /tmp/viewer-locks
 
+# Fonts are renamed at build time; only the renamed copies reach the runtime.
+FROM ${NODE_IMAGE} AS font-builder
+RUN apt-get update && apt-get install -y --no-install-recommends python3-fonttools \
+    fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea \
+    fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji
+COPY images/shard-vnc-desktop/rename-fonts.py /tmp/rename-fonts.py
+RUN python3 /tmp/rename-fonts.py /out/fonts-windows \
+      /usr/share/fonts/truetype/liberation/*.ttf /usr/share/fonts/truetype/crosextra/*.ttf \
+      /usr/share/fonts/truetype/noto/Noto*-Regular.ttf /usr/share/fonts/truetype/noto/Noto*-Bold.ttf \
+      /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc /usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc \
+      /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf \
+    && test -s /out/fonts-windows/NotoSansCJK-Regular.ttc && test -s /out/fonts-windows/NotoSansDevanagari-Regular.ttf
+
 FROM ${NODE_IMAGE}
 ARG TARGETARCH
 RUN test "$TARGETARCH" = amd64
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 unzip ca-certificates curl brotli tigervnc-standalone-server tigervnc-common \
     openbox xdotool x11-utils x11-xserver-utils unclutter procps dbus-x11 \
-    fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea python3-fonttools libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+    fontconfig libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
     libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 \
     libpango-1.0-0 libcairo2 libasound2 libxshmfence1 libgl1-mesa-dri libegl-mesa0 libglx-mesa0 \
     && rm -rf /var/lib/apt/lists/*
@@ -40,11 +53,10 @@ COPY images/shard-vnc-desktop/install-runtime.py ./
 RUN python3 install-runtime.py
 COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
 COPY --chmod=0755 images/minimal-vnc-desktop/entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
-# Windows-named, metric-compatible faces are the only fonts the browser sees.
-COPY images/shard-vnc-desktop/fonts.conf images/shard-vnc-desktop/rename-fonts.py ./
-RUN python3 rename-fonts.py /usr/local/share/fonts-windows \
-      /usr/share/fonts/truetype/liberation/*.ttf /usr/share/fonts/truetype/crosextra/*.ttf \
-    && rm rename-fonts.py && FONTCONFIG_FILE=/opt/shard/fonts.conf fc-cache -f
+# Windows-named faces are the only fonts the browser sees.
+COPY --from=font-builder /out/fonts-windows /usr/local/share/fonts-windows
+COPY images/shard-vnc-desktop/fonts.conf ./
+RUN FONTCONFIG_FILE=/opt/shard/fonts.conf fc-cache -f
 # Same managed policies and kiosk/normal launcher as the main browser image.
 COPY --chown=kernel:kernel images/minimal-vnc-desktop/policies/managed/policy.json /etc/chromium/policies/managed/policy.json
 COPY --chown=kernel:kernel images/minimal-vnc-desktop/policies/variants/policy.reclaim-portal.json /etc/chromium/policy-variants/policy.reclaim-portal.json

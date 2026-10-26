@@ -66,8 +66,7 @@ if (existsSync(saved)) {
   const id = randomUUID().replaceAll('-', '');
   profile = new Profile(library.load(template).config, id);
   // Templates carry their source machine's locale. "auto" resolves the
-  // timezone from this pod's egress at first launch; the control plane
-  // re-aligns it to the session proxy over CDP.
+  // timezone from this pod's egress; a session proxy replaces it below.
   profile.config.timezone = process.env.SHARD_TIMEZONE || 'auto';
   const language = process.env.SHARD_LANGUAGE || 'en-US';
   profile.config.navigator.language = language;
@@ -76,10 +75,20 @@ if (existsSync(saved)) {
     .map((tag, i) => (i ? `${tag};q=${(1 - i / 10).toFixed(1)}` : tag)).join(',');
   profile.config.icu_locale = language;
   profile.config.geolocation = { mode: 'block' };
+  // Every pod renders through the same SwiftShader build, so without noise the
+  // whole fleet shares one canvas, WebGL and audio hash. Seeds derive from the
+  // profile id, so one profile stays stable across restarts.
+  const noise = (process.env.SHARD_NOISE ?? 'canvas,webgl,audio,client_rects').split(',').map(v => v.trim()).filter(v => v && v !== 'none');
+  profile.setNoise(...noise);
   console.log(`[popcorn] created ShardBrowser profile ${id} from ${template}`);
 }
+// run-chromium-managed restarts the browser with the proxy exit's timezone
+// when a session asks for a proxy; the pool keeps the profile's own.
+if (process.env.BROWSER_TIMEZONE) profile.config.timezone = process.env.BROWSER_TIMEZONE;
 // A Windows desktop at 100% scale keeps a 40 px taskbar out of the available
-// area; the kiosk window covers the whole display.
+// area. The viewer proxy fits the window to the whole X screen in both modes,
+// so the window block says so too; templates carry their source device's
+// window, which would not fit this screen.
 const width = Number(process.env.WIDTH || 1920);
 const height = Number(process.env.HEIGHT || 1080);
 const taskbar = profile.platform === 'Windows' ? 40 : 0;
@@ -87,6 +96,11 @@ Object.assign(profile.config.screen ??= {}, {
   width, height, avail_width: width, avail_height: height - taskbar,
   avail_left: 0, avail_top: 0, device_pixel_ratio: 1,
 });
+profile.config.window = {
+  ...profile.config.window,
+  outer_width: width, outer_height: height,
+  inner_width: width, inner_height: kiosk ? height : height - 91,
+};
 const port = Number(process.env.CDP_INTERNAL_PORT || 9223);
 if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid CDP_INTERNAL_PORT');
 const extraArgs = [

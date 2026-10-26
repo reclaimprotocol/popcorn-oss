@@ -20,14 +20,15 @@ The runtime is Linux/amd64 only. Apple silicon requires Docker emulation; native
 
 - `WIDTH=1920`, `HEIGHT=1080`: X display, window and reported screen size.
 - `SHARD_TEMPLATE_PATTERN=^win-(hd|uhd|iris|intel)`: bundled templates eligible for a new profile. `SHARD_TEMPLATE` pins one template instead; `SHARD_PLATFORM=Windows` filters the pool by platform.
-- `SHARD_TIMEZONE=auto`, `SHARD_LANGUAGE=en-US`: locale for a new profile. `auto` resolves the timezone from the pod's direct egress at first launch.
+- `SHARD_TIMEZONE=auto`, `SHARD_LANGUAGE=en-US`: locale for a new profile. `auto` resolves the timezone from the pod's direct egress at first launch; a proxied session replaces it (see Locale below).
+- `SHARD_NOISE=canvas,webgl,audio,client_rects`: engine noise vectors for a new profile, seeded from its id. `none` disables noise.
 - `SHARD_PROFILE_DIR`: persistent profile root. Defaults to `shard` under `BROWSER_PROFILE_DIR`, or under `/home/kernel/user-data`.
 - `REPLACE_DEFAULT_PAGE=false`: `true` installs the reclaim-portal policy variant and start page, as in the main image. `APP_URL` overrides the start page.
 - `ENABLE_PROXY_EXTENSION=true`: load the existing Popcorn extension. Set `false` to disable it.
 - `MVD_EMULATOR_OFF=1`: retain the engine's native profile values. Set `0` to enable the shared CDP emulator and extension compatibility shims together; restart with a fresh browser process.
 - `ENABLE_AGONES=auto`: shared entrypoint lifecycle reporting when running in Kubernetes.
 
-The image runs the main image's `run-chromium-managed`. Pods start in kiosk mode and honour the GameServer's `popcorn.dev/browser-mode` annotation; normal mode uses a separate profile under `/home/kernel/user-data-normal`. The managed Chromium policies are the main image's.
+The image runs the main image's `run-chromium-managed`. Pods start in kiosk mode and honour the GameServer's `popcorn.dev/browser-mode` and `popcorn.dev/browser-timezone` annotations; normal mode uses a separate profile under `/home/kernel/user-data-normal`. The managed Chromium policies are the main image's.
 
 Direct networking is the initial default. Configure session routing through Popcorn's existing proxy-extension flow before navigating to a target. This image does not introduce a new proxy credential interface. QUIC and WebRTC are disabled, including for extension-configured proxies. Proxy authentication and egress need verification in the intended deployment. The helper below verifies a local session before navigating to Delta.
 
@@ -36,9 +37,10 @@ Direct networking is the initial default. Configure session routing through Popc
 A profile is created once per profile directory and reused on later starts. Existing data volumes keep the profile they already have; use a new volume to pick up persona changes.
 
 - **Device:** a random Windows template with Intel integrated graphics. WebGL renders through SwiftShader, and a software renderer is most plausible behind an iGPU. Cores, memory and OS version stay as sampled from the real device; the SDK's re-roll brackets the host's CPU count instead.
-- **Screen:** the X display size at DPR 1, with a 40 px taskbar excluded from the available area.
-- **Fonts:** Liberation, Carlito and Caladea are renamed to Arial, Times New Roman, Courier New, Calibri and Cambria at build time, and a private fontconfig exposes only those. No Linux family name is measurable. The template font declaration is not used: with it, the engine hid the faces that were installed.
-- **Locale:** fixed for the profile. The engine cannot follow a proxy assigned after launch; SDK `"auto"` fields resolve only from a proxy passed at launch.
+- **Screen and window:** the X display size at DPR 1, with a 40 px taskbar excluded from the available area. The template's own window size is replaced, since it belongs to its source device's screen. The viewer proxy fits the browser window to the whole X screen, so a normal-mode window reports an outer height of 1080 against an available height of 1040, which a maximized Windows window would not.
+- **Noise:** every pod renders through the same SwiftShader build, so canvas, WebGL, audio and client-rect output would otherwise hash identically across the fleet. Each profile gets the engine's per-profile noise, stable across its restarts.
+- **Fonts:** Liberation, Carlito and Caladea are renamed to Arial, Times New Roman, Courier New, Calibri and Cambria at build time. Noto faces for other scripts are renamed to the font Windows uses for each script, as in the main image: Nirmala UI for Indic, Segoe UI for Arabic and Hebrew, Microsoft YaHei, Microsoft JhengHei, Yu Gothic UI and Malgun Gothic for CJK (chosen by page language), Segoe UI Emoji, and so on. A private fontconfig exposes only these. No Linux family name is measurable. The template font declaration is not used: with it, the engine hid the faces that were installed.
+- **Locale:** the engine reads the timezone only at launch, and Popcorn assigns the proxy after launch. With `BROWSER_TIMEZONE_FROM_PROXY=true` on pool-manager, a proxied session looks up its exit's timezone through the session's sticky proxy username (ipwho.is, then ip-api.com, then the country's main zone), adds it to the allocation as `popcorn.dev/browser-timezone`, and waits while the pod restarts the browser in that zone. Enable it only for a fleet running this image; the main image would restart without using it. Language stays `SHARD_LANGUAGE`, so pages keep the user's language. Geolocation is blocked by policy.
 
 ## Compare with MVD emulation enabled
 

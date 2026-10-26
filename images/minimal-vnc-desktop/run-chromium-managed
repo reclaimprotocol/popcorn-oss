@@ -7,19 +7,27 @@ AGONES_SDK_HTTP_PORT="${AGONES_SDK_HTTP_PORT:-${AGONES_SDK_PORT:-9358}}"
 CHROMIUM_LAUNCHER="${CHROMIUM_LAUNCHER:-/usr/local/bin/start-chromium}"
 NORMAL_BROWSER_PROFILE_DIR="${NORMAL_BROWSER_PROFILE_DIR:-$HOME/user-data-normal}"
 
-read_mode() {
+# Sets requested (kiosk, normal or empty before allocation) and
+# requested_timezone (the session proxy's exit timezone, or empty).
+read_allocation() {
   local response
   response="$(curl --silent --fail --max-time 1 \
     "http://${AGONES_SDK_HOST}:${AGONES_SDK_HTTP_PORT}/gameserver" 2>/dev/null || true)"
+  requested=""
+  requested_timezone=""
   if [[ "$response" == *'"popcorn.dev/browser-mode":"normal"'* ]]; then
-    printf 'normal'
+    requested=normal
   elif [[ "$response" == *'"popcorn.dev/browser-mode":"kiosk"'* ]]; then
-    printf 'kiosk'
+    requested=kiosk
+  fi
+  if [[ "$response" =~ \"popcorn\.dev/browser-timezone\":\"([A-Za-z0-9_/+-]{1,64})\" ]]; then
+    requested_timezone="${BASH_REMATCH[1]}"
   fi
 }
 
-requested="$(read_mode)"
+read_allocation
 mode="${requested:-kiosk}"
+timezone="$requested_timezone"
 locked=false
 [[ -z "$requested" ]] || locked=true
 child=""
@@ -36,12 +44,12 @@ while true; do
     # A kiosk launch persists fullscreen UI state in its profile. Reusing that
     # profile makes a later process look kiosked even without --kiosk, so the
     # allocated normal-view process gets a clean profile of its own.
-    BROWSER_KIOSK=false BROWSER_PROFILE_DIR="$NORMAL_BROWSER_PROFILE_DIR" "$CHROMIUM_LAUNCHER" &
+    BROWSER_TIMEZONE="$timezone" BROWSER_KIOSK=false BROWSER_PROFILE_DIR="$NORMAL_BROWSER_PROFILE_DIR" "$CHROMIUM_LAUNCHER" &
   else
-    BROWSER_KIOSK=true "$CHROMIUM_LAUNCHER" &
+    BROWSER_TIMEZONE="$timezone" BROWSER_KIOSK=true "$CHROMIUM_LAUNCHER" &
   fi
   child="$!"
-  echo "[browser-mode] started Chromium in ${mode} mode (pid ${child})"
+  echo "[browser-mode] started Chromium in ${mode} mode${timezone:+ with timezone ${timezone}} (pid ${child})"
 
   if [[ "$locked" == true ]]; then
     wait "$child"
@@ -50,12 +58,15 @@ while true; do
 
   while kill -0 "$child" 2>/dev/null; do
     sleep "$POLL_SECONDS"
-    requested="$(read_mode)"
+    read_allocation
     if [[ -n "$requested" ]]; then
       locked=true
-      if [[ "$requested" != "$mode" ]]; then
-        echo "[browser-mode] switching this pod from ${mode} to ${requested} mode"
+      # The timezone is read once at launch, so a proxied session restarts
+      # the browser even when the mode is unchanged.
+      if [[ "$requested" != "$mode" || "$requested_timezone" != "$timezone" ]]; then
+        echo "[browser-mode] switching this pod from ${mode} to ${requested} mode${requested_timezone:+ with timezone ${requested_timezone}}"
         mode="$requested"
+        timezone="$requested_timezone"
         stop_child
         child=""
       fi

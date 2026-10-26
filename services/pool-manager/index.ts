@@ -22,7 +22,7 @@ import {
 } from "./src/session-access";
 import { buildSessionUrls, websocketBaseUrl } from "./src/session-urls";
 import { closeProxyCdpSession, presetExtensionProxy } from "./src/extension-proxy";
-import { proxyPreset, readSessionProxy, type SessionProxy } from "./src/session-proxy";
+import { proxyExitTimezone, proxyPreset, readSessionProxy, type SessionProxy } from "./src/session-proxy";
 import {
     LIVEVIEW_E2E_PROTOCOL,
     readLiveViewE2eRequest,
@@ -33,6 +33,9 @@ const app = new Hono();
 const PORT = 3000;
 
 const CLUSTER_NAME = process.env.CLUSTER_NAME || "unknown";
+// Browser images that read popcorn.dev/browser-timezone at launch (ShardX)
+// restart into the proxy exit's timezone; others would restart for nothing.
+const BROWSER_TIMEZONE_FROM_PROXY = process.env.BROWSER_TIMEZONE_FROM_PROXY === "true";
 const GAME_SERVER_NAMESPACE = RuntimeConfig.gameServerNamespace;
 const GAME_SERVER_FLEET = RuntimeConfig.gameServerFleet;
 const POPCORN_REGION = process.env.POPCORN_REGION || "unknown";
@@ -287,13 +290,18 @@ async function allocateSessionLocally(
     console.log(`🚀 Allocation request for session: ${sessionId} (client: ${identity.clientId})`);
 
     try {
-        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e, browserMode);
+        const preset = proxy ? proxyPreset(proxy.country, sessionId) : null;
+        if (preset && "error" in preset) throw new Error(preset.error);
+        const browserTimezone = proxy && preset && BROWSER_TIMEZONE_FROM_PROXY
+            ? await proxyExitTimezone(proxy.country, preset.value)
+            : undefined;
+        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e, browserMode, browserTimezone);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
         const port = browserRoutePort(allocation.ports);
         const podUrl = `http://${allocation.address}:${port}`;
 
-        if (browserMode === "normal") {
+        if (browserMode === "normal" || browserTimezone) {
             // The in-pod launcher reads allocation metadata from its local
             // Agones sidecar, then replaces only Chromium.
             // Wait past that edge before accepting the first healthy full-CDP
@@ -309,7 +317,7 @@ async function allocateSessionLocally(
                     return false;
                 }
             }, { attempts: 20, delayMs: 250, shouldRetryResult: (ready) => !ready });
-            if (!browserReady) throw new Error("NORMAL_BROWSER_RESTART_FAILED");
+            if (!browserReady) throw new Error(browserMode === "normal" ? "NORMAL_BROWSER_RESTART_FAILED" : "BROWSER_RESTART_FAILED");
         }
 
         const podMetadata = await K8s.getPodMetadata(allocation.gameServerName, GAME_SERVER_NAMESPACE);
@@ -358,11 +366,7 @@ async function allocateSessionLocally(
             ...(e2eBinding ? { liveViewE2e: e2eBinding } : {}),
         };
 
-        if (proxy) {
-            const preset = proxyPreset(proxy.country, sessionId);
-            if ("error" in preset) throw new Error(preset.error);
-            await presetExtensionProxy(sessionId, allocation.address, preset.value);
-        }
+        if (preset) await presetExtensionProxy(sessionId, allocation.address, preset.value);
 
         const sessionAnnotations = {
             ...bound.annotations,

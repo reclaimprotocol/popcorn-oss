@@ -78,3 +78,47 @@ export function proxyPreset(country: string, sessionId: string, raw = process.en
         },
     };
 }
+
+// Used when no geo service answers. A country spanning several zones gets its
+// most populous one.
+const COUNTRY_TIMEZONES: Record<string, string> = {
+    US: "America/New_York", CA: "America/Toronto", MX: "America/Mexico_City",
+    BR: "America/Sao_Paulo", AR: "America/Argentina/Buenos_Aires", CL: "America/Santiago", CO: "America/Bogota",
+    GB: "Europe/London", IE: "Europe/Dublin", DE: "Europe/Berlin", FR: "Europe/Paris", ES: "Europe/Madrid",
+    IT: "Europe/Rome", NL: "Europe/Amsterdam", BE: "Europe/Brussels", PL: "Europe/Warsaw", PT: "Europe/Lisbon",
+    RO: "Europe/Bucharest", RU: "Europe/Moscow", UA: "Europe/Kyiv", TR: "Europe/Istanbul", GR: "Europe/Athens",
+    CZ: "Europe/Prague", HU: "Europe/Budapest", SE: "Europe/Stockholm", FI: "Europe/Helsinki",
+    NO: "Europe/Oslo", DK: "Europe/Copenhagen", CH: "Europe/Zurich", AT: "Europe/Vienna",
+    AU: "Australia/Sydney", NZ: "Pacific/Auckland", ZA: "Africa/Johannesburg", NG: "Africa/Lagos", EG: "Africa/Cairo",
+    IN: "Asia/Kolkata", PK: "Asia/Karachi", BD: "Asia/Dhaka", ID: "Asia/Jakarta", MY: "Asia/Kuala_Lumpur",
+    SG: "Asia/Singapore", TH: "Asia/Bangkok", VN: "Asia/Ho_Chi_Minh", PH: "Asia/Manila",
+    CN: "Asia/Shanghai", HK: "Asia/Hong_Kong", TW: "Asia/Taipei", JP: "Asia/Tokyo", KR: "Asia/Seoul",
+    IL: "Asia/Jerusalem", SA: "Asia/Riyadh", AE: "Asia/Dubai",
+};
+
+const TIMEZONE = /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/;
+
+/**
+ * The timezone of the proxy's exit for this session. The session's sticky
+ * username keeps the browser on the same exit, so a site comparing the
+ * browser clock with its IP sees the zone it expects.
+ */
+export async function proxyExitTimezone(country: string, config: ExtensionProxyConfig, fetchImpl: typeof fetch = fetch): Promise<string> {
+    const auth = config.username ? `${encodeURIComponent(config.username)}:${encodeURIComponent(config.password ?? "")}@` : "";
+    const proxy = `${config.scheme}://${auth}${config.host}:${config.port}`;
+    const services: Array<[string, (body: any) => unknown]> = [
+        ["https://ipwho.is/", (body) => body?.timezone?.id],
+        ["http://ip-api.com/json/?fields=timezone", (body) => body?.timezone],
+    ];
+    for (const [url, read] of services) {
+        try {
+            const response = await fetchImpl(url, { proxy, signal: AbortSignal.timeout(4_000) } as RequestInit);
+            if (!response.ok) continue;
+            const timezone = read(await response.json());
+            if (typeof timezone === "string" && TIMEZONE.test(timezone)) return timezone;
+        } catch {
+            // Try the next service, then the country's zone.
+        }
+    }
+    return COUNTRY_TIMEZONES[country] ?? "UTC";
+}
