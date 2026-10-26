@@ -51,9 +51,10 @@ def rename(font):
     style = names.getDebugName(17) or names.getDebugName(2) or 'Regular'
     full = target if style == 'Regular' else f'{target} {style}'
     values = {1: target, 2: style, 3: full, 4: full, 6: f"{target.replace(' ', '')}-{style.replace(' ', '')}", 16: target, 17: style}
-    for record in names.names:
-        if record.nameID in values:
-            record.string = values[record.nameID]
+    # setName encodes for each record's platform; NameRecord.string holds the
+    # table's encoded bytes.
+    for record in [r for r in names.names if r.nameID in values]:
+        names.setName(values[record.nameID], record.nameID, record.platformID, record.platEncID, record.langID)
     names.names = [record for record in names.names if record.nameID != 18]
     return True
 

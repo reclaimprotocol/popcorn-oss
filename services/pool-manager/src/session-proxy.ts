@@ -83,7 +83,8 @@ export function proxyPreset(country: string, sessionId: string, raw = process.en
 }
 
 // Used when no geo service answers. A country spanning several zones gets its
-// most populous one.
+// most populous one. A country missing here gets no timezone rather than a
+// guessed one.
 const COUNTRY_TIMEZONES: Record<string, string> = {
     US: "America/New_York", CA: "America/Toronto", MX: "America/Mexico_City",
     BR: "America/Sao_Paulo", AR: "America/Argentina/Buenos_Aires", CL: "America/Santiago", CO: "America/Bogota",
@@ -104,9 +105,11 @@ const TIMEZONE = /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/;
 /**
  * The timezone of the proxy's exit for this session. The session's sticky
  * username keeps the browser on the same exit, so a site comparing the
- * browser clock with its IP sees the zone it expects.
+ * browser clock with its IP sees the zone it expects. Undefined when neither
+ * a geo service nor the country table knows it; the browser then keeps its
+ * own zone.
  */
-export async function proxyExitTimezone(country: string, config: ExtensionProxyConfig, fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function proxyExitTimezone(country: string, config: ExtensionProxyConfig, fetchImpl: typeof fetch = fetch): Promise<string | undefined> {
     const auth = config.username ? `${encodeURIComponent(config.username)}:${encodeURIComponent(config.password ?? "")}@` : "";
     const proxy = `${config.scheme}://${auth}${config.host}:${config.port}`;
     const services: Array<[string, (body: any) => unknown]> = [
@@ -123,5 +126,5 @@ export async function proxyExitTimezone(country: string, config: ExtensionProxyC
             // Try the next service, then the country's zone.
         }
     }
-    return COUNTRY_TIMEZONES[country] ?? "UTC";
+    return COUNTRY_TIMEZONES[country];
 }

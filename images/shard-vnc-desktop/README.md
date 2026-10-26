@@ -69,8 +69,6 @@ node images/shard-vnc-desktop/proxy-session.mjs \
 
 The helper uses the existing regular-profile tab and Popcorn proxy extension, retaining the MVD scripts. It reads the direct baseline from public diagnostic endpoints, installs the HTTP(S) proxy route, and checks two rounds of proxy IP/TLS measurements before opening Delta. It refuses to replace an already configured extension proxy. Credentials stay in the host process and matching proxy-origin CDP authentication responses; they are not put in page scripts, command arguments, images or logs. Keep the helper running for authentication in this tab. Ctrl+C clears the extension proxy. If cleanup cannot reach the tab, restart this test container before browsing again.
 
-On 2026-10-26, this extension-based path passed repeated egress and normalized TLS/HTTP2 checks with MVD enabled, and Delta loaded with DPR 1 and a 1920 × 1080 viewport. That result applies to the measured proxy/session, not every provider or future connection.
-
 ## Pinned dependencies
 
 `package-lock.json` pins SDK 2.1.2 and its dependency graph. `artifacts.lock` records SHA-256 checksums for the upstream Linux browser and fingerprint archives; `runtime.json` records their engine version and TLS metadata. Downloads happen only at image build time. A low-level SDK runtime adapter uses those artifacts without invoking the SDK's automatic updater. Startup checks the actual `/json/version` against the pinned engine version.
@@ -92,8 +90,6 @@ To check cookie persistence, run the smoke test once, restart `popcorn-shard`, t
 ```sh
 SHARD_EXPECT_PERSISTED=1 node images/shard-vnc-desktop/smoke.mjs
 ```
-
-Local validation on 2026-10-26 passed the image build, all smoke checks, and the cookie persistence check after a container restart. CDP reported `Chrome/156.0.8078.48`; both screen and viewport measured 1920 × 1080. Proxy validation is described above. Third-party detection results were not tested.
 
 ## Licensing
 

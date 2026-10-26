@@ -30,7 +30,7 @@ const loadingPage = 'https://reclaim-portal-loading-page.s3.ap-south-1.amazonaws
 const replaceDefaultPage = process.env.REPLACE_DEFAULT_PAGE === 'true';
 // Post-proof login repair observes the provider from a clean checkpoint.
 const loginRepair = process.env.POST_PROOF_LOGIN_REPAIR_ENABLED === 'true';
-const startUrl = process.env.APP_URL || (loginRepair ? 'about:blank' : '') || process.env.POPCORN_BROWSER_STARTUP_URL ||
+const startUrl = process.env.APP_URL || (loginRepair && 'about:blank') || process.env.POPCORN_BROWSER_STARTUP_URL ||
   (replaceDefaultPage ? loadingPage : 'https://start.duckduckgo.com/');
 if (replaceDefaultPage) {
   const policyDir = process.env.CHROMIUM_POLICY_DIR || '/etc/chromium/policies/managed';

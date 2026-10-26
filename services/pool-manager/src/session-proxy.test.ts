@@ -91,7 +91,7 @@ describe("proxy exit timezone", () => {
         expect(calls).toEqual([{ url: "https://ipwho.is/", proxy: "http://user-session-abc:p%40ss@proxy.example:22225" }]);
     });
 
-    test("falls back to the next service, then the country's zone", async () => {
+    test("falls back to the next service, then the country's zone, else none", async () => {
         const second = (async (url: string) => {
             let isIpwho = false;
             try {
@@ -107,7 +107,7 @@ describe("proxy exit timezone", () => {
 
         const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
         expect(await proxyExitTimezone("DE", config, failing)).toBe("Europe/Berlin");
-        expect(await proxyExitTimezone("KE", config, failing)).toBe("UTC");
+        expect(await proxyExitTimezone("KE", config, failing)).toBeUndefined();
     });
 
     test("ignores a malformed answer", async () => {
