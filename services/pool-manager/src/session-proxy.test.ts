@@ -73,6 +73,11 @@ test("malformed deployment proxy credentials return a configuration error", () =
     expect(proxyPreset("IN", "browser", "https://user-{{country}}:secret%GG@proxy.example/")).toHaveProperty("error");
 });
 
+test("an uppercase placeholder keeps the ISO country case", () => {
+    const preset = proxyPreset("US", "browser", "http://username-acct-country-{{COUNTRY}}:secret@proxy.example:80");
+    expect(preset).toHaveProperty("value.username", expect.stringMatching(/^username-acct-country-US-session-[0-9a-f]{32}$/));
+});
+
 describe("proxy exit timezone", () => {
     const config = { host: "proxy.example", port: 22225, scheme: "http" as const, username: "user-session-abc", password: "p@ss", bypassList: [] };
 

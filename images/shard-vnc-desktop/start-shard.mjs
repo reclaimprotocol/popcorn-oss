@@ -28,7 +28,9 @@ const runtime = {
 // Same startup page and policy variant selection as the main browser image.
 const loadingPage = 'https://reclaim-portal-loading-page.s3.ap-south-1.amazonaws.com/index.html';
 const replaceDefaultPage = process.env.REPLACE_DEFAULT_PAGE === 'true';
-const startUrl = process.env.APP_URL || process.env.POPCORN_BROWSER_STARTUP_URL ||
+// Post-proof login repair observes the provider from a clean checkpoint.
+const loginRepair = process.env.POST_PROOF_LOGIN_REPAIR_ENABLED === 'true';
+const startUrl = process.env.APP_URL || (loginRepair ? 'about:blank' : '') || process.env.POPCORN_BROWSER_STARTUP_URL ||
   (replaceDefaultPage ? loadingPage : 'https://start.duckduckgo.com/');
 if (replaceDefaultPage) {
   const policyDir = process.env.CHROMIUM_POLICY_DIR || '/etc/chromium/policies/managed';
@@ -82,6 +84,23 @@ if (existsSync(saved)) {
   profile.setNoise(...noise);
   console.log(`[popcorn] created ShardBrowser profile ${id} from ${template}`);
 }
+// Enabled noise needs a strength: a template's zero knob leaves the vector
+// switched on but inert.
+const noiseConfig = profile.config.noise ?? {};
+if (noiseConfig.webgl?.enabled && !noiseConfig.webgl.intensity) noiseConfig.webgl.intensity = 0.0005;
+if (noiseConfig.client_rects?.enabled && !noiseConfig.client_rects.max_offset) noiseConfig.client_rects.max_offset = 1;
+// The template lists its source GPU's extensions. SwiftShader cannot provide
+// these, so getExtension() would return null for advertised names, which
+// detectors read as tampering.
+const unavailableExtensions = new Set([
+  'EXT_disjoint_timer_query', 'EXT_disjoint_timer_query_webgl2', 'EXT_render_snorm', 'EXT_texture_norm16',
+  'KHR_parallel_shader_compile', 'WEBGL_blend_func_extended', 'WEBGL_provoking_vertex',
+]);
+for (const key of ['extensions', 'extensions_v2']) {
+  if (Array.isArray(profile.config.webgl?.[key])) {
+    profile.config.webgl[key] = profile.config.webgl[key].filter(name => !unavailableExtensions.has(name));
+  }
+}
 // run-chromium-managed restarts the browser with the proxy exit's timezone
 // when a session asks for a proxy; the pool keeps the profile's own.
 if (process.env.BROWSER_TIMEZONE) profile.config.timezone = process.env.BROWSER_TIMEZONE;
@@ -110,7 +129,10 @@ const extraArgs = [
   // No GPU in the pod: SwiftShader keeps WebGL available; compositing stays on the CPU.
   '--use-angle=swiftshader-webgl', '--enable-unsafe-swiftshader',
   '--disable-gpu-compositing', '--disable-gpu-rasterization',
+  // As in the main image: popup-based OAuth and payment flows need window.open.
+  '--disable-popup-blocking',
 ];
+if (loginRepair) extraArgs.push('--disable-component-extensions-with-background-pages');
 if (kiosk) extraArgs.push('--kiosk');
 else extraArgs.push('--start-maximized');
 if (process.env.ENABLE_PROXY_EXTENSION !== 'false') {
@@ -119,6 +141,7 @@ if (process.env.ENABLE_PROXY_EXTENSION !== 'false') {
   writeFileSync(join(extension, 'emulation-mode.js'), `globalThis.POPCORN_EMULATION_ENABLED = ${emulatorOff === '0'};\n`);
   extraArgs.push(`--disable-extensions-except=${extension}`, `--load-extension=${extension}`);
 }
+extraArgs.push(...(process.env.CHROMIUM_FLAGS || '').split(/\s+/).filter(Boolean));
 extraArgs.push(startUrl);
 // The noVNC/CDP proxy re-reads this marker; missing or invalid means kiosk.
 writeFileSync(process.env.BROWSER_MODE_FILE || '/tmp/popcorn-browser-mode', kiosk ? 'kiosk\n' : 'normal\n');

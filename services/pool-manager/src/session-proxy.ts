@@ -43,10 +43,13 @@ export type ExtensionProxyConfig = {
 export function proxyPreset(country: string, sessionId: string, raw = process.env.HTTPS_PROXY_URL || ""):
     { value: ExtensionProxyConfig } | { error: string } {
     if (!raw) return { error: "proxy is not configured for this deployment" };
-    if (!raw.includes("{{country}}") && !raw.includes("{{geoLocation}}")) {
-        return { error: "HTTPS_PROXY_URL must include {{country}} or {{geoLocation}}" };
+    if (!raw.includes("{{country}}") && !raw.includes("{{COUNTRY}}") && !raw.includes("{{geoLocation}}")) {
+        return { error: "HTTPS_PROXY_URL must include {{country}}, {{COUNTRY}} or {{geoLocation}}" };
     }
+    // {{country}} is lowercase (Bright Data); {{COUNTRY}} keeps the ISO case
+    // for providers such as Grass that ignore a lowercase code.
     const expanded = raw.trim()
+        .replaceAll("{{COUNTRY}}", country.toUpperCase())
         .replaceAll("{{country}}", country.toLowerCase())
         .replaceAll("{{geoLocation}}", country.toLowerCase());
     if (/\{\{[^}]+\}\}/.test(expanded)) return { error: "HTTPS_PROXY_URL contains an unsupported template" };
