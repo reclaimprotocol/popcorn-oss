@@ -87,9 +87,17 @@ describe("proxy exit timezone", () => {
     });
 
     test("falls back to the next service, then the country's zone", async () => {
-        const second = (async (url: string) => url.startsWith("https://ipwho.is")
-            ? new Response("busy", { status: 429 })
-            : Response.json({ timezone: "America/Chicago" })) as unknown as typeof fetch;
+        const second = (async (url: string) => {
+            let isIpwho = false;
+            try {
+                isIpwho = new URL(url).origin === "https://ipwho.is";
+            } catch {
+                isIpwho = false;
+            }
+            return isIpwho
+                ? new Response("busy", { status: 429 })
+                : Response.json({ timezone: "America/Chicago" });
+        }) as unknown as typeof fetch;
         expect(await proxyExitTimezone("US", config, second)).toBe("America/Chicago");
 
         const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
