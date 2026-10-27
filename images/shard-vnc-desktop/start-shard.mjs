@@ -131,6 +131,9 @@ const extraArgs = [
   '--disable-gpu-compositing', '--disable-gpu-rasterization',
   // As in the main image: popup-based OAuth and payment flows need window.open.
   '--disable-popup-blocking',
+  // Every pod starts a fresh profile, and the ComponentUpdatesEnabled policy alone
+  // still lets ~25 components download into it on every session.
+  '--disable-component-update', '--disable-background-networking',
 ];
 if (loginRepair) extraArgs.push('--disable-component-extensions-with-background-pages');
 if (kiosk) extraArgs.push('--kiosk');
