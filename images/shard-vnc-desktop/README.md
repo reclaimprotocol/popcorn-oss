@@ -31,7 +31,7 @@ The runtime is Linux/amd64 only. Apple silicon requires Docker emulation; native
 
 The image runs the main image's `run-chromium-managed`. Pods start in kiosk mode and honour the GameServer's `popcorn.dev/browser-mode` and `popcorn.dev/browser-timezone` annotations; normal mode uses a separate profile under `/home/kernel/user-data-normal`. The managed Chromium policies are the main image's.
 
-Direct networking is the initial default. Configure session routing through Popcorn's existing proxy-extension flow before navigating to a target. This image does not introduce a new proxy credential interface. QUIC and WebRTC are disabled, including for extension-configured proxies. Proxy authentication and egress need verification in the intended deployment. The helper below verifies a local session before navigating to Delta.
+Direct networking is the initial default. Configure session routing through Popcorn's existing proxy-extension flow before navigating to a target. This image does not introduce a new proxy credential interface. QUIC and WebRTC are disabled, including for extension-configured proxies. Proxy authentication and egress need verification in the intended deployment. The helper below verifies a local session before navigating to `PROXY_SESSION_URL` (default `https://example.com/`).
 
 ## Persona
 
@@ -67,7 +67,7 @@ node images/shard-vnc-desktop/proxy-session.mjs \
   --cdp http://127.0.0.1:19237 --proxy-file /absolute/path/to/private-proxy.json
 ```
 
-The helper uses the existing regular-profile tab and Popcorn proxy extension, retaining the MVD scripts. It reads the direct baseline from public diagnostic endpoints, installs the HTTP(S) proxy route, and checks two rounds of proxy IP/TLS measurements before opening Delta. It refuses to replace an already configured extension proxy. Credentials stay in the host process and matching proxy-origin CDP authentication responses; they are not put in page scripts, command arguments, images or logs. Keep the helper running for authentication in this tab. Ctrl+C clears the extension proxy. If cleanup cannot reach the tab, restart this test container before browsing again.
+The helper uses the existing regular-profile tab and Popcorn proxy extension, retaining the MVD scripts. It reads the direct baseline from public diagnostic endpoints, installs the HTTP(S) proxy route, and checks two rounds of proxy IP/TLS measurements before opening the target URL. It refuses to replace an already configured extension proxy. Credentials stay in the host process and matching proxy-origin CDP authentication responses; they are not put in page scripts, command arguments, images or logs. Keep the helper running for authentication in this tab. Ctrl+C clears the extension proxy. If cleanup cannot reach the tab, restart this test container before browsing again.
 
 ## Pinned dependencies
 

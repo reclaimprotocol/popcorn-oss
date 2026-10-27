@@ -46,8 +46,8 @@ export function proxyPreset(country: string, sessionId: string, raw = process.en
     if (!raw.includes("{{country}}") && !raw.includes("{{COUNTRY}}") && !raw.includes("{{geoLocation}}")) {
         return { error: "HTTPS_PROXY_URL must include {{country}}, {{COUNTRY}} or {{geoLocation}}" };
     }
-    // {{country}} is lowercase (Bright Data); {{COUNTRY}} keeps the ISO case
-    // for providers such as Grass that ignore a lowercase code.
+    // {{country}} is lowercase; {{COUNTRY}} keeps the ISO case for providers
+    // that ignore a lowercase code.
     const expanded = raw.trim()
         .replaceAll("{{COUNTRY}}", country.toUpperCase())
         .replaceAll("{{country}}", country.toLowerCase())

@@ -80,9 +80,9 @@ try {
   const exitIP = verifyEgress(samples, baseline);
   await page.send('Network.setCacheDisabled', { cacheDisabled: false });
   await page.send('Page.bringToFront');
-  await page.send('Page.navigate', { url: 'https://www.delta.com/' });
+  await page.send('Page.navigate', { url: process.env.PROXY_SESSION_URL || 'https://example.com/' });
   console.log(JSON.stringify({ verified: true, exitIP, routing: 'Popcorn proxy extension', targetId: target.targetId }));
-  console.log('Delta opened. Keep this process running for proxy authentication. Ctrl+C clears the proxy.');
+  console.log('Target opened. Keep this process running for proxy authentication. Ctrl+C clears the proxy.');
   await new Promise(resolve => {
     process.once('SIGINT', resolve); process.once('SIGTERM', resolve);
     page.socket.addEventListener('close', resolve, { once: true });
