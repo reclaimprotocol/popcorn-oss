@@ -26,7 +26,7 @@ The runtime is Linux/amd64 only. Apple silicon requires Docker emulation; native
 - `SHARD_PROFILE_DIR`: persistent profile root. Defaults to `shard` under `BROWSER_PROFILE_DIR`, or under `/home/kernel/user-data`.
 - `REPLACE_DEFAULT_PAGE=false`: `true` installs the reclaim-portal policy variant and start page, as in the main image. `APP_URL` overrides the start page.
 - `ENABLE_PROXY_EXTENSION=true`: load the existing Popcorn extension. Set `false` to disable it.
-- `MVD_EMULATOR_OFF=1`: retain the engine's native profile values. Set `0` to enable the shared CDP emulator and extension compatibility shims together; restart with a fresh browser process.
+- `MVD_EMULATOR_OFF=0`: the shared CDP emulator and extension compatibility shims are on, as in the main image. Mobile viewers need them: touch, virtual-keyboard text and dialog relay go through the emulator. Set `1` to retain the engine's native profile values; restart with a fresh browser process.
 - `ENABLE_AGONES=auto`: shared entrypoint lifecycle reporting when running in Kubernetes.
 
 The image runs the main image's `run-chromium-managed`. Pods start in kiosk mode and honour the GameServer's `popcorn.dev/browser-mode` and `popcorn.dev/browser-timezone` annotations; normal mode uses a separate profile under `/home/kernel/user-data-normal`. The managed Chromium policies are the main image's.
@@ -44,11 +44,11 @@ A profile is created once per profile directory and reused on later starts. Exis
 - **Fonts:** Liberation, Carlito and Caladea are renamed to Arial, Times New Roman, Courier New, Calibri and Cambria at build time. Noto faces for other scripts are renamed to the font Windows uses for each script, as in the main image: Nirmala UI for Indic, Segoe UI for Arabic and Hebrew, Microsoft YaHei, Microsoft JhengHei, Yu Gothic UI and Malgun Gothic for CJK (chosen by page language), Segoe UI Emoji, and so on. A private fontconfig exposes only these. No Linux family name is measurable. The template font declaration is not used: with it, the engine hid the faces that were installed.
 - **Locale:** the engine reads the timezone only at launch, and Popcorn assigns the proxy after launch. With `BROWSER_TIMEZONE_FROM_PROXY=true` on pool-manager, a proxied session looks up its exit's timezone through the session's sticky proxy username (ipwho.is, then ip-api.com, then the country's main zone), adds it to the allocation as `popcorn.dev/browser-timezone`, and waits while the pod restarts the browser in that zone. Enable it only for a fleet running this image; the main image would restart without using it. Language stays `SHARD_LANGUAGE`, so pages keep the user's language. Geolocation is blocked by policy.
 
-## Compare with MVD emulation enabled
+## Compare with MVD emulation disabled
 
 ```sh
 docker run -d --name popcorn-shard-mvd --platform linux/amd64 --shm-size=1g \
-  -e MVD_EMULATOR_OFF=0 \
+  -e MVD_EMULATOR_OFF=1 \
   -p 127.0.0.1:16086:6080 -p 127.0.0.1:19237:9226 \
   -v popcorn-shard-mvd-data:/home/kernel/user-data \
   popcorn/shard-viewer:local
@@ -56,7 +56,7 @@ SHARD_CDP_URL=http://127.0.0.1:19237 SHARD_VIEWER_URL=http://127.0.0.1:16086 \
   node images/shard-vnc-desktop/smoke.mjs
 ```
 
-`0` matches the default in the main browser image, where the extension's `emulation-mode.js` keeps the compatibility shims enabled. This launcher rewrites that file at startup from `MVD_EMULATOR_OFF`. Both local modes passed the smoke test.
+`0`, the default, matches the main browser image, where the extension's `emulation-mode.js` keeps the compatibility shims enabled. This launcher rewrites that file at startup from `MVD_EMULATOR_OFF`. Both local modes passed the smoke test.
 
 ## Test an authenticated proxy in the regular profile
 

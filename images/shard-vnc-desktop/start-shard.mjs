@@ -7,7 +7,7 @@ import { createServer, connect } from 'node:net';
 
 // Use the immutable build artifacts; never invoke the SDK auto-updater.
 const root = '/opt/shard/runtime';
-const emulatorOff = process.env.MVD_EMULATOR_OFF ?? '1';
+const emulatorOff = process.env.MVD_EMULATOR_OFF ?? '0';
 if (!['0', '1'].includes(emulatorOff)) throw new Error('Invalid MVD_EMULATOR_OFF (valid: 0, 1)');
 // run-chromium-managed selects the mode per pod; normal view gets its own profile.
 const kiosk = (process.env.BROWSER_KIOSK ?? 'true') === 'true';
