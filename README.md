@@ -53,6 +53,7 @@ flowchart LR
 - `services/control-plane`: client/admin API and multi-region routing.
 - `services/gateway`: OpenResty gateway and JWT path authorization.
 - `images/minimal-vnc-desktop`: VNC/live-view browser runtime image.
+- [ShardBrowser local runtime](images/shard-vnc-desktop/README.md): opt-in ShardX image using the shared viewer and CDP proxy.
 - `services/ttl-controller`: session cleanup controller.
 - `services/mcp-server`: optional remote MCP server (see `docs/mcp-server.md`).
 - `services/attestor`: optional proof sidecar.
