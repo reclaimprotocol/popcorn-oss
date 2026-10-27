@@ -103,7 +103,9 @@ for (const key of ['extensions', 'extensions_v2']) {
 }
 // run-chromium-managed restarts the browser with the proxy exit's timezone
 // when a session asks for a proxy; the pool keeps the profile's own.
-if (process.env.BROWSER_TIMEZONE) profile.config.timezone = process.env.BROWSER_TIMEZONE;
+const sessionTimezone = process.env.BROWSER_TIMEZONE;
+const ownTimezone = profile.config.timezone;
+if (sessionTimezone) profile.config.timezone = sessionTimezone;
 // A Windows desktop at 100% scale keeps a 40 px taskbar out of the available
 // area. The viewer proxy fits the window to the whole X screen in both modes,
 // so the window block says so too; templates carry their source device's
@@ -169,7 +171,9 @@ try {
     quic: false, webrtc: 'block', extraArgs,
   });
   // Persist the resolved timezone so the identity stays stable across restarts.
-  writeFileSync(saved, JSON.stringify({ id: profile.id, config: profile.config }), { mode: 0o600 });
+  // A session's proxy timezone is not the profile's own, so it is not saved.
+  const config = sessionTimezone ? { ...profile.config, timezone: ownTimezone } : profile.config;
+  writeFileSync(saved, JSON.stringify({ id: profile.id, config }), { mode: 0o600 });
   if (!session.cdpUrl) throw new Error('ShardBrowser did not expose CDP within 15 seconds');
   const upstream = new URL(session.cdpUrl);
   const response = await fetch(`http://127.0.0.1:${upstream.port}/json/version`);
