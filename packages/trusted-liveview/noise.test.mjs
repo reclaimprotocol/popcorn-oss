@@ -140,7 +140,9 @@ test('buffers an immediate post-handshake frame without losing Noise nonce order
   }
   globalThis.WebSocket = FakeWebSocket;
   try {
-    const channel = await openNoiseWebSocket('wss://gateway.example/e2e', { ...ids, podPublicKey: pod.publicKey, clientPrivateKey: client.privateKey, clientPublicKey: client.publicKey });
+    const stages = [];
+    const channel = await openNoiseWebSocket('wss://gateway.example/e2e', { ...ids, podPublicKey: pod.publicKey, clientPrivateKey: client.privateKey, clientPublicKey: client.publicKey, onStage: (stage) => stages.push(stage) });
+    assert.deepEqual(stages, ['websocket_opening', 'websocket_open', 'noise_handshake', 'noise_response', 'noise_ready']);
     const received = await new Promise((resolve) => { channel.onmessage = (event) => resolve(new Uint8Array(event.data)); });
     assert.deepEqual(Array.from(received), Array.from(banner));
     channel.send(new TextEncoder().encode('client bytes'));
