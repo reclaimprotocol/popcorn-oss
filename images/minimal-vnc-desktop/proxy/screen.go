@@ -54,8 +54,10 @@ type screenKeeper struct {
 	// inherits the zombie's geometry. Fixing it needs client liveness, not
 	// connection counting.
 	resetOnFirst func()
-	timer        *time.Timer
-	logf         func(string, ...any)
+	// onConnect runs for every new client, after the count and any reset.
+	onConnect func()
+	timer     *time.Timer
+	logf      func(string, ...any)
 }
 
 func newScreenKeeper(delay time.Duration, restore func()) *screenKeeper {
@@ -102,10 +104,14 @@ func (k *screenKeeper) connect(keepGeometry bool) {
 		k.timer = nil
 	}
 	reset := k.resetOnFirst
+	onConnect := k.onConnect
 	k.mu.Unlock()
 	k.note("vnc client connected (now %d)", n)
 	if n == 1 && !keepGeometry && reset != nil {
 		reset()
+	}
+	if onConnect != nil {
+		onConnect()
 	}
 }
 

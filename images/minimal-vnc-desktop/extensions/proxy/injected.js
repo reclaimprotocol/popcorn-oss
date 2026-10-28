@@ -6,6 +6,10 @@
 
   const emulationEnabled = globalThis.POPCORN_EMULATION_ENABLED === true;
   delete globalThis.POPCORN_EMULATION_ENABLED;
+  // Geometry, API-surface and media-query shims only mask emulation; a launcher
+  // whose engine reports these values natively turns them off.
+  const fingerprintShims = globalThis.POPCORN_FINGERPRINT_SHIMS !== false;
+  delete globalThis.POPCORN_FINGERPRINT_SHIMS;
 
   // ---- Passkey suppression on Google sign-in (SCOPED) ----------------------
   // Accounts that have a passkey make Google auto-launch a modal passkey
@@ -508,6 +512,11 @@
   //
   // JS dialogs are handled entirely over CDP instead (Page.javascriptDialogOpening in
   // proxy/emulate.go), which touches nothing in the page.
+
+  if (!fingerprintShims) {
+    window.dispatchEvent(new CustomEvent('__pcnReady'));
+    return;
+  }
 
   // ---- window outer size must track the emulated viewport --------------------
   //

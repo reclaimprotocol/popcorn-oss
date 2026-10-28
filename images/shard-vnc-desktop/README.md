@@ -27,6 +27,8 @@ The runtime is Linux/amd64 only. Apple silicon requires Docker emulation; native
 - `REPLACE_DEFAULT_PAGE=false`: `true` installs the reclaim-portal policy variant and start page, as in the main image. `APP_URL` overrides the start page.
 - `ENABLE_PROXY_EXTENSION=true`: load the existing Popcorn extension. Set `false` to disable it.
 - `MVD_EMULATOR_OFF=0`: the shared CDP emulator and extension compatibility shims are on, as in the main image. Mobile viewers need them: touch, virtual-keyboard text and dialog relay go through the emulator. Set `1` to retain the engine's native profile values; restart with a fresh browser process.
+- `MVD_EMULATOR_ON_VIEWER=1`: the emulator attaches only once the first viewer connects or reports its size, so pages loaded before anyone watches stay unattached. Set `0` to attach at startup, as in the main image.
+- `MVD_FINGERPRINT_SHIMS=0`: the extension's geometry, API-surface and media-query shims stay off, because the engine reports those values natively; its functional shims (select picker, fullscreen, same-tab links, passkey) stay on. Set `1` for the main image's behaviour.
 - `ENABLE_AGONES=auto`: shared entrypoint lifecycle reporting when running in Kubernetes.
 
 The image runs the main image's `run-chromium-managed`. Pods start in kiosk mode and honour the GameServer's `popcorn.dev/browser-mode` and `popcorn.dev/browser-timezone` annotations; normal mode uses a separate profile under `/home/kernel/user-data-normal`. The managed Chromium policies are the main image's.
