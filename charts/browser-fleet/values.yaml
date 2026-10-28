@@ -29,6 +29,8 @@ runtimeClassName: ""
 
 secrets:
   browserRuntimeProxyName: browser-runtime-proxy-secret
+  # Secret Manager key for the optional Grass proxy template (HTTPS_PROXY_URL_GRASS). Empty skips it.
+  browserRuntimeGrassProxyRemoteKey: ""
 
 ccDevicePlugin:
   enabled: false

@@ -64,11 +64,12 @@ export function createLiveViewE2EClient(metadata, retainedKey, options) {
   const config = validateLiveViewE2E(metadata, retainedKey, options);
   let bindingSecret = config.bindingSecret;
   let publicMetadata = config;
-  const connect = async (channel) => {
+  const connect = async (channel, onStage) => {
     const enrollmentSecret = bindingSecret;
     const socket = await openNoiseWebSocket(channel === 'rfb' ? config.e2eRfbUrl : config.e2eControlUrl, {
       sessionId: config.sessionId, podUid: config.podUid, channel, podPublicKey: config.podPublicKey,
       clientPublicKey: config.clientPublicKey, clientPrivateKey: config.clientPrivateKey, bindingSecret: enrollmentSecret,
+      onStage,
     });
     if (enrollmentSecret !== null && bindingSecret !== null) {
       bindingSecret = null;
@@ -84,7 +85,7 @@ export function createLiveViewE2EClient(metadata, retainedKey, options) {
   };
   return Object.freeze({
     get metadata() { return publicMetadata; },
-    connectRfb: () => connect('rfb'),
+    connectRfb: (onStage) => connect('rfb', onStage),
     connectControl: () => connect('control'),
   });
 }

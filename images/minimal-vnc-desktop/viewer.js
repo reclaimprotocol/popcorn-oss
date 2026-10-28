@@ -256,6 +256,18 @@ function postLifecycle(type, data) {
 }
 onLifecycleAck((seq) => dbg('lifecycle ack seq=' + seq));
 
+function reportConnectionStage(phase, detail = {}) {
+  // Bound startup receipts to three attempts and never include a URL or error text.
+  if (everConnected || failedConnects >= 3) return;
+  postToHost('POPCORN_CONNECTION_STAGE', {
+    phase, transport: encryptedMode ? 'encrypted' : 'plain',
+    attempt: failedConnects + 1,
+    elapsedMs: Math.round(performance.now() - connectStartedAt),
+    visibility: document.visibilityState,
+    ...detail,
+  });
+}
+
 // Show the "can't reach the session" overlay. Idempotent (the overlay reuses
 // one node) and only ever fired before the first successful handshake, so a
 // normal mid-session reconnect never triggers it.
@@ -300,6 +312,7 @@ async function connect() {
   connecting = true;
   connected = false;
   connectStartedAt = performance.now();
+  reportConnectionStage('start');
   // ?keep=1 opts out of the proxy's first-connect screen reset: magnify resizes
   // the screen itself after the handshake, and being reset first would bounce
   // the page through a desktop-width relayout on every soft reconnect (a
@@ -317,12 +330,15 @@ async function connect() {
   if (encryptedMode) {
     try {
       const client = await encryptedClient();
+      reportConnectionStage('bootstrap_ready');
       // The control manager begins its Noise handshake immediately, in parallel
       // with the RFB channel. The same viewer state machine consumes both modes.
       const control = configureEncryptedControl(() => client.connectControl(), { mirror: params.get('mirror') === '1' });
       control.ensureConnected();
-      rfbTransport = await client.connectRfb();
+      rfbTransport = await client.connectRfb((phase, detail) => reportConnectionStage(phase, detail));
+      reportConnectionStage('encrypted_transport_ready');
     } catch (error) {
+      reportConnectionStage('encrypted_transport_error');
       connecting = false;
       failedConnects++;
       dbg('rfb encrypted-connect failed: ' + ((error && error.message) || 'unknown'));
@@ -334,6 +350,7 @@ async function connect() {
     }
   }
   if (intentionalDisconnect) return;
+  reportConnectionStage('rfb_start');
   rfb = new RFB(screen, rfbTransport, {
     credentials: { password },
   });
@@ -376,11 +393,13 @@ async function connect() {
   connectWatchdog = window.setTimeout(() => {
     connectWatchdog = null;
     if (connected) return; // handshake landed — nothing to do
+    reportConnectionStage('rfb_watchdog');
     if (!everConnected) showUnreachable();
     dbg('boot connect-watchdog: handshake stall -> recycle');
     try { rfb && rfb.disconnect(); } catch (_) {}
   }, CONNECT_TIMEOUT_MS);
   rfb.addEventListener('connect', () => {
+    reportConnectionStage('rfb_connected');
     // Last-resort cap source: the boot framebuffer, read once and before
     // magnify's first resizeSession changes it. Skipped once the cap is known,
     // which also means reconnects never learn from a sticky framebuffer.
@@ -449,7 +468,11 @@ async function connect() {
   if (window.PopcornKbd && !rfb.viewOnly) {
     window.PopcornKbd.attach(rfb);
   }
-  rfb.addEventListener('disconnect', () => {
+  rfb.addEventListener('disconnect', (event) => {
+    reportConnectionStage('rfb_disconnected', {
+      closeCode: Number.isInteger(event.detail?.code) ? event.detail.code : null,
+      wasClean: typeof event.detail?.clean === 'boolean' ? event.detail.clean : null,
+    });
     connecting = false;
     connected = false;
     // This attempt resolved (cleanly or not), so retire its stall watchdog; the

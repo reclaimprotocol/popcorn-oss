@@ -250,6 +250,9 @@ async function eventBytes(event) {
   return bytes(event.data);
 }
 export async function openNoiseWebSocket(url, options) {
+  const stage = (name, detail) => {
+    try { options.onStage?.(name, detail); } catch (_) {}
+  };
   let parsed;
   try { parsed = new URL(url); } catch (_) { throw new TypeError('E2EE WebSocket URL must be absolute'); }
   const loopback = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1' || parsed.hostname === '[::1]';
@@ -261,28 +264,40 @@ export async function openNoiseWebSocket(url, options) {
   // flight. This removes client crypto from the connection's critical path.
   const helloPromise = initiator.start();
   const ws = new WebSocket(url); ws.binaryType = 'arraybuffer';
+  stage('websocket_opening');
   const opened = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
+      stage('websocket_timeout');
       try { ws.close(1000, 'Noise WebSocket connection timed out'); } catch (_) {}
       reject(new Error('Noise WebSocket connection timed out'));
     }, 8000);
-    ws.onopen = () => { clearTimeout(timeout); resolve(); };
-    ws.onerror = () => { clearTimeout(timeout); reject(new Error('Noise WebSocket connection failed')); };
+    ws.onopen = () => { clearTimeout(timeout); stage('websocket_open'); resolve(); };
+    ws.onerror = () => { clearTimeout(timeout); stage('websocket_error'); reject(new Error('Noise WebSocket connection failed')); };
+    ws.onclose = (event) => {
+      clearTimeout(timeout);
+      stage('websocket_closed', { closeCode: event.code, wasClean: event.wasClean });
+      reject(new Error('Noise WebSocket connection closed'));
+    };
   });
   const [, hello] = await Promise.all([opened, helloPromise]);
   ws.send(hello);
+  stage('noise_handshake');
   const pendingCiphertexts = [];
   let frameChain = Promise.resolve(); let frameError = null; let responseSeen = false;
   const response = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('Noise handshake timed out')), 8000);
+    const timeout = setTimeout(() => { stage('noise_timeout'); reject(new Error('Noise handshake timed out')); }, 8000);
     ws.onmessage = (event) => {
       frameChain = frameChain.then(() => eventBytes(event)).then((frame) => {
-        if (!responseSeen) { responseSeen = true; clearTimeout(timeout); resolve(frame); }
+        if (!responseSeen) { responseSeen = true; clearTimeout(timeout); stage('noise_response'); resolve(frame); }
         else pendingCiphertexts.push(frame);
       }).catch((error) => { frameError = error; clearTimeout(timeout); reject(error); });
     };
-    ws.onerror = () => { clearTimeout(timeout); reject(new Error('Noise handshake failed')); };
-    ws.onclose = () => { clearTimeout(timeout); reject(new Error('Noise handshake closed')); };
+    ws.onerror = () => { clearTimeout(timeout); stage('noise_error'); reject(new Error('Noise handshake failed')); };
+    ws.onclose = (event) => {
+      clearTimeout(timeout);
+      stage('noise_closed', { closeCode: event.code, wasClean: event.wasClean });
+      reject(new Error('Noise handshake closed'));
+    };
   });
   const keys = await initiator.finish(response);
   // The pod may send an RFB banner or initial control snapshot immediately
@@ -296,5 +311,6 @@ export async function openNoiseWebSocket(url, options) {
   // the channel. Plaintexts remain queued until the consumer installs its
   // onmessage handler.
   await channel._receiveChain;
+  stage('noise_ready');
   return channel;
 }
