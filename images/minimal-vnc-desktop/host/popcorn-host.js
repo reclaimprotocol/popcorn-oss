@@ -741,6 +741,7 @@
           case 'POPCORN_BOOT_STALL': emit('bootstall', d); break;
           case 'POPCORN_VIEWPORT': emit('viewport', d); break;
           case 'POPCORN_CONNECT': emit('connect', d); break;
+          case 'POPCORN_CONNECTION_STAGE': emit('connectionstage', d); break;
           case 'POPCORN_FRAME':
             emit('frame', d);
             // Re-audit once real pixels exist: a loading cover, a skeleton, or an
