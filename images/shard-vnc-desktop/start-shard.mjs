@@ -140,6 +140,9 @@ const extraArgs = [
   // Every pod starts a fresh profile, and the ComponentUpdatesEnabled policy alone
   // still lets ~25 components download into it on every session.
   '--disable-component-update', '--disable-background-networking',
+  // Keeps WebRTC UDP off the host route. The engine's own block policy fails
+  // some bot checks when combined with SwiftShader WebGL.
+  '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
 ];
 if (loginRepair) extraArgs.push('--disable-component-extensions-with-background-pages');
 if (kiosk) extraArgs.push('--kiosk');
@@ -173,7 +176,7 @@ process.on('SIGINT', () => void stop(0));
 try {
   session = await browser.launch(profile, {
     cdp: true, headless: false, screenMode: 'profile',
-    quic: false, webrtc: 'block', extraArgs,
+    quic: false, extraArgs,
   });
   // Persist the resolved timezone so the identity stays stable across restarts.
   // A session's proxy timezone is not the profile's own, so it is not saved.
