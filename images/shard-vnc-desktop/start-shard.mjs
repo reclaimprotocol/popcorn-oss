@@ -137,13 +137,22 @@ const extraArgs = [
   // still lets ~25 components download into it on every session.
   '--disable-component-update', '--disable-background-networking',
 ];
+// WebRTC must expose a public candidate: some bot checks fail without one. With
+// the proxy exit known at launch, WebRTC uses TCP only and reports that exit. A
+// proxy set later leaves the exit unknown, so Chrome's own policy keeps UDP on
+// the default route.
+const publicIp = process.env.BROWSER_PUBLIC_IP;
+if (!publicIp) extraArgs.push('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
 if (loginRepair) extraArgs.push('--disable-component-extensions-with-background-pages');
 if (kiosk) extraArgs.push('--kiosk');
 else extraArgs.push('--start-maximized');
 if (process.env.ENABLE_PROXY_EXTENSION !== 'false') {
   const extension = process.env.PROXY_EXTENSION_DIR || '/home/kernel/extensions/proxy';
   writeFileSync(join(extension, 'browser-mode.js'), `globalThis.POPCORN_BROWSER_KIOSK = ${kiosk};\n`);
-  writeFileSync(join(extension, 'emulation-mode.js'), `globalThis.POPCORN_EMULATION_ENABLED = ${emulatorOff === '0'};\n`);
+  writeFileSync(join(extension, 'emulation-mode.js'), `globalThis.POPCORN_EMULATION_ENABLED = ${emulatorOff === '0'};\n` +
+    // The engine reports geometry and API surface natively, so only the
+    // extension's functional shims run.
+    'globalThis.POPCORN_FINGERPRINT_SHIMS = false;\n');
   extraArgs.push(`--disable-extensions-except=${extension}`, `--load-extension=${extension}`);
 }
 extraArgs.push(...(process.env.CHROMIUM_FLAGS || '').split(/\s+/).filter(Boolean));
@@ -168,7 +177,8 @@ process.on('SIGINT', () => void stop(0));
 try {
   session = await browser.launch(profile, {
     cdp: true, headless: false, screenMode: 'profile',
-    quic: false, webrtc: 'block', extraArgs,
+    quic: false, extraArgs,
+    ...(publicIp ? { webrtc: 'tcp_only', webrtcPublicIp: publicIp } : {}),
   });
   // Persist the resolved timezone so the identity stays stable across restarts.
   // A session's proxy timezone is not the profile's own, so it is not saved.

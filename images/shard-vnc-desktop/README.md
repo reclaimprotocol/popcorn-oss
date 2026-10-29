@@ -31,7 +31,7 @@ The runtime is Linux/amd64 only. Apple silicon requires Docker emulation; native
 
 The image runs the main image's `run-chromium-managed`. Pods start in kiosk mode and honour the GameServer's `popcorn.dev/browser-mode` and `popcorn.dev/browser-timezone` annotations; normal mode uses a separate profile under `/home/kernel/user-data-normal`. The managed Chromium policies are the main image's.
 
-Direct networking is the initial default. Configure session routing through Popcorn's existing proxy-extension flow before navigating to a target. This image does not introduce a new proxy credential interface. QUIC and WebRTC are disabled, including for extension-configured proxies. Proxy authentication and egress need verification in the intended deployment. The helper below verifies a local session before navigating to `PROXY_SESSION_URL` (default `https://example.com/`).
+Direct networking is the initial default. Configure session routing through Popcorn's existing proxy-extension flow before navigating to a target. This image does not introduce a new proxy credential interface. QUIC is disabled, including for extension-configured proxies; WebRTC is covered under the persona below. Proxy authentication and egress need verification in the intended deployment. The helper below verifies a local session before navigating to `PROXY_SESSION_URL` (default `https://example.com/`).
 
 ## Persona
 
@@ -43,6 +43,7 @@ A profile is created once per profile directory and reused on later starts. Exis
 - **Noise:** every pod renders through the same SwiftShader build, so canvas, WebGL, audio and client-rect output would otherwise hash identically across the fleet. Each profile gets the engine's per-profile noise, stable across its restarts.
 - **Fonts:** Liberation, Carlito and Caladea are renamed to Arial, Times New Roman, Courier New, Calibri and Cambria at build time. Noto faces for other scripts are renamed to the font Windows uses for each script, as in the main image: Nirmala UI for Indic, Segoe UI for Arabic and Hebrew, Microsoft YaHei, Microsoft JhengHei, Yu Gothic UI and Malgun Gothic for CJK (chosen by page language), Segoe UI Emoji, and so on. A private fontconfig exposes only these. No Linux family name is measurable. The template font declaration is not used: with it, the engine hid the faces that were installed.
 - **Locale:** the engine reads the timezone only at launch, and Popcorn assigns the proxy after launch. With `BROWSER_TIMEZONE_FROM_PROXY=true` on pool-manager, a proxied session looks up its exit's timezone through the session's sticky proxy username (ipwho.is, then ip-api.com, then the country's main zone), adds it to the allocation as `popcorn.dev/browser-timezone`, and waits while the pod restarts the browser in that zone. Enable it only for a fleet running this image; the main image would restart without using it. Language stays `SHARD_LANGUAGE`, so pages keep the user's language. Geolocation is blocked by policy.
+- **WebRTC:** some bot checks fail when no public candidate appears. With `BROWSER_PUBLIC_IP` set to the proxy exit, WebRTC uses TCP only and reports that exit as its public address. Without it, as when a proxy is set after launch, Chrome's `disable_non_proxied_udp` policy applies.
 
 ## Compare with MVD emulation disabled
 
