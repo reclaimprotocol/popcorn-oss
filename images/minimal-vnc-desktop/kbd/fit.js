@@ -46,6 +46,7 @@ const MAG_BUTTON_RATIO = 1.3;
 const FIELD_ZOOM_RATIO = 2.0;
 const FIT_MAX_W = 1440;   // cap the layout width we ask the remote to render
 const FIT_TRIGGER = 1.15; // content must overflow the viewport by >15% to fit
+const FIT_MAX_DISPLAY_W = 1024; // wider displays lay pages out at their own size
 // A page with no viewport meta is laid out by real mobile browsers at a ~980px
 // desktop width scaled to fit (NOT reflowed to the device width). We replicate
 // that: render it wide and fit-to-width so it looks like the real site does on a
@@ -209,9 +210,10 @@ export function createFit({
     const dispW = (display && display.w) || window.innerWidth;
     const dispH = (display && display.h) || window.innerHeight;
     if (!(dispW > 0 && dispH > 0 && layoutW > dispW)) return;
-    // Fit is a phone layout aid. A desktop viewer lays the page out at its own
-    // size, as a desktop browser would. ?fixedw still asks for it explicitly.
-    if (!isTouch && !(FIXEDW > 0)) return;
+    // Fit is a phone layout aid. A desktop viewer, or a touch screen as wide as
+    // one, lays the page out at its own size, as a desktop browser would.
+    // ?fixedw still asks for it explicitly.
+    if (!(isTouch && dispW < FIT_MAX_DISPLAY_W) && !(FIXEDW > 0)) return;
     fitMode = true;
     // A real fit renders the page's FULL width into the framebuffer and scales it
     // down — already more remote pixels than the display has, so supersampling on
