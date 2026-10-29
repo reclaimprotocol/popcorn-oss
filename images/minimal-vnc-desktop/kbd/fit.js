@@ -209,6 +209,9 @@ export function createFit({
     const dispW = (display && display.w) || window.innerWidth;
     const dispH = (display && display.h) || window.innerHeight;
     if (!(dispW > 0 && dispH > 0 && layoutW > dispW)) return;
+    // Fit is a phone layout aid. A desktop viewer lays the page out at its own
+    // size, as a desktop browser would. ?fixedw still asks for it explicitly.
+    if (!isTouch && !(FIXEDW > 0)) return;
     fitMode = true;
     // A real fit renders the page's FULL width into the framebuffer and scales it
     // down — already more remote pixels than the display has, so supersampling on
