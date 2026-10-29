@@ -140,10 +140,13 @@ const extraArgs = [
   // Every pod starts a fresh profile, and the ComponentUpdatesEnabled policy alone
   // still lets ~25 components download into it on every session.
   '--disable-component-update', '--disable-background-networking',
-  // Keeps WebRTC UDP off the host route. The engine's own block policy fails
-  // some bot checks when combined with SwiftShader WebGL.
-  '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
 ];
+// WebRTC must expose a public candidate: some bot checks fail without one. With
+// the proxy exit known at launch, WebRTC uses TCP only and reports that exit. A
+// proxy set later leaves the exit unknown, so Chrome's own policy keeps UDP on
+// the default route.
+const publicIp = process.env.BROWSER_PUBLIC_IP;
+if (!publicIp) extraArgs.push('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
 if (loginRepair) extraArgs.push('--disable-component-extensions-with-background-pages');
 if (kiosk) extraArgs.push('--kiosk');
 else extraArgs.push('--start-maximized');
@@ -177,6 +180,7 @@ try {
   session = await browser.launch(profile, {
     cdp: true, headless: false, screenMode: 'profile',
     quic: false, extraArgs,
+    ...(publicIp ? { webrtc: 'tcp_only', webrtcPublicIp: publicIp } : {}),
   });
   // Persist the resolved timezone so the identity stays stable across restarts.
   // A session's proxy timezone is not the profile's own, so it is not saved.

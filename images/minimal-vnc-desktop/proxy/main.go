@@ -311,7 +311,6 @@ func noVNCMux(web, vnc, cdpUpstream string, ready readyGate, e2e ...*noiseEndpoi
 	keeper.handoff = handoff
 	handoff.onStop(keeper.stopForHandoff)
 	keeper.logf = log.Printf
-	keeper.onConnect = em.wake
 	// The FIRST viewer of a session must start from boot geometry, not from
 	// whatever the previous session left: connecting inside the restore delay
 	// cancels the pending restore, which is right for a reload but wrong for a

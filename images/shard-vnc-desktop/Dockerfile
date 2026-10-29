@@ -65,7 +65,7 @@ COPY --chmod=0755 images/shard-vnc-desktop/start-shard.mjs /opt/shard/start-shar
 COPY --chown=kernel:kernel images/minimal-vnc-desktop/extensions/proxy /home/kernel/extensions/proxy
 COPY --from=viewer-builder /usr/share/novnc /usr/share/novnc
 ENV HOME=/home/kernel XDG_CONFIG_HOME=/home/kernel/.config XDG_CACHE_HOME=/home/kernel/.cache \
-    WIDTH=1920 HEIGHT=1080 DISPLAY_NUM=1 MVD_EMULATOR_OFF=0 MVD_EMULATOR_ON_VIEWER=1 ENABLE_AGONES=auto \
+    WIDTH=1920 HEIGHT=1080 DISPLAY_NUM=1 MVD_EMULATOR_OFF=0 ENABLE_AGONES=auto \
     FONTCONFIG_FILE=/opt/shard/fonts.conf \
     APP_COMMAND=/usr/local/bin/run-chromium-managed CHROMIUM_LAUNCHER=/opt/shard/start-shard.mjs READY_WINDOW_PATTERN="chromium|chrome|shard" READY_TIMEOUT=60
 USER kernel

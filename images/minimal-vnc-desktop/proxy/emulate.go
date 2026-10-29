@@ -72,12 +72,6 @@ type emulator struct {
 	popSeq     uint64      // identifies that window; stale taps are dropped
 	foreground string      // URL of the focused top document ("" = unknown)
 	onPopup    func(payload []byte, open bool)
-
-	// awake is closed once the emulator may attach. With MVD_EMULATOR_ON_VIEWER=1
-	// that waits for the first viewer, so pages loaded with no one watching stay
-	// unattached.
-	awake    chan struct{}
-	wakeOnce sync.Once
 }
 
 // pageEntry associates a top-level target with its URL for focus matching.
@@ -566,10 +560,6 @@ func newEmulator(cdpUpstream string, handoff ...*viewerHandoff) *emulator {
 		dirty:       make(chan struct{}, 1),
 		cmds:        make(chan cdpCmd, 512),
 		prio:        make(chan cdpCmd, 64),
-		awake:       make(chan struct{}),
-	}
-	if os.Getenv("MVD_EMULATOR_ON_VIEWER") != "1" {
-		e.wake()
 	}
 	if len(handoff) > 0 {
 		e.handoff = handoff[0]
@@ -583,14 +573,6 @@ func newEmulator(cdpUpstream string, handoff ...*viewerHandoff) *emulator {
 	e.params = defaultEmulation()
 	go e.run()
 	return e
-}
-
-// wake lets the emulator attach. Later calls do nothing.
-func (e *emulator) wake() {
-	if e == nil || e.awake == nil {
-		return
-	}
-	e.wakeOnce.Do(func() { close(e.awake) })
 }
 
 func (e *emulator) stopForHandoff() {
@@ -869,8 +851,6 @@ func (e *emulator) set(req emulateRequest) {
 	e.mu.Lock()
 	e.params = &req
 	e.mu.Unlock()
-	// A magnify viewer can post its size before its VNC connection counts.
-	e.wake()
 	select {
 	case e.dirty <- struct{}{}:
 	default:
@@ -1126,12 +1106,6 @@ func (e *emulator) run() {
 			e.acknowledgeFreeze()
 			return
 		}
-	}
-	select {
-	case <-e.awake:
-	case <-e.freeze:
-		e.acknowledgeFreeze()
-		return
 	}
 	backoff := 500 * time.Millisecond
 	for {
