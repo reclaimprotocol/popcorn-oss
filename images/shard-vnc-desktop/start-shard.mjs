@@ -9,10 +9,6 @@ import { createServer, connect } from 'node:net';
 const root = '/opt/shard/runtime';
 const emulatorOff = process.env.MVD_EMULATOR_OFF ?? '0';
 if (!['0', '1'].includes(emulatorOff)) throw new Error('Invalid MVD_EMULATOR_OFF (valid: 0, 1)');
-// The engine reports geometry and API surface natively, so the extension's
-// fingerprint shims are off by default; its functional shims stay on.
-const fingerprintShims = process.env.MVD_FINGERPRINT_SHIMS ?? '0';
-if (!['0', '1'].includes(fingerprintShims)) throw new Error('Invalid MVD_FINGERPRINT_SHIMS (valid: 0, 1)');
 // run-chromium-managed selects the mode per pod; normal view gets its own profile.
 const kiosk = (process.env.BROWSER_KIOSK ?? 'true') === 'true';
 const manifest = JSON.parse(readFileSync('/opt/shard/runtime.json', 'utf8'));
@@ -154,7 +150,9 @@ if (process.env.ENABLE_PROXY_EXTENSION !== 'false') {
   const extension = process.env.PROXY_EXTENSION_DIR || '/home/kernel/extensions/proxy';
   writeFileSync(join(extension, 'browser-mode.js'), `globalThis.POPCORN_BROWSER_KIOSK = ${kiosk};\n`);
   writeFileSync(join(extension, 'emulation-mode.js'), `globalThis.POPCORN_EMULATION_ENABLED = ${emulatorOff === '0'};\n` +
-    `globalThis.POPCORN_FINGERPRINT_SHIMS = ${fingerprintShims === '1'};\n`);
+    // The engine reports geometry and API surface natively, so only the
+    // extension's functional shims run.
+    'globalThis.POPCORN_FINGERPRINT_SHIMS = false;\n');
   extraArgs.push(`--disable-extensions-except=${extension}`, `--load-extension=${extension}`);
 }
 extraArgs.push(...(process.env.CHROMIUM_FLAGS || '').split(/\s+/).filter(Boolean));
