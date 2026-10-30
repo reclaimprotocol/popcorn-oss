@@ -71,6 +71,11 @@ export function createFit({
   let fitMode = false;
   let fitLayoutW = 0;
   let fitLayoutH = 0;
+  let fitCappedH = 0; // display height of a fit capped at the window height, else 0
+  function setFitCapped(on) {
+    if (vt.setAnchorTop) vt.setAnchorTop(on);
+    try { document.documentElement.classList.toggle('fit-capped', on); } catch (_) {}
+  }
   // The display width fit was last applied at. A rotate changes it, and both
   // fitLayoutH and the pinned #screen size are derived from it, so it's also how
   // we detect "the viewport WIDTH changed" (rotate/window resize) as opposed to
@@ -225,7 +230,20 @@ export function createFit({
     // whole page before scaleViewport downscales it.
     try { window.__pcnFitActive = true; } catch (_) {}
     fitLayoutW = layoutW;
-    fitLayoutH = Math.max(1, Math.round(layoutW * dispH / dispW));
+    // The remote browser keeps its window within the screen it advertises, so it
+    // never grows past the boot framebuffer height (__pcnFbCap.h, 1080 on the
+    // persona screen). A taller fit, e.g. a 980px no-viewport page on a portrait
+    // phone (~2130 rows), was drawn only down to that row, and a dialog centred
+    // in the page's viewport sat half below it. Capping the layout height keeps
+    // every row drawn 1:1; drawing the full height scaled down was too soft.
+    const cap = typeof window !== 'undefined' ? window.__pcnFbCap : null;
+    const maxH = cap && cap.h > 0 ? cap.h : Infinity;
+    fitLayoutH = Math.max(1, Math.min(maxH, Math.round(layoutW * dispH / dispW)));
+    // Capped, the page fills the display width but not its height: pin it to the
+    // top, sized to its own height so noVNC does not centre it either.
+    fitCappedH = fitLayoutH < Math.round(layoutW * dispH / dispW)
+      ? Math.round(dispW * fitLayoutH / fitLayoutW) : 0;
+    setFitCapped(fitCappedH > 0);
     fitDispW = dispW;
     fitWantReadable = (wantReadable == null) ? true : wantReadable;
     fitNoViewport = !!fromNoViewport;
@@ -267,7 +285,7 @@ export function createFit({
       // jump on every keyboard open/close. A fixed size never changes on
       // keyboard, so noVNC's scale stays put; the keyboard just overlays and the
       // lift transform shifts content as usual.
-      if (s) { s.style.width = dispW + 'px'; s.style.height = dispH + 'px'; }
+      if (s) { s.style.width = dispW + 'px'; s.style.height = (fitCappedH || dispH) + 'px'; }
       // The phase-1 /emulate request and the RFB SetDesktopSize travel on
       // separate connections. On a slow tunnel the former can reach the proxy
       // before Xvnc has grown, so its window-fit check sees the OLD (phone-sized)
@@ -300,6 +318,7 @@ export function createFit({
     hideCover();
     setMagEligible(false); updateControlButtons(); // responsive page → no magnify button
     fitMode = false; fitLayoutW = 0; fitLayoutH = 0; fitDispW = 0; fitWantReadable = true; fitNoViewport = false; fitFixed = false;
+    fitCappedH = 0; setFitCapped(false);
     try { window.__pcnFitActive = false; } catch (_) {} // re-arm the framebuffer cap
     vt.resetTransform(); // instant compose; order vs the size reset below is immaterial
     const s = getScreenElement();
@@ -628,6 +647,12 @@ export function createFit({
       // deriving the width from olw makes it work without the flag.
       const olTarget = clippedContentTarget(state);
       const target = Math.max(swTarget, olTarget);
+      // Left clipping is unreachable however long it lasts, so it fits at once.
+      // Right overflow waits until the content script confirms it has lasted
+      // (swc, see content.js swConfirmed).
+      if (olTarget === 0 && swTarget > 0 && state.swc !== true) {
+        return; // the decision is still open, so the load cover stays up
+      }
       if (target > 0) {
         // A left-clip fit opens zoomed OUT, matching the ?fixedw path: the target is
         // a modest width (412 for Pinterest, i.e. ~0.87 scale on a 360px phone), so

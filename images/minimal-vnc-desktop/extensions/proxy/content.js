@@ -458,10 +458,58 @@
 
   // Widest content extent of this document — lets the viewer detect a
   // non-responsive (fixed-width) page that overflows the mobile viewport and
-  // switch it to fit-to-width.
+  // switch it to fit-to-width. Measured from the page's own horizontal scroll
+  // position: a page that scrolls itself sideways (a swipe drawer parked off to
+  // the left) shows exactly what a real browser shows, and only what lies to the
+  // right of the view is overflow. That position is only final once a frame has
+  // been rendered (the browser applies a page's initial scroll snap then), so
+  // nothing is reported before the first frame.
+  //
+  // And only REAL content past the right edge is overflow (see overflowStats):
+  // a layout container can be wider than the screen while everything in it fits,
+  // e.g. a sliding panel whose empty end sits off-screen. A real browser shows
+  // that page unscrolled with nothing missing, so it reports as fitting.
+  let framePainted = false;
+  requestAnimationFrame(() => { framePainted = true; scheduleReport(); });
   function docScrollWidth() {
+    if (!framePainted) return 0;
     const d = document.documentElement, b = document.body;
-    return Math.max(d ? d.scrollWidth : 0, b ? b.scrollWidth : 0);
+    const sw = Math.max(d ? d.scrollWidth : 0, b ? b.scrollWidth : 0);
+    const sx = pageScrollX();
+    const view = viewWidth();
+    // cr only proves nothing runs past the edge when the scan saw every element.
+    const { cr, full } = overflowStats();
+    if (view > 0 && full && cr > 0 && cr - sx <= view + 1) return Math.min(sw - sx, view);
+    return Math.max(0, sw - sx);
+  }
+  function pageScrollX() { return Math.max(0, Math.round(window.scrollX || 0)); }
+  function viewWidth() {
+    const d = document.documentElement;
+    return d && d.clientWidth > 0 ? d.clientWidth : (window.innerWidth || 0);
+  }
+
+  // swc — the right overflow in sw has lasted SW_CONFIRM_MS. A page can render one
+  // frame wider than it settles, e.g. a swipe drawer laid out before the page
+  // scrolls past it, and fitting to that frame crops the settled page. The viewer
+  // fits to right overflow only once this is set. A re-measure is scheduled for the
+  // deadline, so a page that settles without any mutation, scroll or resize (a CSS
+  // transition) is still measured again before it can be confirmed.
+  const SW_CONFIRM_MS = 1000;
+  let wideSince = 0;
+  let wideTimer = null;
+  function swConfirmed(sw) {
+    const view = viewWidth();
+    if (!(view > 0 && sw > view + 1)) {
+      wideSince = 0;
+      return false;
+    }
+    const now = Date.now();
+    if (!wideSince) {
+      wideSince = now;
+      clearTimeout(wideTimer);
+      wideTimer = setTimeout(() => { overflowDirty = true; scheduleReport(); }, SW_CONFIRM_MS);
+    }
+    return now - wideSince >= SW_CONFIRM_MS;
   }
 
   // sb — px left until the top document's scroll BOTTOM (0 = at the bottom, or
@@ -586,12 +634,12 @@
   // elements are deep while their top-level ancestors sit at left:0.
   // Set by the MutationObserver at the bottom of this file: the cached overflow
   // measurement is stale because the DOM changed. Declared HERE, above
-  // leftOverflowStats(), because the initial report() runs before that setup and a
+  // overflowStats(), because the initial report() runs before that setup and a
   // `let` referenced before its declaration executes throws.
   let overflowDirty = false;
   const OVERFLOW_SCAN_MAX = 4000;
   const OVERFLOW_TTL_MS = 2000;
-  let leftOverflowCache = -1, leftOverflowWidthCache = 0, leftOverflowAt = 0;
+  let leftOverflowCache = -1, leftOverflowWidthCache = 0, contentRightCache = 0, scanFullCache = false, leftOverflowAt = 0;
   // olw — the WIDTH of the widest clipped piece of real content.
   //
   // ol says how far content hangs off the left; olw says how wide the thing
@@ -616,35 +664,61 @@
       return el.children.length === 0 && (el.textContent || '').trim().length > 0;
     } catch (_) { return false; }
   }
+  // cr — where real content ends on the RIGHT, in page px. Media counts here (a
+  // wide image is content), but never for olw, which sizes a fit to text/controls.
+  // full — the scan reached every laid-out element, so cr is the true extent.
 
-  // Both numbers come from ONE pass: getBoundingClientRect forces layout, so a
+  // All three numbers come from ONE pass: getBoundingClientRect forces layout, so a
   // second scan would double the cost of the most expensive thing this file does.
-  function leftOverflowStats() {
+  function overflowStats() {
     const now = Date.now();
     if (!overflowDirty && leftOverflowCache >= 0 && now - leftOverflowAt < OVERFLOW_TTL_MS) {
-      return { ol: leftOverflowCache, olw: leftOverflowWidthCache };
+      return { ol: leftOverflowCache, olw: leftOverflowWidthCache, cr: contentRightCache, full: scanFullCache };
     }
     overflowDirty = false;
     try {
-      let minLeft = 0, widest = 0, n = 0;
+      let minLeft = 0, widest = 0, contentRight = 0, n = 0;
+      // Content left of the view that the page has scrolled past is reachable by
+      // scrolling back, so only what sits left of the page origin is clipped.
+      // Clipped means CUT by that edge: an element parked wholly beyond it (an
+      // off-canvas drawer or its backdrop) is hidden UI a real browser never
+      // shows either, and widening the layout would not bring it on screen.
+      const sx = pageScrollX();
+      const viewRight = sx + viewWidth();
       const els = document.querySelectorAll('body *');
-      for (let i = 0; i < els.length && n < OVERFLOW_SCAN_MAX; i++) {
+      let i = 0;
+      for (; i < els.length && n < OVERFLOW_SCAN_MAX; i++) {
         const el = els[i];
         const r = el.getBoundingClientRect();
         if (r.width <= 0 && r.height <= 0) continue; // not laid out
         n++;
-        if (r.left < minLeft) minLeft = r.left;
-        // Clipped-content candidate. Needs BOTH dimensions (a 0-height element is
-        // not something the user can read) where ol above tolerates one.
-        if (r.left < -1 && r.width > 0 && r.height > 0 && r.width > widest && meaningfulLeaf(el)) {
+        let left = r.left + sx, right = r.right + sx;
+        // A fixed element does not scroll, so its viewport position is final.
+        // Looked up only for elements outside the view: computed style is costly.
+        let fixed = null;
+        const isFixed = () => (fixed === null ? (fixed = getComputedStyle(el).position === 'fixed') : fixed);
+        if (left < -1 && sx > 0 && isFixed()) { left = r.left; right = r.right; }
+        // Clipped-content and extent candidates need BOTH dimensions (a 0-height
+        // element is not something the user can read) where ol tolerates one.
+        const sized = r.width > 0 && r.height > 0;
+        // A fixed element past the right edge cannot be scrolled to: parked UI.
+        if (sized && right > contentRight && (meaningfulLeaf(el) || el.matches('img,video,canvas,iframe,svg')) &&
+            !(right > viewRight + 1 && isFixed())) {
+          contentRight = right;
+        }
+        if (!(left < -1 && right > 1)) continue;
+        if (left < minLeft) minLeft = left;
+        if (sized && r.width > widest && meaningfulLeaf(el)) {
           widest = r.width;
         }
       }
       leftOverflowCache = Math.round(-Math.min(0, minLeft));
       leftOverflowWidthCache = Math.round(widest);
+      contentRightCache = Math.ceil(contentRight);
+      scanFullCache = i >= els.length;
       leftOverflowAt = now;
-      return { ol: leftOverflowCache, olw: leftOverflowWidthCache };
-    } catch (_) { return { ol: 0, olw: 0 }; }
+      return { ol: leftOverflowCache, olw: leftOverflowWidthCache, cr: contentRightCache, full: scanFullCache };
+    } catch (_) { return { ol: 0, olw: 0, cr: 0, full: false }; }
   }
 
   // Whether the page needs the legacy ~980px desktop layout viewport used by
@@ -750,6 +824,7 @@
     if (IS_TOP) {
       const viewportWidth = declaredLayoutViewportWidth();
       base.sw = docScrollWidth(); base.pid = FOCUS_KEY_FRAME; base.novp = viewportWidth !== null;
+      if (swConfirmed(base.sw)) base.swc = true;
       if (viewportWidth !== null) base.vpw = viewportWidth;
       // sb: distance to the scroll bottom — drives the viewer's keyboard-
       // occlusion pan (see docScrollBottom). 0 is the load-bearing value.
@@ -762,8 +837,8 @@
       try { base.origin = location.origin; } catch (_) {}
       // ol: px of content hanging off the LEFT — unreachable, and invisible to sw.
       // olw: how wide the widest clipped piece of real content is — the number the
-      // viewer fits to, because ol alone never converges (see leftOverflowStats).
-      const lo = leftOverflowStats();
+      // viewer fits to, because ol alone never converges (see overflowStats).
+      const lo = overflowStats();
       base.ol = lo.ol;
       base.olw = lo.olw;
       // xf: cross-origin iframe rects — where a tap needs a compat mouse click.
@@ -1232,7 +1307,7 @@
     rectsTimer = setTimeout(() => { rectsTimer = null; report(deepActiveElement()); }, 250);
   }
   window.addEventListener('scroll', scheduleReport, true);
-  window.addEventListener('resize', scheduleReport, true);
+  window.addEventListener('resize', () => { overflowDirty = true; scheduleReport(); }, true);
   // reCAPTCHA's anchor is an external iframe that often starts as about:blank.
   // Its cross-origin transition changes no parent-DOM nodes, so the mutation
   // observer below cannot see it. Capture its load and publish fresh geometry;

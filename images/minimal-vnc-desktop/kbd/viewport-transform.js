@@ -92,6 +92,9 @@ export function createViewportTransform({
   // by a sub-1 minZoom. So the overview (zoomScale == minZoom == 1) already shows
   // the whole page, and pinch/zoom compose on top from there.
   let minZoom = 1;
+  // A capped fit shows the top of a page laid out shorter than the display, so it
+  // sits at the top like a page does, with the backdrop below it, not centred.
+  let anchorTop = false;
   let pinch = null;    // active 2-finger gesture state
   let panning = null;  // active 1-finger pan (only while zoomed in)
 
@@ -218,7 +221,7 @@ export function createViewportTransform({
     // inset === 0 keeps both branches byte-identical to the historical clamp.
     const inset = effKbdInset();
     if (ch <= dispH + 0.5) {
-      const centre = (dispH - ch) / 2 - oyz;
+      const centre = anchorTop ? -oyz : (dispH - ch) / 2 - oyz;
       // Only the viewport-SIZED framebuffer earns the extension. A genuinely
       // LETTERBOXED canvas (smaller than the display, flex-centered by noVNC
       // inside #screen) has blank #111 below it already, so there is nothing
@@ -602,6 +605,7 @@ export function createViewportTransform({
       clampPan();
       composeScreenTransform(false);
     },
+    setAnchorTop(on) { anchorTop = !!on; },
     // enterFit/exitFit: fresh transform baseline with an instant (no-anim) compose.
     resetTransform() { minZoom = 1; zoomScale = 1; panX = 0; panY = 0; composeScreenTransform(false); },
     // enterFit phase-2: snap to a target zoom instantly.

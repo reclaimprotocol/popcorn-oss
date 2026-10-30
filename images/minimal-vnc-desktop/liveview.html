@@ -28,6 +28,14 @@
       overscroll-behavior: none;
     }
 
+    /* A fit capped at the remote window height (kbd/fit.js) shows the top of the
+       page; below it stands in for the rest of the page, like the white X root. */
+    html.fit-capped,
+    html.fit-capped body,
+    html.fit-capped #screen {
+      background: #fff;
+    }
+
     #screen.magnify,
     #screen.magnify canvas {
       touch-action: none;
