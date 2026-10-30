@@ -71,6 +71,24 @@ export function createFit({
   let fitMode = false;
   let fitLayoutW = 0;
   let fitLayoutH = 0;
+  // The remote browser keeps its window within the screen it advertises, so it
+  // never grows past the boot framebuffer height (__pcnFbCap.h, 1080 on the
+  // persona screen). A taller fit, e.g. a 980px no-viewport page on a portrait
+  // phone (~2130 rows), was drawn only down to that row: the rest showed the X
+  // root, and a dialog centred in the page's viewport sat half below it. So the
+  // layout keeps its full CSS size and renders at a device scale factor that fits
+  // the window. That is CDP's paint scale, not deviceScaleFactor: the engine keeps
+  // the persona's devicePixelRatio and ignores a fractional one, and the page sees
+  // neither change. Softer, never cut.
+  function fitRenderScale() {
+    const cap = typeof window !== 'undefined' ? window.__pcnFbCap : null;
+    const maxH = cap && cap.h > 0 ? cap.h : 0;
+    return maxH > 0 && fitLayoutH > maxH ? maxH / fitLayoutH : 1;
+  }
+  function fitFramebufferSize() {
+    const k = fitRenderScale();
+    return { w: Math.max(1, Math.floor(fitLayoutW * k)), h: Math.max(1, Math.floor(fitLayoutH * k)), k };
+  }
   // The display width fit was last applied at. A rotate changes it, and both
   // fitLayoutH and the pinned #screen size are derived from it, so it's also how
   // we detect "the viewport WIDTH changed" (rotate/window resize) as opposed to
@@ -245,14 +263,15 @@ export function createFit({
     setMagEligible(layoutW / dispW >= MAG_BUTTON_RATIO); updateControlButtons();
     showCover(); // hide the fit-to-width framebuffer dance
     const s = getScreenElement();
-    // Phase 1: grow the framebuffer to the full page size.
-    if (s) { s.style.width = fitLayoutW + 'px'; s.style.height = fitLayoutH + 'px'; }
+    // Phase 1: grow the framebuffer to the full page size (scaled, see fitRenderScale).
+    const fb = fitFramebufferSize();
+    if (s) { s.style.width = fb.w + 'px'; s.style.height = fb.h + 'px'; }
     const rfb = getRfb();
     try { if (rfb) { rfb.scaleViewport = false; rfb.resizeSession = true; } } catch (_) {}
     lastEmulateKey = '';
     noteFitToggle(countTowardLatch);
     pushEmulate(); // emulate fitLayoutW×fitLayoutH (computeEmulation fit branch)
-    dbg('fit-to-width p1 layout=' + fitLayoutW + 'x' + fitLayoutH + ' (sw=' + sw + ')');
+    dbg('fit-to-width p1 layout=' + fitLayoutW + 'x' + fitLayoutH + ' fb=' + fb.w + 'x' + fb.h + ' (sw=' + sw + ')');
     // Phase 2: after the server framebuffer has grown, scale it down to fit.
     if (fitPhase2Timer) clearTimeout(fitPhase2Timer);
     fitPhase2Timer = setTimeout(() => {
@@ -399,7 +418,7 @@ export function createFit({
       // Render the FULL page width; the wide framebuffer is scaled down for
       // display by noVNC's scaleViewport (not a CSS transform — that poisons
       // noVNC's own getBoundingClientRect-based resize math).
-      return { width: fitLayoutW, height: fitLayoutH, deviceScaleFactor: 1 };
+      return { width: fitLayoutW, height: fitLayoutH, deviceScaleFactor: 1, scale: fitFramebufferSize().k };
     }
     const screen = getScreenElement();
     let width = Math.max(1, Math.round((screen && screen.offsetWidth) || window.innerWidth));
@@ -426,7 +445,7 @@ export function createFit({
     // Track geometry to avoid duplicate observer refreshes.
     noteGeometry();
     const e = computeEmulation();
-    const key = e.width + 'x' + e.height + '@' + e.deviceScaleFactor.toFixed(3);
+    const key = e.width + 'x' + e.height + '@' + e.deviceScaleFactor.toFixed(3) + (e.scale < 1 ? '/' + e.scale.toFixed(4) : '');
     if (key === lastEmulateKey) return; // skip redundant POSTs (resize spam)
     lastEmulateKey = key;
     dbg('emulate ' + key);
@@ -440,7 +459,10 @@ export function createFit({
         // triggers sites' mobile layout via width media queries, and touch makes
         // it a coherent Windows *touch* device (Surface-style) — mobile UX
         // without the mobile-on-desktop contradiction that bot detectors flag.
-        body: JSON.stringify({ width: e.width, height: e.height, deviceScaleFactor: e.deviceScaleFactor, mobile: false, touch: isTouch }),
+        body: JSON.stringify({
+          width: e.width, height: e.height, deviceScaleFactor: e.deviceScaleFactor,
+          ...(e.scale < 1 ? { scale: e.scale } : {}), mobile: false, touch: isTouch,
+        }),
       }).then((r) => { if (!r.ok) lastEmulateKey = ''; })
         .catch(() => { lastEmulateKey = ''; }); // allow retry on failure
     } catch (_) { lastEmulateKey = ''; }

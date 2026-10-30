@@ -28,6 +28,11 @@ type emulateRequest struct {
 	Mobile            bool    `json:"mobile"`
 	Touch             bool    `json:"touch"`
 	Reset             bool    `json:"reset"`
+
+	// Scale shrinks the painted output without changing the page's layout or its
+	// devicePixelRatio. A fit taller than the browser window asks for it: the
+	// engine keeps deviceScaleFactor at the persona's own, but honours this.
+	Scale float64 `json:"scale,omitempty"`
 }
 
 // emulator maintains device emulation and sends native touch events over CDP.
@@ -784,7 +789,9 @@ func (e *emulator) dispatchTouch(evType string, points []touchPoint) {
 // because its target disappeared).
 func (e *emulator) dispatchTouchWithDone(evType string, points []touchPoint, done func(bool)) bool {
 	tp := make([]map[string]any, 0, len(points))
+	k := e.paintScale()
 	for _, p := range points {
+		p = touchPoint{X: p.X * k, Y: p.Y * k}
 		force := math.Round((0.45+rand.Float64()*0.2)*100) / 100 // ~0.45..0.65
 		radius := math.Round(12 + rand.Float64()*6)              // ~12..18 px
 		tp = append(tp, map[string]any{
@@ -825,6 +832,8 @@ func (e *emulator) dispatchCompatClick(p touchPoint) {
 }
 
 func (e *emulator) dispatchCompatClickWithDone(p touchPoint, done func(bool)) bool {
+	k := e.paintScale()
+	p = touchPoint{X: p.X * k, Y: p.Y * k}
 	base := map[string]any{
 		"x": p.X, "y": p.Y,
 		"button": "left", "clickCount": 1,
@@ -855,6 +864,25 @@ func (e *emulator) set(req emulateRequest) {
 	case e.dirty <- struct{}{}:
 	default:
 	}
+}
+
+// paintScale is the emulated paint scale (emulateRequest.Scale) as applied, or 1.
+// CDP input coordinates are in the scaled view's pixels while the viewer sends page
+// CSS px, so every dispatched point is multiplied by it.
+func (e *emulator) paintScale() float64 {
+	p := e.current()
+	if p == nil || p.Reset {
+		return 1
+	}
+	return clampPaintScale(p.Scale)
+}
+
+// clampPaintScale mirrors applyTo: only a reduction applies, floored at 0.2.
+func clampPaintScale(s float64) float64 {
+	if s <= 0 || s >= 1 {
+		return 1
+	}
+	return math.Max(s, 0.2)
 }
 
 func (e *emulator) current() *emulateRequest {
@@ -1197,10 +1225,16 @@ func (e *emulator) session() error {
 		// rather than the narrow window size — a "desktop" reporting a phone-sized
 		// screen is itself a fingerprint tell. The viewport (width/height) is just
 		// a small window on that screen.
-		send("Emulation.setDeviceMetricsOverride", map[string]any{
+		metrics := map[string]any{
 			"width": w, "height": h, "deviceScaleFactor": dsf, "mobile": p.Mobile,
 			"screenWidth": 1920, "screenHeight": 1080,
-		}, sessionID)
+		}
+		// Only ever a reduction, and floored like dsf: an absurd request must not
+		// paint the page into a handful of pixels.
+		if k := clampPaintScale(p.Scale); k < 1 {
+			metrics["scale"] = k
+		}
+		send("Emulation.setDeviceMetricsOverride", metrics, sessionID)
 		tp := 1
 		if p.Touch {
 			tp = 5
