@@ -285,8 +285,14 @@ echo "[entrypoint] Starting Xvnc on ${DISPLAY} (${WIDTH}x${FB_HEIGHT}x${DEPTH}, 
 # -SetPrimary=0 is the same story inbound: without it a client cut-text also
 # overwrites the remote PRIMARY. Only the real CLIPBOARD selection — a deliberate
 # Ctrl+C — should cross, in either direction.
+#
+# -wr: a white root. The browser keeps its window within the persona screen
+# height, so a fit taller than that (a no-viewport page on a portrait phone) leaves
+# screen rows below the window. Those show the root, and white matches the page
+# background a real phone shows there, where the default black read as a broken band.
 Xvnc "$DISPLAY" \
   -geometry "${WIDTH}x${FB_HEIGHT}" \
+  -wr \
   -depth "$DEPTH" \
   -rfbport "$VNC_PORT" \
   -localhost=1 \
