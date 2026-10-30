@@ -470,21 +470,46 @@
   // e.g. a sliding panel whose empty end sits off-screen. A real browser shows
   // that page unscrolled with nothing missing, so it reports as fitting.
   let framePainted = false;
-  try {
-    requestAnimationFrame(() => { framePainted = true; scheduleReport(); });
-  } catch (_) { framePainted = true; }
+  requestAnimationFrame(() => { framePainted = true; scheduleReport(); });
   function docScrollWidth() {
     if (!framePainted) return 0;
     const d = document.documentElement, b = document.body;
     const sw = Math.max(d ? d.scrollWidth : 0, b ? b.scrollWidth : 0);
     const sx = pageScrollX();
-    const view = d && d.clientWidth > 0 ? d.clientWidth : (window.innerWidth || 0);
-    const cr = overflowStats().cr;
-    if (view > 0 && cr > 0 && cr - sx <= view + 1) return Math.min(sw - sx, view);
+    const view = viewWidth();
+    // cr only proves nothing runs past the edge when the scan saw every element.
+    const { cr, full } = overflowStats();
+    if (view > 0 && full && cr > 0 && cr - sx <= view + 1) return Math.min(sw - sx, view);
     return Math.max(0, sw - sx);
   }
-  function pageScrollX() {
-    try { return Math.max(0, Math.round(window.scrollX || 0)); } catch (_) { return 0; }
+  function pageScrollX() { return Math.max(0, Math.round(window.scrollX || 0)); }
+  function viewWidth() {
+    const d = document.documentElement;
+    return d && d.clientWidth > 0 ? d.clientWidth : (window.innerWidth || 0);
+  }
+
+  // swc — the right overflow in sw has lasted SW_CONFIRM_MS. A page can render one
+  // frame wider than it settles, e.g. a swipe drawer laid out before the page
+  // scrolls past it, and fitting to that frame crops the settled page. The viewer
+  // fits to right overflow only once this is set. A re-measure is scheduled for the
+  // deadline, so a page that settles without any mutation, scroll or resize (a CSS
+  // transition) is still measured again before it can be confirmed.
+  const SW_CONFIRM_MS = 1000;
+  let wideSince = 0;
+  let wideTimer = null;
+  function swConfirmed(sw) {
+    const view = viewWidth();
+    if (!(view > 0 && sw > view + 1)) {
+      wideSince = 0;
+      return false;
+    }
+    const now = Date.now();
+    if (!wideSince) {
+      wideSince = now;
+      clearTimeout(wideTimer);
+      wideTimer = setTimeout(() => { overflowDirty = true; scheduleReport(); }, SW_CONFIRM_MS);
+    }
+    return now - wideSince >= SW_CONFIRM_MS;
   }
 
   // sb — px left until the top document's scroll BOTTOM (0 = at the bottom, or
@@ -614,7 +639,7 @@
   let overflowDirty = false;
   const OVERFLOW_SCAN_MAX = 4000;
   const OVERFLOW_TTL_MS = 2000;
-  let leftOverflowCache = -1, leftOverflowWidthCache = 0, contentRightCache = 0, leftOverflowAt = 0;
+  let leftOverflowCache = -1, leftOverflowWidthCache = 0, contentRightCache = 0, scanFullCache = false, leftOverflowAt = 0;
   // olw — the WIDTH of the widest clipped piece of real content.
   //
   // ol says how far content hangs off the left; olw says how wide the thing
@@ -641,17 +666,14 @@
   }
   // cr — where real content ends on the RIGHT, in page px. Media counts here (a
   // wide image is content), but never for olw, which sizes a fit to text/controls.
-  const MEDIA_SEL = 'img,video,canvas,iframe,svg';
-  function contentLeaf(el) {
-    try { return meaningfulLeaf(el) || el.matches(MEDIA_SEL); } catch (_) { return false; }
-  }
+  // full — the scan reached every laid-out element, so cr is the true extent.
 
   // All three numbers come from ONE pass: getBoundingClientRect forces layout, so a
   // second scan would double the cost of the most expensive thing this file does.
   function overflowStats() {
     const now = Date.now();
     if (!overflowDirty && leftOverflowCache >= 0 && now - leftOverflowAt < OVERFLOW_TTL_MS) {
-      return { ol: leftOverflowCache, olw: leftOverflowWidthCache, cr: contentRightCache };
+      return { ol: leftOverflowCache, olw: leftOverflowWidthCache, cr: contentRightCache, full: scanFullCache };
     }
     overflowDirty = false;
     try {
@@ -662,10 +684,10 @@
       // off-canvas drawer or its backdrop) is hidden UI a real browser never
       // shows either, and widening the layout would not bring it on screen.
       const sx = pageScrollX();
-      const de = document.documentElement;
-      const viewRight = sx + (de && de.clientWidth > 0 ? de.clientWidth : (window.innerWidth || 0));
+      const viewRight = sx + viewWidth();
       const els = document.querySelectorAll('body *');
-      for (let i = 0; i < els.length && n < OVERFLOW_SCAN_MAX; i++) {
+      let i = 0;
+      for (; i < els.length && n < OVERFLOW_SCAN_MAX; i++) {
         const el = els[i];
         const r = el.getBoundingClientRect();
         if (r.width <= 0 && r.height <= 0) continue; // not laid out
@@ -680,7 +702,8 @@
         // element is not something the user can read) where ol tolerates one.
         const sized = r.width > 0 && r.height > 0;
         // A fixed element past the right edge cannot be scrolled to: parked UI.
-        if (sized && right > contentRight && contentLeaf(el) && !(right > viewRight + 1 && isFixed())) {
+        if (sized && right > contentRight && (meaningfulLeaf(el) || el.matches('img,video,canvas,iframe,svg')) &&
+            !(right > viewRight + 1 && isFixed())) {
           contentRight = right;
         }
         if (!(left < -1 && right > 1)) continue;
@@ -692,9 +715,10 @@
       leftOverflowCache = Math.round(-Math.min(0, minLeft));
       leftOverflowWidthCache = Math.round(widest);
       contentRightCache = Math.ceil(contentRight);
+      scanFullCache = i >= els.length;
       leftOverflowAt = now;
-      return { ol: leftOverflowCache, olw: leftOverflowWidthCache, cr: contentRightCache };
-    } catch (_) { return { ol: 0, olw: 0, cr: 0 }; }
+      return { ol: leftOverflowCache, olw: leftOverflowWidthCache, cr: contentRightCache, full: scanFullCache };
+    } catch (_) { return { ol: 0, olw: 0, cr: 0, full: false }; }
   }
 
   // Whether the page needs the legacy ~980px desktop layout viewport used by
@@ -800,6 +824,7 @@
     if (IS_TOP) {
       const viewportWidth = declaredLayoutViewportWidth();
       base.sw = docScrollWidth(); base.pid = FOCUS_KEY_FRAME; base.novp = viewportWidth !== null;
+      if (swConfirmed(base.sw)) base.swc = true;
       if (viewportWidth !== null) base.vpw = viewportWidth;
       // sb: distance to the scroll bottom — drives the viewer's keyboard-
       // occlusion pan (see docScrollBottom). 0 is the load-bearing value.

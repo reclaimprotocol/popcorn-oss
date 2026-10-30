@@ -273,7 +273,7 @@ try {
 function mergeFrames() {
   const now = Date.now();
   let editable = false, rect = null, hints = null, sync = null, focusKey = null;
-  let vw = 0, vh = 0, sw = 0, sb = -1, sc = null, pid = null, origin = null, novp = false, vpw = 0, ol = 0, olw = 0, xf = null;
+  let vw = 0, vh = 0, sw = 0, swc = false, sb = -1, sc = null, pid = null, origin = null, novp = false, vpw = 0, ol = 0, olw = 0, xf = null;
   const rects = [];
   const selects = [];
   const pickers = [];
@@ -340,6 +340,8 @@ function mergeFrames() {
     // can detect a non-responsive page — the merge previously dropped these.
     if (frameId === 0) {
       if (typeof s.sw === 'number' && s.sw > 0) sw = s.sw;
+      // swc: sw's right overflow has lasted long enough to fit to (content.js swConfirmed).
+      if (s.swc === true) swc = true;
       // sb: px to the top document's scroll bottom (content.js docScrollBottom),
       // feeding the viewer's keyboard-occlusion pan. NOT the `> 0` pattern the
       // other fields use: sb === 0 ("at the bottom / no scroll") is exactly the
@@ -382,6 +384,7 @@ function mergeFrames() {
   if (blind) merged.blind = true;   // ditto — an unwhitelisted field is dropped here
   if (nc) merged.nc = nc;
   if (sw > 0) merged.sw = sw;
+  if (swc) merged.swc = true;
   if (sb >= 0) merged.sb = sb; // 0 must survive the merge — see the whitelist note above
   if (sc) merged.sc = sc;
   if (pid) merged.pid = pid;

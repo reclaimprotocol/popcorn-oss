@@ -1,6 +1,6 @@
 // content-overflow.test.mjs — the page-width measurements fit-to-width keys on.
 //
-// sw (docScrollWidth) and ol/olw/cr (overflowStats) are lifted out of the shipped
+// sw (docScrollWidth), swc (swConfirmed) and ol/olw/cr (overflowStats) are lifted out of the shipped
 // content.js and run against a stub page, so these cases exercise the real code.
 // The geometry is measured from a live mobile layout: a 310px drawer parked to the
 // left of a 412px view, which the page scrolls past (scrollX=310) so the view
@@ -29,7 +29,7 @@ function slice(from, lastFn) {
   return CONTENT_SRC.slice(start, fn) + body;
 }
 
-const WIDTH_SRC = slice('let framePainted', 'pageScrollX');
+const WIDTH_SRC = slice('let framePainted', 'swConfirmed');
 const OVERFLOW_SRC = slice('let overflowDirty', 'overflowStats');
 
 function el({ left, width, height = 20, tag = 'div', text = '', position = 'static' }) {
@@ -44,6 +44,8 @@ function el({ left, width, height = 20, tag = 'div', text = '', position = 'stat
 
 function page({ scrollX = 0, scrollWidth = 0, clientWidth = 0, elements = [] }) {
   let frame = null;
+  let now = 1000;
+  const timers = [];
   const window = { scrollX, innerWidth: clientWidth };
   const document = {
     documentElement: { scrollWidth, clientWidth },
@@ -52,14 +54,18 @@ function page({ scrollX = 0, scrollWidth = 0, clientWidth = 0, elements = [] }) 
   };
   const api = new Function(
     'window', 'document', 'getComputedStyle', 'requestAnimationFrame', 'scheduleReport',
-    WIDTH_SRC + '\n' + OVERFLOW_SRC + '\nreturn { docScrollWidth, overflowStats };',
+    'Date', 'setTimeout', 'clearTimeout',
+    WIDTH_SRC + '\n' + OVERFLOW_SRC + '\nreturn { docScrollWidth, swConfirmed, overflowStats };',
   )(
     window, document,
     (e) => ({ position: e._position }),
     (cb) => { frame = cb; },
     () => {},
+    { now: () => now },
+    (cb, ms) => { timers.push(ms); return timers.length; },
+    () => {},
   );
-  return { ...api, paint: () => frame && frame() };
+  return { ...api, document, timers, paint: () => frame && frame(), advance: (ms) => { now += ms; } };
 }
 
 test('sw waits for the first frame, when the page has applied its own scroll', () => {
@@ -127,4 +133,34 @@ test('content cut by the left edge is still reported', () => {
   const { ol, olw } = p.overflowStats();
   assert.equal(ol, 48);
   assert.equal(olw, 392);
+});
+
+test('a scan cut short by its cap does not hide right overflow', () => {
+  const filler = Array.from({ length: 4000 }, (_, i) => el({ left: 8, width: 300, text: 'row ' + i }));
+  const p = page({
+    scrollWidth: 1400, clientWidth: 390,
+    elements: [...filler, el({ left: 8, width: 1392, tag: 'table', text: 'wide table' })],
+  });
+  p.paint();
+  assert.equal(p.overflowStats().full, false);
+  assert.equal(p.docScrollWidth(), 1400);
+});
+
+test('swc is set only by a measurement taken after the overflow has lasted', () => {
+  const p = page({ scrollWidth: 1200, clientWidth: 390 });
+  assert.equal(p.swConfirmed(1200), false, 'first wide measurement');
+  assert.deepEqual(p.timers, [1000], 'a re-measure is scheduled for the deadline');
+  p.advance(999);
+  assert.equal(p.swConfirmed(1200), false);
+  p.advance(1);
+  assert.equal(p.swConfirmed(1200), true);
+});
+
+test('a page that settles before the deadline starts over', () => {
+  const p = page({ scrollWidth: 712, clientWidth: 402 });
+  assert.equal(p.swConfirmed(712), false);
+  p.advance(1000);
+  assert.equal(p.swConfirmed(402), false, 'the re-measure finds it fitting');
+  assert.equal(p.swConfirmed(712), false, 'wide again: a new wait');
+  assert.equal(p.timers.length, 2);
 });

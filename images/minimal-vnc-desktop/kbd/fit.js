@@ -46,10 +46,6 @@ const MAG_BUTTON_RATIO = 1.3;
 const FIELD_ZOOM_RATIO = 2.0;
 const FIT_MAX_W = 1440;   // cap the layout width we ask the remote to render
 const FIT_TRIGGER = 1.15; // content must overflow the viewport by >15% to fit
-// Right overflow must still be there this long after it is first seen. A page can
-// render one frame wider than it settles, e.g. a swipe drawer laid out before the
-// page scrolls past it, and fitting to that frame crops the settled page.
-const SW_CONFIRM_MS = 1000;
 // A page with no viewport meta is laid out by real mobile browsers at a ~980px
 // desktop width scaled to fit (NOT reflowed to the device width). We replicate
 // that: render it wide and fit-to-width so it looks like the real site does on a
@@ -99,13 +95,6 @@ export function createFit({
   // desktop-fit doesn't flash its device-width render first (see revealWhenSettled).
   let fitDecisionPending = true;
   let lastPid = null;
-  // Right overflow seen but not yet confirmed: { pid, confirmed, timer }.
-  let swPending = null;
-  let lastTopState = null;
-  function clearSwPending() {
-    if (swPending && swPending.timer) clearTimeout(swPending.timer);
-    swPending = null;
-  }
   let lastOrigin = null;
 
   // Fit changes RESIZE the remote viewport, and some pages reload their TOP frame
@@ -510,9 +499,7 @@ export function createFit({
 
   function handleTopDocSignal(state) {
     if (!(MAGNIFY && typeof state.pid === 'string')) return;
-    lastTopState = state;
     const navChanged = state.pid !== lastPid;
-    if (navChanged) clearSwPending();
     const originChanged = navChanged && typeof state.origin === 'string' &&
       state.origin.length > 0 && lastOrigin !== null && state.origin !== lastOrigin;
     lastPid = state.pid;
@@ -642,25 +629,12 @@ export function createFit({
       const olTarget = clippedContentTarget(state);
       const target = Math.max(swTarget, olTarget);
       // Left clipping is unreachable however long it lasts, so it fits at once.
-      // Right overflow alone waits for SW_CONFIRM_MS (see there); a signal that
-      // shows the page fitting in the meantime cancels it.
-      if (olTarget === 0 && swTarget > 0 && !(swPending && swPending.pid === state.pid && swPending.confirmed)) {
-        if (!swPending || swPending.pid !== state.pid) {
-          clearSwPending();
-          const pending = { pid: state.pid, confirmed: false, timer: null };
-          pending.timer = setTimeout(() => {
-            pending.timer = null;
-            pending.confirmed = true;
-            if (swPending === pending && lastTopState) handleTopDocSignal(lastTopState);
-          }, SW_CONFIRM_MS);
-          swPending = pending;
-          dbg('fit-to-width wait: sw=' + state.sw + ' over vw=' + state.vw);
-        }
+      // Right overflow waits until the content script confirms it has lasted
+      // (swc, see content.js swConfirmed).
+      if (olTarget === 0 && swTarget > 0 && state.swc !== true) {
         return; // the decision is still open, so the load cover stays up
       }
-      if (swTarget === 0) clearSwPending();
       if (target > 0) {
-        clearSwPending();
         // A left-clip fit opens zoomed OUT, matching the ?fixedw path: the target is
         // a modest width (412 for Pinterest, i.e. ~0.87 scale on a 360px phone), so
         // the whole-width view is readable AND the clipped edge is actually on
