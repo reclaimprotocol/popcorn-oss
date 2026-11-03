@@ -132,6 +132,23 @@ characters of a SHA-256 digest of the complete session ID. This keeps the
 provider's sticky-session token alphanumeric without collapsing distinct IDs
 that differ only by punctuation or a long suffix.
 
+With `BROWSER_TIMEZONE_FROM_PROXY=true`, the pool manager also looks up the
+exit's timezone and public IP through that sticky session, and the pod relaunches
+its browser with them before the session is returned: the browser clock matches
+the exit, and WebRTC reports the exit as its public address.
+
+A caller that applies its own proxy after allocation can pass that proxy's exit
+instead, looked up through the same sticky session:
+
+```json
+{
+  "sessionId": "browser-42",
+  "browserExit": { "timezone": "Asia/Dubai", "publicIp": "192.0.2.44" }
+}
+```
+
+Only these two values are accepted, and not together with `proxy`.
+
 The image-level reference in
 [`images/minimal-vnc-desktop/README.md`](../images/minimal-vnc-desktop/README.md)
 is authoritative for exact runtime variables.

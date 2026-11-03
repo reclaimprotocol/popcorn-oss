@@ -5,6 +5,7 @@ import { K8s } from "./k8s";
 import { buildK8sFetchRequest, getK8sClusterServer } from "./k8s-fetch";
 import { retry } from "./retry";
 import type { LiveViewE2eRequest } from "../liveview-e2e";
+import type { ProxyExit } from "../session-proxy";
 import { E2E_BINDING_SECRET_HASH_ANNOTATION, E2E_CLIENT_PUBLIC_KEY_ANNOTATION, E2E_VERSION_ANNOTATION } from "../liveview-e2e";
 
 const kc = new KubeConfig();
@@ -56,8 +57,15 @@ async function agonesFetch(path: string, opts: any = {}) {
     return fetch(`${getK8sClusterServer(kc)}${path}`, requestInit as any);
 }
 
+function exitAnnotations(exit?: ProxyExit): Record<string, string> {
+    return {
+        ...(exit?.timezone ? { "popcorn.dev/browser-timezone": exit.timezone } : {}),
+        ...(exit?.publicIp ? { "popcorn.dev/browser-public-ip": exit.publicIp } : {}),
+    };
+}
+
 export const Agones = {
-    async allocate(namespace: string = RuntimeConfig.gameServerNamespace, fleetName: string = RuntimeConfig.gameServerFleet, sessionId?: string, liveViewE2e?: LiveViewE2eRequest, browserMode: "kiosk" | "normal" = "kiosk", browserTimezone?: string): Promise<AllocationResponse> {
+    async allocate(namespace: string = RuntimeConfig.gameServerNamespace, fleetName: string = RuntimeConfig.gameServerFleet, sessionId?: string, liveViewE2e?: LiveViewE2eRequest, browserMode: "kiosk" | "normal" = "kiosk", browserExit?: ProxyExit): Promise<AllocationResponse> {
         console.log(`🎮 Requesting allocation via K8s API [${fleetName}]...`);
 
         try {
@@ -82,7 +90,7 @@ export const Agones = {
                     annotations: {
                         "popcorn.dev/session-id": sessionId,
                         "popcorn.dev/browser-mode": browserMode,
-                        ...(browserTimezone ? { "popcorn.dev/browser-timezone": browserTimezone } : {}),
+                        ...exitAnnotations(browserExit),
                         ...(liveViewE2e ? {
                             [E2E_VERSION_ANNOTATION]: String(liveViewE2e.version),
                             ...(liveViewE2e.clientPublicKey ? {
@@ -130,7 +138,7 @@ export const Agones = {
                     annotations: {
                         "popcorn.dev/session-id": sessionId,
                         "popcorn.dev/browser-mode": browserMode,
-                        ...(browserTimezone ? { "popcorn.dev/browser-timezone": browserTimezone } : {})
+                        ...exitAnnotations(browserExit)
                             }
                         }
                     });

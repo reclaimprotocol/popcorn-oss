@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { proxyExitTimezone, proxyPreset, readSessionProxy } from "./session-proxy";
+import { proxyExit, proxyPreset, readBrowserExit, readSessionProxy } from "./session-proxy";
 
 describe("session proxy request", () => {
     test("treats an omitted, null, or false proxy as direct egress", () => {
@@ -78,16 +78,16 @@ test("an uppercase placeholder keeps the ISO country case", () => {
     expect(preset).toHaveProperty("value.username", expect.stringMatching(/^username-acct-country-US-session-[0-9a-f]{32}$/));
 });
 
-describe("proxy exit timezone", () => {
+describe("proxy exit", () => {
     const config = { host: "proxy.example", port: 22225, scheme: "http" as const, username: "user-session-abc", password: "p@ss", bypassList: [] };
 
     test("asks a geo service through the session's proxy", async () => {
         const calls: Array<{ url: string; proxy?: string }> = [];
         const fetchImpl = (async (url: string, init: any) => {
             calls.push({ url, proxy: init.proxy });
-            return Response.json({ timezone: { id: "America/Los_Angeles" } });
+            return Response.json({ timezone: { id: "America/Los_Angeles" }, ip: "203.0.113.7" });
         }) as unknown as typeof fetch;
-        expect(await proxyExitTimezone("US", config, fetchImpl)).toBe("America/Los_Angeles");
+        expect(await proxyExit("US", config, fetchImpl)).toEqual({ timezone: "America/Los_Angeles", publicIp: "203.0.113.7" });
         expect(calls).toEqual([{ url: "https://ipwho.is/", proxy: "http://user-session-abc:p%40ss@proxy.example:22225" }]);
     });
 
@@ -101,13 +101,13 @@ describe("proxy exit timezone", () => {
             }
             return isIpwho
                 ? new Response("busy", { status: 429 })
-                : Response.json({ timezone: "America/Chicago" });
+                : Response.json({ timezone: "America/Chicago", query: "198.51.100.9" });
         }) as unknown as typeof fetch;
-        expect(await proxyExitTimezone("US", config, second)).toBe("America/Chicago");
+        expect(await proxyExit("US", config, second)).toEqual({ timezone: "America/Chicago", publicIp: "198.51.100.9" });
 
         const failing = (async () => { throw new Error("offline"); }) as unknown as typeof fetch;
-        expect(await proxyExitTimezone("DE", config, failing)).toBe("Europe/Berlin");
-        expect(await proxyExitTimezone("KE", config, failing)).toBe("Africa/Nairobi");
+        expect(await proxyExit("DE", config, failing)).toEqual({ timezone: "Europe/Berlin" });
+        expect(await proxyExit("KE", config, failing)).toEqual({ timezone: "Africa/Nairobi" });
     });
 
     test("has a fallback zone for every accepted country", async () => {
@@ -117,13 +117,38 @@ describe("proxy exit timezone", () => {
         for (const a of letters) for (const b of letters) {
             if ("error" in readSessionProxy({ proxy: { country: a + b } })) continue;
             accepted++;
-            expect(await proxyExitTimezone(a + b, config, failing)).toBeDefined();
+            expect((await proxyExit(a + b, config, failing)).timezone).toBeDefined();
         }
         expect(accepted).toBe(249);
     });
 
     test("ignores a malformed answer", async () => {
         const fetchImpl = (async () => Response.json({ timezone: { id: "\"};rm -rf" } })) as unknown as typeof fetch;
-        expect(await proxyExitTimezone("JP", config, fetchImpl)).toBe("Asia/Tokyo");
+        expect(await proxyExit("JP", config, fetchImpl)).toEqual({ timezone: "Asia/Tokyo" });
+    });
+
+    test("prefers an IPv4 exit address over IPv6", async () => {
+        const fetchImpl = (async (url: string) => new URL(url).origin === "https://ipwho.is"
+            ? Response.json({ timezone: { id: "Asia/Dubai" }, ip: "2001:db8::1" })
+            : Response.json({ timezone: "Asia/Dubai", query: "192.0.2.44" })) as unknown as typeof fetch;
+        expect(await proxyExit("AE", config, fetchImpl)).toEqual({ timezone: "Asia/Dubai", publicIp: "192.0.2.44" });
+
+        const v6only = (async () => Response.json({ timezone: { id: "Asia/Dubai" }, ip: "2001:db8::1" })) as unknown as typeof fetch;
+        expect(await proxyExit("AE", config, v6only)).toEqual({ timezone: "Asia/Dubai", publicIp: "2001:db8::1" });
+    });
+});
+
+describe("caller proxy exit", () => {
+    test("accepts only a timezone and a public IP", () => {
+        expect(readBrowserExit({})).toEqual({});
+        expect(readBrowserExit({ browserExit: { timezone: "Asia/Dubai", publicIp: "192.0.2.44" } }))
+            .toEqual({ value: { timezone: "Asia/Dubai", publicIp: "192.0.2.44" } });
+        expect(readBrowserExit({ browserExit: {} })).toHaveProperty("error");
+        expect(readBrowserExit({ browserExit: { publicIp: "proxy.example" } })).toHaveProperty("error");
+        expect(readBrowserExit({ browserExit: { timezone: "Asia/Dubai", password: "x" } })).toHaveProperty("error");
+    });
+
+    test("cannot be combined with a pool-managed proxy", () => {
+        expect(readBrowserExit({ proxy: { country: "AE" }, browserExit: { timezone: "Asia/Dubai" } })).toHaveProperty("error");
     });
 });

@@ -22,7 +22,8 @@ import {
 } from "./src/session-access";
 import { buildSessionUrls, websocketBaseUrl } from "./src/session-urls";
 import { closeProxyCdpSession, presetExtensionProxy } from "./src/extension-proxy";
-import { proxyExitTimezone, proxyPreset, readSessionProxy, type SessionProxy } from "./src/session-proxy";
+import { waitForRelaunchedBrowser } from "./src/relaunched-browser";
+import { proxyExit, proxyPreset, readBrowserExit, readSessionProxy, type ProxyExit, type SessionProxy } from "./src/session-proxy";
 import {
     LIVEVIEW_E2E_PROTOCOL,
     readLiveViewE2eRequest,
@@ -33,8 +34,9 @@ const app = new Hono();
 const PORT = 3000;
 
 const CLUSTER_NAME = process.env.CLUSTER_NAME || "unknown";
-// Browser images that read popcorn.dev/browser-timezone at launch (ShardX)
-// restart into the proxy exit's timezone; others would restart for nothing.
+// Browser images that read popcorn.dev/browser-timezone and
+// popcorn.dev/browser-public-ip at launch (ShardX) restart into the proxy
+// exit's timezone and WebRTC address; others would restart for nothing.
 const BROWSER_TIMEZONE_FROM_PROXY = process.env.BROWSER_TIMEZONE_FROM_PROXY === "true";
 const GAME_SERVER_NAMESPACE = RuntimeConfig.gameServerNamespace;
 const GAME_SERVER_FLEET = RuntimeConfig.gameServerFleet;
@@ -270,6 +272,7 @@ async function allocateSessionLocally(
     proxy: SessionProxy = null,
     liveViewE2e?: LiveViewE2eRequest,
     browserMode: "kiosk" | "normal" = "kiosk",
+    callerExit?: ProxyExit,
 ) {
     const allocationRequestedAt = new Date();
     if (requestedSessionId && !isValidSessionId(requestedSessionId)) {
@@ -292,31 +295,22 @@ async function allocateSessionLocally(
     try {
         const preset = proxy ? proxyPreset(proxy.country, sessionId) : null;
         if (preset && "error" in preset) throw new Error(preset.error);
-        const browserTimezone = proxy && preset && BROWSER_TIMEZONE_FROM_PROXY
-            ? await proxyExitTimezone(proxy.country, preset.value)
-            : undefined;
-        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e, browserMode, browserTimezone);
+        // A caller that applies its own proxy after allocation passes that
+        // proxy's exit instead (readBrowserExit).
+        const browserExit = !BROWSER_TIMEZONE_FROM_PROXY ? undefined
+            : proxy && preset ? await proxyExit(proxy.country, preset.value)
+            : callerExit;
+        const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e, browserMode, browserExit);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
         const port = browserRoutePort(allocation.ports);
         const podUrl = `http://${allocation.address}:${port}`;
 
-        if (browserMode === "normal" || browserTimezone) {
+        if (browserMode === "normal" || browserExit?.timezone || browserExit?.publicIp) {
             // The in-pod launcher reads allocation metadata from its local
-            // Agones sidecar, then replaces only Chromium.
-            // Wait past that edge before accepting the first healthy full-CDP
-            // response so callers never receive the old kiosk process.
-            await Bun.sleep(750);
-            const browserReady = await retry(async () => {
-                try {
-                    const response = await fetch(`http://${allocation.address}:9226/json/version`, {
-                        signal: AbortSignal.timeout(1_000),
-                    });
-                    return response.ok;
-                } catch {
-                    return false;
-                }
-            }, { attempts: 20, delayMs: 250, shouldRetryResult: (ready) => !ready });
+            // Agones sidecar, then replaces only Chromium. Callers must never
+            // receive the old kiosk process (see waitForRelaunchedBrowser).
+            const browserReady = await waitForRelaunchedBrowser(allocation.address, gameServerAllocatedAt.getTime());
             if (!browserReady) throw new Error(browserMode === "normal" ? "NORMAL_BROWSER_RESTART_FAILED" : "BROWSER_RESTART_FAILED");
         }
 
@@ -490,6 +484,8 @@ async function createControlPlaneSession(c: any): Promise<Response> {
         }
         const proxy = readSessionProxy(body);
         if ("error" in proxy) return c.json({ error: proxy.error }, 400);
+        const browserExit = readBrowserExit(body);
+        if ("error" in browserExit) return c.json({ error: browserExit.error }, 400);
         const browserMode = body?.browserMode === undefined ? "kiosk" : body.browserMode;
         if (browserMode !== "kiosk" && browserMode !== "normal") {
             return c.json({ error: "browserMode must be kiosk or normal" }, 400);
@@ -509,6 +505,7 @@ async function createControlPlaneSession(c: any): Promise<Response> {
             proxy.value,
             liveViewE2e.value,
             browserMode,
+            browserExit.value,
         );
         return c.json(buildSessionDetails(c, allocation.sessionId, allocation.podData, publicBaseUrl));
     } catch (e) {
