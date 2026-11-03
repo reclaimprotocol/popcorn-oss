@@ -132,7 +132,7 @@ characters of a SHA-256 digest of the complete session ID. This keeps the
 provider's sticky-session token alphanumeric without collapsing distinct IDs
 that differ only by punctuation or a long suffix.
 
-With `BROWSER_TIMEZONE_FROM_PROXY=true`, the pool manager also looks up the
+With `poolManager.browserTimezoneFromProxy=true` (`BROWSER_TIMEZONE_FROM_PROXY`), the pool manager also looks up the
 exit's timezone and public IP through that sticky session, and the pod relaunches
 its browser with them before the session is returned: the browser clock matches
 the exit, and WebRTC reports the exit as its public address.

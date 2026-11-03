@@ -75,6 +75,8 @@ spec:
               value: {{ default .Release.Namespace .Values.poolManager.gameServerNamespace | quote }}
             - name: GAME_SERVER_FLEET
               value: {{ .Values.poolManager.gameServerFleet | quote }}
+            - name: BROWSER_TIMEZONE_FROM_PROXY
+              value: {{ .Values.poolManager.browserTimezoneFromProxy | default false | toString | quote }}
             - name: HTTPS_PROXY_URL
               valueFrom:
                 secretKeyRef:
