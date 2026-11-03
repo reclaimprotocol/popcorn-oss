@@ -43,7 +43,7 @@ import { getX402Analytics } from './src/x402-analytics';
 import { X402Store } from './src/x402-store';
 import { selectTrustedClientAddress } from './src/x402-utils';
 import { readBoundedJsonBody } from './src/http-body';
-import { readCountryProxy } from './src/proxy-country';
+import { readBrowserExit, readCountryProxy } from './src/proxy-country';
 import { createLiveViewE2eEnrollment, readLiveViewE2eRequest, readLiveViewEncryption, withLiveViewE2eBootstrapFragment } from './src/liveview-e2e';
 import {
   renderClientSessionsPanelHtml,
@@ -487,6 +487,8 @@ async function routeSession(
   const expiresAt = ttlSeconds ? expiresAtFromTtlSeconds(ttlSeconds) : undefined;
   const proxy = readCountryProxy(body);
   if ('error' in proxy) return { status: 400, body: { error: proxy.error } };
+  const browserExit = readBrowserExit(body);
+  if ('error' in browserExit) return { status: 400, body: { error: browserExit.error } };
   const browserMode = body?.browserMode === undefined ? 'kiosk' : body.browserMode;
   if (browserMode !== 'kiosk' && browserMode !== 'normal') {
     return { status: 400, body: { error: 'browserMode must be kiosk or normal' } };
@@ -530,6 +532,7 @@ async function routeSession(
       expiresAt,
       ...(liveViewE2e.value ? { liveViewE2e: liveViewE2e.value } : {}),
       ...(proxy.value ? { proxy: proxy.value } : {}),
+      ...(browserExit.value ? { browserExit: browserExit.value } : {}),
       browserMode,
     }, ControlPlaneConfig.serviceAuthToken);
     attempts.push(result.attempt);

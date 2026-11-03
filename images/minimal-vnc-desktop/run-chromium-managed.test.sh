@@ -15,12 +15,14 @@ cat >"$test_dir/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 mode="$(cat "$TEST_MODE_FILE")"
 timezone="$(cat "$TEST_TIMEZONE_FILE" 2>/dev/null || true)"
-printf '{"metadata":{"annotations":{"popcorn.dev/browser-mode":"%s"%s}}}' "$mode" \
-  "${timezone:+,\"popcorn.dev/browser-timezone\":\"$timezone\"}"
+public_ip="$(cat "$TEST_PUBLIC_IP_FILE" 2>/dev/null || true)"
+printf '{"metadata":{"annotations":{"popcorn.dev/browser-mode":"%s"%s%s}}}' "$mode" \
+  "${timezone:+,\"popcorn.dev/browser-timezone\":\"$timezone\"}" \
+  "${public_ip:+,\"popcorn.dev/browser-public-ip\":\"$public_ip\"}"
 EOF
 cat >"$test_dir/launcher" <<'EOF'
 #!/usr/bin/env bash
-printf '%s|%s%s\n' "$BROWSER_KIOSK" "${BROWSER_PROFILE_DIR:-default}" "${BROWSER_TIMEZONE:+|$BROWSER_TIMEZONE}" >>"$TEST_LAUNCH_LOG"
+printf '%s|%s%s%s\n' "$BROWSER_KIOSK" "${BROWSER_PROFILE_DIR:-default}" "${BROWSER_TIMEZONE:+|$BROWSER_TIMEZONE}" "${BROWSER_PUBLIC_IP:+|$BROWSER_PUBLIC_IP}" >>"$TEST_LAUNCH_LOG"
 trap 'exit 0' TERM INT
 while true; do sleep 1; done
 EOF
@@ -30,6 +32,7 @@ start_managed() {
   PATH="$test_dir/bin:$PATH" \
   TEST_MODE_FILE="$test_dir/mode" \
   TEST_TIMEZONE_FILE="$test_dir/timezone" \
+  TEST_PUBLIC_IP_FILE="$test_dir/public_ip" \
   TEST_LAUNCH_LOG="$test_dir/launches" \
   CHROMIUM_LAUNCHER="$test_dir/launcher" \
   BROWSER_MODE_POLL_SECONDS=0.05 \
@@ -53,7 +56,8 @@ wait_for_launch 'false|.*/user-data-normal'
 [[ "$(grep -c '^true|default$' "$test_dir/launches")" == 1 ]]
 [[ "$(grep -c '^false|.*/user-data-normal$' "$test_dir/launches")" == 1 ]]
 
-# A proxied kiosk session restarts the browser with the proxy's timezone.
+# A proxied kiosk session restarts the browser, on a clean profile, with the
+# proxy exit's timezone and public IP.
 kill "$managed_pid"
 wait "$managed_pid" 2>/dev/null || true
 rm -f "$test_dir/launches"
@@ -61,6 +65,8 @@ printf unallocated >"$test_dir/mode"
 start_managed
 wait_for_launch 'true|default'
 printf America/Los_Angeles >"$test_dir/timezone"
+printf 203.0.113.7 >"$test_dir/public_ip"
 printf kiosk >"$test_dir/mode"
-wait_for_launch 'true|default|America/Los_Angeles'
-[[ "$(cat "$test_dir/launches")" == $'true|default\ntrue|default|America/Los_Angeles' ]]
+wait_for_launch 'true|.*/user-data-session|America/Los_Angeles|203.0.113.7'
+[[ "$(wc -l <"$test_dir/launches")" -eq 2 ]]
+[[ "$(head -1 "$test_dir/launches")" == 'true|default' ]]
