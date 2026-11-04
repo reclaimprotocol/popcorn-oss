@@ -201,10 +201,18 @@ spec:
                   value: {{ .Values.region | quote }}
                 - name: TPM_EVENT_LOG_PATH
                   value: /var/run/cc/tpm0/binary_bios_measurements
+{{- if .Values.browserRuntimeAttestor.finalize.enabled }}
+                - name: FINALIZE_TOKEN_FILE
+                  value: /run/popcorn-attestor-finalize/token
+{{- end }}
               volumeMounts:
                 - mountPath: /var/run/cc/tpm0
                   name: tpm-eventlog
                   readOnly: true
+{{- if .Values.browserRuntimeAttestor.finalize.enabled }}
+                - mountPath: /run/popcorn-attestor-finalize
+                  name: attestor-finalize
+{{- end }}
 {{- end }}
 {{- range $extensionName, $extension := .Values.sessionExtensions }}
 {{- if dig "enabled" true $extension }}
@@ -225,4 +233,10 @@ spec:
               hostPath:
                 path: /sys/kernel/security/tpm0
                 type: Directory
+{{- if .Values.browserRuntimeAttestor.finalize.enabled }}
+            - name: attestor-finalize
+              emptyDir:
+                medium: Memory
+                sizeLimit: 1Mi
+{{- end }}
 {{- end }}
