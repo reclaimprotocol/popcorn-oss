@@ -304,7 +304,10 @@ func generateTEEProof(ctx context.Context, state *runtimeState, nonce string) (s
 		return "", newCodedError("PROJECT_RESOLUTION_FAILED", http.StatusInternalServerError, "failed to resolve gcp project id", err)
 	}
 
-	client, err := confidentialcomputing.NewClient(ctx)
+	// REST, not gRPC: since 2026-10-30 the gRPC endpoint returns PermissionDenied
+	// ("Write access to project ... was denied") for CreateChallenge even though IAM
+	// grants confidentialcomputing.challenges.create; the REST endpoint accepts it.
+	client, err := confidentialcomputing.NewRESTClient(ctx)
 	if err != nil {
 		return "", newCodedError("ATTESTATION_CLIENT_FAILED", http.StatusInternalServerError, "failed to create confidential computing client", err)
 	}
