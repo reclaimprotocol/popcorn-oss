@@ -282,9 +282,19 @@ func TestInitFinalizeTokenWritesFreshReadableToken(t *testing.T) {
 	}
 }
 
-func TestInitFinalizeTokenFailsForMissingDirectory(t *testing.T) {
-	if _, err := initFinalizeToken(filepath.Join(t.TempDir(), "missing", "token")); err == nil {
-		t.Fatal("initFinalizeToken() error = nil, want missing directory error")
+func TestInitFinalizeTokenDisabledWithoutSharedDirectory(t *testing.T) {
+	if token, err := initFinalizeToken(filepath.Join(t.TempDir(), "missing", "token")); err != nil || token != "" {
+		t.Fatalf("initFinalizeToken() = %q, %v; want disabled", token, err)
+	}
+}
+
+func TestInitFinalizeTokenRejectsInvalidSharedDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(path, []byte("synthetic"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := initFinalizeToken(filepath.Join(path, "token")); err == nil {
+		t.Fatal("initFinalizeToken() accepted a regular file as the shared directory")
 	}
 }
 

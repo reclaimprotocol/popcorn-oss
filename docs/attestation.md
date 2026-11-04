@@ -146,7 +146,8 @@ At startup the attestor writes a random per-process bearer token to
 `/run/popcorn-attestor-finalize/token` on the memory-backed `attestor-finalize`
 volume. Only containers that mount that volume can read it. Mount it read-only
 in the session extension that finalizes results, and never in the browser
-runtime:
+runtime. The shared directory enables the endpoint; without it, `/finalize` is
+not registered. The token path is fixed in code and needs no environment variable:
 
 ```yaml
 volumeMounts:

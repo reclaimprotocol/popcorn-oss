@@ -9,8 +9,9 @@ collects GCP confidential-computing evidence, and returns a nonce-bound proof.
 - `GET /health` returns `200 OK` when the service is running.
 - `GET /proof?nonce=<hex>` returns the versioned attestation response.
 - `POST /finalize` binds a same-pod caller's proof hash, public key and session
-  ID into a fresh attestation. It exists only when `FINALIZE_TOKEN_FILE` is set
-  and requires the bearer token written there. See
+  ID into a fresh attestation. It exists only when the shared directory
+  `/run/popcorn-attestor-finalize` is present and requires the bearer token
+  written to `token` there. See
   [Same-pod finalization](../../docs/attestation.md#same-pod-finalization).
 
 The service listens on TCP port `8085`. The browser-fleet chart exposes it only
@@ -24,10 +25,12 @@ when `browserRuntimeAttestor.enabled=true`.
 - `/etc/cosign.pub`, used to verify both deployed image signatures.
 
 Configuration is supplied through `ATTESTATION_TOKEN_AUDIENCE`,
-`CONFIDENTIAL_COMPUTING_LOCATION`, `TPM_EVENT_LOG_PATH`, the optional
-`FINALIZE_TOKEN_FILE`, and the Pod-provided
+`CONFIDENTIAL_COMPUTING_LOCATION`, `TPM_EVENT_LOG_PATH`, and the Pod-provided
 `HOSTNAME` value. See [Attestation](../../docs/attestation.md) for the complete
 cluster, IAM, signing, and Helm setup.
+
+Finalization needs no environment variable: the optional shared volume enables
+it, and the token location is fixed in code.
 
 ## Develop
 

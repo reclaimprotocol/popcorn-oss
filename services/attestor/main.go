@@ -62,6 +62,7 @@ const (
 	maxFinalizePublicKey   = 512
 	maxFinalizeSessionID   = 256
 	finalizeTokenByteCount = 32
+	finalizeTokenFile      = "/run/popcorn-attestor-finalize/token"
 )
 
 type proofResponse struct {
@@ -148,7 +149,7 @@ func main() {
 
 	http.HandleFunc("/proof", handleProof)
 
-	finalizeToken, err := initFinalizeToken(os.Getenv("FINALIZE_TOKEN_FILE"))
+	finalizeToken, err := initFinalizeToken(finalizeTokenFile)
 	if err != nil {
 		log.Fatalf("failed to initialize finalize token: %v", err)
 	}
@@ -303,11 +304,16 @@ func finalizeBinding(req finalizeRequest) string {
 }
 
 // initFinalizeToken writes a fresh per-process bearer token for same-pod
-// callers. An empty path leaves the finalize endpoint disabled.
+// callers. An absent shared directory leaves the finalize endpoint disabled.
 func initFinalizeToken(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return "", nil
+	}
+	if _, err := os.Stat(filepath.Dir(path)); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("inspect token directory: %w", err)
 	}
 
 	raw := make([]byte, finalizeTokenByteCount)

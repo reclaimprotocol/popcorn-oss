@@ -201,10 +201,6 @@ spec:
                   value: {{ .Values.region | quote }}
                 - name: TPM_EVENT_LOG_PATH
                   value: /var/run/cc/tpm0/binary_bios_measurements
-{{- if .Values.browserRuntimeAttestor.finalize.enabled }}
-                - name: FINALIZE_TOKEN_FILE
-                  value: /run/popcorn-attestor-finalize/token
-{{- end }}
               volumeMounts:
                 - mountPath: /var/run/cc/tpm0
                   name: tpm-eventlog
