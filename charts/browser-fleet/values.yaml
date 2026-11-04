@@ -58,6 +58,12 @@ browserPolicy:
 browserRuntimeAttestor:
   enabled: false
   imagePullPolicy: IfNotPresent
+  # Authenticated same-pod POST /finalize. The attestor writes a per-process
+  # bearer token to the memory-backed `attestor-finalize` volume; only session
+  # extension containers that mount that volume (read-only, at
+  # /run/popcorn-attestor-finalize) can read it. The browser runtime never does.
+  finalize:
+    enabled: false
 
 browserRuntimeAttestorImage: ghcr.io/reclaimprotocol/popcorn-oss/browser-runtime-attestor:latest
 

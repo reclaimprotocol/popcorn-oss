@@ -1,17 +1,24 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -45,6 +52,17 @@ const (
 	DefaultAttestationAudience    = "popcorn-attestor"
 	DefaultAttestationHTTPTimeout = 30 * time.Second
 	DefaultTPMEventLogPath        = "/var/run/cc/tpm0/binary_bios_measurements"
+
+	// Finalization binds a same-pod caller's result to the runtime attestation.
+	// The prefix is not hex, so /proof can never mint a finalization nonce.
+	FinalizationVersion    = "v1"
+	FinalizeNoncePrefix    = "finalize:"
+	FinalizeBindingDomain  = "popcorn/attestor/finalize/v1"
+	maxFinalizeBodyBytes   = 4 << 10
+	maxFinalizePublicKey   = 512
+	maxFinalizeSessionID   = 256
+	finalizeTokenByteCount = 32
+	finalizeTokenFile      = "/run/popcorn-attestor-finalize/token"
 )
 
 type proofResponse struct {
@@ -56,8 +74,24 @@ type proofResponse struct {
 	Workload      *proofContainerRef `json:"workload,omitempty"`
 	Verifier      *proofContainerRef `json:"verifier,omitempty"`
 	Attestation   *proofAttestation  `json:"attestation,omitempty"`
+	Finalization  *proofFinalization `json:"finalization,omitempty"`
 	Error         *proofError        `json:"error,omitempty"`
 }
+
+type proofFinalization struct {
+	Version   string `json:"version"`
+	ProofHash string `json:"proof_hash"`
+	PublicKey string `json:"public_key"`
+	SessionID string `json:"session_id"`
+}
+
+type finalizeRequest struct {
+	ProofHash string `json:"proof_hash"`
+	PublicKey string `json:"public_key"`
+	SessionID string `json:"session_id"`
+}
+
+type proofGenerator func(ctx context.Context, nonce string) (*proofResponse, error)
 
 type proofContainerRef struct {
 	ContainerName string `json:"container_name"`
@@ -114,6 +148,15 @@ func main() {
 	log.Printf("starting attestor service on port %s", Port)
 
 	http.HandleFunc("/proof", handleProof)
+
+	finalizeToken, err := initFinalizeToken(finalizeTokenFile)
+	if err != nil {
+		log.Fatalf("failed to initialize finalize token: %v", err)
+	}
+	if finalizeToken != "" {
+		http.HandleFunc("/finalize", finalizeHandler(finalizeToken, generateProof))
+		log.Printf("finalize endpoint enabled")
+	}
 	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
@@ -143,6 +186,163 @@ func handleProof(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(proof)
+}
+
+// finalizeHandler binds a caller-computed proof hash, public key and session ID
+// into a fresh runtime attestation. Only same-pod containers that mount the
+// token file can call it; it is never part of the public /proof surface.
+func finalizeHandler(token string, prove proofGenerator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeProofError(w, newCodedError("METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed, "finalize requires POST", nil))
+			return
+		}
+		if !validFinalizeAuthorization(r.Header.Get("Authorization"), token) {
+			writeProofError(w, newCodedError("UNAUTHORIZED", http.StatusUnauthorized, "finalize requires the local bearer token", nil))
+			return
+		}
+
+		req, err := decodeFinalizeRequest(w, r)
+		if err != nil {
+			writeProofError(w, err)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), DefaultAttestationHTTPTimeout)
+		defer cancel()
+
+		proof, err := prove(ctx, finalizeBinding(req))
+		if err != nil {
+			writeProofError(w, err)
+			return
+		}
+		proof.Finalization = &proofFinalization{
+			Version:   FinalizationVersion,
+			ProofHash: req.ProofHash,
+			PublicKey: req.PublicKey,
+			SessionID: req.SessionID,
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(proof)
+	}
+}
+
+func validFinalizeAuthorization(header, token string) bool {
+	if token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(header), []byte("Bearer "+token)) == 1
+}
+
+func decodeFinalizeRequest(w http.ResponseWriter, r *http.Request) (finalizeRequest, error) {
+	var req finalizeRequest
+	invalid := func(message string, err error) (finalizeRequest, error) {
+		return finalizeRequest{}, newCodedError("FINALIZE_REQUEST_INVALID", http.StatusBadRequest, message, err)
+	}
+
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		return invalid("finalize requires an application/json body", err)
+	}
+
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxFinalizeBodyBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		return invalid("finalize body must be one JSON object with proof_hash, public_key and session_id", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return invalid("finalize body must contain exactly one JSON object", err)
+	}
+
+	if len(req.ProofHash) != sha256.Size*2 || strings.ToLower(req.ProofHash) != req.ProofHash {
+		return invalid("proof_hash must be 64 lowercase hex characters", nil)
+	}
+	if _, err := hex.DecodeString(req.ProofHash); err != nil {
+		return invalid("proof_hash must be 64 lowercase hex characters", err)
+	}
+	if !visibleASCII(req.PublicKey, maxFinalizePublicKey) {
+		return invalid(fmt.Sprintf("public_key must be 1-%d visible ASCII characters", maxFinalizePublicKey), nil)
+	}
+	if !visibleASCII(req.SessionID, maxFinalizeSessionID) {
+		return invalid(fmt.Sprintf("session_id must be 1-%d visible ASCII characters", maxFinalizeSessionID), nil)
+	}
+	return req, nil
+}
+
+func visibleASCII(value string, maxLen int) bool {
+	if value == "" || len(value) > maxLen {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x21 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+// finalizeBinding hashes length-prefixed fields under a fixed domain:
+// domain NUL u32be(32) proof_hash_bytes u32be(n) public_key u32be(n) session_id.
+func finalizeBinding(req finalizeRequest) string {
+	proofHash, _ := hex.DecodeString(req.ProofHash)
+
+	var payload bytes.Buffer
+	payload.WriteString(FinalizeBindingDomain)
+	payload.WriteByte(0)
+	for _, field := range [][]byte{proofHash, []byte(req.PublicKey), []byte(req.SessionID)} {
+		_ = binary.Write(&payload, binary.BigEndian, uint32(len(field)))
+		payload.Write(field)
+	}
+
+	sum := sha256.Sum256(payload.Bytes())
+	return FinalizeNoncePrefix + hex.EncodeToString(sum[:])
+}
+
+// initFinalizeToken writes a fresh per-process bearer token for same-pod
+// callers. An absent shared directory leaves the finalize endpoint disabled.
+func initFinalizeToken(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(filepath.Dir(path)); errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("inspect token directory: %w", err)
+	}
+
+	raw := make([]byte, finalizeTokenByteCount)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	token := hex.EncodeToString(raw)
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".finalize-token-*")
+	if err != nil {
+		return "", fmt.Errorf("create token file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(token); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("write token file: %w", err)
+	}
+	// The mounting volume is the access boundary; sidecars may run as other users.
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return "", fmt.Errorf("chmod token file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("close token file: %w", err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return "", fmt.Errorf("install token file: %w", err)
+	}
+	return token, nil
 }
 
 func generateProof(ctx context.Context, nonce string) (*proofResponse, error) {
