@@ -551,12 +551,14 @@ export function createFit({
       // it must not suppress this destination's first fit decision.
       lastFitChangeAt = 0;
     }
-    if (navChanged && fitMode && fitNoViewport && !state.novp) {
+    if (fitMode && fitNoViewport && !state.novp) {
       // The old document was a Hanyang-style no-viewport page, but this one is
       // responsive. This is a real destination change, not the old document
       // reloading because we fitted it. Do this BEFORE the generic settle-window
       // latch so a same-origin sign-in or redirect cannot retain desktop fit.
-      dbg('fit exit: responsive destination after no-viewport page');
+      // The same document counts too: a viewport meta can arrive after the fit
+      // was entered (inserted by script), and the page is responsive from then on.
+      dbg(navChanged ? 'fit exit: responsive destination after no-viewport page' : 'fit exit: viewport meta arrived');
       fitLatched = false;
       fitToggleTimes = [];
       exitFit();
