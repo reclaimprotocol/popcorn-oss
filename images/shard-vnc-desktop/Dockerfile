@@ -1,6 +1,11 @@
 # Build from the repository root. ShardX is an opt-in local runtime.
 ARG GOLANG_IMAGE=docker.io/golang:1.26@sha256:5f3787b7f902c07c7ec4f3aa91a301a3eda8133aa32661a3b3a3a86ab3a68a36
 ARG NODE_IMAGE=docker.io/node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae2e30ec9e735122f38d
+# Where the ShardX runtime comes from: "download" installs the archives pinned in
+# artifacts.lock; "image" copies the runtime already installed in SHARD_RUNTIME_IMAGE
+# (a previous build of this image), for when the pinned archives are no longer served.
+ARG SHARD_RUNTIME_FROM=download
+ARG SHARD_RUNTIME_IMAGE=scratch
 FROM ${GOLANG_IMAGE} AS proxy-builder
 WORKDIR /src
 COPY images/minimal-vnc-desktop/proxy/go.mod images/minimal-vnc-desktop/proxy/go.sum ./
@@ -30,6 +35,17 @@ RUN python3 /tmp/rename-fonts.py /out/fonts-windows \
       /usr/share/fonts/truetype/noto/NotoColorEmoji.ttf \
     && test -s /out/fonts-windows/NotoSansCJK-Regular.ttc && test -s /out/fonts-windows/NotoSansDevanagari-Regular.ttf
 
+FROM docker.io/python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS runtime-download
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/shard
+COPY images/shard-vnc-desktop/runtime.json images/shard-vnc-desktop/artifacts.lock ./
+COPY images/shard-vnc-desktop/install-runtime.py ./
+RUN python3 install-runtime.py
+
+FROM ${SHARD_RUNTIME_IMAGE} AS runtime-image
+
+FROM runtime-${SHARD_RUNTIME_FROM} AS runtime
+
 FROM ${NODE_IMAGE}
 ARG TARGETARCH
 RUN test "$TARGETARCH" = amd64
@@ -49,8 +65,12 @@ WORKDIR /opt/shard
 COPY images/shard-vnc-desktop/package*.json ./
 RUN npm ci --ignore-scripts --omit=dev && npm cache clean --force
 COPY images/shard-vnc-desktop/runtime.json images/shard-vnc-desktop/artifacts.lock ./
-COPY images/shard-vnc-desktop/install-runtime.py ./
-RUN python3 install-runtime.py
+COPY --from=runtime /opt/shard/runtime /opt/shard/runtime
+# Either source must be the engine runtime.json describes; the launcher pins its
+# version, and a copied runtime is otherwise unchecked.
+RUN python3 -c "import json, mmap; v = json.load(open('runtime.json'))['chromium_version']; \
+f = open('runtime/ShardX-Linux/chrome', 'rb'); \
+assert mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ).find(v.encode()) >= 0, 'ShardX runtime is not Chromium ' + v"
 COPY --from=proxy-builder /out/novnc-proxy /usr/local/bin/novnc-proxy
 COPY --chmod=0755 images/minimal-vnc-desktop/entrypoint.sh /usr/local/bin/minimal-vnc-entrypoint
 # Windows-named faces are the only fonts the browser sees.
