@@ -100,7 +100,7 @@ test('unmodified printable keydown is ignored (input/composition owns it)', asyn
 test('committed input value is sent and the proxy cleared', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
   proxy.value = 'hey';
-  fire(proxy, 'input', {});
+  fire(proxy, 'input', { inputType: 'insertText' });
   assert.deepEqual(rfb.tapped(), keysymsFor('hey'));
   assert.equal(proxy.value, '');
 });
@@ -346,4 +346,39 @@ test('the editing allowlist still forwards', async () => {
     assert.deepEqual(rfb.chords(),
       [[0xffe3, true], [keysym, true], [keysym, false], [0xffe3, false]], props.key);
   }
+});
+
+// A fill (password manager / agent autofill) replaces the remote field, so a fill
+// that fires twice — the double-paste seen with an agent vault on Kaggle — leaves
+// one copy instead of two.
+const CTRL_A = [[0xffe3, true], [0x61, true], [0x61, false], [0xffe3, false]];
+for (const inputType of ['insertReplacementText', undefined]) {
+  test(`a fill (${inputType || 'synthetic input'}) replaces the remote field each time`, async () => {
+    const { rfb, proxy } = await freshViewer(createMockRfb);
+    for (let i = 0; i < 2; i++) {
+      proxy.value = 'hunter2!';
+      fire(proxy, 'input', inputType ? { inputType } : {});
+    }
+    assert.deepEqual(rfb.chords(), [...CTRL_A, ...CTRL_A]);
+    assert.deepEqual(rfb.tapped(), [BS, ...keysymsFor('hunter2!'), BS, ...keysymsFor('hunter2!')]);
+    assert.equal(proxy.value, '');
+  });
+}
+
+test('chunked typing (insertText) still appends without select-all', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  proxy.value = 'user@';
+  fire(proxy, 'input', { inputType: 'insertText' });
+  proxy.value = 'example.com';
+  fire(proxy, 'input', { inputType: 'insertText' });
+  assert.deepEqual(rfb.chords(), []);
+  assert.deepEqual(rfb.tapped(), keysymsFor('user@example.com'));
+});
+
+test('a single character is typing, whatever its inputType', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  proxy.value = 'x';
+  fire(proxy, 'input', {});
+  assert.deepEqual(rfb.chords(), []);
+  assert.deepEqual(rfb.tapped(), keysymsFor('x'));
 });

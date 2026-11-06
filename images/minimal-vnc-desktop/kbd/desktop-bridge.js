@@ -174,7 +174,25 @@ export function createDesktopBridge({
     if (!getRfb() || !proxy) return;
     if (eventComposing(e)) return;
     const v = proxy.value;
-    if (v) { sendText(v); proxy.value = ''; }
+    if (!v) return;
+    proxy.value = '';
+    // A multi-character value that did not arrive as typing ('insertText') is a
+    // fill: a password manager or agent autofill ('insertReplacementText', or a
+    // synthetic input event with no inputType). Fills often fire twice to satisfy
+    // frameworks, and each round finds the whole value here, so REPLACE the remote
+    // field (select all + delete) rather than append — a repeated fill must leave
+    // one copy, as it would in a local field. Chunked typing stays appending.
+    if (isFill(e, v) && getRfb()) {
+      dbg('desktop fill replace len=' + v.length);
+      sendKeyChord({ ctrlKey: true }, 0x61); // Ctrl+A
+      sendSpecialKey('Backspace');
+    }
+    sendText(v);
+  }
+
+  function isFill(e, v) {
+    const type = e && e.inputType;
+    return Array.from(v).length > 1 && type !== 'insertText' && type !== 'insertCompositionText';
   }
 
   function focusProxyDesktop() {
