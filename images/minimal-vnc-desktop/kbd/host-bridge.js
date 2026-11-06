@@ -205,6 +205,39 @@ export function reportInteraction(kind, detail) {
 }
 
 /**
+ * Classify the focused remote field for the embedder: 'password', 'username',
+ * 'otp', or 'text'. Metadata only (type/autocomplete/name), never a value.
+ */
+export function classifyField(hints, sensitive) {
+  const h = hints || {};
+  const type = String(h.type || '').toLowerCase();
+  const ac = String(h.autoComplete || '').toLowerCase();
+  const name = String(h.name || '').toLowerCase();
+  if (type === 'password' || /\b(current|new)-password\b/.test(ac)) return 'password';
+  if (/\bone-time-code\b/.test(ac)) return 'otp';
+  if (sensitive) return 'text';
+  if (type === 'email' || /\b(username|email)\b/.test(ac) || /user|email|login/.test(name)) return 'username';
+  return 'text';
+}
+
+let lastFieldReport = null;
+
+/**
+ * Tell the embedder which kind of remote field is focused (null when none), so
+ * it can offer a real credential <input> that password managers and agents can
+ * fill, then POPCORN_PASTE the value. Sent only on change, and only to a
+ * configured ?parentOrigin=: unlike geometry, field kinds are not broadcast to
+ * an arbitrary framer.
+ */
+export function reportFieldFocus(kind, sensitive) {
+  if (!EMBEDDED || !PARENT_ORIGIN) return;
+  const report = kind ? kind + (sensitive ? ':s' : '') : null;
+  if (report === lastFieldReport) return;
+  lastFieldReport = report;
+  postToHost('POPCORN_FIELD_FOCUS', { kind: kind || null, sensitive: !!(kind && sensitive) });
+}
+
+/**
  * Announce ourselves to the embedder. Sent once the viewer is live so the host
  * knows the protocol version it's talking to and can start posting geometry.
  */

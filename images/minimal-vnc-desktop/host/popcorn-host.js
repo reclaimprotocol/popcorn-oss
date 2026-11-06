@@ -758,6 +758,10 @@
             break;
           case 'POPCORN_INPUT_DRIFT': emit('inputdrift', d); break;
           case 'POPCORN_INTERACTION': emit('interaction', d); break;
+          // Kind of the focused remote field ('password' | 'username' | 'otp' |
+          // 'text' | null). Metadata only. Lets this page offer a real credential
+          // <input> that password managers and in-browser agents can fill.
+          case 'POPCORN_FIELD_FOCUS': emit('fieldfocus', d); break;
           case 'POPCORN_RTT': emit('rtt', d); break;
           case 'POPCORN_KBD_HEALTH': emit('health', d); break;
           // Framebuffer vs CSS vs device-pixel geometry (viewer.js traceScale).
@@ -767,7 +771,9 @@
           case 'POPCORN_SCALE': emit('scale', d); break;
           default: return;
         }
-        if (relay) {
+        // Field kinds stay with the first host: relaying goes to '*', and which
+        // field the user is in is not something to hand an unpinned ancestor.
+        if (relay && d.type !== 'POPCORN_FIELD_FOCUS') {
           // Keep it moving up. '*' because our own parent's origin is the
           // integrator's page, which we don't get to pin.
           try { global.parent.postMessage(d, '*'); } catch (_) {}
@@ -905,7 +911,7 @@
     }
 
     return {
-      /** Subscribe to viewer events: boot|booterror|bootstall|hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|health|scale|layout|rtt */
+      /** Subscribe to viewer events: boot|booterror|bootstall|hello|viewport|connect|frame|disconnect|error|kbdstate|inputdrift|interaction|fieldfocus|health|scale|layout|rtt */
       on: function (name, fn) {
         (listeners[name] || (listeners[name] = [])).push(fn);
         return this;

@@ -21,7 +21,7 @@ import { isSafari, nowMs } from './env.js';
 import { ALL_MODIFIER_KEYSYMS } from './keys.js';
 
 export function createClipboard({
-  getRfb, getProxy, getHints, getFocusKey, sendText, sendSpecialKey,
+  getRfb, getProxy, getHints, getFocusKey, getSensitiveField, sendText, sendSpecialKey,
   clearProxy, setAllowBlur, setKeyboardActive,
 }) {
   let remoteClipboardText = null; // latest text the remote copied
@@ -127,6 +127,9 @@ export function createClipboard({
 
   function canStageRemoteClipboard(text, rfb) {
     if (typeof rfb.clipboardPasteFrom !== 'function') return false;
+    // Never leave a password/OTP/card value on the remote clipboard, where a later
+    // paste anywhere on the remote could expose it. Type it as keysyms instead.
+    if (getSensitiveField && getSensitiveField()) return false;
     const encodingSupported = /^[\x00-\xff]*$/.test(text) || serverExtendedClipboard();
     if (!encodingSupported) return false;
     return text.length > 32 || !getFocusKey();

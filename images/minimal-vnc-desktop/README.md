@@ -359,6 +359,20 @@ out across cores. The mechanism is proven; the cost profile is not the same. Pag
 are already supersampled (980 remote px into a 411px viewport ≈ `dev=0.91`, which is
 why desktop-fallback pages look sharp while responsive ones look soft).
 
+### Focused field kind
+
+An embed loaded with `?parentOrigin=` receives `POPCORN_FIELD_FOCUS` with
+`{ kind, sensitive }` when the focused remote field changes. `kind` is
+`password`, `username`, `otp`, `text`, or `null` when no field is focused. It is
+derived from the field's `type`, `autocomplete`, and `name` only, never its
+value. Embeds without `?parentOrigin=` never receive it, and relaying hosts do not
+forward it upward. `PopcornHost` emits it as `fieldfocus`.
+
+The host can then show a real `<input type="password">` that password managers
+and in-browser agents can fill, and send the value with `paste()`. A paste into a
+sensitive field is always typed as keysyms; it is never staged on the remote
+clipboard.
+
 ### Diagnostics
 
 Desktop mouse presses report `POPCORN_INTERACTION` with `kind: 'click'` through
