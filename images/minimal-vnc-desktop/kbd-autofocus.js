@@ -81,7 +81,7 @@ import { createDialog } from './kbd/dialog.js';
 import { createPopupBar } from './kbd/popup-bar.js';
 import { createNativeSelectProxy } from './kbd/native-select.js';
 import { createNativePickerProxy } from './kbd/native-picker.js';
-import { hostGeometry, installHostBridge, postToHost, reportInteraction } from './kbd/host-bridge.js';
+import { classifyField, hostGeometry, installHostBridge, postToHost, reportFieldFocus, reportInteraction } from './kbd/host-bridge.js';
 import { initE2E } from './kbd/e2e.js';
 import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
 
@@ -194,6 +194,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     getProxy: () => proxy,
     getHints: () => session.hints(),
     getFocusKey: () => session.focusKey(),
+    getSensitiveField: () => session.sensitive(),
     sendText,
     sendSpecialKey,
     clearProxy: () => clearProxy(),
@@ -933,6 +934,10 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
     session.applySignal(state);
     nativeSelect.applySignal(state);
     nativePicker.applySignal(state);
+    reportFieldFocus(
+      session.focusKey() ? classifyField(session.hints(), session.sensitive()) : null,
+      session.sensitive(),
+    );
   };
   const armDismiss = session.armDismiss;
 
@@ -1319,6 +1324,7 @@ import { createFbScaleWatch, FBSCALE_MODE } from './kbd/fbscale.js';
       session.clearFalseDismiss();
       if (keyboardActive) dismissKeyboard();
       session.resetField();
+      reportFieldFocus(null);
       transport.clearSendQueue();
       input.reset(); // drops pending deletes/composition and the proxy baseline
       stopWatchdog();

@@ -174,8 +174,24 @@ export function createDesktopBridge({
     if (!getRfb() || !proxy) return;
     if (eventComposing(e)) return;
     const v = proxy.value;
-    if (v) { sendText(v); proxy.value = ''; }
+    if (!v) return;
+    proxy.value = '';
+    // A script-dispatched fill (password-manager extension or agent autofill:
+    // untrusted, with no inputType or 'insertReplacementText') often fires twice
+    // to satisfy frameworks, and each round finds the whole value here. REPLACE
+    // the remote field (select all + delete) so a repeated fill leaves one copy.
+    // Trusted input — typing, CDP insertText, dictation, drop, and spell-check or
+    // autocorrect replacements — lands at the caret, so it stays appending.
+    const fill = !!e && e.isTrusted === false &&
+      (!e.inputType || e.inputType === 'insertReplacementText');
+    if (fill && Array.from(v).length > 1 && getRfb()) {
+      dbg('desktop fill replace len=' + v.length);
+      sendKeyChord({ ctrlKey: true }, 0x61); // Ctrl+A
+      sendSpecialKey('Backspace');
+    }
+    sendText(v);
   }
+
 
   function focusProxyDesktop() {
     const proxy = getProxy();
