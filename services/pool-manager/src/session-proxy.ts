@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 
 export type SessionProxy = { country: string } | null;
 
@@ -145,28 +146,55 @@ const COUNTRY_TIMEZONES: Record<string, string> = {
 
 const TIMEZONE = /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/;
 
+export type ProxyExit = { timezone?: string; publicIp?: string };
+
 /**
- * The timezone of the proxy's exit for this session. The session's sticky
- * username keeps the browser on the same exit, so a site comparing the
- * browser clock with its IP sees the zone it expects. When both geo services
- * fail, the country's primary zone is used.
+ * The timezone and public IP of the proxy's exit for this session. The
+ * session's sticky username keeps the browser on the same exit, so a site
+ * comparing the browser clock with its IP sees the zone it expects, and WebRTC
+ * can report the exit as its public address. An IPv6 answer is kept only when
+ * no service reports IPv4, which is the address most sites see. When both geo
+ * services fail, the country's primary zone is used and the IP stays unknown.
  */
-export async function proxyExitTimezone(country: string, config: ExtensionProxyConfig, fetchImpl: typeof fetch = fetch): Promise<string | undefined> {
+export async function proxyExit(country: string, config: ExtensionProxyConfig, fetchImpl: typeof fetch = fetch): Promise<ProxyExit> {
     const auth = config.username ? `${encodeURIComponent(config.username)}:${encodeURIComponent(config.password ?? "")}@` : "";
     const proxy = `${config.scheme}://${auth}${config.host}:${config.port}`;
-    const services: Array<[string, (body: any) => unknown]> = [
-        ["https://ipwho.is/", (body) => body?.timezone?.id],
-        ["http://ip-api.com/json/?fields=timezone", (body) => body?.timezone],
+    const services: Array<[string, (body: any) => [unknown, unknown]]> = [
+        ["https://ipwho.is/", (body) => [body?.timezone?.id, body?.ip]],
+        ["http://ip-api.com/json/?fields=timezone,query", (body) => [body?.timezone, body?.query]],
     ];
+    let timezone: string | undefined;
+    let publicIp: string | undefined;
     for (const [url, read] of services) {
         try {
             const response = await fetchImpl(url, { proxy, signal: AbortSignal.timeout(4_000) } as RequestInit);
             if (!response.ok) continue;
-            const timezone = read(await response.json());
-            if (typeof timezone === "string" && TIMEZONE.test(timezone)) return timezone;
+            const [zone, ip] = read(await response.json());
+            if (!timezone && typeof zone === "string" && TIMEZONE.test(zone)) timezone = zone;
+            if (typeof ip === "string" && isIP(ip) && (!publicIp || isIP(ip) === 4)) publicIp = ip;
+            if (timezone && publicIp && isIP(publicIp) === 4) break;
         } catch {
             // Try the next service, then the country's zone.
         }
     }
-    return COUNTRY_TIMEZONES[country];
+    return { timezone: timezone ?? COUNTRY_TIMEZONES[country], ...(publicIp ? { publicIp } : {}) };
+}
+
+/**
+ * The exit of a proxy the caller applies itself after allocation. Its timezone
+ * and public IP are read at browser launch, so the caller looks them up first
+ * (through the same sticky proxy session) and Popcorn relaunches into them.
+ * No proxy address or credential is accepted here.
+ */
+export function readBrowserExit(body: unknown): { value?: ProxyExit } | { error: string } {
+    const exit = (body as any)?.browserExit;
+    if (exit === undefined || exit === null) return {};
+    const error = { error: "browserExit must be { timezone?: IANA zone, publicIp?: IP address } with at least one field" };
+    if (typeof exit !== "object" || Array.isArray(exit)) return error;
+    const keys = Object.keys(exit);
+    if (!keys.length || keys.some((key) => key !== "timezone" && key !== "publicIp")) return error;
+    if (exit.timezone !== undefined && (typeof exit.timezone !== "string" || exit.timezone.length > 64 || !TIMEZONE.test(exit.timezone))) return error;
+    if (exit.publicIp !== undefined && (typeof exit.publicIp !== "string" || !isIP(exit.publicIp))) return error;
+    if ((body as any)?.proxy) return { error: "Use proxy or browserExit, not both" };
+    return { value: { ...(exit.timezone ? { timezone: exit.timezone } : {}), ...(exit.publicIp ? { publicIp: exit.publicIp } : {}) } };
 }

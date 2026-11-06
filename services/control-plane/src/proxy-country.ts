@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 export type CountryProxy = { country: string } | null;
 
 const ISO_3166_ALPHA_2 = new Set((
@@ -19,4 +21,26 @@ export function readCountryProxy(body: unknown): { value: CountryProxy } | { err
     return { error: 'proxy must be false or { country: "US" } using an ISO 3166-1 alpha-2 country code' };
   }
   return { value: { country: proxy.country.trim() } };
+}
+
+const TIMEZONE = /^[A-Za-z0-9_+-]+(\/[A-Za-z0-9_+-]+){0,2}$/;
+
+export type BrowserExit = { timezone?: string; publicIp?: string };
+
+/**
+ * The exit of a proxy the caller applies itself after allocation; the pool
+ * relaunches the browser into its timezone and WebRTC address. Only those two
+ * values are accepted, never a proxy address or credential.
+ */
+export function readBrowserExit(body: unknown): { value?: BrowserExit } | { error: string } {
+  const exit = (body as any)?.browserExit;
+  if (exit === undefined || exit === null) return {};
+  const error = { error: 'browserExit must be { timezone?: IANA zone, publicIp?: IP address } with at least one field' };
+  if (typeof exit !== 'object' || Array.isArray(exit)) return error;
+  const keys = Object.keys(exit);
+  if (!keys.length || keys.some(key => key !== 'timezone' && key !== 'publicIp')) return error;
+  if (exit.timezone !== undefined && (typeof exit.timezone !== 'string' || exit.timezone.length > 64 || !TIMEZONE.test(exit.timezone))) return error;
+  if (exit.publicIp !== undefined && (typeof exit.publicIp !== 'string' || !isIP(exit.publicIp))) return error;
+  if ((body as any)?.proxy) return { error: 'Use proxy or browserExit, not both' };
+  return { value: { ...(exit.timezone ? { timezone: exit.timezone } : {}), ...(exit.publicIp ? { publicIp: exit.publicIp } : {}) } };
 }
