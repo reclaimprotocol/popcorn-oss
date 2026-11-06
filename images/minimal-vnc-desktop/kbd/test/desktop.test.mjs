@@ -100,7 +100,7 @@ test('unmodified printable keydown is ignored (input/composition owns it)', asyn
 test('committed input value is sent and the proxy cleared', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
   proxy.value = 'hey';
-  fire(proxy, 'input', { inputType: 'insertText' });
+  fire(proxy, 'input', {});
   assert.deepEqual(rfb.tapped(), keysymsFor('hey'));
   assert.equal(proxy.value, '');
 });
@@ -357,7 +357,7 @@ for (const inputType of ['insertReplacementText', undefined]) {
     const { rfb, proxy } = await freshViewer(createMockRfb);
     for (let i = 0; i < 2; i++) {
       proxy.value = 'hunter2!';
-      fire(proxy, 'input', inputType ? { inputType } : {});
+      fire(proxy, 'input', inputType ? { inputType, isTrusted: false } : { isTrusted: false });
     }
     assert.deepEqual(rfb.chords(), [...CTRL_A, ...CTRL_A]);
     assert.deepEqual(rfb.tapped(), [BS, ...keysymsFor('hunter2!'), BS, ...keysymsFor('hunter2!')]);
@@ -386,7 +386,7 @@ test('chunked typing (insertText) still appends without select-all', async () =>
 test('a single character is typing, whatever its inputType', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
   proxy.value = 'x';
-  fire(proxy, 'input', {});
+  fire(proxy, 'input', { isTrusted: false });
   assert.deepEqual(rfb.chords(), []);
   assert.deepEqual(rfb.tapped(), keysymsFor('x'));
 });

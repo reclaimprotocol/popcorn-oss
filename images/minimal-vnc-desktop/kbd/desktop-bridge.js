@@ -182,7 +182,7 @@ export function createDesktopBridge({
     // the remote field (select all + delete) so a repeated fill leaves one copy.
     // Trusted input — typing, CDP insertText, dictation, drop, and spell-check or
     // autocorrect replacements — lands at the caret, so it stays appending.
-    const fill = !!e && e.isTrusted !== true &&
+    const fill = !!e && e.isTrusted === false &&
       (!e.inputType || e.inputType === 'insertReplacementText');
     if (fill && Array.from(v).length > 1 && getRfb()) {
       dbg('desktop fill replace len=' + v.length);
