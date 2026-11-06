@@ -348,7 +348,7 @@ test('the editing allowlist still forwards', async () => {
   }
 });
 
-// A fill (password manager / agent autofill) replaces the remote field, so a fill
+// A script-dispatched fill (untrusted) replaces the remote field, so a fill
 // that fires twice — the double-paste seen with an agent vault on Kaggle — leaves
 // one copy instead of two.
 const CTRL_A = [[0xffe3, true], [0x61, true], [0x61, false], [0xffe3, false]];
@@ -365,15 +365,13 @@ for (const inputType of ['insertReplacementText', undefined]) {
   });
 }
 
-for (const inputType of ['insertFromDictation', 'insertFromDrop', 'insertFromYank']) {
-  test(`${inputType} inserts at the caret without clearing the remote field`, async () => {
-    const { rfb, proxy } = await freshViewer(createMockRfb);
-    proxy.value = 'two words';
-    fire(proxy, 'input', { inputType });
-    assert.deepEqual(rfb.chords(), []);
-    assert.deepEqual(rfb.tapped(), keysymsFor('two words'));
-  });
-}
+test('a trusted insertReplacementText (spell-check, autocorrect) does not clear the field', async () => {
+  const { rfb, proxy } = await freshViewer(createMockRfb);
+  proxy.value = 'their';
+  fire(proxy, 'input', { inputType: 'insertReplacementText', isTrusted: true });
+  assert.deepEqual(rfb.chords(), []);
+  assert.deepEqual(rfb.tapped(), keysymsFor('their'));
+});
 
 test('chunked typing (insertText) still appends without select-all', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);

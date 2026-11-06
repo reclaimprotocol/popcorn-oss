@@ -176,13 +176,14 @@ export function createDesktopBridge({
     const v = proxy.value;
     if (!v) return;
     proxy.value = '';
-    // A fill — password manager or agent autofill, i.e. 'insertReplacementText' or
-    // a synthetic input event with no inputType — often fires twice to satisfy
-    // frameworks, and each round finds the whole value here. REPLACE the remote
-    // field (select all + delete) so a repeated fill leaves one copy, as it would
-    // in a local field. Every other insertion (typing, dictation, drop, yank) has
-    // an inputType and lands at the caret, so it stays appending.
-    const fill = !e || !e.inputType || e.inputType === 'insertReplacementText';
+    // A script-dispatched fill (password-manager extension or agent autofill:
+    // untrusted, with no inputType or 'insertReplacementText') often fires twice
+    // to satisfy frameworks, and each round finds the whole value here. REPLACE
+    // the remote field (select all + delete) so a repeated fill leaves one copy.
+    // Trusted input — typing, CDP insertText, dictation, drop, and spell-check or
+    // autocorrect replacements — lands at the caret, so it stays appending.
+    const fill = !!e && e.isTrusted !== true &&
+      (!e.inputType || e.inputType === 'insertReplacementText');
     if (fill && Array.from(v).length > 1 && getRfb()) {
       dbg('desktop fill replace len=' + v.length);
       sendKeyChord({ ctrlKey: true }, 0x61); // Ctrl+A
