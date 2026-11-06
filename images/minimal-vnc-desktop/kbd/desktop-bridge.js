@@ -176,13 +176,14 @@ export function createDesktopBridge({
     const v = proxy.value;
     if (!v) return;
     proxy.value = '';
-    // A multi-character value that did not arrive as typing ('insertText') is a
-    // fill: a password manager or agent autofill ('insertReplacementText', or a
-    // synthetic input event with no inputType). Fills often fire twice to satisfy
-    // frameworks, and each round finds the whole value here, so REPLACE the remote
-    // field (select all + delete) rather than append — a repeated fill must leave
-    // one copy, as it would in a local field. Chunked typing stays appending.
-    if (isFill(e, v) && getRfb()) {
+    // A fill — password manager or agent autofill, i.e. 'insertReplacementText' or
+    // a synthetic input event with no inputType — often fires twice to satisfy
+    // frameworks, and each round finds the whole value here. REPLACE the remote
+    // field (select all + delete) so a repeated fill leaves one copy, as it would
+    // in a local field. Every other insertion (typing, dictation, drop, yank) has
+    // an inputType and lands at the caret, so it stays appending.
+    const fill = !e || !e.inputType || e.inputType === 'insertReplacementText';
+    if (fill && Array.from(v).length > 1 && getRfb()) {
       dbg('desktop fill replace len=' + v.length);
       sendKeyChord({ ctrlKey: true }, 0x61); // Ctrl+A
       sendSpecialKey('Backspace');
@@ -190,10 +191,6 @@ export function createDesktopBridge({
     sendText(v);
   }
 
-  function isFill(e, v) {
-    const type = e && e.inputType;
-    return Array.from(v).length > 1 && type !== 'insertText' && type !== 'insertCompositionText';
-  }
 
   function focusProxyDesktop() {
     const proxy = getProxy();

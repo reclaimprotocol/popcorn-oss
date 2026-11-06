@@ -365,6 +365,16 @@ for (const inputType of ['insertReplacementText', undefined]) {
   });
 }
 
+for (const inputType of ['insertFromDictation', 'insertFromDrop', 'insertFromYank']) {
+  test(`${inputType} inserts at the caret without clearing the remote field`, async () => {
+    const { rfb, proxy } = await freshViewer(createMockRfb);
+    proxy.value = 'two words';
+    fire(proxy, 'input', { inputType });
+    assert.deepEqual(rfb.chords(), []);
+    assert.deepEqual(rfb.tapped(), keysymsFor('two words'));
+  });
+}
+
 test('chunked typing (insertText) still appends without select-all', async () => {
   const { rfb, proxy } = await freshViewer(createMockRfb);
   proxy.value = 'user@';
