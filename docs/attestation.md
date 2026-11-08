@@ -130,6 +130,72 @@ Popcorn OSS does not ship a complete policy verifier. Operators must publish
 the accepted image digests, signer identity, platform claims, and proof version
 for their deployment.
 
+## Same-pod finalization
+
+`POST /finalize` lets a trusted same-pod service bind its own result to a fresh
+runtime attestation. It is disabled unless both values are set:
+
+```yaml
+browserRuntimeAttestor:
+  enabled: true
+  finalize:
+    enabled: true
+```
+
+At startup the attestor writes a random per-process bearer token to
+`/run/popcorn-attestor-finalize/token` on the memory-backed `attestor-finalize`
+volume. Only containers that mount that volume can read it. Mount it read-only
+in the session extension that finalizes results, and never in the browser
+runtime. The shared directory enables the endpoint; without it, `/finalize` is
+not registered. The token path is fixed in code and needs no environment variable:
+
+```yaml
+volumeMounts:
+  - name: attestor-finalize
+    mountPath: /run/popcorn-attestor-finalize
+    readOnly: true
+```
+
+Request:
+
+```http
+POST http://127.0.0.1:8085/finalize
+Authorization: Bearer <token file contents>
+Content-Type: application/json
+
+{"proof_hash":"<64 lowercase hex>","public_key":"<1-512 visible ASCII>","session_id":"<1-256 visible ASCII>"}
+```
+
+The attestor computes this binding and requests the usual GCP token with
+`eat_nonce = [binding, runtime digest binding]`:
+
+```text
+binding = "finalize:" || hex(SHA-256(
+  "popcorn/attestor/finalize/v1" || 0x00 ||
+  u32be(32) || proof_hash bytes ||
+  u32be(len) || public_key bytes ||
+  u32be(len) || session_id bytes))
+```
+
+`u32be` is a four-byte big-endian length. The `finalize:` prefix is not hex, so
+the public `/proof` endpoint can never mint a finalization nonce. The response
+is the v3 proof shape with `nonce` set to the binding, plus:
+
+```json
+"finalization": {"version": "v1", "proof_hash": "...", "public_key": "...", "session_id": "..."}
+```
+
+To verify a finalization, recompute the binding from the `finalization` fields
+and require it in the token's `eat_nonce`, then apply every check in
+[Verifier requirements](#verifier-requirements). The attestation proves that a
+caller holding the pod-local token, inside the attested browser pod, bound these
+values at token time. It does not attest the calling container's image or
+behavior; the finalizing service remains trusted by whoever deployed it.
+
+The token rotates whenever the attestor restarts, so callers read it at request
+time. It is never logged or returned. `/finalize` sets no CORS headers and
+returns `Cache-Control: no-store`.
+
 ## Rollout and incident rules
 
 - Treat any new image digest as a policy change.
