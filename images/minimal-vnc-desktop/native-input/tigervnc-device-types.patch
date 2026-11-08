@@ -1,0 +1,29 @@
+Description: Register the native VNC mouse and keyboard with XInput types
+ Chromium's X11 input enumeration uses XI1 device types. Leaving the VNC
+ pointer untyped makes a working mouse disappear from its capability list.
+Forwarded: no
+--- a/unix/xserver/hw/vnc/vncInput.c
++++ b/unix/xserver/hw/vnc/vncInput.c
+@@ -41,6 +41,7 @@
+ #include <X11/keysym.h>
+ #include <X11/Xlib.h>
+ #include <X11/Xutil.h>
++#include <X11/extensions/XI.h>
+ 
+ extern const unsigned short code_map_qnum_to_xorgevdev[];
+ extern const unsigned int code_map_qnum_to_xorgevdev_len;
+@@ -114,6 +115,14 @@
+ 
+ 	if (ret != Success)
+ 		FatalError("Failed to initialize TigerVNC input devices\n");
++
++	/* Advertise the real devices before activation/hotplug notification. */
++	AssignTypeAndName(vncPointerDev,
++	                  MakeAtom(XI_MOUSE, sizeof(XI_MOUSE) - 1, TRUE),
++	                  "TigerVNC pointer");
++	AssignTypeAndName(vncKeyboardDev,
++	                  MakeAtom(XI_KEYBOARD, sizeof(XI_KEYBOARD) - 1, TRUE),
++	                  "TigerVNC keyboard");
+ 
+ 	if (ActivateDevice(vncPointerDev, TRUE) != Success ||
+ 	    ActivateDevice(vncKeyboardDev, TRUE) != Success)
