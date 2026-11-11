@@ -659,6 +659,85 @@ func TestRuntimeShimRefusesAClientIDItHasOut(t *testing.T) {
 	}
 }
 
+func TestRuntimeShimReadsACommandSplitAcrossFrames(t *testing.T) {
+	h := newShimHarness(t)
+	command := `{"id":1,"method":"Runtime.enable","sessionId":"S"}`
+	for i, piece := range []string{command[:9], command[9:30], command[30:]} {
+		opcode := byte(0x0)
+		if i == 0 {
+			opcode = 0x1
+		}
+		if err := writeFrameToConn(h.client, &h.clientMu, opcode, []byte(piece), true, i == 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h.clientGets("Runtime.enable answer", reply(1))
+	if h.browserGot(method("Runtime.enable")) {
+		t.Fatal("a command sent in pieces reached the browser uninspected")
+	}
+}
+
+func TestRuntimeShimReadsAnEventSplitAcrossFrames(t *testing.T) {
+	h := newShimHarness(t)
+	h.enable()
+	event := `{"method":"Console.messageAdded","params":{"message":{"level":"log","text":"in pieces"}},"sessionId":"S"}`
+	if err := writeFrameToConn(h.browser, &h.browserMu, 0x1, []byte(event[:20]), false, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFrameToConn(h.browser, &h.browserMu, 0x0, []byte(event[20:]), false, true); err != nil {
+		t.Fatal(err)
+	}
+	called := h.clientGets("console event", method("Runtime.consoleAPICalled"))
+	if !strings.Contains(string(called.Params), "in pieces") {
+		t.Fatalf("console event = %s", called.Params)
+	}
+	if h.clientGot(method("Console.messageAdded")) {
+		t.Fatal("the split event was forwarded unread")
+	}
+}
+
+func TestTextAssembler(t *testing.T) {
+	var a textAssembler
+	type frame struct {
+		opcode  byte
+		payload string
+		fin     bool
+	}
+	step := func(in frame) (frame, bool) {
+		t.Helper()
+		opcode, payload, fin, held, err := a.next(in.opcode, []byte(in.payload), in.fin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame{opcode, string(payload), fin}, held
+	}
+	if out, held := step(frame{0x1, "whole", true}); held || out != (frame{0x1, "whole", true}) {
+		t.Fatalf("whole text = %+v held=%v", out, held)
+	}
+	if _, held := step(frame{0x1, "ab", false}); !held {
+		t.Fatal("the first piece was not held")
+	}
+	if _, held := step(frame{0x0, "cd", false}); !held {
+		t.Fatal("a middle piece was not held")
+	}
+	if out, held := step(frame{0x0, "ef", true}); held || out != (frame{0x1, "abcdef", true}) {
+		t.Fatalf("joined text = %+v held=%v", out, held)
+	}
+	// A split binary message is not the shim's to read.
+	if out, held := step(frame{0x2, "bin", false}); held || out != (frame{0x2, "bin", false}) {
+		t.Fatalf("binary start = %+v held=%v", out, held)
+	}
+	if out, held := step(frame{0x0, "ary", true}); held || out != (frame{0x0, "ary", true}) {
+		t.Fatalf("binary end = %+v held=%v", out, held)
+	}
+	if _, held := step(frame{0x1, "x", false}); !held {
+		t.Fatal("the first piece was not held")
+	}
+	if _, _, _, _, err := a.next(0x0, make([]byte, maxWSFrame), true); err == nil {
+		t.Fatal("an oversized split message was accepted")
+	}
+}
+
 func TestContextIDFromObjectID(t *testing.T) {
 	id, isolate, err := contextIDFromObjectID("-2056584488901696505.4.17")
 	if err != nil || id != 4 || isolate != "-2056584488901696505" {

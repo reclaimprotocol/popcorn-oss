@@ -32,10 +32,20 @@ export interface RelaunchWaitOptions {
  * launcher records the session once that session's browser is running, and the
  * wait is for that record.
  *
- * A launcher that keeps records writes its first one before it starts a browser,
- * and a pod is not allocated before its browser is up. So a game server with no
- * record belongs to an image from before records existed. Its browser is
- * accepted once the launcher has had time to replace it, as it was before.
+ * A game server with no record belongs to an image from before records
+ * existed, and its browser is accepted once the launcher has had time to
+ * replace it, as it was before. That reading is safe because an image that
+ * keeps records cannot be allocated without one:
+ *
+ *   1. its launcher (run-chromium-managed) writes "pool", and waits until the
+ *      game server shows it, before it starts the first browser;
+ *   2. its entrypoint reports the pod ready only once that browser's window
+ *      exists;
+ *   3. Agones allocates only ready pods.
+ *
+ * So on such an image the record is on the game server before any allocation,
+ * and a later write that fails or is slow leaves the earlier record in place:
+ * the wait then continues until the session is named.
  */
 export async function waitForRelaunchedBrowser(
     address: string,

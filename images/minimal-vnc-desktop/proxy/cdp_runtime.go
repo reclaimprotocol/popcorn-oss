@@ -165,6 +165,38 @@ const shimErrorScript = `(() => {
   }, true]);
 })()`
 
+// textAssembler joins a text message that arrives split across websocket
+// frames, so that it is read whole.
+type textAssembler struct {
+	open    bool
+	pending []byte
+}
+
+// next takes one data frame and returns the frame to handle now. A piece of a
+// split text message is held until the message is complete, and the message
+// then comes back as a single final text frame. Everything else comes back as
+// it went in.
+func (a *textAssembler) next(opcode byte, payload []byte, fin bool) (byte, []byte, bool, bool, error) {
+	switch {
+	case opcode == 0x1 && !fin:
+		a.open, a.pending = true, append(a.pending[:0], payload...)
+		return opcode, nil, fin, true, nil
+	case opcode == 0x0 && a.open:
+		if uint64(len(a.pending))+uint64(len(payload)) > maxWSFrame {
+			a.open, a.pending = false, nil
+			return opcode, nil, fin, false, errors.New("split text message is too large")
+		}
+		a.pending = append(a.pending, payload...)
+		if !fin {
+			return opcode, nil, fin, true, nil
+		}
+		whole := a.pending
+		a.open, a.pending = false, nil
+		return 0x1, whole, true, false, nil
+	}
+	return opcode, payload, fin, false, nil
+}
+
 // shimBindingStub stands in for a binding until the browser installs the real
 // one over it, keeping the payloads of calls made in between. %s is the name.
 const shimBindingStub = `(() => {
