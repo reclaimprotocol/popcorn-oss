@@ -482,6 +482,10 @@ commands the probes need):
 | `CDP_FULL_PORT` | `9226` | Full CDP proxy port. |
 | `CDP_RESTRICTED_LISTEN` | `0.0.0.0:${CDP_RESTRICTED_PORT}` | Restricted CDP listen address; set empty to disable. |
 | `CDP_FULL_LISTEN` | `0.0.0.0:${CDP_FULL_PORT}` | Full CDP listen address for trusted internal routing; set empty to disable. |
+| `CDP_RUNTIME_SHIM` | `false` | Answer `Runtime.enable` in the full CDP proxy so the domain stays off in the browser. See [CDP surfaces](../../docs/popcorn-browser.md#keeping-the-runtime-domain-off). |
+| `CDP_RUNTIME_SHIM_CONSOLE` | `true` | With the shim on, report console calls to the client. |
+| `CDP_RUNTIME_SHIM_ERRORS` | `true` | With the shim on, report uncaught errors and unhandled rejections to the client. |
+| `CDP_RUNTIME_SHIM_DEBUG` | `false` | Log the contexts, bindings and failures the shim handles. |
 | `CDP_UPSTREAM_ADDR` | `127.0.0.1:${CDP_INTERNAL_PORT}` | Chromium DevTools upstream used by both CDP proxies. |
 | `ENABLE_AGONES` | `auto` | Enable best-effort Agones SDK lifecycle calls when Kubernetes/Pod env is present; set `false` for standalone debugging. |
 | `AGONES_SDK_HOST` | `127.0.0.1` | Agones SDK HTTP sidecar host. |

@@ -760,6 +760,9 @@ func (h *cdpHandler) proxyWebsocket(w http.ResponseWriter, r *http.Request) {
 		restricted:     h.restricted,
 		allowed:        h.allowed,
 	}
+	if !h.restricted && runtimeShimEnabled() {
+		bridge.shim = newRuntimeShim(bridge)
+	}
 	bridge.run()
 }
 
@@ -959,6 +962,7 @@ type cdpBridge struct {
 	allowed        map[string]bool
 	clientMu       sync.Mutex
 	upstreamMu     sync.Mutex
+	shim           *runtimeShim
 }
 
 func (b *cdpBridge) run() {
@@ -1082,6 +1086,9 @@ func (b *cdpBridge) copyClientToUpstream() {
 					continue
 				}
 			}
+			if b.shim != nil && opcode == 0x1 && fin && !b.shim.fromClient(payload) {
+				continue
+			}
 			if err := b.forwardClientFrame(opcode, payload, fin); err != nil {
 				return
 			}
@@ -1108,8 +1115,15 @@ func (b *cdpBridge) copyUpstreamToClient() {
 
 		switch opcode {
 		case 0x0, 0x1, 0x2:
+			if b.shim != nil && opcode == 0x1 && fin && !b.shim.fromUpstream(payload) {
+				b.shim.flushAfter()
+				continue
+			}
 			if !b.forwardResponse(opcode, payload, fin) {
 				return
+			}
+			if b.shim != nil {
+				b.shim.flushAfter()
 			}
 		case 0x8:
 			_ = b.forwardResponse(0x8, payload, true)

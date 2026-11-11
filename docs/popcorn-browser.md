@@ -60,6 +60,39 @@ The optional `/cdp-agent` gateway route also provides full automation-scoped
 CDP for the x402 lifecycle. Full CDP can control the browser completely; never
 treat a path token as a harmless identifier.
 
+### Keeping the Runtime domain off
+
+A page can tell when the DevTools Runtime domain is enabled, and automation
+libraries enable it on every page. With `CDP_RUNTIME_SHIM=true` the full CDP
+proxy answers `Runtime.enable` itself, so the domain stays off in the browser,
+and supplies what the client would have received from it:
+
+- execution contexts for every frame and worker, as they are created and
+  destroyed;
+- bindings, in each new document;
+- console calls, as `Runtime.consoleAPICalled`;
+- uncaught errors and unhandled rejections, as `Runtime.exceptionThrown`.
+
+Commands such as `Runtime.evaluate` are unaffected. Two things differ from the
+real domain, because providing them would mean inspecting objects the page
+controls, which the page can observe:
+
+- a console call's arguments arrive as one string argument, so an object reads
+  `[object Object]` and has no handle;
+- an unhandled rejection is described only as far as the page cannot notice.
+  A rejected error keeps its message, but a custom error class is named
+  `Error`, and a proxy, or an error whose message is a getter, is reported
+  without a message.
+
+The proxy also sends the load events a client waits for after a history
+navigation, which the browser omits when it restores a page from the
+back/forward cache.
+
+Set it per fleet through `extraBrowserRuntimeEnv`. It is off by default.
+`CDP_RUNTIME_SHIM_CONSOLE=false` and `CDP_RUNTIME_SHIM_ERRORS=false` turn off
+console and error reporting separately, and `CDP_RUNTIME_SHIM_DEBUG=true` logs
+what the proxy reports.
+
 ## Browser image and startup
 
 The maintained image lives under `images/minimal-vnc-desktop`. Its entrypoint
