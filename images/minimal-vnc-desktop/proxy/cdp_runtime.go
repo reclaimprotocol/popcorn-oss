@@ -49,7 +49,15 @@ type runtimeShim struct {
 	errors  bool
 	mu      sync.Mutex
 
+	// The shim's own commands are numbered downwards from -1. Clients count
+	// upwards, so the two do not meet; a client that does use negative ids is
+	// tracked in clientIDs so the shim steps around it. issued holds every id
+	// the shim has sent until its reply arrives, including one whose caller
+	// stopped waiting: only those replies are kept from the client.
 	nextID      int64
+	issued      map[int64]struct{}
+	clientIDs   map[int64]struct{}
+	callTimeout time.Duration
 	exceptionID int
 	// Reports from workers, by content, so the copy that bubbles to the
 	// owning page is not reported a second time.
@@ -99,8 +107,9 @@ type shimReply struct {
 }
 
 const (
-	shimFirstID     = 1_500_000_000
 	shimCallTimeout = 5 * time.Second
+	// Ids wrap before they leave the range the browser accepts.
+	shimLastID = -2_000_000_000
 	// Only used to reach a frame's document when the client registered no world.
 	shimProbeWorld = "cdp"
 	// Marks a console message as an error report from the listener below.
@@ -187,7 +196,9 @@ func newRuntimeShim(b *cdpBridge) *runtimeShim {
 		b:           b,
 		console:     shimFlag("CDP_RUNTIME_SHIM_CONSOLE", true),
 		errors:      shimFlag("CDP_RUNTIME_SHIM_ERRORS", true),
-		nextID:      shimFirstID,
+		issued:      map[int64]struct{}{},
+		clientIDs:   map[int64]struct{}{},
+		callTimeout: shimCallTimeout,
 		calls:       map[int64]chan shimReply{},
 		clientWorld: map[int64]shimWorld{},
 		sessions:    map[string]*shimSession{},
@@ -257,12 +268,53 @@ var shimClientMethods = [][]byte{
 
 // fromClient reports whether a complete client text frame should be forwarded.
 func (s *runtimeShim) fromClient(payload []byte) bool {
+	if !s.claimClientID(payload) {
+		return false
+	}
 	forward, before := s.clientFrame(payload)
 	// Sent ahead of the client's frame, and after the state lock is released.
 	if before != nil {
 		before()
 	}
 	return forward
+}
+
+var shimNegativeID = []byte(`"id":-`)
+
+// claimClientID notes a negative id a client uses, so the shim never issues
+// it while the command is in flight. It reports false, having answered the
+// client, for the one case the two cannot share: an id the shim has out now.
+func (s *runtimeShim) claimClientID(payload []byte) bool {
+	if !bytes.Contains(payload, shimNegativeID) {
+		return true
+	}
+	var msg struct {
+		ID        int64  `json:"id"`
+		SessionID string `json:"sessionId"`
+	}
+	if json.Unmarshal(payload, &msg) != nil || msg.ID >= 0 {
+		return true
+	}
+	s.mu.Lock()
+	_, taken := s.issued[msg.ID]
+	if !taken {
+		s.clientIDs[msg.ID] = struct{}{}
+	}
+	s.mu.Unlock()
+	if taken {
+		s.toClient(struct {
+			ID    int64 `json:"id"`
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+			SessionID string `json:"sessionId,omitempty"`
+		}{ID: msg.ID, Error: struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}{-32600, "Command id is in use"}, SessionID: msg.SessionID})
+	}
+	return !taken
 }
 
 // clientFrame decides what happens to a client frame, and returns anything
@@ -564,6 +616,9 @@ func (s *runtimeShim) flushAfter() {
 
 func (s *runtimeShim) response(payload []byte) bool {
 	end := len(shimIDPrefix)
+	if end < len(payload) && payload[end] == '-' {
+		end++
+	}
 	for end < len(payload) && payload[end] >= '0' && payload[end] <= '9' {
 		end++
 	}
@@ -572,14 +627,17 @@ func (s *runtimeShim) response(payload []byte) bool {
 		return true
 	}
 	s.mu.Lock()
+	_, issued := s.issued[id]
+	delete(s.issued, id)
 	call, own := s.calls[id]
 	delete(s.calls, id)
 	world, isWorld := s.clientWorld[id]
 	delete(s.clientWorld, id)
+	delete(s.clientIDs, id)
 	s.mu.Unlock()
-	if !own && id > shimFirstID {
-		// A reply that outlived its caller. The id is still the shim's own,
-		// and a client fails on a reply to a command it never sent.
+	if issued && !own {
+		// A reply that outlived its caller, or to a command nothing waits on.
+		// A client fails on a reply to a command it never sent.
 		return false
 	}
 	if own {
@@ -783,7 +841,7 @@ func (s *runtimeShim) call(sessionID, method string, params any) (json.RawMessag
 	select {
 	case r := <-reply:
 		return r.result, r.err
-	case <-time.After(shimCallTimeout):
+	case <-time.After(s.callTimeout):
 		s.mu.Lock()
 		delete(s.calls, id)
 		s.mu.Unlock()
@@ -795,8 +853,18 @@ func (s *runtimeShim) call(sessionID, method string, params any) (json.RawMessag
 func (s *runtimeShim) commandID() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.nextID++
-	return s.nextID
+	for {
+		s.nextID--
+		if s.nextID < shimLastID {
+			s.nextID = -1
+		}
+		_, issued := s.issued[s.nextID]
+		_, client := s.clientIDs[s.nextID]
+		if !issued && !client {
+			s.issued[s.nextID] = struct{}{}
+			return s.nextID
+		}
+	}
 }
 
 // send issues a command without waiting; its reply is dropped by id.

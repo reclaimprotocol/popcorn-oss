@@ -49,6 +49,7 @@ func newShimHarness(t *testing.T) *shimHarness {
 		upstreamReader: bufio.NewReader(proxyUpstream),
 	}
 	bridge.shim = newRuntimeShim(bridge)
+	bridge.shim.callTimeout = 300 * time.Millisecond
 	go bridge.run()
 	go h.readClient()
 	go h.serveBrowser()
@@ -600,15 +601,67 @@ func TestRuntimeShimSendsLoadEventsForARestoredPage(t *testing.T) {
 	}
 }
 
-func TestRuntimeShimNeverForwardsItsOwnReplies(t *testing.T) {
+func TestRuntimeShimKeepsALateReplyFromTheClient(t *testing.T) {
 	h := newShimHarness(t)
-	h.enable()
-	// A reply that arrives after its caller gave up still carries the shim's id.
-	h.fromBrowser(fmt.Sprintf(`{"id":%d,"result":{},"sessionId":"S"}`, shimFirstID+900))
+	h.mu.Lock()
+	h.reply["Console.enable"] = func(shimMessage) any { return nil } // never answered in time
+	h.mu.Unlock()
+	h.fromClient(`{"id":1,"method":"Runtime.enable","sessionId":"S"}`)
+	pending := h.browserGets("Console.enable", method("Console.enable"))
+	h.clientGets("Runtime.enable answer once the wait runs out", reply(1))
+
+	h.fromBrowser(fmt.Sprintf(`{"id":%d,"result":{},"sessionId":"S"}`, pending.ID))
 	h.fromBrowser(`{"method":"Network.dataReceived","params":{},"sessionId":"S"}`)
 	h.clientGets("later event", method("Network.dataReceived"))
-	if h.clientGot(func(msg shimMessage) bool { return msg.ID > shimFirstID }) {
+	if h.clientGot(reply(pending.ID)) {
 		t.Fatal("a reply to a command the client never sent was forwarded")
+	}
+}
+
+func TestRuntimeShimLeavesClientIDsAlone(t *testing.T) {
+	h := newShimHarness(t)
+	h.enable()
+	// Any id a client chooses is the client's, however large or negative.
+	for _, id := range []int64{1_500_000_001, 2_147_483_647, -40_000} {
+		h.fromClient(fmt.Sprintf(`{"id":%d,"method":"Browser.getVersion"}`, id))
+		h.browserGets("forwarded command", func(msg shimMessage) bool { return msg.ID == id && msg.Method == "Browser.getVersion" })
+		h.clientGets("its reply", reply(id))
+	}
+}
+
+func TestRuntimeShimStepsAroundAClientsNegativeID(t *testing.T) {
+	h := newShimHarness(t)
+	h.mu.Lock()
+	h.reply["Browser.getVersion"] = func(shimMessage) any { return nil } // left in flight
+	h.mu.Unlock()
+	// The shim's first id would be -1; the client has it out already.
+	h.fromClient(`{"id":-1,"method":"Browser.getVersion"}`)
+	h.browserGets("client command", func(msg shimMessage) bool { return msg.ID == -1 && msg.Method == "Browser.getVersion" })
+	h.enable()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, msg := range h.commands {
+		if msg.ID == -1 && msg.Method != "Browser.getVersion" {
+			t.Fatalf("the shim reused the client's id for %s", msg.Method)
+		}
+	}
+}
+
+func TestRuntimeShimRefusesAClientIDItHasOut(t *testing.T) {
+	h := newShimHarness(t)
+	h.mu.Lock()
+	h.reply["Console.enable"] = func(shimMessage) any { return nil } // the shim's command stays in flight
+	h.mu.Unlock()
+	h.fromClient(`{"id":1,"method":"Runtime.enable","sessionId":"S"}`)
+	pending := h.browserGets("Console.enable", method("Console.enable"))
+
+	h.fromClient(fmt.Sprintf(`{"id":%d,"method":"Browser.getVersion","sessionId":"S"}`, pending.ID))
+	refused := h.clientGets("refusal", func(msg shimMessage) bool { return msg.ID == pending.ID && strings.Contains(msg.raw, `"error"`) })
+	if refused.SessionID != "S" {
+		t.Fatalf("refusal = %s", refused.raw)
+	}
+	if h.browserGot(func(msg shimMessage) bool { return msg.ID == pending.ID && msg.Method == "Browser.getVersion" }) {
+		t.Fatal("two commands with one id reached the browser")
 	}
 }
 
