@@ -252,88 +252,24 @@ func (sess *shimSession) removeBinding(name string) {
 	sess.bindings = kept
 }
 
-var shimClientMethods = [][]byte{
-	[]byte(`"Runtime.enable"`),
-	[]byte(`"Runtime.addBinding"`),
-	[]byte(`"Runtime.removeBinding"`),
-	[]byte(`"Runtime.runIfWaitingForDebugger"`),
-	[]byte(`"Console.enable"`),
-	[]byte(`"Console.disable"`),
-	[]byte(`"Page.createIsolatedWorld"`),
-	[]byte(`"Page.addScriptToEvaluateOnNewDocument"`),
-	[]byte(`"Page.setLifecycleEventsEnabled"`),
-	[]byte(`"Page.enable"`),
-	[]byte(`"Page.disable"`),
-}
-
 // fromClient reports whether a complete client text frame should be forwarded.
 func (s *runtimeShim) fromClient(payload []byte) bool {
-	if !s.claimClientID(payload) {
-		return false
-	}
-	forward, before := s.clientFrame(payload)
+	forward, unlocked := s.clientFrame(payload)
 	// Sent ahead of the client's frame, and after the state lock is released.
-	if before != nil {
-		before()
+	if unlocked != nil {
+		unlocked()
 	}
 	return forward
 }
 
-var shimNegativeID = []byte(`"id":-`)
-
-// claimClientID notes a negative id a client uses, so the shim never issues
-// it while the command is in flight. It reports false, having answered the
-// client, for the one case the two cannot share: an id the shim has out now.
-func (s *runtimeShim) claimClientID(payload []byte) bool {
-	if !bytes.Contains(payload, shimNegativeID) {
-		return true
-	}
+// clientFrame decides what happens to a client frame, and returns what has to
+// be sent first, once the state lock is released.
+func (s *runtimeShim) clientFrame(payload []byte) (forward bool, unlocked func()) {
 	var msg struct {
-		ID        int64  `json:"id"`
-		SessionID string `json:"sessionId"`
-	}
-	if json.Unmarshal(payload, &msg) != nil || msg.ID >= 0 {
-		return true
-	}
-	s.mu.Lock()
-	_, taken := s.issued[msg.ID]
-	if !taken {
-		s.clientIDs[msg.ID] = struct{}{}
-	}
-	s.mu.Unlock()
-	if taken {
-		s.toClient(struct {
-			ID    int64 `json:"id"`
-			Error struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-			SessionID string `json:"sessionId,omitempty"`
-		}{ID: msg.ID, Error: struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		}{-32600, "Command id is in use"}, SessionID: msg.SessionID})
-	}
-	return !taken
-}
-
-// clientFrame decides what happens to a client frame, and returns anything
-// that has to reach the browser before it.
-func (s *runtimeShim) clientFrame(payload []byte) (forward bool, before func()) {
-	relevant := false
-	for _, method := range shimClientMethods {
-		if bytes.Contains(payload, method) {
-			relevant = true
-			break
-		}
-	}
-	if !relevant {
-		return true, nil
-	}
-	var msg struct {
-		ID        int64  `json:"id"`
-		Method    string `json:"method"`
-		SessionID string `json:"sessionId"`
+		ID        int64           `json:"id"`
+		Method    string          `json:"method"`
+		SessionID string          `json:"sessionId"`
+		RawParams json.RawMessage `json:"params"`
 		Params    struct {
 			FrameID              string `json:"frameId"`
 			WorldName            string `json:"worldName"`
@@ -341,13 +277,24 @@ func (s *runtimeShim) clientFrame(payload []byte) (forward bool, before func()) 
 			ExecutionContextID   int    `json:"executionContextId"`
 			ExecutionContextName string `json:"executionContextName"`
 			Enabled              bool   `json:"enabled"`
-		} `json:"params"`
+		} `json:"-"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		return true, nil
 	}
+	// Only the methods handled below have parameters in this shape.
+	_ = json.Unmarshal(msg.RawParams, &msg.Params)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if msg.ID < 0 {
+		// A client's negative id is the client's: the shim steps around it
+		// while the command is in flight. The one case the two cannot share
+		// is an id the shim has out now.
+		if _, taken := s.issued[msg.ID]; taken {
+			return false, func() { s.refuse(msg.ID, msg.SessionID) }
+		}
+		s.clientIDs[msg.ID] = struct{}{}
+	}
 	if s.passthrough[msg.SessionID] {
 		return true, nil
 	}
@@ -380,7 +327,7 @@ func (s *runtimeShim) clientFrame(payload []byte) (forward bool, before func()) 
 				if msg.Params.ExecutionContextName != "" {
 					params["worldName"] = msg.Params.ExecutionContextName
 				}
-				before = func() { s.send(msg.SessionID, "Page.addScriptToEvaluateOnNewDocument", params) }
+				unlocked = func() { s.send(msg.SessionID, "Page.addScriptToEvaluateOnNewDocument", params) }
 			}
 		}
 	case "Runtime.removeBinding":
@@ -413,7 +360,7 @@ func (s *runtimeShim) clientFrame(payload []byte) (forward bool, before func()) 
 		s.session(msg.SessionID).addWorld(msg.Params.WorldName)
 		s.clientWorld[msg.ID] = shimWorld{session: msg.SessionID, frameID: msg.Params.FrameID, name: msg.Params.WorldName}
 	}
-	return true, before
+	return true, unlocked
 }
 
 var (
@@ -847,6 +794,19 @@ func (s *runtimeShim) call(sessionID, method string, params any) (json.RawMessag
 		s.mu.Unlock()
 		return nil, fmt.Errorf("%s timed out", method)
 	}
+}
+
+// refuse answers a client command that cannot be forwarded under its id.
+func (s *runtimeShim) refuse(id int64, sessionID string) {
+	type failure struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	s.toClient(struct {
+		ID        int64   `json:"id"`
+		Error     failure `json:"error"`
+		SessionID string  `json:"sessionId,omitempty"`
+	}{id, failure{-32600, "Command id is in use"}, sessionID})
 }
 
 // commandID reserves the id of a command the shim issues.
