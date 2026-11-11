@@ -300,6 +300,9 @@ async function allocateSessionLocally(
         const browserExit = !BROWSER_TIMEZONE_FROM_PROXY ? undefined
             : proxy && preset ? await proxyExit(proxy.country, preset.value)
             : callerExit;
+        // Taken before the request: the launcher can relaunch the browser
+        // before the allocation response arrives here.
+        const allocationStartedAt = Date.now();
         const allocation = await Agones.allocate(GAME_SERVER_NAMESPACE, GAME_SERVER_FLEET, sessionId, liveViewE2e, browserMode, browserExit);
         const gameServerAllocatedAt = new Date();
         allocatedGameServerName = allocation.gameServerName;
@@ -310,7 +313,7 @@ async function allocateSessionLocally(
             // The in-pod launcher reads allocation metadata from its local
             // Agones sidecar, then replaces only Chromium. Callers must never
             // receive the old kiosk process (see waitForRelaunchedBrowser).
-            const browserReady = await waitForRelaunchedBrowser(allocation.address, gameServerAllocatedAt.getTime());
+            const browserReady = await waitForRelaunchedBrowser(allocation.address, allocationStartedAt);
             if (!browserReady) throw new Error(browserMode === "normal" ? "NORMAL_BROWSER_RESTART_FAILED" : "BROWSER_RESTART_FAILED");
         }
 

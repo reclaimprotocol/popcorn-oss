@@ -16,17 +16,21 @@ export type PageAgeProbe = () => Promise<number | null>;
  * is lost when it is killed: the proxy preset's first evaluate then times out.
  * A page that started loading after the allocation can only belong to the new
  * browser. Its age is measured by the page itself, so the two clocks never meet.
+ *
+ * `allocationStartedAt` is taken before the allocation is requested. The
+ * launcher can relaunch the browser before the response arrives, and a cutoff
+ * taken afterwards would make that new page look like the old one.
  */
 export async function waitForRelaunchedBrowser(
     address: string,
-    allocatedAt: number,
+    allocationStartedAt: number,
     probe: PageAgeProbe = () => firstPageAge(address),
     timeoutMs = RELAUNCH_TIMEOUT_MS,
 ): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
         const age = await probe().catch(() => null);
-        if (age !== null && age < Date.now() - allocatedAt) return true;
+        if (age !== null && age < Date.now() - allocationStartedAt) return true;
         await Bun.sleep(PROBE_INTERVAL_MS);
     }
     return false;

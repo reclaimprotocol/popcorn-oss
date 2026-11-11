@@ -28,6 +28,17 @@ describe("waitForRelaunchedBrowser", () => {
         expect(calls).toBe(2);
     });
 
+    test("accepts a browser relaunched before the allocation response arrived", async () => {
+        // The allocation was requested a second ago and the browser relaunched
+        // 400ms later, while the response was still on its way.
+        const requestedAt = Date.now() - 1_000;
+        const respondedAt = Date.now() - 100;
+        const relaunchedPageAge = async () => 600;
+        expect(await waitForRelaunchedBrowser("pod", requestedAt, relaunchedPageAge, 600)).toBe(true);
+        // Measured from the response, the same page would look like the old browser.
+        expect(await waitForRelaunchedBrowser("pod", respondedAt, relaunchedPageAge, 300)).toBe(false);
+    });
+
     test("fails when only the old browser answers", async () => {
         const ok = await waitForRelaunchedBrowser("pod", Date.now(), async () => 60_000, 600);
         expect(ok).toBe(false);
