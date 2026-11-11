@@ -22,7 +22,7 @@ import {
 } from "./src/session-access";
 import { buildSessionUrls, websocketBaseUrl } from "./src/session-urls";
 import { closeProxyCdpSession, presetExtensionProxy } from "./src/extension-proxy";
-import { waitForRelaunchedBrowser } from "./src/relaunched-browser";
+import { BROWSER_LAUNCH_ANNOTATION, waitForRelaunchedBrowser } from "./src/relaunched-browser";
 import { proxyExit, proxyPreset, readBrowserExit, readSessionProxy, type ProxyExit, type SessionProxy } from "./src/session-proxy";
 import {
     LIVEVIEW_E2E_PROTOCOL,
@@ -309,8 +309,9 @@ async function allocateSessionLocally(
         if (browserMode === "normal" || browserExit?.timezone || browserExit?.publicIp) {
             // The in-pod launcher reads allocation metadata from its local
             // Agones sidecar, then replaces only Chromium. Callers must never
-            // receive the old kiosk process (see waitForRelaunchedBrowser).
-            const browserReady = await waitForRelaunchedBrowser(allocation.address, gameServerAllocatedAt.getTime());
+            // receive the browser it replaces (see waitForRelaunchedBrowser).
+            const browserReady = await waitForRelaunchedBrowser(allocation.address, sessionId,
+                () => K8s.getGameServerAnnotation(allocation.gameServerName, BROWSER_LAUNCH_ANNOTATION, GAME_SERVER_NAMESPACE));
             if (!browserReady) throw new Error(browserMode === "normal" ? "NORMAL_BROWSER_RESTART_FAILED" : "BROWSER_RESTART_FAILED");
         }
 

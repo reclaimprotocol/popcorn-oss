@@ -760,6 +760,9 @@ func (h *cdpHandler) proxyWebsocket(w http.ResponseWriter, r *http.Request) {
 		restricted:     h.restricted,
 		allowed:        h.allowed,
 	}
+	if !h.restricted && runtimeShimEnabled() {
+		bridge.shim = newRuntimeShim(bridge)
+	}
 	bridge.run()
 }
 
@@ -959,6 +962,11 @@ type cdpBridge struct {
 	allowed        map[string]bool
 	clientMu       sync.Mutex
 	upstreamMu     sync.Mutex
+	shim           *runtimeShim
+	// With the shim, a text message split across frames is joined before it
+	// is read: a command sent in pieces must not pass uninspected.
+	clientText   textAssembler
+	upstreamText textAssembler
 }
 
 func (b *cdpBridge) run() {
@@ -1082,6 +1090,16 @@ func (b *cdpBridge) copyClientToUpstream() {
 					continue
 				}
 			}
+			if b.shim != nil {
+				var held bool
+				if opcode, payload, fin, held, err = b.clientText.next(opcode, payload, fin); err != nil {
+					_ = writeFrameToConn(b.client, &b.clientMu, 0x8, []byte{0x03, 0xF1}, false, true)
+					return
+				}
+				if held || (opcode == 0x1 && !b.shim.fromClient(payload)) {
+					continue
+				}
+			}
 			if err := b.forwardClientFrame(opcode, payload, fin); err != nil {
 				return
 			}
@@ -1108,8 +1126,24 @@ func (b *cdpBridge) copyUpstreamToClient() {
 
 		switch opcode {
 		case 0x0, 0x1, 0x2:
+			if b.shim != nil {
+				var held bool
+				if opcode, payload, fin, held, err = b.upstreamText.next(opcode, payload, fin); err != nil {
+					return
+				}
+				if held {
+					continue
+				}
+				if opcode == 0x1 && !b.shim.fromUpstream(payload) {
+					b.shim.flushAfter()
+					continue
+				}
+			}
 			if !b.forwardResponse(opcode, payload, fin) {
 				return
+			}
+			if b.shim != nil {
+				b.shim.flushAfter()
 			}
 		case 0x8:
 			_ = b.forwardResponse(0x8, payload, true)

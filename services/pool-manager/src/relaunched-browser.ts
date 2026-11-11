@@ -4,58 +4,76 @@ const CDP_PORT = 9226;
 const RELAUNCH_TIMEOUT_MS = 45_000;
 const PROBE_TIMEOUT_MS = 2_000;
 const PROBE_INTERVAL_MS = 250;
+// How long an image that does not record its launches is given to replace its browser.
+const UNRECORDED_RELAUNCH_MS = 750;
 
-/** Age of the browser's first page in ms, or null when no page answers yet. */
-export type PageAgeProbe = () => Promise<number | null>;
+/** Where the in-pod launcher records who the running browser was launched for. */
+export const BROWSER_LAUNCH_ANNOTATION = "agones.dev/sdk-browser-launch";
+
+/** The launcher's record: a session id, "pool" before an allocation, or null when the image keeps none. */
+export type LaunchRecord = () => Promise<string | null>;
+
+/** Whether the pod's browser answers. */
+export type BrowserProbe = () => Promise<boolean>;
+
+export interface RelaunchWaitOptions {
+    probe?: BrowserProbe;
+    timeoutMs?: number;
+    unrecordedRelaunchMs?: number;
+}
 
 /**
- * Wait until the pod's browser is the one relaunched for this allocation.
+ * Wait until the pod's browser is the one launched for this session.
  *
  * The in-pod launcher replaces Chromium only after it next polls the allocation,
- * so for a while the OLD browser still answers on the CDP port. Work sent to it
- * is lost when it is killed: the proxy preset's first evaluate then times out.
- * A page that started loading after the allocation can only belong to the new
- * browser. Its age is measured by the page itself, so the two clocks never meet.
+ * so for a while another browser still answers on the CDP port: the pool's, or
+ * one still starting when the pod was allocated. Work sent to it is lost when it
+ * is killed. Nothing about a browser that answers says which one it is, so the
+ * launcher records the session once that session's browser is running, and the
+ * wait is for that record.
+ *
+ * A game server with no record belongs to an image from before records
+ * existed, and its browser is accepted once the launcher has had time to
+ * replace it, as it was before. That reading is safe because an image that
+ * keeps records cannot be allocated without one:
+ *
+ *   1. its launcher (run-chromium-managed) writes "pool", and waits until the
+ *      game server shows it, before it starts the first browser;
+ *   2. its entrypoint reports the pod ready only once that browser's window
+ *      exists;
+ *   3. Agones allocates only ready pods.
+ *
+ * So on such an image the record is on the game server before any allocation,
+ * and a later write that fails or is slow leaves the earlier record in place:
+ * the wait then continues until the session is named.
  */
 export async function waitForRelaunchedBrowser(
     address: string,
-    allocatedAt: number,
-    probe: PageAgeProbe = () => firstPageAge(address),
-    timeoutMs = RELAUNCH_TIMEOUT_MS,
+    sessionId: string,
+    launchRecord: LaunchRecord,
+    options: RelaunchWaitOptions = {},
 ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
+    const probe = options.probe ?? (() => browserAnswers(address));
+    const deadline = Date.now() + (options.timeoutMs ?? RELAUNCH_TIMEOUT_MS);
+    let launched = false;
     while (Date.now() < deadline) {
-        const age = await probe().catch(() => null);
-        if (age !== null && age < Date.now() - allocatedAt) return true;
+        if (!launched) {
+            // A failed read says nothing about the image: ask again.
+            const record = await launchRecord().catch(() => undefined);
+            if (record === null) {
+                await Bun.sleep(options.unrecordedRelaunchMs ?? UNRECORDED_RELAUNCH_MS);
+                launched = true;
+            } else if (record === sessionId) {
+                launched = true;
+            }
+        }
+        if (launched && await probe().catch(() => false)) return true;
         await Bun.sleep(PROBE_INTERVAL_MS);
     }
     return false;
 }
 
-async function firstPageAge(address: string): Promise<number | null> {
-    const targets = await fetch(`http://${address}:${CDP_PORT}/json/list`, {
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    }).then((response) => response.ok ? response.json() as Promise<Array<{ type: string; webSocketDebuggerUrl?: string }>> : []);
-    const target = targets.find((candidate) => candidate.type === "page" && candidate.webSocketDebuggerUrl);
-    if (!target?.webSocketDebuggerUrl) return null;
-
-    const socket = new WebSocket(target.webSocketDebuggerUrl);
-    try {
-        return await new Promise<number | null>((resolve) => {
-            const timeout = setTimeout(() => resolve(null), PROBE_TIMEOUT_MS);
-            socket.addEventListener("open", () => {
-                socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "performance.now()", returnByValue: true } }));
-            }, { once: true });
-            socket.addEventListener("message", (event) => {
-                const message = JSON.parse(String(event.data));
-                if (message.id !== 1) return;
-                clearTimeout(timeout);
-                const value = message.result?.result?.value;
-                resolve(typeof value === "number" ? value : null);
-            });
-            socket.addEventListener("error", () => { clearTimeout(timeout); resolve(null); }, { once: true });
-        });
-    } finally {
-        socket.close();
-    }
+async function browserAnswers(address: string): Promise<boolean> {
+    const response = await fetch(`http://${address}:${CDP_PORT}/json/version`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    return response.ok;
 }
