@@ -58,6 +58,21 @@ test('a no-viewport navigation retains the current desktop fit', () => {
   assert.equal(fit.fitMode(), true, 'retained the desktop fit across navigation');
 });
 
+test('a viewport meta arriving on the same document exits the desktop fit', () => {
+  const { fit } = makeFit();
+
+  fit.handleTopDocSignal({ pid: 'late-meta', novp: true, vw: 390, sw: 980 });
+  assert.equal(fit.fitMode(), true, 'entered the desktop fallback fit');
+
+  // A repeated no-viewport report for the same document keeps the fit.
+  fit.handleTopDocSignal({ pid: 'late-meta', novp: true, vw: 980, sw: 980 });
+  assert.equal(fit.fitMode(), true, 'retained while the page still has no viewport meta');
+
+  // The meta arrives (slow load or inserted by script): the page is responsive now.
+  fit.handleTopDocSignal({ pid: 'late-meta', novp: false, vw: 980, sw: 980 });
+  assert.equal(fit.fitMode(), false, 'left the desktop fit');
+});
+
 test('three auto-reconnects do not latch fit; a later navigation still exits', async () => {
   const { fit, magEligible } = makeFit();
 

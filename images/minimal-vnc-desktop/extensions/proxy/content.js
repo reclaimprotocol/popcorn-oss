@@ -734,6 +734,11 @@
           return globalThis.__POPCORN_VIEWPORT_META__.declaredLayoutWidth(c);
         }
       }
+      // Still parsing <head> (no <body> yet): the meta may simply not have
+      // arrived, so the answer is unknown. On a slow network that window lasts
+      // seconds, and answering "no viewport" from it put responsive pages into
+      // the desktop fit.
+      if (!document.body) return undefined;
       return 980;
     } catch (_) { return null; }
   }
@@ -823,9 +828,12 @@
     // FOCUS_KEY_FRAME from a subframe would otherwise look like a navigation.
     if (IS_TOP) {
       const viewportWidth = declaredLayoutViewportWidth();
-      base.sw = docScrollWidth(); base.pid = FOCUS_KEY_FRAME; base.novp = viewportWidth !== null;
+      base.sw = docScrollWidth();
+      // pid is what the viewer's fit decision keys on, so hold it back until the
+      // viewport answer is known: an early "no viewport" is never sent.
+      if (viewportWidth !== undefined) { base.pid = FOCUS_KEY_FRAME; base.novp = viewportWidth !== null; }
       if (swConfirmed(base.sw)) base.swc = true;
-      if (viewportWidth !== null) base.vpw = viewportWidth;
+      if (viewportWidth) base.vpw = viewportWidth;
       // sb: distance to the scroll bottom — drives the viewer's keyboard-
       // occlusion pan (see docScrollBottom). 0 is the load-bearing value.
       base.sb = docScrollBottom();
