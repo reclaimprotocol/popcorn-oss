@@ -170,6 +170,11 @@ exit's timezone and public IP through that sticky session, and the pod relaunche
 its browser with them before the session is returned: the browser clock matches
 the exit, and WebRTC reports the exit as its public address.
 
+The pod's launcher records on its game server which session the running browser
+was launched for (`agones.dev/sdk-browser-launch`), and the pool manager returns
+the session only once that record names it. A browser image from before the
+record existed is given a moment to relaunch instead, as before.
+
 A caller that applies its own proxy after allocation can pass that proxy's exit
 instead, looked up through the same sticky session:
 

@@ -8,19 +8,23 @@ CHROMIUM_LAUNCHER="${CHROMIUM_LAUNCHER:-/usr/local/bin/start-chromium}"
 NORMAL_BROWSER_PROFILE_DIR="${NORMAL_BROWSER_PROFILE_DIR:-$HOME/user-data-normal}"
 SESSION_BROWSER_PROFILE_DIR="${SESSION_BROWSER_PROFILE_DIR:-$HOME/user-data-session}"
 
-# Sets requested (kiosk, normal or empty before allocation),
+# Sets requested (kiosk, normal or empty before allocation), requested_session,
 # requested_timezone and requested_public_ip (the session proxy's exit, or empty).
 read_allocation() {
   local response
   response="$(curl --silent --fail --max-time 1 \
     "http://${AGONES_SDK_HOST}:${AGONES_SDK_HTTP_PORT}/gameserver" 2>/dev/null || true)"
   requested=""
+  requested_session=""
   requested_timezone=""
   requested_public_ip=""
   if [[ "$response" == *'"popcorn.dev/browser-mode":"normal"'* ]]; then
     requested=normal
   elif [[ "$response" == *'"popcorn.dev/browser-mode":"kiosk"'* ]]; then
     requested=kiosk
+  fi
+  if [[ "$response" =~ \"popcorn\.dev/session-id\":\"([A-Za-z0-9_-]{1,64})\" ]]; then
+    requested_session="${BASH_REMATCH[1]}"
   fi
   if [[ "$response" =~ \"popcorn\.dev/browser-timezone\":\"([A-Za-z0-9_/+-]{1,64})\" ]]; then
     requested_timezone="${BASH_REMATCH[1]}"
@@ -30,8 +34,32 @@ read_allocation() {
   fi
 }
 
+# Records on the game server who the running browser was launched for: "pool"
+# before an allocation, then the session. The pool manager hands a session its
+# browser only once this names that session, because a browser that merely
+# answers may be the one about to be replaced.
+announced=""
+announce() {
+  [[ "$announced" != "$1" ]] || return 0
+  curl --silent --fail --max-time 1 --request PUT \
+    --header 'Content-Type: application/json' \
+    --data "{\"key\":\"browser-launch\",\"value\":\"$1\"}" \
+    "http://${AGONES_SDK_HOST}:${AGONES_SDK_HTTP_PORT}/metadata/annotation" >/dev/null 2>&1 || return 1
+  announced="$1"
+}
+
+# Announces the session once its browser is running, then stays with it.
+serve_session() {
+  until announce "${session:-allocated}" || ! kill -0 "$child" 2>/dev/null; do
+    sleep "$POLL_SECONDS"
+  done
+  wait "$child"
+  exit $?
+}
+
 read_allocation
 mode="${requested:-kiosk}"
+session="$requested_session"
 timezone="$requested_timezone"
 public_ip="$requested_public_ip"
 locked=false
@@ -62,15 +90,16 @@ while true; do
   echo "[browser-mode] started Chromium in ${mode} mode${timezone:+ with timezone ${timezone}} (pid ${child})"
 
   if [[ "$locked" == true ]]; then
-    wait "$child"
-    exit $?
+    serve_session
   fi
 
   while kill -0 "$child" 2>/dev/null; do
+    announce pool || true
     sleep "$POLL_SECONDS"
     read_allocation
     if [[ -n "$requested" ]]; then
       locked=true
+      session="$requested_session"
       # The timezone and public IP are read once at launch, so a proxied
       # session restarts the browser even when the mode is unchanged.
       if [[ "$requested" != "$mode" || "$requested_timezone" != "$timezone" || "$requested_public_ip" != "$public_ip" ]]; then
@@ -85,8 +114,8 @@ while true; do
     fi
   done
 
+  # The allocation asked for the browser already running.
   if [[ -n "$child" ]]; then
-    wait "$child"
-    exit $?
+    serve_session
   fi
 done
