@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -171,27 +172,15 @@ func (h *shimHarness) browserGets(what string, match func(shimMessage) bool) shi
 // settle lets in-flight work finish before asserting that something did not happen.
 func (h *shimHarness) settle() { time.Sleep(60 * time.Millisecond) }
 
-func (h *shimHarness) clientGot(match func(shimMessage) bool) bool {
+func (h *shimHarness) got(list *[]shimMessage, match func(shimMessage) bool) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for _, msg := range h.received {
-		if match(msg) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(*list, match)
 }
 
-func (h *shimHarness) browserGot(match func(shimMessage) bool) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, msg := range h.commands {
-		if match(msg) {
-			return true
-		}
-	}
-	return false
-}
+func (h *shimHarness) clientGot(match func(shimMessage) bool) bool { return h.got(&h.received, match) }
+
+func (h *shimHarness) browserGot(match func(shimMessage) bool) bool { return h.got(&h.commands, match) }
 
 func method(name string) func(shimMessage) bool {
 	return func(msg shimMessage) bool { return msg.Method == name }
@@ -467,6 +456,22 @@ func TestRuntimeShimReportsAWorkerErrorOnce(t *testing.T) {
 	if shim.bubbledFromWorker(report, false) {
 		t.Fatal("a later page error with the same text was dropped")
 	}
+}
+
+// The browser adds a binding to the contexts that already exist even while the
+// domain is off, so the document that is loaded when a client registers one is
+// served by the client's own command. The shim must not swallow or alter it.
+func TestRuntimeShimForwardsABindingForTheLoadedDocument(t *testing.T) {
+	h := newShimHarness(t)
+	h.enable()
+	h.fromClient(`{"id":3,"method":"Runtime.addBinding","params":{"name":"report"},"sessionId":"S"}`)
+	forwarded := h.browserGets("the client's own command", func(msg shimMessage) bool {
+		return msg.Method == "Runtime.addBinding" && msg.ID == 3
+	})
+	if forwarded.raw != `{"id":3,"method":"Runtime.addBinding","params":{"name":"report"},"sessionId":"S"}` {
+		t.Fatalf("forwarded = %s", forwarded.raw)
+	}
+	h.clientGets("its answer", reply(3))
 }
 
 func TestRuntimeShimReinstallsBindingsInNewContexts(t *testing.T) {

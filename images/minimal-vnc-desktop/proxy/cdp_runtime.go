@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,10 +26,13 @@ import (
 //   - Execution contexts: an isolated world's id comes back from
 //     Page.createIsolatedWorld, and a frame's main-world id is the middle field
 //     of any object id resolved in that world.
-//   - Bindings: the browser only installs a binding into new contexts while the
-//     domain is on, so each one the client registers is added again to every
-//     context reported here. That lands shortly after the document starts, so
-//     until then a stand-in queues the calls made by scripts that run first.
+//   - Bindings: the browser adds a binding to the contexts that exist when the
+//     command arrives whether or not the domain is on, so the client's command
+//     is forwarded as it is. What the browser skips, with the domain off, is
+//     every context created afterwards. Each binding the client registers is
+//     therefore added again to every context reported here. That lands shortly
+//     after the document starts, so until then a stand-in queues the calls
+//     made by scripts that run first.
 //   - Navigation: contexts come and go with frames, which only the Page domain
 //     reports. It is enabled for every session described here, and its events
 //     are kept from a client that did not enable it.
@@ -221,15 +225,9 @@ func (s *runtimeShim) session(sessionID string) *shimSession {
 }
 
 func (sess *shimSession) addWorld(name string) {
-	if name == "" {
-		return
+	if name != "" && !slices.Contains(sess.worlds, name) {
+		sess.worlds = append(sess.worlds, name)
 	}
-	for _, existing := range sess.worlds {
-		if existing == name {
-			return
-		}
-	}
-	sess.worlds = append(sess.worlds, name)
 }
 
 // dropFrame forgets a frame's contexts and returns them.
@@ -243,13 +241,7 @@ func (sess *shimSession) dropFrame(frameID string) []shimContext {
 }
 
 func (sess *shimSession) removeBinding(name string) {
-	kept := sess.bindings[:0]
-	for _, binding := range sess.bindings {
-		if binding.name != name {
-			kept = append(kept, binding)
-		}
-	}
-	sess.bindings = kept
+	sess.bindings = slices.DeleteFunc(sess.bindings, func(binding shimBinding) bool { return binding.name == name })
 }
 
 // fromClient reports whether a complete client text frame should be forwarded.
@@ -314,7 +306,9 @@ func (s *runtimeShim) clientFrame(payload []byte) (forward bool, unlocked func()
 			return false, nil
 		}
 	case "Runtime.addBinding":
-		// A binding aimed at one context needs no replay: that context exists.
+		// Forwarded below, which covers the contexts that exist now. Only a
+		// binding meant for every context has to follow into later ones; one
+		// aimed at a single context does not.
 		if msg.Params.ExecutionContextID == 0 {
 			sess := s.session(msg.SessionID)
 			sess.removeBinding(msg.Params.Name)
