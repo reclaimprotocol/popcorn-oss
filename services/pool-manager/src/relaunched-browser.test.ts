@@ -88,7 +88,7 @@ describe("waitForRelaunchedBrowser", () => {
         const ok = await waitForRelaunchedBrowser("pod", "session-1", async () => null, {
             probe: async () => { firstProbeAfter ||= Date.now() - started; return true; },
             timeoutMs: 5_000,
-            unreportedRelaunchMs: 300,
+            unrecordedRelaunchMs: 300,
         });
         expect(ok).toBe(true);
         expect(firstProbeAfter).toBeGreaterThanOrEqual(290);

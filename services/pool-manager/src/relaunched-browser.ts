@@ -4,8 +4,8 @@ const CDP_PORT = 9226;
 const RELAUNCH_TIMEOUT_MS = 45_000;
 const PROBE_TIMEOUT_MS = 2_000;
 const PROBE_INTERVAL_MS = 250;
-// How long an image that does not report its launches is given to replace its browser.
-const UNREPORTED_RELAUNCH_MS = 750;
+// How long an image that does not record its launches is given to replace its browser.
+const UNRECORDED_RELAUNCH_MS = 750;
 
 /** Where the in-pod launcher records who the running browser was launched for. */
 export const BROWSER_LAUNCH_ANNOTATION = "agones.dev/sdk-browser-launch";
@@ -13,13 +13,13 @@ export const BROWSER_LAUNCH_ANNOTATION = "agones.dev/sdk-browser-launch";
 /** The launcher's record: a session id, "pool" before an allocation, or null when the image keeps none. */
 export type LaunchRecord = () => Promise<string | null>;
 
-/** Whether the browser's first page answers. */
-export type PageProbe = () => Promise<boolean>;
+/** Whether the pod's browser answers. */
+export type BrowserProbe = () => Promise<boolean>;
 
 export interface RelaunchWaitOptions {
-    probe?: PageProbe;
+    probe?: BrowserProbe;
     timeoutMs?: number;
-    unreportedRelaunchMs?: number;
+    unrecordedRelaunchMs?: number;
 }
 
 /**
@@ -32,7 +32,9 @@ export interface RelaunchWaitOptions {
  * launcher records the session once that session's browser is running, and the
  * wait is for that record.
  *
- * An image from before launches were recorded keeps none. Its browser is
+ * A launcher that keeps records writes its first one before it starts a browser,
+ * and a pod is not allocated before its browser is up. So a game server with no
+ * record belongs to an image from before records existed. Its browser is
  * accepted once the launcher has had time to replace it, as it was before.
  */
 export async function waitForRelaunchedBrowser(
@@ -41,7 +43,7 @@ export async function waitForRelaunchedBrowser(
     launchRecord: LaunchRecord,
     options: RelaunchWaitOptions = {},
 ): Promise<boolean> {
-    const probe = options.probe ?? (() => firstPageAnswers(address));
+    const probe = options.probe ?? (() => browserAnswers(address));
     const deadline = Date.now() + (options.timeoutMs ?? RELAUNCH_TIMEOUT_MS);
     let launched = false;
     while (Date.now() < deadline) {
@@ -49,7 +51,7 @@ export async function waitForRelaunchedBrowser(
             // A failed read says nothing about the image: ask again.
             const record = await launchRecord().catch(() => undefined);
             if (record === null) {
-                await Bun.sleep(options.unreportedRelaunchMs ?? UNREPORTED_RELAUNCH_MS);
+                await Bun.sleep(options.unrecordedRelaunchMs ?? UNRECORDED_RELAUNCH_MS);
                 launched = true;
             } else if (record === sessionId) {
                 launched = true;
@@ -61,29 +63,7 @@ export async function waitForRelaunchedBrowser(
     return false;
 }
 
-async function firstPageAnswers(address: string): Promise<boolean> {
-    const targets = await fetch(`http://${address}:${CDP_PORT}/json/list`, {
-        signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    }).then((response) => response.ok ? response.json() as Promise<Array<{ type: string; webSocketDebuggerUrl?: string }>> : []);
-    const target = targets.find((candidate) => candidate.type === "page" && candidate.webSocketDebuggerUrl);
-    if (!target?.webSocketDebuggerUrl) return false;
-
-    const socket = new WebSocket(target.webSocketDebuggerUrl);
-    try {
-        return await new Promise<boolean>((resolve) => {
-            const timeout = setTimeout(() => resolve(false), PROBE_TIMEOUT_MS);
-            socket.addEventListener("open", () => {
-                socket.send(JSON.stringify({ id: 1, method: "Runtime.evaluate", params: { expression: "1", returnByValue: true } }));
-            }, { once: true });
-            socket.addEventListener("message", (event) => {
-                const message = JSON.parse(String(event.data));
-                if (message.id !== 1) return;
-                clearTimeout(timeout);
-                resolve(message.result?.result?.value === 1);
-            });
-            socket.addEventListener("error", () => { clearTimeout(timeout); resolve(false); }, { once: true });
-        });
-    } finally {
-        socket.close();
-    }
+async function browserAnswers(address: string): Promise<boolean> {
+    const response = await fetch(`http://${address}:${CDP_PORT}/json/version`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    return response.ok;
 }

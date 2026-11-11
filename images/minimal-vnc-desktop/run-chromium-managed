@@ -8,13 +8,24 @@ CHROMIUM_LAUNCHER="${CHROMIUM_LAUNCHER:-/usr/local/bin/start-chromium}"
 NORMAL_BROWSER_PROFILE_DIR="${NORMAL_BROWSER_PROFILE_DIR:-$HOME/user-data-normal}"
 SESSION_BROWSER_PROFILE_DIR="${SESSION_BROWSER_PROFILE_DIR:-$HOME/user-data-session}"
 
+# Whether this pod is one Agones can allocate, decided as the entrypoint does.
+agones_enabled() {
+  case "${ENABLE_AGONES:-auto}" in
+    1 | true | TRUE | yes | YES) return 0 ;;
+    auto) [[ -n "${POD_NAME:-}" || -n "${KUBERNETES_SERVICE_HOST:-}" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 # Sets requested (kiosk, normal or empty before allocation), requested_session,
-# requested_timezone and requested_public_ip (the session proxy's exit, or empty).
+# requested_timezone and requested_public_ip (the session proxy's exit, or
+# empty), and recorded_launch (what the game server shows for announce, below).
 read_allocation() {
   local response
   response="$(curl --silent --fail --max-time 1 \
     "http://${AGONES_SDK_HOST}:${AGONES_SDK_HTTP_PORT}/gameserver" 2>/dev/null || true)"
   requested=""
+  recorded_launch=""
   requested_session=""
   requested_timezone=""
   requested_public_ip=""
@@ -22,6 +33,9 @@ read_allocation() {
     requested=normal
   elif [[ "$response" == *'"popcorn.dev/browser-mode":"kiosk"'* ]]; then
     requested=kiosk
+  fi
+  if [[ "$response" =~ \"agones\.dev/sdk-browser-launch\":\"([A-Za-z0-9_-]{1,64})\" ]]; then
+    recorded_launch="${BASH_REMATCH[1]}"
   fi
   if [[ "$response" =~ \"popcorn\.dev/session-id\":\"([A-Za-z0-9_-]{1,64})\" ]]; then
     requested_session="${BASH_REMATCH[1]}"
@@ -38,6 +52,11 @@ read_allocation() {
 # before an allocation, then the session. The pool manager hands a session its
 # browser only once this names that session, because a browser that merely
 # answers may be the one about to be replaced.
+#
+# The pool manager reads a game server with no record as an image that keeps
+# none. So the first record has to be on the game server before the pod can be
+# allocated: the pod reports ready only after its first browser is up, and that
+# browser is not started until the record shows (see below).
 announced=""
 announce() {
   [[ "$announced" != "$1" ]] || return 0
@@ -65,6 +84,14 @@ public_ip="$requested_public_ip"
 locked=false
 [[ -z "$requested" ]] || locked=true
 child=""
+
+if [[ "$locked" != true ]] && agones_enabled; then
+  # The write is accepted before it reaches the game server; wait to see it there.
+  until announce pool && [[ "$recorded_launch" == pool ]]; do
+    sleep "$POLL_SECONDS"
+    read_allocation
+  done
+fi
 
 stop_child() {
   [[ -n "$child" ]] || return 0
@@ -94,7 +121,6 @@ while true; do
   fi
 
   while kill -0 "$child" 2>/dev/null; do
-    announce pool || true
     sleep "$POLL_SECONDS"
     read_allocation
     if [[ -n "$requested" ]]; then

@@ -18,17 +18,26 @@ cat >"$test_dir/bin/curl" <<'EOF'
 if [[ "$*" == */metadata/annotation* ]]; then
   [[ ! -e "$TEST_ANNOUNCE_FAILS" ]] || exit 22
   sleep 0.1 # the browser started just before this call logs its launch on its own time
+  launches=0
+  [[ ! -f "$TEST_LAUNCH_LOG" ]] || launches="$(wc -l <"$TEST_LAUNCH_LOG" | tr -d ' ')"
   while [[ $# -gt 0 ]]; do
-    [[ "$1" != --data ]] || printf '%s after %s launches\n' "$2" "$(wc -l <"$TEST_LAUNCH_LOG" 2>/dev/null | tr -d ' ')" >>"$TEST_ANNOUNCE_LOG"
+    if [[ "$1" == --data ]]; then
+      printf '%s after %s launches\n' "$2" "$launches" >>"$TEST_ANNOUNCE_LOG"
+      # The game server shows a record only once TEST_RECORD_HIDDEN is gone.
+      [[ "$2" =~ \"value\":\"([^\"]+)\" ]] && printf %s "${BASH_REMATCH[1]}" >"$TEST_RECORD_FILE"
+    fi
     shift
   done
   exit 0
 fi
+recorded=""
+[[ -e "$TEST_RECORD_HIDDEN" ]] || recorded="$(cat "$TEST_RECORD_FILE" 2>/dev/null || true)"
 mode="$(cat "$TEST_MODE_FILE")"
 session="$(cat "$TEST_SESSION_FILE" 2>/dev/null || true)"
 timezone="$(cat "$TEST_TIMEZONE_FILE" 2>/dev/null || true)"
 public_ip="$(cat "$TEST_PUBLIC_IP_FILE" 2>/dev/null || true)"
-printf '{"metadata":{"annotations":{"popcorn.dev/browser-mode":"%s"%s%s%s}}}' "$mode" \
+printf '{"metadata":{"annotations":{"popcorn.dev/browser-mode":"%s"%s%s%s%s}}}' "$mode" \
+  "${recorded:+,\"agones.dev/sdk-browser-launch\":\"$recorded\"}" \
   "${session:+,\"popcorn.dev/session-id\":\"$session\"}" \
   "${timezone:+,\"popcorn.dev/browser-timezone\":\"$timezone\"}" \
   "${public_ip:+,\"popcorn.dev/browser-public-ip\":\"$public_ip\"}"
@@ -49,6 +58,9 @@ start_managed() {
   TEST_SESSION_FILE="$test_dir/session" \
   TEST_ANNOUNCE_LOG="$test_dir/announcements" \
   TEST_ANNOUNCE_FAILS="$test_dir/announce-fails" \
+  TEST_RECORD_FILE="$test_dir/record" \
+  TEST_RECORD_HIDDEN="$test_dir/record-hidden" \
+  ENABLE_AGONES=true \
   TEST_LAUNCH_LOG="$test_dir/launches" \
   CHROMIUM_LAUNCHER="$test_dir/launcher" \
   BROWSER_MODE_POLL_SECONDS=0.05 \
@@ -75,16 +87,21 @@ wait_for_announcement() {
 restart_managed() {
   kill "$managed_pid"
   wait "$managed_pid" 2>/dev/null || true
-  rm -f "$test_dir/launches" "$test_dir/announcements" "$test_dir/announce-fails"
+  rm -f "$test_dir/launches" "$test_dir/announcements" "$test_dir/announce-fails" "$test_dir/record" "$test_dir/record-hidden"
   printf unallocated >"$test_dir/mode"
   start_managed
   wait_for_launch 'true|default'
 }
 
+# No browser is started until the game server shows the pool record: a pod
+# cannot report ready, and so cannot be allocated, without one.
+: >"$test_dir/record-hidden"
 start_managed
+wait_for_announcement '{"key":"browser-launch","value":"pool"} after 0 launches'
+sleep 0.3
+[[ ! -e "$test_dir/launches" ]]
+rm "$test_dir/record-hidden"
 wait_for_launch 'true|default'
-# The pool's browser is announced as nobody's.
-wait_for_announcement '{"key":"browser-launch","value":"pool"} after 1 launches'
 
 printf session-a >"$test_dir/session"
 printf normal >"$test_dir/mode"
