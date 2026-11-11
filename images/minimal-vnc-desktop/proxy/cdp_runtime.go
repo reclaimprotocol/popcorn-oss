@@ -165,13 +165,11 @@ const shimBindingStub = `(() => {
 var shimDebug = shimFlag("CDP_RUNTIME_SHIM_DEBUG", false)
 
 func shimFlag(name string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "true":
-		return true
-	case "false":
-		return false
+	value, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(name)))
+	if err != nil {
+		return fallback
 	}
-	return fallback
+	return value
 }
 
 func shimLog(format string, args ...any) {
@@ -259,6 +257,17 @@ var shimClientMethods = [][]byte{
 
 // fromClient reports whether a complete client text frame should be forwarded.
 func (s *runtimeShim) fromClient(payload []byte) bool {
+	forward, before := s.clientFrame(payload)
+	// Sent ahead of the client's frame, and after the state lock is released.
+	if before != nil {
+		before()
+	}
+	return forward
+}
+
+// clientFrame decides what happens to a client frame, and returns anything
+// that has to reach the browser before it.
+func (s *runtimeShim) clientFrame(payload []byte) (forward bool, before func()) {
 	relevant := false
 	for _, method := range shimClientMethods {
 		if bytes.Contains(payload, method) {
@@ -267,7 +276,7 @@ func (s *runtimeShim) fromClient(payload []byte) bool {
 		}
 	}
 	if !relevant {
-		return true
+		return true, nil
 	}
 	var msg struct {
 		ID        int64  `json:"id"`
@@ -283,12 +292,12 @@ func (s *runtimeShim) fromClient(payload []byte) bool {
 		} `json:"params"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		return true
+		return true, nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.passthrough[msg.SessionID] {
-		return true
+		return true, nil
 	}
 	switch msg.Method {
 	case "Runtime.enable":
@@ -296,14 +305,14 @@ func (s *runtimeShim) fromClient(payload []byte) bool {
 		sess.enabled, sess.enabling = true, true
 		shimLog("Runtime.enable session=%.8s worker=%v", msg.SessionID, sess.worker)
 		go s.enable(msg.ID, msg.SessionID, append([]byte(nil), payload...))
-		return false
+		return false, nil
 	case "Runtime.runIfWaitingForDebugger":
 		// A worker paused at start must not run before the error listener is
 		// in place. A paused frame cannot be held the same way: it does not
 		// answer the commands that describe it until it runs.
 		if sess := s.sessions[msg.SessionID]; sess != nil && sess.enabling && sess.worker {
 			sess.held = append(sess.held, append([]byte(nil), payload...))
-			return false
+			return false, nil
 		}
 	case "Runtime.addBinding":
 		// A binding aimed at one context needs no replay: that context exists.
@@ -319,7 +328,7 @@ func (s *runtimeShim) fromClient(payload []byte) bool {
 				if msg.Params.ExecutionContextName != "" {
 					params["worldName"] = msg.Params.ExecutionContextName
 				}
-				s.send(msg.SessionID, "Page.addScriptToEvaluateOnNewDocument", params)
+				before = func() { s.send(msg.SessionID, "Page.addScriptToEvaluateOnNewDocument", params) }
 			}
 		}
 	case "Runtime.removeBinding":
@@ -332,7 +341,7 @@ func (s *runtimeShim) fromClient(payload []byte) bool {
 		if sess.enabled && (s.console || s.errors) {
 			// Keep the domain on for the shim; answer as the browser would.
 			go s.toClient(shimResult{ID: msg.ID, SessionID: msg.SessionID})
-			return false
+			return false, nil
 		}
 	case "Page.enable":
 		s.session(msg.SessionID).clientPage = true
@@ -342,7 +351,7 @@ func (s *runtimeShim) fromClient(payload []byte) bool {
 		if sess.enabled && !sess.worker {
 			// The shim still needs the domain; its events are withheld instead.
 			go s.toClient(shimResult{ID: msg.ID, SessionID: msg.SessionID})
-			return false
+			return false, nil
 		}
 	case "Page.setLifecycleEventsEnabled":
 		s.session(msg.SessionID).lifecycle = msg.Params.Enabled
@@ -352,7 +361,7 @@ func (s *runtimeShim) fromClient(payload []byte) bool {
 		s.session(msg.SessionID).addWorld(msg.Params.WorldName)
 		s.clientWorld[msg.ID] = shimWorld{session: msg.SessionID, frameID: msg.Params.FrameID, name: msg.Params.WorldName}
 	}
-	return true
+	return true, before
 }
 
 var (
@@ -752,9 +761,8 @@ func (s *runtimeShim) exception(sessionID string, contextID int, report string, 
 
 func (s *runtimeShim) call(sessionID, method string, params any) (json.RawMessage, error) {
 	reply := make(chan shimReply, 1)
+	id := s.commandID()
 	s.mu.Lock()
-	s.nextID++
-	id := s.nextID
 	s.calls[id] = reply
 	s.mu.Unlock()
 	payload, err := json.Marshal(struct {
@@ -783,15 +791,22 @@ func (s *runtimeShim) call(sessionID, method string, params any) (json.RawMessag
 	}
 }
 
+// commandID reserves the id of a command the shim issues.
+func (s *runtimeShim) commandID() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.nextID++
+	return s.nextID
+}
+
 // send issues a command without waiting; its reply is dropped by id.
 func (s *runtimeShim) send(sessionID, method string, params any) {
-	s.nextID++
 	payload, err := json.Marshal(struct {
 		ID        int64  `json:"id"`
 		Method    string `json:"method"`
 		Params    any    `json:"params,omitempty"`
 		SessionID string `json:"sessionId,omitempty"`
-	}{s.nextID, method, params, sessionID})
+	}{s.commandID(), method, params, sessionID})
 	if err == nil {
 		_ = writeFrameToConn(s.b.upstream, &s.b.upstreamMu, 0x1, payload, true, true)
 	}
