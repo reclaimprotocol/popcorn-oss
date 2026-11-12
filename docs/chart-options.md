@@ -39,6 +39,7 @@ Use [Configuration](configuration.md) to choose values and
 | `poolManager.redisSecondaryHost` | `""` | Optional secondary Redis host during HA migration. |
 | `poolManager.gameServerNamespace` | `""` | GameServer namespace; empty uses the Helm release namespace. |
 | `poolManager.gameServerFleet` | `browser-fleet` | Agones Fleet name. |
+| `poolManager.browserTimezoneFromProxy` | `false` | Relaunch proxied browsers with the proxy exit's timezone and WebRTC address. |
 | `poolManager.jwtSecretName` | `""` | Override for the gateway JWT Secret. |
 | `poolManager.serviceAuth.secretName` | `""` | Override for the service-auth Secret. |
 | `poolManager.serviceAuth.secretKey` | `POOL_MANAGER_SERVICE_AUTH_TOKEN` | Key inside the service-auth Secret. |

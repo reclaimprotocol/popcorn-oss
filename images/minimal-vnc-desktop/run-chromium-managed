@@ -6,31 +6,92 @@ AGONES_SDK_HOST="${AGONES_SDK_HOST:-127.0.0.1}"
 AGONES_SDK_HTTP_PORT="${AGONES_SDK_HTTP_PORT:-${AGONES_SDK_PORT:-9358}}"
 CHROMIUM_LAUNCHER="${CHROMIUM_LAUNCHER:-/usr/local/bin/start-chromium}"
 NORMAL_BROWSER_PROFILE_DIR="${NORMAL_BROWSER_PROFILE_DIR:-$HOME/user-data-normal}"
+SESSION_BROWSER_PROFILE_DIR="${SESSION_BROWSER_PROFILE_DIR:-$HOME/user-data-session}"
 
-# Sets requested (kiosk, normal or empty before allocation) and
-# requested_timezone (the session proxy's exit timezone, or empty).
+# Whether this pod is one Agones can allocate, decided as the entrypoint does.
+agones_enabled() {
+  case "${ENABLE_AGONES:-auto}" in
+    1 | true | TRUE | yes | YES) return 0 ;;
+    auto) [[ -n "${POD_NAME:-}" || -n "${KUBERNETES_SERVICE_HOST:-}" ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# Sets requested (kiosk, normal or empty before allocation), requested_session,
+# requested_timezone and requested_public_ip (the session proxy's exit, or
+# empty), and recorded_launch (what the game server shows for announce, below).
 read_allocation() {
   local response
   response="$(curl --silent --fail --max-time 1 \
     "http://${AGONES_SDK_HOST}:${AGONES_SDK_HTTP_PORT}/gameserver" 2>/dev/null || true)"
   requested=""
+  recorded_launch=""
+  requested_session=""
   requested_timezone=""
+  requested_public_ip=""
   if [[ "$response" == *'"popcorn.dev/browser-mode":"normal"'* ]]; then
     requested=normal
   elif [[ "$response" == *'"popcorn.dev/browser-mode":"kiosk"'* ]]; then
     requested=kiosk
   fi
+  if [[ "$response" =~ \"agones\.dev/sdk-browser-launch\":\"([A-Za-z0-9_-]{1,64})\" ]]; then
+    recorded_launch="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$response" =~ \"popcorn\.dev/session-id\":\"([A-Za-z0-9_-]{1,64})\" ]]; then
+    requested_session="${BASH_REMATCH[1]}"
+  fi
   if [[ "$response" =~ \"popcorn\.dev/browser-timezone\":\"([A-Za-z0-9_/+-]{1,64})\" ]]; then
     requested_timezone="${BASH_REMATCH[1]}"
   fi
+  if [[ "$response" =~ \"popcorn\.dev/browser-public-ip\":\"([0-9A-Fa-f.:]{2,45})\" ]]; then
+    requested_public_ip="${BASH_REMATCH[1]}"
+  fi
+}
+
+# Records on the game server who the running browser was launched for: "pool"
+# before an allocation, then the session. The pool manager hands a session its
+# browser only once this names that session, because a browser that merely
+# answers may be the one about to be replaced.
+#
+# The pool manager reads a game server with no record as an image that keeps
+# none. So the first record has to be on the game server before the pod can be
+# allocated: the pod reports ready only after its first browser is up, and that
+# browser is not started until the record shows (see below).
+announced=""
+announce() {
+  [[ "$announced" != "$1" ]] || return 0
+  curl --silent --fail --max-time 1 --request PUT \
+    --header 'Content-Type: application/json' \
+    --data "{\"key\":\"browser-launch\",\"value\":\"$1\"}" \
+    "http://${AGONES_SDK_HOST}:${AGONES_SDK_HTTP_PORT}/metadata/annotation" >/dev/null 2>&1 || return 1
+  announced="$1"
+}
+
+# Announces the session once its browser is running, then stays with it.
+serve_session() {
+  until announce "${session:-allocated}" || ! kill -0 "$child" 2>/dev/null; do
+    sleep "$POLL_SECONDS"
+  done
+  wait "$child"
+  exit $?
 }
 
 read_allocation
 mode="${requested:-kiosk}"
+session="$requested_session"
 timezone="$requested_timezone"
+public_ip="$requested_public_ip"
 locked=false
 [[ -z "$requested" ]] || locked=true
 child=""
+
+if [[ "$locked" != true ]] && agones_enabled; then
+  # The write is accepted before it reaches the game server; wait to see it there.
+  until announce pool && [[ "$recorded_launch" == pool ]]; do
+    sleep "$POLL_SECONDS"
+    read_allocation
+  done
+fi
 
 stop_child() {
   [[ -n "$child" ]] || return 0
@@ -44,16 +105,19 @@ while true; do
     # A kiosk launch persists fullscreen UI state in its profile. Reusing that
     # profile makes a later process look kiosked even without --kiosk, so the
     # allocated normal-view process gets a clean profile of its own.
-    BROWSER_TIMEZONE="$timezone" BROWSER_KIOSK=false BROWSER_PROFILE_DIR="$NORMAL_BROWSER_PROFILE_DIR" "$CHROMIUM_LAUNCHER" &
+    BROWSER_TIMEZONE="$timezone" BROWSER_PUBLIC_IP="$public_ip" BROWSER_KIOSK=false BROWSER_PROFILE_DIR="$NORMAL_BROWSER_PROFILE_DIR" "$CHROMIUM_LAUNCHER" &
+  elif [[ -n "$timezone" || -n "$public_ip" ]]; then
+    # A proxied session restarts the pool's kiosk browser. ShardX exits when a
+    # relaunch on the same profile is given a proxy, so it gets a clean one.
+    BROWSER_TIMEZONE="$timezone" BROWSER_PUBLIC_IP="$public_ip" BROWSER_KIOSK=true BROWSER_PROFILE_DIR="$SESSION_BROWSER_PROFILE_DIR" "$CHROMIUM_LAUNCHER" &
   else
-    BROWSER_TIMEZONE="$timezone" BROWSER_KIOSK=true "$CHROMIUM_LAUNCHER" &
+    BROWSER_KIOSK=true "$CHROMIUM_LAUNCHER" &
   fi
   child="$!"
   echo "[browser-mode] started Chromium in ${mode} mode${timezone:+ with timezone ${timezone}} (pid ${child})"
 
   if [[ "$locked" == true ]]; then
-    wait "$child"
-    exit $?
+    serve_session
   fi
 
   while kill -0 "$child" 2>/dev/null; do
@@ -61,12 +125,14 @@ while true; do
     read_allocation
     if [[ -n "$requested" ]]; then
       locked=true
-      # The timezone is read once at launch, so a proxied session restarts
-      # the browser even when the mode is unchanged.
-      if [[ "$requested" != "$mode" || "$requested_timezone" != "$timezone" ]]; then
+      session="$requested_session"
+      # The timezone and public IP are read once at launch, so a proxied
+      # session restarts the browser even when the mode is unchanged.
+      if [[ "$requested" != "$mode" || "$requested_timezone" != "$timezone" || "$requested_public_ip" != "$public_ip" ]]; then
         echo "[browser-mode] switching this pod from ${mode} to ${requested} mode${requested_timezone:+ with timezone ${requested_timezone}}"
         mode="$requested"
         timezone="$requested_timezone"
+        public_ip="$requested_public_ip"
         stop_child
         child=""
       fi
@@ -74,8 +140,8 @@ while true; do
     fi
   done
 
+  # The allocation asked for the browser already running.
   if [[ -n "$child" ]]; then
-    wait "$child"
-    exit $?
+    serve_session
   fi
 done

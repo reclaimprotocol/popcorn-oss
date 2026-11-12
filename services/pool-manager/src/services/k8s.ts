@@ -31,6 +31,11 @@ async function k8sJson(path: string, opts: any = {}) {
     return res;
 }
 
+export function gameServerAnnotation(gameServer: any, annotation: string): string | null {
+    const value = gameServer?.metadata?.annotations?.[annotation];
+    return typeof value === "string" ? value : null;
+}
+
 export function buildMetadataAnnotationsPatch(annotations: Record<string, string>) {
     return {
         metadata: {
@@ -183,6 +188,13 @@ export const K8s = {
             attempts: 20,
             delayMs: 250,
         });
+    },
+
+    /** One annotation of a game server, or null when it has none by that name. Throws when the game server cannot be read. */
+    async getGameServerAnnotation(name: string, annotation: string, namespace: string = RuntimeConfig.gameServerNamespace): Promise<string | null> {
+        const res = await k8sJson(`/apis/agones.dev/v1/namespaces/${namespace}/gameservers/${name}`, { method: "GET" });
+        if (!res.ok) throw new Error(`GameServer ${name} read failed: ${res.status}`);
+        return gameServerAnnotation(await res.json(), annotation);
     },
 
     async patchGameServer(namespace: string, name: string, patch: any): Promise<void> {

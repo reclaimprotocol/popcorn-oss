@@ -1,4 +1,5 @@
 import type { RegionConfig } from './config';
+import type { BrowserExit } from './proxy-country';
 import { summarizeAttemptError, type RegionAttempt } from './regions';
 import {
   isLiveViewE2eResponse,
@@ -20,6 +21,7 @@ export interface RoutedSessionRequest {
   tokenExpiresAt?: string;
   accessPolicy?: RoutedSessionAccessPolicy;
   proxy?: { country: string };
+  browserExit?: BrowserExit;
   browserMode?: 'kiosk' | 'normal';
   liveViewE2e?: LiveViewE2eRequest;
 }
