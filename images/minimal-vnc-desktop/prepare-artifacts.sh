@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CHROMIUM_LOCK="$SCRIPT_DIR/locks/chromium-artifacts.tsv"
+APT_LOCK="$SCRIPT_DIR/locks/apt-debs.tsv"
 MIRROR_LOCK="$SCRIPT_DIR/locks/artifact-mirrors.tsv"
 
 usage() {
@@ -10,13 +11,22 @@ usage() {
 Usage:
   prepare-artifacts.sh <output-dir> [platform]
 
-Prepares a small artifact context for the minimal VNC desktop Dockerfile.
-The output directory will contain artifacts/debs/*.deb.
+Prepares the artifact context for the minimal VNC desktop Dockerfile:
+  artifacts/debs/*.deb  the prepared debs in locks/chromium-artifacts.tsv
+  artifacts/apt/*.deb   every Ubuntu deb in locks/apt-debs.tsv
+
+The build installs these files and never contacts an apt archive. Each file is
+fetched from the first source that has it, and must match its locked sha256:
+  1. ARTIFACT_MIRROR_PREFIX/<filename>, when set
+  2. the GitHub release in locks/artifact-mirrors.tsv (assets named <sha256>.deb)
+  3. the locked upstream URL
+  4. for Ubuntu debs, Launchpad, which keeps every published build
 
 Environment:
   GITHUB_ARTIFACT_MIRROR_REPO  Optional GitHub repo override for release assets.
   ARTIFACT_MIRROR_TAG          Optional GitHub release tag override.
   ARTIFACT_MIRROR_PREFIX       Optional unauthenticated HTTP mirror prefix.
+  ARTIFACT_MIRROR_DISABLE=1    Skip the GitHub release (used to fill a new one).
   SOURCE_DATE_EPOCH            Optional deterministic timestamp for prepared files.
 EOF
 }
@@ -65,7 +75,6 @@ normalize_platform() {
 TARGET_PLATFORM="$(normalize_platform "$PLATFORM_INPUT")"
 TARGET_ARCH="${TARGET_PLATFORM#linux/}"
 ARTIFACT_ROOT="$OUT_DIR/artifacts"
-DEB_DIR="$ARTIFACT_ROOT/debs"
 TMP_DOWNLOAD_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DOWNLOAD_DIR"' EXIT
 
@@ -84,8 +93,6 @@ IFS=$'\t' read -r locked_mirror_repo locked_mirror_tag <<<"$mirror_record"
 GITHUB_ARTIFACT_MIRROR_REPO="${GITHUB_ARTIFACT_MIRROR_REPO:-$locked_mirror_repo}"
 ARTIFACT_MIRROR_TAG="${ARTIFACT_MIRROR_TAG:-$locked_mirror_tag}"
 
-mkdir -p "$DEB_DIR"
-
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -95,22 +102,22 @@ sha256_file() {
 }
 
 verify_file() {
-  local path="$1"
-  local expected_sha="$2"
-  local actual_sha
-
-  actual_sha="$(sha256_file "$path")"
-  [[ "$actual_sha" == "$expected_sha" ]]
+  [[ "$(sha256_file "$1")" == "$2" ]]
 }
 
+# A source that is down should not hold the build up for long when another
+# source can still serve the file, so only the last source retries hard.
 download_with_curl() {
   local url="$1"
   local out_path="$2"
+  local retries="$3"
 
   curl \
     --fail \
+    --silent \
+    --show-error \
     --location \
-    --retry 8 \
+    --retry "$retries" \
     --retry-all-errors \
     --retry-delay 2 \
     --connect-timeout 20 \
@@ -120,83 +127,83 @@ download_with_curl() {
     "$url"
 }
 
-download_artifact() {
-  local filename="$1"
-  local upstream_url="$2"
-  local out_path="$3"
-  local mirror_prefix="${ARTIFACT_MIRROR_PREFIX:-}"
-  local mirror_repo="${GITHUB_ARTIFACT_MIRROR_REPO:-}"
-  local mirror_tag="${ARTIFACT_MIRROR_TAG:-}"
+# fetch <filename> <sha256> <out_path> <url>...: the first URL whose file
+# matches the sha256 wins.
+fetch() {
+  local filename="$1" expected_sha="$2" out_path="$3"
+  shift 3
+  local tmp_path="$TMP_DOWNLOAD_DIR/$filename"
+  local url retries remaining=$#
 
-  if [[ -n "$mirror_prefix" ]]; then
-    if download_with_curl "${mirror_prefix%/}/$filename" "$out_path"; then
-      return
-    fi
-    echo "Mirror prefix missing $filename; falling back" >&2
-  fi
-
-  if [[ -n "$mirror_repo" && -n "$mirror_tag" ]] && command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    rm -f "$TMP_DOWNLOAD_DIR/$filename"
-    if gh release download "$mirror_tag" \
-      --repo "$mirror_repo" \
-      --pattern "$filename" \
-      --dir "$TMP_DOWNLOAD_DIR" \
-      --clobber >/dev/null; then
-      if [[ "$TMP_DOWNLOAD_DIR/$filename" != "$out_path" ]]; then
-        mv "$TMP_DOWNLOAD_DIR/$filename" "$out_path"
+  for url in "$@"; do
+    remaining=$((remaining - 1))
+    retries=2
+    [[ "$remaining" == "0" ]] && retries=8
+    rm -f "$tmp_path"
+    if download_with_curl "$url" "$tmp_path" "$retries"; then
+      if verify_file "$tmp_path" "$expected_sha"; then
+        mv "$tmp_path" "$out_path"
+        return
       fi
-      return
+      echo "Checksum mismatch for $filename from $url" >&2
     fi
-    echo "GitHub artifact mirror missing $filename; falling back" >&2
-  fi
+    if [[ "$remaining" != "0" ]]; then
+      echo "Could not get $filename from $url; trying the next source" >&2
+    fi
+  done
 
-  download_with_curl "$upstream_url" "$out_path"
+  echo "No source served $filename with sha256 $expected_sha" >&2
+  exit 1
 }
 
-while IFS=$'\t' read -r arch name filename url expected_sha; do
-  if [[ "$arch" != "$TARGET_ARCH" ]]; then
-    continue
-  fi
+# prepare <lock> <dest-dir> <filename-col> <url-col> <sha-col> <launchpad:0|1>
+prepare() {
+  local lock="$1" dest="$2" file_col="$3" url_col="$4" sha_col="$5" launchpad="$6"
+  local filename url sha urls expected=()
 
-  out_path="$DEB_DIR/$filename"
-  if [[ -f "$out_path" ]] && verify_file "$out_path" "$expected_sha"; then
-    echo "Using cached $filename"
-    continue
-  fi
+  mkdir -p "$dest"
+  while IFS=$'\t' read -r filename url sha; do
+    expected+=("$filename")
+    if [[ -f "$dest/$filename" ]] && verify_file "$dest/$filename" "$sha"; then
+      continue
+    fi
+    echo "Preparing $filename"
+    urls=()
+    if [[ -n "${ARTIFACT_MIRROR_PREFIX:-}" ]]; then
+      urls+=("${ARTIFACT_MIRROR_PREFIX%/}/$filename")
+    fi
+    if [[ "${ARTIFACT_MIRROR_DISABLE:-0}" != "1" && -n "$GITHUB_ARTIFACT_MIRROR_REPO" && -n "$ARTIFACT_MIRROR_TAG" ]]; then
+      urls+=("https://github.com/$GITHUB_ARTIFACT_MIRROR_REPO/releases/download/$ARTIFACT_MIRROR_TAG/$sha.deb")
+    fi
+    urls+=("$url")
+    if [[ "$launchpad" == "1" ]]; then
+      urls+=("https://launchpad.net/ubuntu/+archive/primary/+files/$filename")
+    fi
+    fetch "$filename" "$sha" "$dest/$filename" "${urls[@]}"
+  done < <(
+    awk -F '\t' -v arch="$TARGET_ARCH" -v f="$file_col" -v u="$url_col" -v s="$sha_col" \
+      '$0 !~ /^[[:space:]]*(#|$)/ && $1 == arch { print $f "\t" $u "\t" $s }' "$lock"
+  )
 
-  rm -f "$out_path"
-  tmp_path="$TMP_DOWNLOAD_DIR/$filename"
-  echo "Preparing $name ($filename)"
-  download_artifact "$filename" "$url" "$tmp_path"
-
-  if ! verify_file "$tmp_path" "$expected_sha"; then
-    echo "Checksum mismatch for $filename" >&2
-    echo "Expected: $expected_sha" >&2
-    echo "Actual:   $(sha256_file "$tmp_path")" >&2
+  if [[ "${#expected[@]}" == "0" ]]; then
+    echo "No ${lock##*/} entries for $TARGET_ARCH" >&2
     exit 1
   fi
 
-  mv "$tmp_path" "$out_path"
-done < <(awk -F '\t' '$0 !~ /^[[:space:]]*(#|$)/ { print }' "$CHROMIUM_LOCK")
+  # Drop debs left over from an earlier lock, so the directory holds exactly
+  # the locked set and the image installs nothing else.
+  local existing
+  for existing in "$dest"/*.deb; do
+    [[ -e "$existing" ]] || continue
+    if ! printf '%s\n' "${expected[@]}" | grep -qxF "$(basename "$existing")"; then
+      echo "Pruning stale artifact $(basename "$existing")"
+      rm -f "$existing"
+    fi
+  done
+}
 
-# Prune debs left over from a previous lock (e.g. chromium debs from an earlier
-# browser base) so a stale cache dir doesn't
-# poison the count check below.
-expected_debs="$(awk -F '\t' -v arch="$TARGET_ARCH" \
-  '$0 !~ /^[[:space:]]*(#|$)/ && $1 == arch { print $3 }' "$CHROMIUM_LOCK")"
-for existing in "$DEB_DIR"/*.deb; do
-  [[ -e "$existing" ]] || continue
-  if ! printf '%s\n' "$expected_debs" | grep -qxF "$(basename "$existing")"; then
-    echo "Pruning stale artifact $(basename "$existing")"
-    rm -f "$existing"
-  fi
-done
-
-artifact_count="$(find "$DEB_DIR" -maxdepth 1 -type f -name '*.deb' | wc -l | tr -d '[:space:]')"
-if [[ "$artifact_count" != "1" ]]; then
-  echo "Expected 1 deb artifact (libxcvt0) for $TARGET_ARCH, found $artifact_count" >&2
-  exit 1
-fi
+prepare "$CHROMIUM_LOCK" "$ARTIFACT_ROOT/debs" 3 4 5 0
+prepare "$APT_LOCK" "$ARTIFACT_ROOT/apt" 4 5 6 1
 
 find "$ARTIFACT_ROOT" -type f -exec chmod 0644 {} +
 find "$ARTIFACT_ROOT" -type d -exec chmod 0755 {} +
