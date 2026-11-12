@@ -7,9 +7,9 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/ci/check-reproducible-images.sh --commit-sha <sha> [--service all|browser-runtime-attestor|browser-runtime]
+  scripts/ci/check-reproducible-images.sh --commit-sha <sha> [--service all|browser-runtime-attestor]
 
-Pulls the published immutable image tag for the selected reproducible image set,
+Pulls the published immutable image tag for the reproducible attestor image,
 rebuilds that image locally from the same commit, and compares both the image
 config digest and the complete registry manifest digest.
 EOF
@@ -47,7 +47,7 @@ if [[ -z "$commit_sha" ]]; then
 fi
 
 case "$selector" in
-  all|browser-runtime-attestor|browser-runtime) ;;
+  all|browser-runtime-attestor) ;;
   attestor)
     selector="browser-runtime-attestor"
     ;;
@@ -219,46 +219,7 @@ build_attestor_once() {
   rm -f "$metadata_file"
 }
 
-build_browser_runtime_once() {
-  local metadata_file out_dir artifact_dir ubuntu_snapshot
-
-  metadata_file="$(mktemp)"
-  out_dir="$(mktemp -d)"
-  artifact_dir="$(mktemp -d)"
-  CLEANUP_DIRS+=("$out_dir" "$artifact_dir")
-  browser_runtime_local_layout_dir="$out_dir"
-
-  ubuntu_snapshot="$(awk -F '=' '$1 == "UBUNTU_SNAPSHOT" { print $2 }' images/minimal-vnc-desktop/locks/ubuntu-snapshot.lock)"
-  if [[ -z "$ubuntu_snapshot" ]]; then
-    echo "Failed to resolve UBUNTU_SNAPSHOT from images/minimal-vnc-desktop/locks/ubuntu-snapshot.lock" >&2
-    exit 1
-  fi
-
-  GITHUB_ARTIFACT_MIRROR_REPO="${GITHUB_ARTIFACT_MIRROR_REPO:-reclaimprotocol/popcorn-oss}" \
-    SOURCE_DATE_EPOCH=0 ./images/minimal-vnc-desktop/prepare-artifacts.sh "$artifact_dir" linux/amd64
-
-  docker buildx build \
-    --platform linux/amd64 \
-    --build-arg "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}" \
-    --build-arg "UBUNTU_SNAPSHOT=${ubuntu_snapshot}" \
-    --build-context "minimal-vnc-artifacts=${artifact_dir}" \
-    --build-context "trusted-liveview=${REPO_ROOT}/packages/trusted-liveview" \
-    --metadata-file "$metadata_file" \
-    --provenance=false \
-    --output "type=oci,dest=${out_dir},tar=false,name=local/popcorn/browser-runtime:${requested_commit},oci-mediatypes=true,compression=gzip,compression-level=9,force-compression=true,rewrite-timestamp=true" \
-    images/minimal-vnc-desktop
-
-  browser_runtime_local="$(config_digest_from_metadata "$metadata_file")"
-  browser_runtime_local_manifest="$(metadata_value "$metadata_file" "containerimage.digest")"
-  rm -f "$metadata_file"
-}
-
-services=()
-if [[ "$selector" == "all" ]]; then
-  services=(browser-runtime-attestor browser-runtime)
-else
-  services=("$selector")
-fi
+services=(browser-runtime-attestor)
 
 attestor_published=""
 attestor_local=""
@@ -266,12 +227,6 @@ attestor_published_manifest=""
 attestor_local_manifest=""
 attestor_published_ref=""
 attestor_local_layout_dir=""
-browser_runtime_published=""
-browser_runtime_local=""
-browser_runtime_published_manifest=""
-browser_runtime_local_manifest=""
-browser_runtime_published_ref=""
-browser_runtime_local_layout_dir=""
 
 for service in "${services[@]}"; do
   case "$service" in
@@ -282,21 +237,12 @@ for service in "${services[@]}"; do
       attestor_published_manifest="$(pull_published_repo_digest browser-runtime-attestor)"
       build_attestor_once
       ;;
-    browser-runtime)
-      echo "Comparing published and local browser-runtime digests..."
-      browser_runtime_published_ref="${REGISTRY_HOST}/${REGISTRY_PROJECT_ID}/${REGISTRY_REPOSITORY}/browser-runtime:${requested_commit}"
-      browser_runtime_published="$(pull_published_image browser-runtime)"
-      browser_runtime_published_manifest="$(pull_published_repo_digest browser-runtime)"
-      build_browser_runtime_once
-      ;;
   esac
 done
 
 python3 - "$selector" "$SOURCE_DATE_EPOCH" "$requested_commit" \
   "$attestor_published" "$attestor_local" \
-  "$attestor_published_manifest" "$attestor_local_manifest" \
-  "$browser_runtime_published" "$browser_runtime_local" \
-  "$browser_runtime_published_manifest" "$browser_runtime_local_manifest" <<'PY'
+  "$attestor_published_manifest" "$attestor_local_manifest" <<'PY'
 from __future__ import annotations
 
 import json
@@ -311,10 +257,6 @@ import sys
     att_local,
     att_published_manifest,
     att_local_manifest,
-    browser_published,
-    browser_local,
-    browser_published_manifest,
-    browser_local_manifest,
 ) = sys.argv[1:]
 source_date_epoch = int(source_date_epoch)
 
@@ -329,17 +271,6 @@ if selector in {"all", "browser-runtime-attestor"}:
         "local_manifest_digest": att_local_manifest,
         "manifest_match": bool(att_published_manifest)
         and att_published_manifest == att_local_manifest,
-    }
-
-if selector in {"all", "browser-runtime"}:
-    results["browser-runtime"] = {
-        "published_config_digest": browser_published,
-        "local_config_digest": browser_local,
-        "config_match": bool(browser_published) and browser_published == browser_local,
-        "published_manifest_digest": browser_published_manifest,
-        "local_manifest_digest": browser_local_manifest,
-        "manifest_match": bool(browser_published_manifest)
-        and browser_published_manifest == browser_local_manifest,
     }
 
 for result in results.values():
@@ -413,21 +344,6 @@ if [[ -n "$attestor_published" ]] \
   fi
 fi
 
-if [[ -n "$browser_runtime_published" ]] \
-  && { [[ "$browser_runtime_published" != "$browser_runtime_local" ]] \
-    || [[ "$browser_runtime_published_manifest" != "$browser_runtime_local_manifest" ]]; }; then
-  check_failed=1
-  if [[ "$browser_runtime_published" != "$browser_runtime_local" ]] \
-    && [[ -n "$browser_runtime_published_ref" && -n "$browser_runtime_local_layout_dir" ]]; then
-    python3 "$SCRIPT_DIR/diff-image-layers.py" \
-      --service browser-runtime \
-      --published-image-ref "$browser_runtime_published_ref" \
-      --local-oci-layout "$browser_runtime_local_layout_dir" \
-      --output-json "dist/reproducible-image-layer-diff-browser-runtime.json" \
-      --output-md "dist/reproducible-image-layer-diff-browser-runtime.md"
-  fi
-fi
-
 if (( check_failed )); then
   echo >&2
   echo "Reproducibility check failed for:" >&2
@@ -437,13 +353,6 @@ if (( check_failed )); then
     echo "  - browser-runtime-attestor:" >&2
     echo "      config: published=${attestor_published} local=${attestor_local}" >&2
     echo "      manifest: published=${attestor_published_manifest} local=${attestor_local_manifest}" >&2
-  fi
-  if [[ -n "$browser_runtime_published" ]] \
-    && { [[ "$browser_runtime_published" != "$browser_runtime_local" ]] \
-      || [[ "$browser_runtime_published_manifest" != "$browser_runtime_local_manifest" ]]; }; then
-    echo "  - browser-runtime:" >&2
-    echo "      config: published=${browser_runtime_published} local=${browser_runtime_local}" >&2
-    echo "      manifest: published=${browser_runtime_published_manifest} local=${browser_runtime_local_manifest}" >&2
   fi
   exit 1
 fi

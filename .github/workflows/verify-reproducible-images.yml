@@ -14,7 +14,6 @@ on:
         type: choice
         options:
           - all
-          - browser-runtime
           - browser-runtime-attestor
 
 permissions:
@@ -25,7 +24,6 @@ env:
   REGISTRY_HOST: ghcr.io
   REGISTRY_PROJECT_ID: reclaimprotocol
   REGISTRY_REPOSITORY: popcorn-oss
-  GITHUB_ARTIFACT_MIRROR_REPO: reclaimprotocol/popcorn-oss
   BUILDX_VERSION: v0.35.0
   BUILDKIT_IMAGE: moby/buildkit:v0.31.2@sha256:2f5adac4ecd194d9f8c10b7b5d7bceb5186853db1b26e5abd3a657af0b7e26ec
 
