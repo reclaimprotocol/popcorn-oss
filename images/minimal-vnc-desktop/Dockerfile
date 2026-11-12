@@ -93,9 +93,15 @@ ENV XDG_CONFIG_HOME=/home/kernel/.config
 ENV XDG_CACHE_HOME=/home/kernel/.cache
 
 COPY locks/apt-packages.txt /tmp/apt-packages.txt
+COPY locks/apt-debs.tsv /tmp/apt-debs.tsv
 COPY locks/chromium-artifacts.tsv /tmp/chromium-artifacts.tsv
 COPY locks/novnc.lock /tmp/novnc.lock
 
+# The Ubuntu packages are installed from the prepared artifact context, never
+# from an archive: `apt-get update` is not run, so a Canonical outage cannot
+# break the build. locks/apt-debs.tsv (made by lock-apt-debs.sh) is the full
+# closure of locks/apt-packages.txt; every file is checked against its sha256,
+# and every pin is checked to be installed at exactly its version.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-apt-cache \
     --mount=type=cache,target=/var/lib/apt,sharing=locked,id=$CACHEIDPREFIX-apt-lib \
     --mount=from=minimal-vnc-artifacts,source=/artifacts,target=/mnt/artifacts,ro \
@@ -103,11 +109,27 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     touch_start="$(date -u +'%Y-%m-%d %H:%M:%S')"; \
     rm -f /etc/apt/apt.conf.d/docker-clean; \
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' >/etc/apt/apt.conf.d/keep-cache; \
-    package_args="$(grep -vE '^[[:space:]]*(#|$)' /tmp/apt-packages.txt | tr '\n' ' ')"; \
-    apt-get update; \
-    apt-get --no-install-recommends -y install ${package_args}; \
     arch="${TARGETARCH:-amd64}"; \
     case "$arch" in amd64|arm64) ;; *) echo "unsupported target arch: $arch" >&2; exit 1 ;; esac; \
+    awk -F '\t' -v arch="$arch" 'NF == 6 && $1 == arch { print $6 "  /mnt/artifacts/apt/" $4 }' /tmp/apt-debs.tsv >/tmp/apt-debs.sha256; \
+    test -s /tmp/apt-debs.sha256; \
+    sha256sum --quiet -c /tmp/apt-debs.sha256; \
+    test "$(find /mnt/artifacts/apt -maxdepth 1 -name '*.deb' | wc -l)" -eq "$(wc -l </tmp/apt-debs.sha256)"; \
+    dpkg-query -W -f='${Package}\n' | sort >/tmp/dpkg-before; \
+    apt-get --no-install-recommends -y install $(awk '{ print $2 }' /tmp/apt-debs.sha256); \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-packages.txt | \
+    while IFS='=' read -r name version; do \
+        installed="$(dpkg-query -W -f='${Version}' "$name")"; \
+        if [ "$installed" != "$version" ]; then echo "pin ${name}=${version} installed as ${installed}" >&2; exit 1; fi; \
+    done; \
+    # Installing files marks every package manual. Set the marks an archive
+    # install would have: packages new to the base image are auto unless pinned,
+    # and upgraded base packages keep theirs. The --auto-remove purge below then
+    # removes the same packages it always did.
+    awk -F '\t' -v arch="$arch" 'NF == 6 && $1 == arch { print $2 }' /tmp/apt-debs.tsv | sort >/tmp/dpkg-locked; \
+    grep -vE '^[[:space:]]*(#|$)' /tmp/apt-packages.txt | cut -d= -f1 | sort >/tmp/dpkg-pinned; \
+    comm -13 /tmp/dpkg-before /tmp/dpkg-locked | comm -23 - /tmp/dpkg-pinned | xargs -r apt-mark auto >/dev/null; \
+    rm -f /tmp/dpkg-before /tmp/dpkg-locked /tmp/dpkg-pinned; \
     mkdir -p /tmp/chromium-artifacts; \
     cp -a /mnt/artifacts/debs/. /tmp/chromium-artifacts/; \
     awk -F '\t' -v arch="$arch" 'NF == 5 && $1 == arch { print $2 "\t" $3 "\t" $4 "\t" $5 }' /tmp/chromium-artifacts.tsv | \
@@ -133,7 +155,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked,id=$CACHEIDPREFIX-ap
     sed -i 's#^supportsWebCodecsH264Decode = await _checkWebCodecsH264DecodeSupport();$#_checkWebCodecsH264DecodeSupport().then((result) => { supportsWebCodecsH264Decode = result; });#' /usr/share/novnc/core/util/browser.js; \
     grep -q '^_checkWebCodecsH264DecodeSupport().then(' /usr/share/novnc/core/util/browser.js; \
     apt-get purge -y --auto-remove xz-utils; \
-    rm -rf /tmp/chromium-artifacts /tmp/novnc-src /tmp/novnc.tar.gz /tmp/apt-packages.txt /tmp/chromium-artifacts.tsv /tmp/novnc.lock; \
+    rm -rf /tmp/chromium-artifacts /tmp/novnc-src /tmp/novnc.tar.gz /tmp/apt-packages.txt /tmp/apt-debs.tsv /tmp/apt-debs.sha256 /tmp/chromium-artifacts.tsv /tmp/novnc.lock; \
     useradd -m -s /bin/bash kernel; \
     mkdir -p /home/kernel/user-data /home/kernel/.config/openbox /home/kernel/.cache /tmp/.X11-unix /var/log/app; \
     ln -sfn /var/log/app /var/log/minimal-vnc; \

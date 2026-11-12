@@ -1,6 +1,7 @@
 # Top-level apt packages for the minimal VNC runtime.
-# Versions were resolved from the Ubuntu 22.04 archive on 2026-06-24 and are
-# installed against the Dockerfile's pinned Ubuntu snapshot sources.
+# Versions were resolved from the Ubuntu 22.04 archive on 2026-06-24. After a
+# change here, run lock-apt-debs.sh and publish-artifact-mirror.sh: the image
+# installs the closure locked in apt-debs.tsv, not from an archive.
 bash=5.1-6ubuntu1.1
 # Build-time only: precompresses liveview.html to the .br sibling that
 # proxy/main.go already prefers over .gz. The whole viewer is inlined into that
