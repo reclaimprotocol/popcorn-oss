@@ -19,8 +19,6 @@ def main() -> int:
     parser.add_argument("--registry-project", required=True)
     parser.add_argument("--registry-repository", required=True)
     parser.add_argument("--browser-runtime-attestor-digest", required=True)
-    parser.add_argument("--browser-runtime-digest", required=True)
-    parser.add_argument("--ubuntu-snapshot", required=True)
     parser.add_argument("--json-out", required=True)
     parser.add_argument("--markdown-out", required=True)
     args = parser.parse_args()
@@ -47,18 +45,6 @@ def main() -> int:
                     args.browser_runtime_attestor_digest,
                 ),
             },
-            "browser-runtime": {
-                "tag": f"{tag_prefix}/browser-runtime:{args.commit}",
-                "digest": args.browser_runtime_digest,
-                "image": build_image_ref(
-                    args.registry_host,
-                    args.registry_project,
-                    args.registry_repository,
-                    "browser-runtime",
-                    args.browser_runtime_digest,
-                ),
-                "ubuntu_snapshot": args.ubuntu_snapshot,
-            },
         },
         "verification": {
             "cosign_oidc_issuer": "https://token.actions.githubusercontent.com",
@@ -75,7 +61,7 @@ def main() -> int:
 
     markdown = f"""## Reproducible Images
 
-This build records immutable digests for the OSS reproducible image set: `browser-runtime` and `browser-runtime-attestor`.
+This build records the immutable digest of the OSS reproducible image: `browser-runtime-attestor`.
 
 Commit: `{args.commit}`
 Source date epoch: `{args.source_date_epoch}` (`{created_at}`)
@@ -85,9 +71,7 @@ Tag policy: immutable commit tags for runtime images
 | Image | Commit tag | Digest ref |
 | --- | --- | --- |
 | `browser-runtime-attestor` | `{tag_prefix}/browser-runtime-attestor:{args.commit}` | `{payload["reproducible_images"]["browser-runtime-attestor"]["image"]}` |
-| `browser-runtime` | `{tag_prefix}/browser-runtime:{args.commit}` | `{payload["reproducible_images"]["browser-runtime"]["image"]}` |
 Source repository: `https://github.com/reclaimprotocol/popcorn-oss`
-Browser runtime Ubuntu snapshot: `{args.ubuntu_snapshot}`
 Cosign OIDC issuer: `https://token.actions.githubusercontent.com`
 Cosign workflow identity: `https://github.com/reclaimprotocol/popcorn-oss/.github/workflows/reproducible-images.yml@refs/heads/main`
 """
