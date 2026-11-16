@@ -34,6 +34,18 @@ data:
             type: regex_parser
             parse_from: attributes["log.file.path"]
             regex: '^/var/log/pods/(?P<k8s_namespace_name>[^_]+)_(?P<k8s_pod_name>.+)_(?P<k8s_pod_uid>[0-9a-f-]+)/(?P<k8s_container_name>[^/]+)/(?P<k8s_restart_count>\d+)\.log$'
+          - id: parse-browser-events-json
+            type: json_parser
+            if: 'attributes.k8s_container_name == "browser-events" and body matches "^\\{"'
+            parse_from: body
+            on_error: send
+            severity:
+              parse_from: attributes.level
+              mapping:
+                debug: debug
+                info: info
+                warn: warn
+                error: error
     processors:
       memory_limiter:
         check_interval: 1s
@@ -97,6 +109,11 @@ data:
       transform/session:
         error_mode: ignore
         log_statements:
+          - context: log
+            statements:
+              # The regex_parser above writes k8s_container_name to log attributes, which the
+              # resource processor cannot read, so set service.name here.
+              - set(resource.attributes["service.name"], log.attributes["k8s_container_name"]) where log.attributes["k8s_container_name"] != nil
           - context: log
             statements:
               - set(log.attributes["session.id"], resource.attributes["popcorn.session.id"]) where resource.attributes["popcorn.session.id"] != nil and resource.attributes["popcorn.session.bound_at_unix_nano"] != nil and log.time_unix_nano >= Int(resource.attributes["popcorn.session.bound_at_unix_nano"])
