@@ -113,6 +113,18 @@ curl -fsS \
 The response is expected to contain a proof version, the supplied nonce,
 workload and verifier image identities, and a GCP attestation token.
 
+A failed request returns `error.code` and, for Confidential Computing API
+failures (`CHALLENGE_CREATION_FAILED`, `ATTESTATION_FAILED`), `error.reason`:
+
+| `reason` | Meaning | Action |
+|----------|---------|--------|
+| `http_403` | The API refused the attestor's service account. | Check the Workload Identity binding and `confidentialcomputing.challenges.create`. |
+| `http_429` | The project's Confidential Computing quota is exhausted. | Check quota usage for `confidentialcomputing.googleapis.com`. |
+| `http_500` to `http_504`, `transport` | The API or the network failed. | Challenge creation was already tried three times; check Google Cloud status. |
+| `deadline_exceeded` | The 30 second request budget ran out. | Usually a long run of `503` responses, which the client retries. |
+
+The full upstream error is written to the attestor container log only.
+
 ## Verifier requirements
 
 Do not accept the JSON merely because the endpoint returned 200. The verifier
