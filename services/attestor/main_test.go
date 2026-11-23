@@ -16,7 +16,60 @@ import (
 	"time"
 
 	ccpb "cloud.google.com/go/confidentialcomputing/apiv1/confidentialcomputingpb"
+	"github.com/googleapis/gax-go/v2/apierror"
+	"google.golang.org/api/googleapi"
 )
+
+// restErrors builds the errors the Confidential Computing REST client returns
+// for an HTTP status: the raw *googleapi.Error and the *apierror.APIError that
+// gax wraps it in.
+func restErrors(t *testing.T, code int) map[string]error {
+	t.Helper()
+	raw := &googleapi.Error{Code: code, Message: "upstream said no"}
+	wrapped, ok := apierror.FromError(raw)
+	if !ok {
+		t.Fatalf("apierror.FromError did not accept a googleapi.Error with code %d", code)
+	}
+	return map[string]error{
+		"googleapi": raw,
+		"apierror":  wrapped,
+		"wrapped":   fmt.Errorf("attempts=1: %w", wrapped),
+	}
+}
+
+func TestGoogleRESTErrorsAreClassifiedByStatus(t *testing.T) {
+	for _, tc := range []struct {
+		code      int
+		reason    string
+		retryable bool
+	}{
+		{http.StatusForbidden, "http_403", false},
+		{http.StatusTooManyRequests, "http_429", false},
+		{http.StatusInternalServerError, "http_500", true},
+		{http.StatusServiceUnavailable, "http_503", true},
+	} {
+		for form, err := range restErrors(t, tc.code) {
+			if got := upstreamErrorReason(err); got != tc.reason {
+				t.Fatalf("%s %d: reason = %q, want %q", form, tc.code, got, tc.reason)
+			}
+			if got := retryableChallengeError(err); got != tc.retryable {
+				t.Fatalf("%s %d: retryable = %v, want %v", form, tc.code, got, tc.retryable)
+			}
+		}
+	}
+}
+
+func TestCreateChallengeDoesNotRetryGoogleQuotaOrPermissionErrors(t *testing.T) {
+	for _, code := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		for form, want := range restErrors(t, code) {
+			create, calls := challengeStub(want, nil)
+			_, _, err := createChallengeWithRetry(context.Background(), noWait, create)
+			if !errors.Is(err, want) || *calls != 1 {
+				t.Fatalf("%s %d: error = %v, calls = %d, want the upstream error after 1 call", form, code, err, *calls)
+			}
+		}
+	}
+}
 
 // fakeAPIError mimics the HTTPCode method of the Google API error type.
 type fakeAPIError struct{ code int }

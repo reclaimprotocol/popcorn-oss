@@ -27,6 +27,7 @@ import (
 	attestpb "github.com/google/go-tpm-tools/proto/attest"
 	"github.com/google/go-tpm/legacy/tpm2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/googleapi"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -130,7 +131,13 @@ var challengeRetryBackoff = []time.Duration{500 * time.Millisecond, 1500 * time.
 
 // upstreamHTTPCode returns the HTTP status carried by a Google API error, or 0
 // when the error did not come from an HTTP response (network, credentials).
+// The REST transport produces *googleapi.Error, which gax normally wraps in an
+// *apierror.APIError; both forms are recognised.
 func upstreamHTTPCode(err error) int {
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) && apiErr.Code > 0 {
+		return apiErr.Code
+	}
 	var httpErr interface{ HTTPCode() int }
 	if errors.As(err, &httpErr) {
 		if code := httpErr.HTTPCode(); code > 0 {
