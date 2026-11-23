@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/compute/metadata"
 	confidentialcomputing "cloud.google.com/go/confidentialcomputing/apiv1"
 	ccpb "cloud.google.com/go/confidentialcomputing/apiv1/confidentialcomputingpb"
@@ -26,7 +27,9 @@ import (
 	gtpmclient "github.com/google/go-tpm-tools/client"
 	attestpb "github.com/google/go-tpm-tools/proto/attest"
 	"github.com/google/go-tpm/legacy/tpm2"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	"google.golang.org/api/googleapi"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -71,6 +74,11 @@ type proofAttestation struct {
 type proofError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Reason classifies an upstream Confidential Computing failure (for example
+	// "http_403", "http_429", "deadline_exceeded" or "transport") so callers can
+	// tell permission and quota problems from transient ones. The underlying
+	// error text stays in the attestor log.
+	Reason string `json:"reason,omitempty"`
 }
 
 type runtimeState struct {
@@ -85,6 +93,7 @@ type runtimeState struct {
 type codedError struct {
 	Code       string
 	Message    string
+	Reason     string
 	HTTPStatus int
 	Err        error
 }
@@ -108,6 +117,101 @@ func (e *codedError) Unwrap() error {
 
 func newCodedError(code string, status int, message string, err error) *codedError {
 	return &codedError{Code: code, HTTPStatus: status, Message: message, Err: err}
+}
+
+// newUpstreamError wraps a Confidential Computing API failure and records its
+// reason class for the response and the log.
+func newUpstreamError(code, message string, err error) *codedError {
+	coded := newCodedError(code, http.StatusInternalServerError, message, err)
+	coded.Reason = upstreamErrorReason(err)
+	return coded
+}
+
+// challengeRetryBackoff holds the waits before the second and third
+// CreateChallenge attempts. Together they stay far inside the request timeout.
+var challengeRetryBackoff = []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond}
+
+// upstreamHTTPCode returns the HTTP status carried by a Google API or token
+// error, or 0 when the error did not come from an HTTP response (network).
+// The REST transport produces *googleapi.Error, which gax normally wraps in an
+// *apierror.APIError; both forms are recognised. The client fetches its access
+// token lazily, so a token endpoint rejection can surface here too.
+func upstreamHTTPCode(err error) int {
+	var apiErr *googleapi.Error
+	if errors.As(err, &apiErr) && apiErr.Code > 0 {
+		return apiErr.Code
+	}
+	var authErr *auth.Error
+	if errors.As(err, &authErr) && authErr.Response != nil {
+		return authErr.Response.StatusCode
+	}
+	var tokenErr *oauth2.RetrieveError
+	if errors.As(err, &tokenErr) && tokenErr.Response != nil {
+		return tokenErr.Response.StatusCode
+	}
+	var httpErr interface{ HTTPCode() int }
+	if errors.As(err, &httpErr) {
+		if code := httpErr.HTTPCode(); code > 0 {
+			return code
+		}
+	}
+	return 0
+}
+
+func upstreamErrorReason(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	}
+	if code := upstreamHTTPCode(err); code > 0 {
+		return fmt.Sprintf("http_%d", code)
+	}
+	return "transport"
+}
+
+// retryableChallengeError reports whether a CreateChallenge failure is worth
+// another attempt. Client errors are not: 403 (permissions) and 429 (quota)
+// need an operator, and repeating them only hides the cause. The client
+// library already retries 503 on its own.
+func retryableChallengeError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	switch upstreamHTTPCode(err) {
+	case 0, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+// createChallengeWithRetry calls create up to len(backoff)+1 times and returns
+// the challenge, the number of attempts made and the last error. If the
+// context ends during a wait, the context error is returned so the failure is
+// reported as canceled or deadline_exceeded; the upstream error stays in its text.
+func createChallengeWithRetry(ctx context.Context, backoff []time.Duration, create func(context.Context) (*ccpb.Challenge, error)) (*ccpb.Challenge, int, error) {
+	for attempt := 1; ; attempt++ {
+		challenge, err := create(ctx)
+		if err == nil {
+			return challenge, attempt, nil
+		}
+		if attempt > len(backoff) || !retryableChallengeError(err) {
+			return nil, attempt, err
+		}
+		wait := backoff[attempt-1]
+		log.Printf("CreateChallenge attempt %d failed, retrying in %s: reason=%s: %v", attempt, wait, upstreamErrorReason(err), err)
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, attempt, fmt.Errorf("%w while waiting to retry after: %v", ctx.Err(), err)
+		case <-timer.C:
+		}
+	}
 }
 
 func main() {
@@ -313,12 +417,14 @@ func generateTEEProof(ctx context.Context, state *runtimeState, nonce string) (s
 	}
 	defer client.Close()
 
-	challenge, err := client.CreateChallenge(ctx, &ccpb.CreateChallengeRequest{
-		Parent:    fmt.Sprintf("projects/%s/locations/%s", projectID, confidentialLocation()),
-		Challenge: &ccpb.Challenge{},
+	challenge, attempts, err := createChallengeWithRetry(ctx, challengeRetryBackoff, func(ctx context.Context) (*ccpb.Challenge, error) {
+		return client.CreateChallenge(ctx, &ccpb.CreateChallengeRequest{
+			Parent:    fmt.Sprintf("projects/%s/locations/%s", projectID, confidentialLocation()),
+			Challenge: &ccpb.Challenge{},
+		})
 	})
 	if err != nil {
-		return "", newCodedError("CHALLENGE_CREATION_FAILED", http.StatusInternalServerError, "failed to create confidential computing challenge", err)
+		return "", newUpstreamError("CHALLENGE_CREATION_FAILED", "failed to create confidential computing challenge", fmt.Errorf("attempts=%d: %w", attempts, err))
 	}
 	if challenge.GetName() == "" {
 		return "", newCodedError("CHALLENGE_EMPTY", http.StatusInternalServerError, "confidential computing challenge name is empty", nil)
@@ -349,7 +455,7 @@ func generateTEEProof(ctx context.Context, state *runtimeState, nonce string) (s
 		},
 	})
 	if err != nil {
-		return "", newCodedError("ATTESTATION_FAILED", http.StatusInternalServerError, "failed to verify confidential compute attestation", err)
+		return "", newUpstreamError("ATTESTATION_FAILED", "failed to verify confidential compute attestation", err)
 	}
 
 	if token := resp.GetOidcClaimsToken(); token != "" {
@@ -482,12 +588,17 @@ func writeProofError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	code := "INTERNAL_ERROR"
 	message := err.Error()
+	reason := ""
 	var coded *codedError
 	if errors.As(err, &coded) {
 		status = coded.HTTPStatus
 		code = coded.Code
 		message = coded.Message
-		if coded.Err != nil {
+		reason = coded.Reason
+		switch {
+		case coded.Err != nil && reason != "":
+			log.Printf("%s: reason=%s: %v", coded.Code, reason, coded.Err)
+		case coded.Err != nil:
 			log.Printf("%s: %v", coded.Code, coded.Err)
 		}
 	} else {
@@ -500,6 +611,7 @@ func writeProofError(w http.ResponseWriter, err error) {
 		Error: &proofError{
 			Code:    code,
 			Message: message,
+			Reason:  reason,
 		},
 	})
 }
