@@ -3,6 +3,7 @@ module github.com/reclaimprotocol/popcorn-oss/services/attestor
 go 1.25.6
 
 require (
+	cloud.google.com/go/auth v0.16.4
 	cloud.google.com/go/compute/metadata v0.8.4
 	cloud.google.com/go/confidentialcomputing v1.10.1
 	github.com/google/go-containerregistry v0.19.2
@@ -17,7 +18,6 @@ require (
 )
 
 require (
-	cloud.google.com/go/auth v0.16.4 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

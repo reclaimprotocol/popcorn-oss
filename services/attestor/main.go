@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/auth"
 	"cloud.google.com/go/compute/metadata"
 	confidentialcomputing "cloud.google.com/go/confidentialcomputing/apiv1"
 	ccpb "cloud.google.com/go/confidentialcomputing/apiv1/confidentialcomputingpb"
@@ -26,6 +27,7 @@ import (
 	gtpmclient "github.com/google/go-tpm-tools/client"
 	attestpb "github.com/google/go-tpm-tools/proto/attest"
 	"github.com/google/go-tpm/legacy/tpm2"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/googleapi"
 	corev1 "k8s.io/api/core/v1"
@@ -129,14 +131,23 @@ func newUpstreamError(code, message string, err error) *codedError {
 // CreateChallenge attempts. Together they stay far inside the request timeout.
 var challengeRetryBackoff = []time.Duration{500 * time.Millisecond, 1500 * time.Millisecond}
 
-// upstreamHTTPCode returns the HTTP status carried by a Google API error, or 0
-// when the error did not come from an HTTP response (network, credentials).
+// upstreamHTTPCode returns the HTTP status carried by a Google API or token
+// error, or 0 when the error did not come from an HTTP response (network).
 // The REST transport produces *googleapi.Error, which gax normally wraps in an
-// *apierror.APIError; both forms are recognised.
+// *apierror.APIError; both forms are recognised. The client fetches its access
+// token lazily, so a token endpoint rejection can surface here too.
 func upstreamHTTPCode(err error) int {
 	var apiErr *googleapi.Error
 	if errors.As(err, &apiErr) && apiErr.Code > 0 {
 		return apiErr.Code
+	}
+	var authErr *auth.Error
+	if errors.As(err, &authErr) && authErr.Response != nil {
+		return authErr.Response.StatusCode
+	}
+	var tokenErr *oauth2.RetrieveError
+	if errors.As(err, &tokenErr) && tokenErr.Response != nil {
+		return tokenErr.Response.StatusCode
 	}
 	var httpErr interface{ HTTPCode() int }
 	if errors.As(err, &httpErr) {
@@ -179,7 +190,9 @@ func retryableChallengeError(err error) bool {
 }
 
 // createChallengeWithRetry calls create up to len(backoff)+1 times and returns
-// the challenge, the number of attempts made and the last error.
+// the challenge, the number of attempts made and the last error. If the
+// context ends during a wait, the context error is returned so the failure is
+// reported as canceled or deadline_exceeded; the upstream error stays in its text.
 func createChallengeWithRetry(ctx context.Context, backoff []time.Duration, create func(context.Context) (*ccpb.Challenge, error)) (*ccpb.Challenge, int, error) {
 	for attempt := 1; ; attempt++ {
 		challenge, err := create(ctx)
@@ -195,7 +208,7 @@ func createChallengeWithRetry(ctx context.Context, backoff []time.Duration, crea
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return nil, attempt, err
+			return nil, attempt, fmt.Errorf("%w while waiting to retry after: %v", ctx.Err(), err)
 		case <-timer.C:
 		}
 	}

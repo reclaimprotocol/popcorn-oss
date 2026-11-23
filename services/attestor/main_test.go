@@ -15,8 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/auth"
 	ccpb "cloud.google.com/go/confidentialcomputing/apiv1/confidentialcomputingpb"
 	"github.com/googleapis/gax-go/v2/apierror"
+	"golang.org/x/oauth2"
 	"google.golang.org/api/googleapi"
 )
 
@@ -149,18 +151,74 @@ func TestCreateChallengeStopsAfterBoundedAttempts(t *testing.T) {
 	}
 }
 
-func TestCreateChallengeStopsWaitingWhenContextEnds(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	want := &fakeAPIError{code: http.StatusInternalServerError}
-	calls := 0
-	create := func(context.Context) (*ccpb.Challenge, error) {
-		calls++
-		cancel()
-		return nil, want
+func TestCreateChallengeReportsContextEndDuringWait(t *testing.T) {
+	upstream := &fakeAPIError{code: http.StatusServiceUnavailable}
+	for name, tc := range map[string]struct {
+		end    func(context.Context) (context.Context, context.CancelFunc)
+		want   error
+		reason string
+	}{
+		"canceled": {
+			end: func(parent context.Context) (context.Context, context.CancelFunc) {
+				ctx, cancel := context.WithCancel(parent)
+				cancel()
+				return ctx, cancel
+			},
+			want:   context.Canceled,
+			reason: "canceled",
+		},
+		"deadline": {
+			end: func(parent context.Context) (context.Context, context.CancelFunc) {
+				return context.WithDeadline(parent, time.Now().Add(-time.Second))
+			},
+			want:   context.DeadlineExceeded,
+			reason: "deadline_exceeded",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := tc.end(context.Background())
+			defer cancel()
+			create, calls := challengeStub(upstream, nil)
+			_, attempts, err := createChallengeWithRetry(ctx, []time.Duration{time.Hour, time.Hour}, create)
+			if !errors.Is(err, tc.want) || attempts != 1 || *calls != 1 {
+				t.Fatalf("error = %v, attempts = %d, calls = %d, want %v after 1 call", err, attempts, *calls, tc.want)
+			}
+			if got := upstreamErrorReason(err); got != tc.reason {
+				t.Fatalf("reason = %q, want %q", got, tc.reason)
+			}
+			if !strings.Contains(err.Error(), upstream.Error()) {
+				t.Fatalf("error %q does not mention the upstream error", err)
+			}
+		})
 	}
-	_, _, err := createChallengeWithRetry(ctx, []time.Duration{time.Hour, time.Hour}, create)
-	if !errors.Is(err, want) || calls != 1 {
-		t.Fatalf("error = %v, calls = %d, want upstream error after 1 call", err, calls)
+}
+
+func TestTokenErrorsAreClassifiedByStatus(t *testing.T) {
+	response := func(code int) *http.Response { return &http.Response{StatusCode: code} }
+	for _, tc := range []struct {
+		name      string
+		err       error
+		reason    string
+		retryable bool
+	}{
+		{"oauth2 403", &oauth2.RetrieveError{Response: response(http.StatusForbidden)}, "http_403", false},
+		{"oauth2 wrapped 400", fmt.Errorf("token: %w", &oauth2.RetrieveError{Response: response(http.StatusBadRequest)}), "http_400", false},
+		{"oauth2 503", &oauth2.RetrieveError{Response: response(http.StatusServiceUnavailable)}, "http_503", true},
+		{"oauth2 no response", &oauth2.RetrieveError{}, "transport", true},
+		{"auth 404", &auth.Error{Response: response(http.StatusNotFound)}, "http_404", false},
+		{"auth 500", &auth.Error{Response: response(http.StatusInternalServerError)}, "http_500", true},
+		{"auth no response", &auth.Error{Err: errors.New("dial tcp: i/o timeout")}, "transport", true},
+	} {
+		if got := upstreamErrorReason(tc.err); got != tc.reason {
+			t.Fatalf("%s: reason = %q, want %q", tc.name, got, tc.reason)
+		}
+		if got := retryableChallengeError(tc.err); got != tc.retryable {
+			t.Fatalf("%s: retryable = %v, want %v", tc.name, got, tc.retryable)
+		}
+	}
+	create, calls := challengeStub(&oauth2.RetrieveError{Response: response(http.StatusForbidden)}, nil)
+	if _, _, err := createChallengeWithRetry(context.Background(), noWait, create); err == nil || *calls != 1 {
+		t.Fatalf("error = %v, calls = %d, want a token 403 to fail after 1 call", err, *calls)
 	}
 }
 

@@ -121,7 +121,7 @@ failures (`CHALLENGE_CREATION_FAILED`, `ATTESTATION_FAILED`), `error.reason`:
 | `http_403` | The API refused the attestor's service account. | Check the Workload Identity binding and `confidentialcomputing.challenges.create`. |
 | `http_429` | The project's Confidential Computing quota is exhausted. | Check quota usage for `confidentialcomputing.googleapis.com`. |
 | `http_500` to `http_504`, `transport` | The API or the network failed. | Challenge creation was already tried three times; check Google Cloud status. |
-| `deadline_exceeded` | The 30 second request budget ran out. | Usually a long run of `503` responses, which the client retries. |
+| `deadline_exceeded` | The 30 second request budget ran out, possibly while waiting to retry. | Usually a long run of `503` responses, which the client retries. The attestor log has the last upstream error. |
 
 The full upstream error is written to the attestor container log only.
 
