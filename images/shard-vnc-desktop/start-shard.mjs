@@ -137,6 +137,10 @@ const extraArgs = [
   // still lets ~25 components download into it on every session.
   '--disable-component-update', '--disable-background-networking',
 ];
+// No WebAuthn (window.PublicKeyCredential is removed): Google would otherwise
+// open a passkey screen nothing in the pod can complete. Its sign-in and 2-Step
+// Verification then skip their passkey options. DISABLE_WEBAUTHN=false keeps it.
+if (process.env.DISABLE_WEBAUTHN !== 'false') extraArgs.push('--disable-blink-features=WebAuth');
 // WebRTC must expose a public candidate: some bot checks fail without one. With
 // the proxy exit known at launch, WebRTC uses TCP only and reports that exit. A
 // proxy set later leaves the exit unknown, so Chrome's own policy keeps UDP on

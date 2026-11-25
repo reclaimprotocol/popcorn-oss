@@ -407,6 +407,19 @@ fi
 # NOTE: Chromium honours only the LAST --disable-features on the command line,
 # and cloak_flags is appended last, so the passkey feature is added to BOTH the
 # cloak_flags list here AND the base flags list below to cover either config.
+# Passkeys: --disable-blink-features=WebAuth removes window.PublicKeyCredential
+# (as in Android WebView), so sites see no WebAuthn at all. Without it Google
+# finds a platform authenticator and opens a passkey screen nothing in the
+# container can complete; with it Google's sign-in and 2-Step Verification drop
+# their passkey options and go to the password. This replaces the old
+# Google-only JS patch in extensions/proxy/injected.js. Set
+# CLOAK_DISABLE_WEBAUTHN=false to keep WebAuthn (the WebAuthn relay needs it).
+# Chromium honours only the LAST --disable-blink-features, so a CHROMIUM_FLAGS
+# value for that switch must repeat WebAuth.
+_webauthn_flags=()
+if [[ "${CLOAK_DISABLE_WEBAUTHN:-true}" == "true" ]]; then
+  _webauthn_flags=("--disable-blink-features=WebAuth")
+fi
 _passkey_feat=""
 if [[ "${CLOAK_DISABLE_PASSKEY:-true}" == "true" ]]; then
   _passkey_feat=",AutofillReintroduceHybridPasskeyDropdownItem"
@@ -472,6 +485,7 @@ flags=(
   # login flows silently die. Real user clicks are gestures, but kiosk + the
   # blocker still interfere; disabling the blocker makes popups reliable.
   "--disable-popup-blocking"
+  "${_webauthn_flags[@]}"
   "${cloak_flags[@]}"
 )
 

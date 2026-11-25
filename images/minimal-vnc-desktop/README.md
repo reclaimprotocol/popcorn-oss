@@ -488,6 +488,7 @@ commands the probes need):
 | `POPCORN_BROWSER_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` is unset. |
 | `CHROMIUM_STARTUP_URL` | empty | Compatibility alias used when `APP_URL` and `POPCORN_BROWSER_STARTUP_URL` are unset. |
 | `CHROMIUM_FLAGS` | empty | Extra flags appended to Chromium. |
+| `CLOAK_DISABLE_WEBAUTHN` | `true` | Launch with `--disable-blink-features=WebAuth`, which removes `PublicKeyCredential` so Google sign-in skips its passkey screens. Set `false` to keep WebAuthn. |
 | `FORTRESS_COMPOSITING` | `software` | Fortress graphics path: `software` uses CPU compositing with SwiftShader WebGL fallback; `swiftshader` restores the previous path. Requires a new browser process. |
 | `LOG_DIR` | `/var/log/app` | Directory for `entrypoint.log` (including proxy/TEE events), `xvnc.log`, `openbox.log`, and `app.log`. |
 | `ENABLE_PROXY_EXTENSION` | `true` | Load the bundled Popcorn proxy extension using Chromium extension flags. |

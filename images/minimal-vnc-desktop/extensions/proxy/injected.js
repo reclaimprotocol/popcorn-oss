@@ -11,39 +11,6 @@
   const fingerprintShims = globalThis.POPCORN_FINGERPRINT_SHIMS !== false;
   delete globalThis.POPCORN_FINGERPRINT_SHIMS;
 
-  // ---- Passkey suppression on Google sign-in (SCOPED) ----------------------
-  // Accounts that have a passkey make Google auto-launch a modal passkey
-  // ceremony ("Complete sign-in using your passkey"), which fails in this
-  // container (no authenticator / cross-device) with a "your device can't be
-  // used" modal and blocks password login. Report no platform authenticator /
-  // no conditional mediation and fail any WebAuthn get() fast the way a
-  // user-cancel does, so Google drops straight to the password field.
-  //
-  // Deliberately SCOPED to Google's auth domain: every other page — including a
-  // fingerprinting probe — keeps a pristine, untampered navigator.credentials,
-  // so this adds ZERO detection surface where stealth actually matters. Toggle
-  // with window.__PCN_KEEP_PASSKEY = true before this runs to disable.
-  (function suppressGooglePasskey() {
-    if (!emulationEnabled) return;
-    try {
-      if (window.__PCN_KEEP_PASSKEY) return;
-      var h = location.hostname || '';
-      if (!/(^|\.)google\.com$/.test(h)) return;
-      if (!('PublicKeyCredential' in window) || !navigator.credentials) return;
-      try { PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = function () { return Promise.resolve(false); }; } catch (_) {}
-      try { PublicKeyCredential.isConditionalMediationAvailable = function () { return Promise.resolve(false); }; } catch (_) {}
-      try { if (PublicKeyCredential.getClientCapabilities) PublicKeyCredential.getClientCapabilities = function () { return Promise.resolve({}); }; } catch (_) {}
-      var origGet = navigator.credentials.get.bind(navigator.credentials);
-      navigator.credentials.get = function (options) {
-        if (options && (options.publicKey || options.mediation === 'conditional')) {
-          // Google catches NotAllowedError and falls back to the password field.
-          return Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'));
-        }
-        return origGet(options);
-      };
-    } catch (_) {}
-  })();
-
   const pendingRequests = new Map();
   let requestCounter = 0;
 
