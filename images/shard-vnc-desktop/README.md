@@ -26,6 +26,7 @@ The runtime is Linux/amd64 only. Apple silicon requires Docker emulation; native
 - `SHARD_PROFILE_DIR`: persistent profile root. Defaults to `shard` under `BROWSER_PROFILE_DIR`, or under `/home/kernel/user-data`.
 - `REPLACE_DEFAULT_PAGE=false`: `true` installs the reclaim-portal policy variant and start page, as in the main image. `APP_URL` overrides the start page.
 - `ENABLE_PROXY_EXTENSION=true`: load the existing Popcorn extension. Set `false` to disable it.
+- `DISABLE_WEBAUTHN=true`: launch with `--disable-blink-features=WebAuth`, which removes `PublicKeyCredential` so Google sign-in skips its passkey screens. Set `false` to keep WebAuthn.
 - `MVD_EMULATOR_OFF=0`: the shared CDP emulator and extension compatibility shims are on, as in the main image. Mobile viewers need them: touch, virtual-keyboard text and dialog relay go through the emulator. Set `1` to retain the engine's native profile values; restart with a fresh browser process.
 - `ENABLE_AGONES=auto`: shared entrypoint lifecycle reporting when running in Kubernetes.
 
