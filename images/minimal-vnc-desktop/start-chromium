@@ -461,6 +461,11 @@ flags=(
   "--no-first-run"
   "--no-default-browser-check"
   "--disable-background-networking"
+  # Every pod starts a fresh profile, and the ComponentUpdatesEnabled policy
+  # exempts security components: without this switch the component updater
+  # downloads the ~9 MB CRLSet (plus subresource-filter rules) from
+  # edgedl.me.gvt1.com about a minute into every session. Matches ShardX.
+  "--disable-component-update"
   "--disable-dev-shm-usage"
   "--disable-sync"
   # MediaRouter is intentionally NOT disabled: doing so empties

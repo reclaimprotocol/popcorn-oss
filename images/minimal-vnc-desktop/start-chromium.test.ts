@@ -41,6 +41,7 @@ for (const persona of [undefined, 'windows', 'linux']) {
         '--disable-gpu-rasterization', '--enable-unsafe-swiftshader']) {
         expect(lines.filter(line => line === flag)).toHaveLength(compositing === 'swiftshader' ? 0 : 1);
       }
+      expect(lines.filter(line => line === '--disable-component-update')).toHaveLength(1);
       expect(lines.filter(line => line === '--disable-component-extensions-with-background-pages')).toHaveLength(repair === 'true' ? 1 : 0);
       expect(lines.at(-1)).toBe(repair === 'true' ? 'about:blank' : 'https://start.duckduckgo.com/');
     } finally { rmSync(dir, { recursive: true, force: true }); }
