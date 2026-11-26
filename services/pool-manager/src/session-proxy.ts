@@ -78,9 +78,7 @@ export function proxyPreset(country: string, sessionId: string, raw = process.en
             port,
             scheme: url.protocol === "https:" ? "https" : "http",
             ...(username ? { username: `${username}-session-${stickyId}`, password } : {}),
-            // Chrome downloads its ~9 MB certificate revocation list (CRLSet) from
-            // gvt1.com on every fresh profile; never pay residential-proxy bytes for it.
-            bypassList: ["localhost", "127.0.0.1", "[::1]", "*.gvt1.com"],
+            bypassList: ["localhost", "127.0.0.1", "[::1]"],
         },
     };
 }

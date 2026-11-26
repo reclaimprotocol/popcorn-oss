@@ -657,7 +657,7 @@ async function handleSetProxy(config) {
     throw new Error('Proxy host is required');
   }
 
-  const { host, port = 8080, scheme = 'http', bypassList = ['localhost', '127.0.0.1', '*.gvt1.com'] } = config;
+  const { host, port = 8080, scheme = 'http', bypassList = ['localhost', '127.0.0.1'] } = config;
 
   await chrome.proxy.settings.set({
     value: {
@@ -694,7 +694,7 @@ chrome.storage.local.get(['proxyConfig'], (result) => {
         mode: 'fixed_servers',
         rules: {
           singleProxy: { scheme, host, port },
-          bypassList: bypassList || ['localhost', '127.0.0.1', '*.gvt1.com']
+          bypassList: bypassList || ['localhost', '127.0.0.1']
         }
       },
       scope: 'regular'

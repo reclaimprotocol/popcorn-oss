@@ -69,7 +69,7 @@ try {
   await page.send('Fetch.enable', { handleAuthRequests: true });
   changed = true;
   await extension('PCN_PROXY_SET', { scheme: proxy.protocol.slice(0, -1), host: proxy.hostname,
-    port: Number(proxy.port || (proxy.protocol === 'https:' ? 443 : 80)), bypassList: ['localhost', '127.0.0.1', '[::1]', '*.gvt1.com'] });
+    port: Number(proxy.port || (proxy.protocol === 'https:' ? 443 : 80)), bypassList: ['localhost', '127.0.0.1', '[::1]'] });
   const samples = [];
   for (let round = 0; round < 2; round++) {
     const ip = await diagnosticJSON(page, 'https://api.ipify.org?format=json', 'ip');

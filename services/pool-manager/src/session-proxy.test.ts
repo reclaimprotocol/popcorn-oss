@@ -27,7 +27,7 @@ describe("session proxy request", () => {
                 scheme: "https",
                 username: "customer-country-in-session-6f025d8950fdd146e10c249de68adec9",
                 password: "secret",
-                bypassList: ["localhost", "127.0.0.1", "[::1]", "*.gvt1.com"],
+                bypassList: ["localhost", "127.0.0.1", "[::1]"],
             },
         });
     });
@@ -44,7 +44,7 @@ describe("session proxy request", () => {
                 scheme: "http",
                 username: "customer-country-us-session-6f025d8950fdd146e10c249de68adec9",
                 password: "secret",
-                bypassList: ["localhost", "127.0.0.1", "[::1]", "*.gvt1.com"],
+                bypassList: ["localhost", "127.0.0.1", "[::1]"],
             },
         });
     });
