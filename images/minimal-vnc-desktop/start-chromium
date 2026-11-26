@@ -461,6 +461,7 @@ flags=(
   "--no-first-run"
   "--no-default-browser-check"
   "--disable-background-networking"
+  "--disable-component-update"
   "--disable-dev-shm-usage"
   "--disable-sync"
   # MediaRouter is intentionally NOT disabled: doing so empties
