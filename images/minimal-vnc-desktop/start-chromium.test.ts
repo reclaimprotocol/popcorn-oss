@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,4 +47,41 @@ for (const persona of [undefined, 'windows', 'linux']) {
   });
 }
 }
+}
+
+for (const [label, existing] of [
+  ['a fresh profile', undefined],
+  ['a profile without spellcheck prefs', '{"profile":{"cookie_controls_mode":0},"intl":{"accept_languages":"en-US,en"}}'],
+  ['a profile with spellcheck dictionaries', '{"spellcheck":{"dictionaries":["en-US","hi"],"dictionary":"en-US"},"profile":{"x":1}}'],
+] as const) {
+  test(`launcher empties the spellcheck dictionary list for ${label}`, () => {
+    const dir = mkdtempSync(join(tmpdir(), 'popcorn-launcher-'));
+    try {
+      const binary = join(dir, 'chromium');
+      writeFileSync(binary, '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n');
+      chmodSync(binary, 0o755);
+      const profile = join(dir, 'profile');
+      if (existing) {
+        mkdirSync(join(profile, 'Default'), { recursive: true });
+        writeFileSync(join(profile, 'Default', 'Preferences'), existing);
+      }
+      const launcher = join(dir, 'launcher');
+      writeFileSync(launcher, readFileSync(join(import.meta.dir, 'start-chromium'), 'utf8').replaceAll('/opt/tilion/tilion', binary).replaceAll('/etc/timezone', join(dir, 'timezone')).replaceAll('/etc/localtime', join(dir, 'localtime')));
+      const result = Bun.spawnSync(['bash', launcher], {
+        // The 3p-cookie pref merge uses GNU sed -i; keep this test portable to BSD sed.
+        env: { ...process.env, BROWSER: 'fortress', CLOAK_ALLOW_3P_COOKIES: 'false', BROWSER_PROFILE_DIR: profile, BROWSER_MODE_FILE: join(dir, 'mode'),
+          REPLACE_DEFAULT_PAGE: 'false', ENABLE_PROXY_EXTENSION: 'false', CLOAK_GEOIP: 'false',
+          CLOAK_TIMEZONE: 'Etc/UTC', CLOAK_LOCALE: 'en-US', CLOAK_FINGERPRINT_SEED: '1234567',
+          APP_URL: '', POPCORN_BROWSER_STARTUP_URL: '', CHROMIUM_STARTUP_URL: '', CHROMIUM_FLAGS: '' },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      expect(result.exitCode, result.stderr.toString()).toBe(0);
+      const prefs = JSON.parse(readFileSync(join(profile, 'Default', 'Preferences'), 'utf8'));
+      expect(prefs.spellcheck.dictionaries).toEqual([]);
+      expect(prefs.spellcheck.dictionary).toBe('');
+      // Other prefs survive the merge.
+      if (existing?.includes('accept_languages')) expect(prefs.intl.accept_languages).toBe('en-US,en');
+      if (existing?.includes('"x":1')) expect(prefs.profile.x).toBe(1);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 }
