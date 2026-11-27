@@ -82,6 +82,7 @@ COPY --chown=kernel:kernel images/minimal-vnc-desktop/policies/managed/policy.js
 COPY --chown=kernel:kernel images/minimal-vnc-desktop/policies/variants/policy.reclaim-portal.json /etc/chromium/policy-variants/policy.reclaim-portal.json
 COPY --chmod=0755 images/minimal-vnc-desktop/run-chromium-managed /usr/local/bin/run-chromium-managed
 COPY --chmod=0755 images/shard-vnc-desktop/start-shard.mjs /opt/shard/start-shard.mjs
+COPY images/shard-vnc-desktop/lib/policy.mjs /opt/shard/lib/policy.mjs
 COPY --chown=kernel:kernel images/minimal-vnc-desktop/extensions/proxy /home/kernel/extensions/proxy
 COPY --from=viewer-builder /usr/share/novnc /usr/share/novnc
 ENV HOME=/home/kernel XDG_CONFIG_HOME=/home/kernel/.config XDG_CACHE_HOME=/home/kernel/.cache \
