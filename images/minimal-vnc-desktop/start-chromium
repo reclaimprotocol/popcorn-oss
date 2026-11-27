@@ -445,6 +445,33 @@ if [[ "${CLOAK_ALLOW_3P_COOKIES:-true}" == "true" ]]; then
   echo "[stealth] 3p-cookies: policy + prefs(cookie_controls_mode=0, enforced on warmed profiles too) + disable TrackingProtection3pcd (reCAPTCHA v3/Enterprise reputation)"
 fi
 
+# Chrome downloads a Hunspell dictionary for each spellcheck language the first
+# time a page has an editable field; an empty list stops that download.
+mkdir -p "$CLOAK_PROFILE_DIR/Default"
+if ! python3 -I - "$CLOAK_PROFILE_DIR/Default/Preferences" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        text = f.read()
+except FileNotFoundError:
+    text = ''
+prefs = json.loads(text) if text.strip() else {}
+if not isinstance(prefs, dict):
+    sys.exit('Preferences is not a JSON object')
+spell = prefs.get('spellcheck')
+if not isinstance(spell, dict):
+    spell = prefs['spellcheck'] = {}
+spell['dictionaries'] = []
+spell['dictionary'] = ''
+with open(path + '.tmp', 'w') as f:
+    json.dump(prefs, f, separators=(',', ':'))
+os.replace(path + '.tmp', path)
+PY
+then
+  echo "[start-chromium] WARN: could not clear spellcheck dictionaries in Preferences" >&2
+fi
+
 if [[ "$BROWSER" == "fingerprint" ]]; then
   echo "[stealth] fingerprint-chromium: seed=${CLOAK_SEED} platform=${CLOAK_FP_PLATFORM} tz=${CLOAK_TIMEZONE} locale=${CLOAK_LOCALE}"
   echo "[stealth] If the WebGL renderer reports a flagship discrete GPU, pin CLOAK_FINGERPRINT_SEED to a seed that maps to an integrated GPU."

@@ -4,6 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSyn
 import { randomInt, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { createServer, connect } from 'node:net';
+import { blockSpellcheckLanguages } from './lib/policy.mjs';
 
 // Use the immutable build artifacts; never invoke the SDK auto-updater.
 const root = '/opt/shard/runtime';
@@ -161,6 +162,10 @@ extraArgs.push(startUrl);
 writeFileSync(process.env.BROWSER_MODE_FILE || '/tmp/popcorn-browser-mode', kiosk ? 'kiosk\n' : 'normal\n');
 const udd = join(profilesRoot, profile.id);
 for (const lock of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) rmSync(join(udd, lock), { force: true });
+try {
+  blockSpellcheckLanguages(join(process.env.CHROMIUM_POLICY_DIR || '/etc/chromium/policies/managed', 'policy.json'),
+    profile.config.navigator.languages);
+} catch (error) { console.warn(`[popcorn] could not block spellcheck languages: ${error.message}`); }
 const browser = new Browser(runtime);
 let session;
 let bridge;
