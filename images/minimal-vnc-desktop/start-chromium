@@ -447,17 +447,29 @@ fi
 
 # Chrome downloads a Hunspell dictionary for each spellcheck language the first
 # time a page has an editable field; an empty list stops that download.
-spell_pref_file="$CLOAK_PROFILE_DIR/Default/Preferences"
 mkdir -p "$CLOAK_PROFILE_DIR/Default"
-if [[ ! -s "$spell_pref_file" ]]; then
-  printf '%s' '{"spellcheck":{"dictionaries":[],"dictionary":""}}' > "$spell_pref_file"
-elif grep -q '"spellcheck"' "$spell_pref_file"; then
-  sed -e 's/"dictionaries"[[:space:]]*:[[:space:]]*\[[^]]*\]/"dictionaries":[]/' \
-    -e 's/"dictionary"[[:space:]]*:[[:space:]]*"[^"]*"/"dictionary":""/' \
-    "$spell_pref_file" > "$spell_pref_file.tmp" && mv "$spell_pref_file.tmp" "$spell_pref_file"
-else
-  sed -e '1s/^{/{"spellcheck":{"dictionaries":[],"dictionary":""},/' \
-    "$spell_pref_file" > "$spell_pref_file.tmp" && mv "$spell_pref_file.tmp" "$spell_pref_file"
+if ! python3 -I - "$CLOAK_PROFILE_DIR/Default/Preferences" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+try:
+    with open(path) as f:
+        text = f.read()
+except FileNotFoundError:
+    text = ''
+prefs = json.loads(text) if text.strip() else {}
+if not isinstance(prefs, dict):
+    sys.exit('Preferences is not a JSON object')
+spell = prefs.get('spellcheck')
+if not isinstance(spell, dict):
+    spell = prefs['spellcheck'] = {}
+spell['dictionaries'] = []
+spell['dictionary'] = ''
+with open(path + '.tmp', 'w') as f:
+    json.dump(prefs, f, separators=(',', ':'))
+os.replace(path + '.tmp', path)
+PY
+then
+  echo "[start-chromium] WARN: could not clear spellcheck dictionaries in Preferences" >&2
 fi
 
 if [[ "$BROWSER" == "fingerprint" ]]; then

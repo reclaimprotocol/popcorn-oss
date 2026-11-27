@@ -53,6 +53,7 @@ for (const [label, existing] of [
   ['a fresh profile', undefined],
   ['a profile without spellcheck prefs', '{"profile":{"cookie_controls_mode":0},"intl":{"accept_languages":"en-US,en"}}'],
   ['a profile with spellcheck dictionaries', '{"spellcheck":{"dictionaries":["en-US","hi"],"dictionary":"en-US"},"profile":{"x":1}}'],
+  ['a spellcheck object without the dictionary keys', '{"spellcheck":{"use_spelling_service":false},"profile":{"x":1}}'],
 ] as const) {
   test(`launcher empties the spellcheck dictionary list for ${label}`, () => {
     const dir = mkdtempSync(join(tmpdir(), 'popcorn-launcher-'));
@@ -82,6 +83,7 @@ for (const [label, existing] of [
       // Other prefs survive the merge.
       if (existing?.includes('accept_languages')) expect(prefs.intl.accept_languages).toBe('en-US,en');
       if (existing?.includes('"x":1')) expect(prefs.profile.x).toBe(1);
+      if (existing?.includes('use_spelling_service')) expect(prefs.spellcheck.use_spelling_service).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 }
